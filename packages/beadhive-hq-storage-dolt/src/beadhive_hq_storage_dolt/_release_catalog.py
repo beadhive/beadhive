@@ -17,6 +17,7 @@ __all__ = [
     "CATALOG_DIFF_SQL",
     "CATALOG_INSERT_SQL",
     "CATALOG_ROWS_SQL",
+    "CATALOG_VERSIONS_OF_DIGEST_SQL",
     "RELEASE_CATALOG_TABLE",
     "catalog_account_statements",
     "catalog_select_statement",
@@ -45,6 +46,15 @@ CATALOG_INSERT_SQL: Final = (
 )
 CATALOG_ROWS_SQL: Final = f"SELECT {_LIST} FROM {RELEASE_CATALOG_TABLE}"
 """Every row; callers append ``WHERE catalog = %s AND version = %s`` or ``AS OF %s``."""
+CATALOG_VERSIONS_OF_DIGEST_SQL: Final = (
+    "SELECT `catalog`, `version`, `measured_digest`, `status`, `algorithm` "
+    f"FROM {RELEASE_CATALOG_TABLE} AS OF %s WHERE `catalog` = %s AND `version` IN "
+    f"(SELECT `version` FROM {RELEASE_CATALOG_TABLE} AS OF %s "
+    "WHERE `catalog` = %s AND `measured_digest` = %s)"
+)
+"""Release eligibility under a policy (bh-vfrem.6): every row (active and tombstone) of each
+version that holds one digest, ``AS OF`` the verified runtime head and never the working set.
+It omits ``bundle``, which a frame does not need to judge eligibility."""
 CATALOG_DIFF_SQL: Final = (
     f"SELECT DISTINCT diff_type FROM DOLT_DIFF(%s, %s, '{RELEASE_CATALOG_TABLE}')"
 )

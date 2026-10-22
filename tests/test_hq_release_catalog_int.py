@@ -300,3 +300,39 @@ def test_the_catalog_diff_probe_is_row_level_on_this_dolt(tmp_path, fixture, mon
         assert {r[0] for r in sql.catalog_diff_types(added, edited)} == {"modified"}
         assert {r[0] for r in sql.catalog_diff_types(edited, deleted)} == {"removed"}
         root.close()
+
+
+def test_release_rows_for_a_digest_are_read_as_of_the_head_not_the_working_set(
+    tmp_path, fixture, monkeypatch
+):
+    """The policy eligibility read (bh-vfrem.6) sees a committed append and a committed
+    tombstone at their commits, and never an uncommitted row of the dirty working set."""
+    from beadhive.release_policy import admits, catalog_row_for
+    from beadhive_hq_storage_dolt import HqRuntimeStatements
+
+    desired = {
+        "release": {"id": "0.28.2", "digest": "sha256:" + "0" * 64},
+        "release_policy": {"format": 1, "spec": "==0.28.*", "catalog": "beadhive"},
+    }
+    measured = {"id": "0.28.5", "digest": "sha256:" + "1" * 64}
+    with _server(tmp_path) as port:
+        root, cursor, _reader_, created = _world(tmp_path, fixture, port, monkeypatch)
+        sql = HqRuntimeStatements.of(cursor)
+
+        def verdict(head):
+            rows = sql.release_catalog_rows(head, "beadhive", measured["digest"])
+            return admits(measured, desired, catalog_row_for(rows, "beadhive", measured))
+
+        assert verdict(created) is False  # unknown before the import
+        store = _store(port, tmp_path)
+        store.add(_entry())
+        added = _head(cursor)
+        assert verdict(added) is True and verdict(created) is False
+        cursor.execute(
+            "INSERT INTO hq_release_catalog VALUES "
+            f"('beadhive','0.28.5','{measured['digest']}','revoked','{ALGORITHM}','a','c','{{}}','',1)"
+        )
+        assert verdict(added) is True  # the dirty working set is invisible AS OF the head
+        revoked = _commit(cursor)
+        assert verdict(revoked) is False and verdict(added) is True
+        root.close()

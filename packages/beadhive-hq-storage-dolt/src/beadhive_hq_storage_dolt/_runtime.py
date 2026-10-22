@@ -28,7 +28,12 @@ from contextlib import AbstractContextManager, contextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from ._incarnation import ELIGIBILITY_SQL, EVIDENCE_SQL, POLICY_SQL, RENEW_SQL
-from ._release_catalog import CATALOG_DIFF_SQL, CATALOG_INSERT_SQL, CATALOG_ROWS_SQL
+from ._release_catalog import (
+    CATALOG_DIFF_SQL,
+    CATALOG_INSERT_SQL,
+    CATALOG_ROWS_SQL,
+    CATALOG_VERSIONS_OF_DIGEST_SQL,
+)
 
 if TYPE_CHECKING:
     from ._hq import DoltHqStorage
@@ -583,6 +588,11 @@ class HqRuntimeStatements:
         self._cursor.execute(CATALOG_ROWS_SQL + " AS OF %s", (revision,))
         rows = self._cursor.fetchall()
         return rows, [column[0] for column in self._cursor.description]
+
+    def release_catalog_rows(self, head: str, catalog: str, digest: str) -> Any:
+        """``(catalog, version, digest, status, algorithm)`` of every version holding ``digest``,
+        ``AS OF head``: the frame's read for release eligibility under a policy."""
+        return self._all(CATALOG_VERSIONS_OF_DIGEST_SQL, (head, catalog, head, catalog, digest))
 
     def commit_schemas(self, message: str) -> None:
         self._cursor.execute("CALL DOLT_ADD('dolt_schemas')")

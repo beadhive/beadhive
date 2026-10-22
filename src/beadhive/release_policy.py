@@ -7,14 +7,16 @@ accepts npm-style shorthand and normalises it here before anything is signed.
 
 Prereleases are admitted only when the spec names one (the ``packaging`` default).
 
-Eligibility is deliberately not decided here: the read-time ``admits()`` predicate that judges an
-evidence row against the policy is bh-vfrem.6.  :func:`satisfies` only answers "does this version
-match this spec", which validation needs for ``release.id``.
+:func:`admits` is the read-time eligibility predicate both liveness carriers share (ADR section
+4): it judges a measured release against the grant and the catalog row for its digest.
+:func:`satisfies` only answers "does this version match this spec", which validation needs for
+``release.id``.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping, Sequence
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -121,8 +123,7 @@ def normalize(text: str) -> str:
 def satisfies(spec: str, version: str) -> bool:
     """Whether ``version`` matches ``spec`` (prereleases only if the spec names one).
 
-    The read-time eligibility predicate ``admits(policy, evidence)`` (catalog membership plus
-    range) belongs here and lands with bh-vfrem.6; it must not be inferred from this helper.
+    Range only: catalog membership is :func:`admits`, which must not be inferred from this.
     """
     try:
         parsed = SpecifierSet(spec)
@@ -186,3 +187,70 @@ def downgrades(spec: str, attested: str | None) -> bool:
     if satisfies(spec, attested):
         return False
     return any(p < current and satisfies(spec, str(p)) for p in _probes(spec))
+
+
+def catalog_row_for(
+    rows: Iterable[Sequence], catalog: str, measured: Mapping[str, str]
+) -> dict | None:
+    """Fold raw catalog rows into the one row :func:`admits` judges, or ``None`` when absent.
+
+    ``rows`` are ``(catalog, version, measured_digest, status, algorithm)`` tuples: every row of
+    each version that holds ``measured['digest']``, read ``AS OF`` the verified runtime head.
+    Revocation is a tombstone (a ``revoked`` row for the same digest), so a digest is active only
+    with an ``active`` row and no tombstone.  ``active_digests`` is how many digests of that
+    version are effectively active; the catalog allows one, and :func:`admits` refuses more.
+    A row whose version differs from ``measured['id']`` is returned unchanged so ``admits``
+    refuses the disagreement rather than this lookup hiding it.
+    """
+    mine = [tuple(r) for r in rows if r[0] == catalog]
+    digest, version = measured.get("digest"), measured.get("id")
+    versions = sorted({r[1] for r in mine if r[2] == digest})
+    if not versions:
+        return None
+    chosen = version if version in versions else versions[0]
+    scoped = [r for r in mine if r[1] == chosen]
+    tombstoned = {r[2] for r in scoped if r[3] == "revoked"}
+    active = {r[2] for r in scoped if r[3] == "active"} - tombstoned
+    algorithm = next((r[4] for r in scoped if r[2] == digest and r[3] == "active"), "")
+    return {
+        "catalog": catalog,
+        "version": chosen,
+        "measured_digest": digest,
+        "status": "active" if digest in active else "revoked",
+        "algorithm": algorithm,
+        "active_digests": len(active),
+    }
+
+
+def admits(measured, desired, catalog_row) -> bool:
+    """Whether ``measured`` (``{id, digest}``) satisfies the release the grant ``desired`` names.
+
+    Without ``desired['release_policy']`` this is today's exact pin and ``catalog_row`` is
+    ignored.  With one, all of these hold (ADR section 4; the epoch conjunct stays with the
+    carrier): the row is the catalog's own, ``active`` and for this digest; the measurement
+    algorithm is the one the catalog row names; the self-reported id equals the row's version;
+    that version has exactly one active digest; and the version satisfies the canonical spec.
+    """
+    if not isinstance(measured, Mapping) or not isinstance(desired, Mapping):
+        return False
+    policy = desired.get("release_policy")
+    if policy is None:
+        return dict(measured) == desired.get("release")
+    row = catalog_row
+    try:
+        from .release_measurement import ALGORITHM
+
+        return (
+            isinstance(row, Mapping)
+            and isinstance(policy, Mapping)
+            and row.get("catalog") == policy.get("catalog")
+            and row.get("status") == "active"
+            and row.get("algorithm") == ALGORITHM
+            and row.get("active_digests") == 1
+            and row.get("measured_digest") == measured.get("digest")
+            and row.get("version") == measured.get("id")
+            and isinstance(policy.get("spec"), str)
+            and satisfies(policy["spec"], str(row.get("version")))
+        )
+    except (TypeError, ValueError):
+        return False
