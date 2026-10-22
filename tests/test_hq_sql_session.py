@@ -177,6 +177,8 @@ class _Cursor:
             self.rows = [("head",)]
         elif "AS session_epoch_current" in sql:  # the one eligibility statement
             self.rows = [world.session_row]
+        elif "FROM hq_release_catalog" in sql:  # only a release_policy grant asks (bh-vfrem.6)
+            self.rows = list(world.catalog)
         elif "FROM hq_principal_registry" in sql:
             self.rows = [tuple(vars(world.route).values())]
         elif "information_schema.tables" in sql:
@@ -218,6 +220,7 @@ def _world(monkeypatch, *, tables=(), table=None, liveness=None, public=None):
         route=_route(table),
         tables=set(tables),
         session_row=SESSION_ROW,
+        catalog=[],
         public=public,
         lease_row=None,
         statements=[],
@@ -779,3 +782,121 @@ def test_refusal_category_is_a_fixed_redacted_word(exc, category):
     from beadhive.heartbeat_report import refusal_category
 
     assert refusal_category(exc) == category
+
+
+# ---- release ranges on the session carrier (bh-vfrem.6, ADR section 4) -------------------------
+
+REF = {"id": "0.28.2", "digest": "sha256:" + "a" * 64}
+UPGRADED = {"id": "0.28.3", "digest": "sha256:" + "b" * 64}
+POLICY = {"format": 1, "spec": ">=0.28.2,==0.28.*", "catalog": "beadhive"}
+V1 = "beadhive-tree-sha256-v1"
+
+
+def _catalog_row(release, status="active", algorithm=V1, catalog="beadhive"):
+    return (catalog, release["id"], release["digest"], status, algorithm)
+
+
+def _ranged(monkeypatch, *, measured=UPGRADED, catalog=(), policy=POLICY, evidence_epoch=None):
+    """A switched incarnation granted REF with ``policy``, whose evidence measured ``measured``."""
+    authority, world = _world(monkeypatch, tables=BOTH, liveness="signed")
+    desired = world.state["frames"]["frame-1"]["active"]["desired"]
+    desired["release"] = REF
+    if policy is not None:
+        desired["release_policy"] = policy
+    row = list(SESSION_ROW)
+    row[3 if evidence_epoch is not None else 4] = evidence_epoch or measured["id"]
+    if evidence_epoch is None:
+        row[5] = measured["digest"]
+    row[16] = 0  # the exact-digest column is ignored under a policy: it never grants a range
+    world.session_row = tuple(row)
+    world.catalog = list(catalog)
+    return authority, world
+
+
+def _release_matches(authority):
+    return authority.read_frame_composite(session_liveness=True)[9].release_matches
+
+
+def test_in_range_upgrade_is_admitted_at_an_unchanged_epoch(monkeypatch):
+    authority, world = _ranged(monkeypatch, catalog=[_catalog_row(UPGRADED)])
+    assert _release_matches(authority) is True
+    (params,) = [p for sql, p in world.statements if "FROM hq_release_catalog" in sql]
+    # AS OF the verified runtime head, never the working set; keyed by the evidence digest.
+    assert params == ("head", "beadhive", "head", "beadhive", UPGRADED["digest"])
+
+
+@pytest.mark.parametrize(
+    ("name", "catalog", "measured"),
+    [
+        ("unknown digest", [], UPGRADED),
+        (
+            "out of range",
+            [_catalog_row({"id": "0.29.0", "digest": UPGRADED["digest"]})],
+            {"id": "0.29.0", "digest": UPGRADED["digest"]},
+        ),
+        ("revoked", [_catalog_row(UPGRADED), _catalog_row(UPGRADED, "revoked")], UPGRADED),
+        (
+            "id disagrees with the signed binding",
+            [_catalog_row({"id": "0.28.4", "digest": UPGRADED["digest"]})],
+            UPGRADED,
+        ),
+        (
+            "tampered digest",
+            [_catalog_row(UPGRADED)],
+            {"id": "0.28.3", "digest": "sha256:" + "c" * 64},
+        ),
+        ("other catalog", [_catalog_row(UPGRADED, catalog="other")], UPGRADED),
+        (
+            "other algorithm",
+            [_catalog_row(UPGRADED, algorithm="beadhive-tree-sha256-v2")],
+            UPGRADED,
+        ),
+        (
+            "second active digest for the version",
+            [
+                _catalog_row(UPGRADED),
+                _catalog_row({"id": "0.28.3", "digest": "sha256:" + "d" * 64}),
+            ],
+            UPGRADED,
+        ),
+    ],
+)
+def test_a_range_refuses_what_the_catalog_does_not_vouch_for(monkeypatch, name, catalog, measured):
+    authority, _ = _ranged(monkeypatch, catalog=catalog, measured=measured)
+    assert _release_matches(authority) is False, name
+
+
+def test_a_range_still_needs_the_current_evidence_epoch(monkeypatch):
+    authority, _ = _ranged(monkeypatch, catalog=[_catalog_row(UPGRADED)], evidence_epoch=7)
+    assert _release_matches(authority) is False
+
+
+def test_exact_pin_grant_runs_the_same_statement_and_never_reads_the_catalog(monkeypatch):
+    authority, world = _ranged(monkeypatch, policy=None, catalog=[_catalog_row(UPGRADED)])
+    assert _release_matches(authority) is False  # a different digest is not the pin
+    assert not any("hq_release_catalog" in sql for sql, _ in world.statements)
+    (params,) = [
+        p
+        for sql, p in world.statements
+        if sql == ELIGIBILITY_SQL.format(session=BOTH[0], evidence=BOTH[1])
+    ]
+    assert params == ("fixture", REF["digest"], "head", "head", None, "frame_a", 1)
+
+
+def test_lease_holder_read_accepts_an_in_range_upgrade_and_refuses_a_revocation(monkeypatch):
+    plane, world, record = _ownership_world(monkeypatch)
+    record["desired"]["release"] = REF
+    record["desired"]["release_policy"] = POLICY
+    row = list(world.session_row)
+    row[4], row[5], row[16] = UPGRADED["id"], UPGRADED["digest"], 0
+    world.session_row = tuple(row)
+    world.catalog = [_catalog_row(UPGRADED)]
+    manifest = SimpleNamespace(
+        frame_id="frame-1", host_id="host-1", instance_ref="vm-1", beadyard_id=None
+    )
+    # Same epoch (2), same grant: only the measured release moved within the range.
+    assert plane.read_eligibility(manifest, prefix="bh")[2].release_matches
+    assert plane.read_hive_lease_record("bh", holder_identity="host-1")[1].epoch == 19
+    assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1].epoch == 19
+    world.catalog = [_catalog_row(UPGRADED), _catalog_row(UPGRADED, "revoked")]
+    assert plane.read_hive_lease("bh", holder_identity="host-1") is None

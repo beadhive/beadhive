@@ -42,6 +42,8 @@ from typing import Any, Protocol
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from .release_measurement import fold_digest
+
 __all__ = [
     "ALGORITHM",
     "CATALOG",
@@ -148,7 +150,7 @@ class BundleVerifier(Protocol):
 
 
 # =============================================================================================
-# Wheel measurement (a local copy of the fold in release_measurement.installed_release)
+# Wheel measurement (the shared fold in release_measurement)
 # =============================================================================================
 
 
@@ -158,21 +160,6 @@ class WheelMeasurement:
     file_count: int
     name: str
     version: str
-
-
-def _fold(entries: Sequence[tuple[str, bytes]]) -> tuple[str, int]:
-    """``beadhive-tree-sha256-v1`` over ``(name, bytes)`` pairs, exactly as
-    :func:`beadhive.release_measurement.installed_release` folds the installed files.
-
-    TODO(bh-vfrem.3): replace with the shared pure fold in ``release_measurement`` once it
-    lands, so this verifier and ``scripts/release-manifest.py`` cannot drift."""
-    digest = hashlib.sha256()
-    count = 0
-    for name, data in sorted(entries, key=lambda item: item[0]):
-        if name.startswith("beadhive/") and "__pycache__" not in name and not name.endswith(".pyc"):
-            digest.update(name.encode() + b"\0" + hashlib.sha256(data).digest())
-            count += 1
-    return "sha256:" + digest.hexdigest(), count
 
 
 def measure_wheel(wheel: bytes) -> WheelMeasurement:
@@ -195,7 +182,7 @@ def measure_wheel(wheel: bytes) -> WheelMeasurement:
         if len(metadata) != 1:
             raise CatalogError("wheel has no single dist-info METADATA")
         headers = BytesParser().parsebytes(archive.read(metadata[0]), headersonly=True)
-    digest, count = _fold(entries)
+    digest, count = fold_digest(entries)
     if not count:
         raise CatalogError("wheel holds no beadhive/ package files")
     return WheelMeasurement(

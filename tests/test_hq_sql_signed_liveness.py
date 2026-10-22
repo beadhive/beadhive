@@ -664,3 +664,29 @@ def test_cordoned_holder_lease_waived_only_when_disabled(frame, monkeypatch):
     # Lease ownership is not authority: a foreign holder is still refused.
     foreign = _lease_plane(cordoned, {}, _hive_lease("host-2", expires=NOW + 3600))
     assert foreign.read_hive_lease_record("bh", holder_identity="host-1")[1] is None
+
+
+def test_range_grant_reads_the_catalog_row_as_of_the_verified_head(frame, monkeypatch):
+    monkeypatch.setenv(ENFORCE_ENV, "false")
+    policy = {"format": 1, "spec": ">=0.28.2,==0.28.*", "catalog": "beadhive"}
+    record = {**frame.record, "desired": {**frame.record["desired"], "release_policy": policy}}
+    plane, manifest, _calls = _eligibility_plane(frame, record, {})
+    reads, row = [], {"version": "x", "status": "active"}
+    authority = plane._runtime_authority()
+    authority.read_release_catalog_row = lambda head, catalog, measured: (
+        reads.append((head, catalog, measured)) or row
+    )
+    plane._runtime_authority = lambda: authority
+    _head, _desired, observation = plane.read_eligibility(manifest)
+    assert reads == [("head", "beadhive", dict(RELEASE))]
+    assert observation.release_catalog_row == row
+
+
+def test_exact_pin_grant_never_reads_the_catalog(frame, monkeypatch):
+    monkeypatch.setenv(ENFORCE_ENV, "false")
+    plane, manifest, _calls = _eligibility_plane(frame, frame.record, {})
+    authority = plane._runtime_authority()
+    authority.read_release_catalog_row = lambda *a: pytest.fail("exact pin reads no catalog")
+    plane._runtime_authority = lambda: authority
+    _head, _desired, observation = plane.read_eligibility(manifest)
+    assert observation.release_catalog_row is None

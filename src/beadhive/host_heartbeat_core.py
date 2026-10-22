@@ -97,6 +97,9 @@ class VerifiedObservation:
     sha: str = ""
     candidate: bool = False
     age_basis: str = ""
+    # The release-catalog row for the beat's measured digest, read AS OF the verified runtime
+    # head when the grant carries a release_policy (bh-vfrem.6); ``None`` otherwise.
+    release_catalog_row: dict | None = None
 
 
 def ref_name(identity: str) -> str:

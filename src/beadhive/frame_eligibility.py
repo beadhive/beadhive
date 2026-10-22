@@ -117,7 +117,11 @@ def _waive_authority(frame, facts, caps, predicates):
             "current_frame_incarnation": beat.session_epoch_matches,
             "beadyard_binding": True,
             "release_matches": frame.release is not None
-            and beat.evidence_release.get("digest") == frame.release.model_dump().get("digest"),
+            and (
+                # Waived mode drops the policy conjunct as it drops the desired-release one.
+                "release_policy" in facts.desired
+                or beat.evidence_release.get("digest") == frame.release.model_dump().get("digest")
+            ),
             "conformance_pass": beat.evidence_status == "conformant",
         }
     relaxed = {
@@ -132,7 +136,10 @@ def _waive_authority(frame, facts, caps, predicates):
         "beadyard_binding": lease is not None and frame.beadyard_id == lease.beadyard_id,
         "release_matches": lease is not None
         and frame.release is not None
-        and lease.release.model_dump() == frame.release.model_dump(),
+        and (
+            "release_policy" in facts.desired
+            or lease.release.model_dump() == frame.release.model_dump()
+        ),
         "conformance_pass": lease is not None
         and lease.conformance.status == "conformant"
         and all(check.status != "fail" for check in lease.conformance.checks),
@@ -268,6 +275,22 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
     )
 
 
+def _signed_release_matches(lease, frame, desired, beat) -> bool:
+    """The beat's, the manifest's and the grant's release agree (an exact pin), or, under a
+    ``release_policy``, both the beat's and the manifest's release are admitted (ADR section 4)."""
+    if lease is None or frame.release is None:
+        return False
+    if "release_policy" not in desired:
+        return lease.release.model_dump() == frame.release.model_dump() == desired.get("release")
+    from .release_policy import admits
+
+    row = getattr(beat, "release_catalog_row", None)
+    return admits(lease.release.model_dump(), desired, row) and (
+        frame.release.model_dump() == desired.get("release")
+        or admits(frame.release.model_dump(), desired, row)
+    )
+
+
 def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> EligibilityDecision:
     """Candidate eligibility, independent of current hive-primary lease ownership.
 
@@ -359,14 +382,7 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
                 == desired.get("authority", {}).get("beadyard_id"),
             ),
             ("authenticated_fresh_heartbeat", bool(fresh or trusted_emergency or waived)),
-            (
-                "release_matches",
-                lease is not None
-                and frame.release is not None
-                and lease.release.model_dump()
-                == frame.release.model_dump()
-                == desired.get("release"),
-            ),
+            ("release_matches", _signed_release_matches(lease, frame, desired, beat)),
             (
                 "conformance_pass",
                 bool(trusted_emergency)

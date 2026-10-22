@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -2730,11 +2731,17 @@ class SqlControlPlane:
                 "cordoned": record["cordoned"],
                 "authority": record["authority"],
             }
-            return (
-                head,
-                desired,
-                self._composite_observation(row, route, slot, record, session, now=at),
-            )
+            observation = self._composite_observation(row, route, slot, record, session, now=at)
+            policy = record["desired"].get("release_policy")
+            lease = getattr(observation, "lease", None)
+            if policy is not None and session is None and lease is not None:
+                # Signed-beat carrier under a release range: the catalog row for the beat's
+                # measured digest, AS OF the head this composite verified.
+                row = self._runtime_authority().read_release_catalog_row(
+                    head, policy["catalog"], lease.release.model_dump()
+                )
+                observation = dataclasses.replace(observation, release_catalog_row=row)
+            return head, desired, observation
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise

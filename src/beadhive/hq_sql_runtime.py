@@ -342,6 +342,35 @@ class SqlRuntimeAuthority:
                 raise SqlRuntimeDeadline("HQ runtime operation deadline exceeded") from None
             raise SqlRuntimeUnavailable("verified HQ runtime connection unavailable") from None
 
+    def read_release_catalog_row(self, head: str, catalog: str, measured: dict, *, deadline=None):
+        """The catalog row :func:`beadhive.release_policy.admits` judges for a signed beat's
+        measured release (bh-vfrem.6), read ``AS OF head``: the runtime head the composite
+        already verified, so a dirty working set is never visible. The same pinned-identity
+        check as the composite guards the connection. ``None`` when the digest is unknown."""
+        from .release_policy import catalog_row_for
+
+        binding = self.settings["runtime"]
+        connection, deadline = self._open(deadline=deadline)
+        try:
+            with connection.cursor() as cursor:
+                sql = runtime_statements(cursor)
+                user, database, branch, version = sql.identity()
+                if (
+                    not user.startswith(binding["user"] + "@")
+                    or database != binding["database"]
+                    or branch != "main"
+                    or version != "2.3.5"
+                ):
+                    raise SqlRuntimeError("release catalog endpoint identity mismatch")
+                rows = sql.release_catalog_rows(head, catalog, measured.get("digest", ""))
+            return catalog_row_for(rows, catalog, measured)
+        except SqlRuntimeError:
+            raise
+        except Exception:
+            raise SqlRuntimeError("release catalog unavailable") from None
+        finally:
+            connection.close()
+
     def _check_floor(self, cursor, backend, generation, sequence, head, *, deadline=None):
         settings = self.settings
         if (
@@ -1314,6 +1343,8 @@ class SqlRuntimeAuthority:
                 desired_profile=str(desired.get("profile", "")),
                 prefix=prefix,
                 candidate=slot == "candidate",
+                desired_release=desired.get("release"),
+                release_policy=desired.get("release_policy"),
             )
         except SessionError as exc:
             raise SqlRuntimeError(f"session liveness unavailable: {exc}") from None
