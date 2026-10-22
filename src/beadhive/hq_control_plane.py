@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -789,6 +790,7 @@ class GitControlPlane:
             raise ControlPlaneError("invalid authority carrier")
         state = json.loads(_git(self.hq_dir, "show", f"{sha}:authority.json"))
         guard.validate_state(state)
+        guard.refuse_release_policy(state)
         if (
             not witnesses
             or witnesses[-1] != f"{guard.WITNESS}{state['revision']:020d}"
@@ -855,6 +857,7 @@ class GitControlPlane:
             expires_at=expires_at,
         )
         guard.validate_state(state)
+        guard.refuse_release_policy(state)
         blob = _git(self.hq_dir, "hash-object", "-w", "--stdin", data=gitref.encode(state))
         tree = _git(self.hq_dir, "mktree", data=f"100644 blob {blob}\tauthority.json\n")
         args, message = authority_mode.commit_tree_args(
@@ -1184,6 +1187,10 @@ class GitControlPlane:
         }
         entry["epoch_floor"] = authority.epoch
         return self._write(state, expected, operator_key)
+
+    def release_policy(self, frame, action="plan", **_kwargs):
+        """Fail closed: release ranges need the SQL HQ release catalog (bh-vfrem.5)."""
+        raise ControlPlaneError("release-policy requires the protected SQL control plane")
 
     def bind_beadyard(self, *, expected, operator_key):
         """Atomically bind every live legacy frame without replacing its incarnation.
@@ -1627,6 +1634,12 @@ class SqlControlPlane:
         from .frame_release_upgrade import release_upgrade
 
         return release_upgrade(self, frame, action, **kwargs)
+
+    def release_policy(self, frame, action="plan", **kwargs):
+        """Reviewed operator-signed release-policy publication; never advances the epoch."""
+        from .frame_release_policy import release_policy
+
+        return release_policy(self, frame, action, **kwargs)
 
     config_backend = "sql"
 
@@ -2718,11 +2731,30 @@ class SqlControlPlane:
                 "cordoned": record["cordoned"],
                 "authority": record["authority"],
             }
-            return (
-                head,
-                desired,
-                self._composite_observation(row, route, slot, record, session, now=at),
-            )
+            observation = self._composite_observation(row, route, slot, record, session, now=at)
+            policy = record["desired"].get("release_policy")
+            lease = getattr(observation, "lease", None)
+            if policy is not None and session is None and lease is not None:
+                # Signed-beat carrier under a release range: the catalog row for the beat's
+                # measured digest, AS OF the head this composite verified.
+                row = self._runtime_authority().read_release_catalog_row(
+                    head, policy["catalog"], lease.release.model_dump()
+                )
+                observation = dataclasses.replace(observation, release_catalog_row=row)
+            elif policy is not None and session is not None:
+                # Session carrier: the manifest release stays the reference and need not equal
+                # the grant's; it must itself be admitted (ADR section 4), judged on its own
+                # catalog row AS OF the same verified head.
+                held = getattr(manifest, "release", None)
+                manifest_release = held.model_dump() if held is not None else None
+                if manifest_release is not None and manifest_release != record["desired"].get(
+                    "release"
+                ):
+                    row = self._runtime_authority().read_release_catalog_row(
+                        head, policy["catalog"], manifest_release
+                    )
+                    observation = dataclasses.replace(observation, manifest_release_catalog_row=row)
+            return head, desired, observation
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise

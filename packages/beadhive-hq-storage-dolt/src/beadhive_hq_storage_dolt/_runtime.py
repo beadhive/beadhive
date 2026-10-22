@@ -28,6 +28,12 @@ from contextlib import AbstractContextManager, contextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from ._incarnation import ELIGIBILITY_SQL, EVIDENCE_SQL, POLICY_SQL, RENEW_SQL
+from ._release_catalog import (
+    CATALOG_DIFF_SQL,
+    CATALOG_INSERT_SQL,
+    CATALOG_ROWS_SQL,
+    CATALOG_VERSIONS_OF_DIGEST_SQL,
+)
 
 if TYPE_CHECKING:
     from ._hq import DoltHqStorage
@@ -552,6 +558,41 @@ class HqRuntimeStatements:
 
     def status_tables(self) -> Any:
         return self._all("SELECT table_name FROM dolt_status")
+
+    def commit_table(self, table: str, message: str) -> None:
+        """Stage exactly one reviewed table (root validates the identifier) and commit it."""
+        self._cursor.execute(f"CALL DOLT_ADD('{table}')")
+        self._cursor.execute(
+            "CALL DOLT_COMMIT('-m',%s,'--author','HQ release catalog <hq-catalog@localhost>')",
+            (message,),
+        )
+
+    def catalog_diff_types(self, before: str, after: str) -> Any:
+        """Distinct row-level diff types of ``hq_release_catalog`` between two revisions."""
+        return self._all(CATALOG_DIFF_SQL, (before, after))
+
+    def catalog_rows(self, catalog: str, version: str | None = None) -> Any:
+        """The catalog's rows (``CATALOG_COLUMNS`` order), one version's or all."""
+        if version is None:
+            return self._all(CATALOG_ROWS_SQL + " WHERE catalog = %s ORDER BY version", (catalog,))
+        return self._all(
+            CATALOG_ROWS_SQL + " WHERE catalog = %s AND version = %s", (catalog, version)
+        )
+
+    def catalog_insert(self, values: Sequence[Any]) -> None:
+        """Append one row (``CATALOG_COLUMNS`` order); the only write the catalog account holds."""
+        self._cursor.execute(CATALOG_INSERT_SQL, tuple(values))
+
+    def catalog_at(self, revision: str) -> tuple[Any, list[str]]:
+        """``(rows, column names)`` of the catalog ``AS OF revision``."""
+        self._cursor.execute(CATALOG_ROWS_SQL + " AS OF %s", (revision,))
+        rows = self._cursor.fetchall()
+        return rows, [column[0] for column in self._cursor.description]
+
+    def release_catalog_rows(self, head: str, catalog: str, digest: str) -> Any:
+        """``(catalog, version, digest, status, algorithm)`` of every version holding ``digest``,
+        ``AS OF head``: the frame's read for release eligibility under a policy."""
+        return self._all(CATALOG_VERSIONS_OF_DIGEST_SQL, (head, catalog, head, catalog, digest))
 
     def commit_schemas(self, message: str) -> None:
         self._cursor.execute("CALL DOLT_ADD('dolt_schemas')")

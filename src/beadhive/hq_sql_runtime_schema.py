@@ -111,6 +111,30 @@ FAILOVER_POLICY_SCHEMA = (
 )
 
 
+#: The signed release catalog (bh-vfrem.4, docs/design/frame-release-range-adr.md section 2): one
+#: fleet-wide, COMMITTED, append-only table binding each admitted ``bh`` version to the measured
+#: digest the release workflow signed for it. A revocation is a ``revoked`` tombstone row, never
+#: an edit. The primary key lets a digest be ``active`` once and ``revoked`` once, so a revoked
+#: digest cannot be re-activated. Written only by the separately credentialed
+#: ``hq.sql.release_catalog`` binding (INSERT on this table, nothing else); frames hold SELECT.
+#: Created by :func:`beadhive.hq_sql_session_provision.provision_release_catalog`, not by the
+#: fresh-only schema above, so a catalog-less HQ keeps its exact initial commit and the feature
+#: stays opt-in. The restore floor accepts a same-sequence commit that only adds rows to it.
+RELEASE_CATALOG_TABLE = "hq_release_catalog"
+RELEASE_CATALOG_STATUSES = ("active", "revoked")
+RELEASE_CATALOG_SCHEMA = (
+    f"CREATE TABLE {RELEASE_CATALOG_TABLE} ("
+    "catalog VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, "
+    "version VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL, "
+    "measured_digest VARCHAR(80) NOT NULL, status VARCHAR(16) NOT NULL, "
+    "algorithm VARCHAR(64) NOT NULL, wheel_sha256 CHAR(64) NOT NULL, "
+    "`commit` VARCHAR(64) NOT NULL, bundle LONGBLOB NOT NULL, reason VARCHAR(512) NOT NULL, "
+    "recorded_at DOUBLE NOT NULL, "
+    "PRIMARY KEY (catalog, version, measured_digest, status), "
+    "CHECK (status IN ('active','revoked')))",
+)
+
+
 def _incarnation(principal: str, epoch: int) -> None:
     if (
         not isinstance(principal, str)

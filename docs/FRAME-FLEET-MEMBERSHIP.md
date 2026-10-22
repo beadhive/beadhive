@@ -271,11 +271,31 @@ no observer receipt to wait for.
   `REQUIRE SSL`, and no hive database is co-hosted on the HQ server.
 - `git` HQ keeps the signed `HeartbeatLease`. Execution frames are scoped to `dolt-server` HQ.
 
-**Release ranges (`bh-vfrem`) are not part of 0.23.0.** A frame grant still pins one release;
-`release_matches` compares against it exactly. When release ranges land, `release_matches` and
-`conformance_pass` become range-aware over the evidence row; until then a release change is a
-reviewed grant rotation (`bh host release-upgrade`). The version ranges that do exist in 0.23.0
-belong to the test canary, not to grants
+**Release ranges (`bh-vfrem`, 0.29.0).** A SQL frame grant can carry an optional
+`desired.release_policy` (`format`, a canonical PEP 440 `spec`, `catalog`). Without it the grant
+is an exact pin and `release_matches` compares against `desired.release` exactly, as in 0.23.0.
+With it, `release_matches` is `release_policy.admits`: the evidence epoch is current, the measured
+digest has an **active** row in the signed release catalog, the row's version equals the reported
+release id, and the version satisfies the spec. Both carriers (the session statement and the
+signed beat) judge it, and the frame's own `heartbeat_report` refuses only outside the policy.
+The grant's `release` becomes the policy's reference release, which the committed host manifest
+keeps. `conformance_pass` is unchanged. Consequences:
+
+- An in-range upgrade is an install and a daemon restart. No epoch advance, new principal or
+  operator key. Frames may run mixed in-range patches.
+- An out-of-range upgrade, a profile change, an emergency admission and every Git-HQ frame still
+  use the exact pin and the reviewed rotation (`bh host release-upgrade`).
+- `admit` still pins registration and first beat to the grant's reference release, so an
+  already-upgraded in-range host is admitted or re-provisioned on the reference release, or the
+  reference is re-planned.
+- A policy can only be set once **every** frame reads 0.29.0 or later
+  (`MIN_RELEASE_POLICY_READER`); readers on older releases cannot parse the grant.
+- Waived mode (`BH_HQ_AUTHORITY_ENFORCE=false`) drops the policy conjunct as it drops the pin.
+
+Operator steps (range, catalog provisioning and import, revocation, rollback and the factory
+dogfood) are in the [release-range runbook](design/frame-release-upgrade-runbook.md#release-ranges-in-range-upgrades-without-rotation);
+the design is [frame-release-range-adr.md](design/frame-release-range-adr.md). The version ranges
+that existed in 0.23.0 belong to the test canary, not to grants
 ([CONFIGURATION](CONFIGURATION.md#fence-canary-ranges)).
 
 Inspect a candidate and a hive's policy with:

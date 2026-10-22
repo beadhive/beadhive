@@ -885,6 +885,7 @@ The supported grants (bh-aprgo) are listed below. `<runtime>` is the runtime dat
 | Authority writer (remote operator, `hq.sql.authority_writer`) | `SELECT ON <runtime>.*`; `UPDATE ON <runtime>.hq_authority`; `INSERT ON <runtime>.hq_principal_registry`; `INSERT ON <runtime>.hq_live_floors`; `EXECUTE ON PROCEDURE <runtime>.dolt_add` and `<runtime>.dolt_commit`; `SELECT` on `<config>.hq_config_meta`, `hq_config_documents`, `hq_config_publications` |
 | Observer, director | `SELECT ON <runtime>.*`, plus their existing table-level writes and config reads |
 | Frame | `SELECT ON <runtime>.*`; `SELECT, UPDATE` on its own `frame_<principal>_<epoch>_session` / `_evidence`; its inbox `SELECT, INSERT` while it has one; config reads |
+| Release catalog writer (`hq.sql.release_catalog`, bh-vfrem.4) | `SELECT ON <runtime>.*`; `INSERT ON <runtime>.hq_release_catalog`; `EXECUTE ON PROCEDURE <runtime>.dolt_add` and `<runtime>.dolt_commit`. No `UPDATE`, `DELETE`, `TRIGGER`, `CREATE` or `mysql` access, and no grant option (`check_grants(role="catalog")`) |
 | Server-local provisioning/apply binding | The authority writer's grants, plus `CREATE`, `TRIGGER`, `INSERT`, `SELECT ON <runtime>.* WITH GRANT OPTION`; `UPDATE ON <runtime>.* WITH GRANT OPTION`; `SELECT ON <config>.* WITH GRANT OPTION`; `CREATE USER ON *.*`; `SELECT ON mysql.*` |
 
 `SELECT ON <runtime>.*` is read-only. It grants no write, and every frame write right is still
@@ -941,6 +942,9 @@ such a head only if every first-parent commit since its floor is reviewed provis
 - **Stamp-trigger pairs.** After the liveness schema exists, a commit may only add canonical
   `frame_<principal>_<epoch>_session_stamp` / `_evidence_stamp` pairs for an unregistered,
   unauthorized next epoch.
+- **Release catalog rows.** A commit whose only diff is rows added to `hq_release_catalog`, or
+  the one-time creation of that empty table ([release catalog](#release-catalog)). An edited or
+  deleted catalog row refuses like any other change.
 
 Any other same-sequence change still refuses. This includes editing an existing policy or
 ignore rule, ignoring another table, touching the authority or registry, adding unrelated
@@ -972,6 +976,48 @@ replay.
    because it descends from their floor.
 4. If the change is not intended, revert it with a new commit, then publish again as in
    step 3. A revert alone is still refused, because every commit since the floor is checked.
+
+### The signed release catalog {#release-catalog}
+
+`hq_release_catalog` (bh-vfrem.4, [ADR](design/frame-release-range-adr.md) sections 2 and 3) binds
+each admitted `bh` version to the measured digest the release workflow signed for it. It is a
+**committed**, append-only table in the runtime database; a revocation is a `revoked` tombstone
+row, never an edit. It is opt-in: nothing reads it until a frame has a release policy, and an HQ
+without the table behaves exactly as before.
+
+- **Provision** once, server-local: `bh hq release-catalog provision` (the administrative
+  operator settings file; idempotent) runs `provision_release_catalog`, which creates the empty
+  table and commits it (a clean working tree is required). Frames provisioned afterwards get
+  `SELECT` on it from the provisioning plan; a frame provisioned earlier reads it through its database-wide
+  `SELECT`, and `check_provisioning` reports a frame that can do neither. Create the writer with
+  `catalog_account_statements` (TLS-required, host-pinned) and bind it as `hq.sql.release_catalog`
+  in the operator settings file. It is a different credential from the authority writer and holds
+  no operator key.
+- **Verbs** (hidden while ranges are dormant); all but `provision` are bound by that credential:
+  `bh hq release-catalog import <version>` fetches the wheel and its Sigstore bundle,
+  verifies the bundle, recomputes the measured digest from the wheel and appends the row (the
+  bundle comes from GitHub's attestation API keyed by the wheel's sha256, the wheel from PyPI;
+  there is no release asset);
+  `verify [<version>|--all]` re-checks stored bundles with no fetch; `revoke <version> --reason
+  "..."` appends a tombstone. A PyPI yank never revokes. `--bundle`/`--wheel` import local files (air-gapped)
+  and `--trusted-root` verifies offline against a pinned `trusted_root.json`.
+- **Verification is an optional extra**: `uv tool install 'beadhive[release-verify]'` (sigstore,
+  Apache-2.0). Core, frames and every other command import without it.
+- **Identity policy**: issuer `https://token.actions.githubusercontent.com`; SAN
+  `https://github.com/beadhive/beadhive/.github/workflows/release.yml@refs/tags/v<version>`; a
+  `refs/tags/v*` ref only; the certificate's source digest equal to the predicate's `commit`;
+  the repository name **and** numeric ID. The subject must be the wheel being imported and the
+  predicate digest must equal the digest recomputed from it.
+- **Rules**: one active digest per version (a second one is refused until the first is
+  revoked); a revoked digest cannot be re-activated.
+- **Restore floor**: a same-sequence commit whose only diff is rows **added** to
+  `hq_release_catalog` (or the one-time creation of the empty table) is reviewed and advances
+  every reader's floor. An edited or deleted row, or any other change in the same commit, refuses
+  with the usual `amended authority` message. The check is row level (`DOLT_DIFF`); the summary
+  alone cannot tell an append from an edit.
+- **Auto-import**: `hq.release_catalog.auto_import` (default `false`) runs a host-daemon timer
+  that imports each PyPI release newer than the newest catalogued one, with the same
+  verification. It does nothing until the first entry was imported by hand.
 
 ### Soak check: sender stall (Φ3, O4) {#sender-stall-soak}
 

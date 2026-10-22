@@ -1664,6 +1664,51 @@ class HqSqlConfig(_Section):
         return self
 
 
+class HqReleaseCatalogConfig(_Section):
+    """Signed release catalog automation (``hq.release_catalog``, bh-vfrem.4). HOST-local: it
+    names the host whose daemon runs the importer. The catalog credential itself is
+    ``hq.sql.release_catalog`` in the operator settings file, never in host.yaml."""
+
+    auto_import: StrictBool = Field(
+        False,
+        description=(
+            "Run a host-daemon timer that imports each new PyPI release into the signed release "
+            "catalog (`bh hq release-catalog import`, same verification, INSERT-only "
+            "credential). Off by default. Needs dolt-server HQ, the catalog writer settings file "
+            "and `beadhive[release-verify]`; it never imports an older or pre-release version, "
+            "and does nothing until the first entry has been imported by hand."
+        ),
+    )
+    interval_seconds: float = Field(
+        3600.0,
+        gt=0,
+        le=86_400,
+        description="Seconds between PyPI listings while auto_import is on.",
+    )
+    operator_settings: str = Field(
+        "",
+        description=(
+            "Absolute path of the operator settings file carrying hq.sql.release_catalog. When "
+            "empty, BH_HQ_OPERATOR_SETTINGS in the daemon's environment is used."
+        ),
+    )
+    trusted_root: str = Field(
+        "",
+        description=(
+            "Absolute path of a pinned Sigstore trusted_root.json for offline verification. "
+            "When empty the TUF root is refreshed online."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _absolute_paths(self):
+        for name in ("operator_settings", "trusted_root"):
+            value = getattr(self, name)
+            if value and not Path(value).is_absolute():
+                raise ValueError(f"release_catalog {name} must be an absolute path")
+        return self
+
+
 class HqConfig(_Section):
     """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
 
@@ -1710,6 +1755,7 @@ class HqConfig(_Section):
         ),
     )
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
+    release_catalog: HqReleaseCatalogConfig = Field(default_factory=HqReleaseCatalogConfig)
 
     remote: str = Field(
         "",

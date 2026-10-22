@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import re
 
-from .hq_sql_placement import check_grants, check_triggers
+from .hq_sql_placement import check_grants, check_triggers, reads_table
 from .hq_sql_runtime_schema import (
     LIVENESS_POLICY_TABLE,
+    RELEASE_CATALOG_SCHEMA,
+    RELEASE_CATALOG_TABLE,
     evidence_table,
     inbox_table,
     session_table,
@@ -47,6 +49,7 @@ __all__ = [
     "cohosted_hive_databases",
     "provision_incarnation",
     "provision_liveness_schema",
+    "provision_release_catalog",
     "resume_incarnation",
     "validate_incarnation",
 ]
@@ -68,6 +71,26 @@ def provision_liveness_schema(cursor, policy: LivenessPolicy | None = None) -> b
     sql = _statements(cursor)
     for statement in liveness_schema_statements(policy):
         sql.execute(statement)
+    return True
+
+
+def provision_release_catalog(cursor) -> bool:
+    """Idempotent, server-local: create and commit the empty ``hq_release_catalog`` table
+    (bh-vfrem.4). Returns whether anything was written.
+
+    Refuses on a dirty working tree, so the commit holds exactly this table. The restore floor
+    accepts this one commit at an unchanged authority sequence (an empty table with exactly the
+    reviewed columns); frames provisioned afterwards get ``SELECT`` on it from
+    :func:`provision_incarnation`, and frames provisioned before already read it through their
+    database-wide ``SELECT`` (checked by :func:`check_provisioning`)."""
+    sql = _statements(cursor)
+    if _existing(sql, (RELEASE_CATALOG_TABLE,)):
+        return False
+    if sql.status_tables():
+        raise SessionError("committed working tree must be clean before provisioning the catalog")
+    for statement in RELEASE_CATALOG_SCHEMA:
+        sql.execute(statement)
+    sql.commit_table(RELEASE_CATALOG_TABLE, "HQ signed release catalog table")
     return True
 
 
@@ -101,7 +124,12 @@ def provision_incarnation(
     for statement in (*session_ddl(principal, epoch), *evidence_ddl(principal, epoch)):
         sql.execute(statement)
     for statement in account_statements(
-        principal, epoch, frame_address=frame_address, database=database, inbox=inbox
+        principal,
+        epoch,
+        frame_address=frame_address,
+        database=database,
+        inbox=inbox,
+        catalog=bool(_existing(sql, (RELEASE_CATALOG_TABLE,))),
     ):
         sql.execute(statement, (password,) if "%s" in statement else None)
     sql.commit_schemas(f"HQ session/evidence triggers for {principal} incarnation {epoch}")
@@ -121,7 +149,11 @@ def resume_incarnation(
     and evidence already published by a frame are never reset.
     """
     statements = account_statements(
-        principal, epoch, frame_address=frame_address, database=database
+        principal,
+        epoch,
+        frame_address=frame_address,
+        database=database,
+        catalog=bool(_existing(cursor, (RELEASE_CATALOG_TABLE,))),
     )  # Validate identifiers/address before the first write.
     if not isinstance(password, str) or not password:
         raise SessionError("frame account password required")
@@ -273,7 +305,7 @@ def check_provisioning(
     problems: list[str] = []
     if not _ignore_committed(sql):
         problems.append(f"ignore rule {IGNORE_PATTERN!r} is not committed")
-    present = _existing(sql, (session, evidence, LIVENESS_POLICY_TABLE))
+    present = _existing(sql, (session, evidence, LIVENESS_POLICY_TABLE, RELEASE_CATALOG_TABLE))
     if LIVENESS_POLICY_TABLE not in present:
         problems.append(f"{LIVENESS_POLICY_TABLE} missing")
     else:
@@ -321,6 +353,10 @@ def check_provisioning(
             f"{principal}@{host}: {p}"
             for p in check_grants(lines, role="frame", database=database, writable=writable)
         ]
+        if RELEASE_CATALOG_TABLE in present and not reads_table(
+            lines, database=database, table=RELEASE_CATALOG_TABLE
+        ):
+            problems.append(f"{principal}@{host}: frame lacks SELECT on {RELEASE_CATALOG_TABLE}")
     problems += [
         f"hive database {name!r} is co-hosted on the HQ server"
         for name in cohosted_hive_databases(sql)

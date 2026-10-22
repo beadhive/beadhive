@@ -848,6 +848,17 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
     },
     # bh-7iovd: the reviewed HQ-independent recovery route and its bounded path
     # scope append only these exact optional inputs to the existing public verbs.
+    # bh-vfrem.5 (operator approval: Brian Cripe, 2026-10-22, recorded on bh-vfrem.5):
+    # `bh hq authority release-policy plan|apply` appends these five optional inputs to the
+    # existing verb.
+    # Callers that omit them keep their exact request and behaviour.
+    "hq.authority": {
+        "spec": {"type": "string"},
+        "allow_downgrade": {"type": "boolean"},
+        "allow_unknown_readers": {"type": "boolean"},
+        "plan_sha256": {"type": "string"},
+        "verb": {"type": "string"},
+    },
     "worktree.status": {
         "local_safe": {"type": "boolean"},
         "root": {"type": "array", "items": {}},

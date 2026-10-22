@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:wire-schema:bh.hive-survey:1",
+  "title": "bh hive survey --json v1",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "repo", "registered", "classification", "commits", "last_commit", "age_days",
+      "ahead", "behind", "dirty_branches", "disk", "disk_bytes", "difficulty"
+    ],
+    "additionalProperties": true,
+    "properties": {
+      "repo": {"type": "string"},
+      "registered": {"type": "boolean"},
+      "classification": {"type": "string"},
+      "commits": {"type": "integer", "minimum": 0},
+      "last_commit": {"type": ["string", "null"]},
+      "age_days": {"type": ["number", "null"], "minimum": 0},
+      "ahead": {"type": ["integer", "null"], "minimum": 0},
+      "behind": {"type": ["integer", "null"], "minimum": 0},
+      "dirty_branches": {"type": "integer", "minimum": 0},
+      "disk": {"type": "string"},
+      "disk_bytes": {"type": "integer", "minimum": 0},
+      "difficulty": {
+        "enum": ["easy", "medium", "hard", "not-a-candidate"],
+        "x-beadhive-closed-union": true
+      }
+    }
+  }
+}

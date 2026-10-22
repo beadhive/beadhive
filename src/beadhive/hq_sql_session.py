@@ -188,7 +188,13 @@ def _account(principal: str, address: str) -> str:
 
 
 def account_statements(
-    principal: str, epoch: int, *, frame_address: str, database: str, inbox: bool = False
+    principal: str,
+    epoch: int,
+    *,
+    frame_address: str,
+    database: str,
+    inbox: bool = False,
+    catalog: bool = False,
 ) -> tuple[str, ...]:
     """The host-pinned, TLS-required account and its grants. ``CREATE USER`` takes the password
     as the one bound parameter (``%s``). Grants on the HQ authority tables a frame already reads
@@ -202,6 +208,7 @@ def account_statements(
         session=session_table(principal, epoch),
         evidence=evidence_table(principal, epoch),
         inbox=inbox_table(principal, epoch) if inbox else None,
+        catalog=catalog,
     )
 
 
@@ -447,6 +454,9 @@ class SessionObservation:
     age_basis: str = "hq-server-session-row"
     carrier: str = "session"
     predicates: dict = field(default_factory=dict)
+    # Catalog row for the committed manifest's release (bh-vfrem.7); set by the control plane
+    # only under a release_policy when the manifest differs from the grant's reference release.
+    manifest_release_catalog_row: dict | None = None
 
     @property
     def sha(self) -> str:
@@ -471,6 +481,14 @@ def _seconds(value) -> float | None:
     return int(value) / 1e6
 
 
+def _policy_admits(sql, head: str, measured: dict, desired: dict) -> bool:
+    from .release_policy import admits, catalog_row_for
+
+    catalog = desired["release_policy"].get("catalog", "")
+    rows = sql.release_catalog_rows(head, catalog, measured["digest"])
+    return admits(measured, desired, catalog_row_for(rows, catalog, measured))
+
+
 def read_eligibility(
     cursor,
     *,
@@ -481,9 +499,17 @@ def read_eligibility(
     desired_profile: str,
     prefix: str | None = None,
     candidate: bool = False,
+    desired_release: dict | None = None,
+    release_policy: dict | None = None,
 ) -> SessionObservation:
     """Run :data:`ELIGIBILITY_SQL` once, inside the caller's authority transaction, and judge
-    its ages against the committed TTLs (:func:`within_ttl`)."""
+    its ages against the committed TTLs (:func:`within_ttl`).
+
+    With ``release_policy`` (bh-vfrem.6) the statement is unchanged and its exact-digest column
+    is ignored for the epoch alone; ``release_matches`` is then
+    :func:`beadhive.release_policy.admits` over the catalog rows for the evidence digest, read in
+    this same transaction ``AS OF head`` (the verified runtime head, never the working set).
+    Without it nothing differs from the exact pin."""
     sql = _statements(cursor)
     route = incarnation_switch(sql, principal, epoch)
     if route is None:
@@ -522,6 +548,13 @@ def read_eligibility(
         digest,
     ) = rows[0]
     policy = _policy([(session_ttl, evidence_ttl)])
+    if release_policy is not None:
+        release = bool(_evidence_epoch == grant_epoch) and _policy_admits(
+            sql,
+            head,
+            {"id": str(release_id), "digest": str(release_digest)},
+            {"release": desired_release, "release_policy": release_policy},
+        )
     fresh = bool(epoch_current) and within_ttl(session_age_us, policy.session_ttl_s)
     conformance = bool(evidence_conformant) and within_ttl(evidence_age_us, policy.evidence_ttl_s)
     predicates = {

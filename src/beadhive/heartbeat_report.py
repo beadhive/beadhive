@@ -17,6 +17,7 @@ from . import config, heartbeat_conformance, host, hosts, registry
 from .config_validate import validate_config
 from .hq_framelease_contracts import DOMAIN_V2, HeartbeatError, HeartbeatLease
 from .release_measurement import installed_release
+from .release_policy import admits
 
 _UNSET = object()
 
@@ -126,6 +127,20 @@ def refusal_category(exc: BaseException) -> str:
     return "configuration"
 
 
+def _manifest_release_ok(plane, head, manifest_release, measured, desired) -> bool:
+    """The committed manifest's release: the grant's reference exactly (an exact pin), or under
+    a ``release_policy`` the reference or a release that is itself admitted (ADR section 4)."""
+    if manifest_release == desired["release"]:
+        return True
+    policy = desired.get("release_policy")
+    if policy is None:
+        return False
+    row = plane._runtime_authority().read_release_catalog_row(
+        head, policy["catalog"], manifest_release
+    )
+    return admits(manifest_release, desired, row)
+
+
 def generate(
     plane,
     *,
@@ -149,7 +164,7 @@ def generate(
         # ``row`` is the receiver's accepted observation, or in ``hq.sql.liveness: signed``
         # mode the newest verified heartbeat in this frame's own inbox — so the next seq
         # follows the last beat actually sent and never stalls behind a lagging receiver.
-        _, _, route, _, record, snapshot, _, row, _ = (
+        head, _, route, _, record, snapshot, _, row, _ = (
             plane._runtime_authority().read_frame_composite()
         )
         if require_inbox:
@@ -164,10 +179,24 @@ def generate(
             raise HeartbeatError("local host identity differs from current grant")
         measured = installed_release()
         release = desired["release"]
-        if measured["digest"] != release["digest"]:
-            raise HeartbeatError(
-                "installed release differs from reviewed grant; operator upgrade required"
+        policy = desired.get("release_policy")
+        if policy is None:
+            if measured["digest"] != release["digest"]:
+                raise HeartbeatError(
+                    "installed release differs from reviewed grant; operator upgrade required"
+                )
+        else:
+            # Under a release range the grant admits a catalogued version set, not one digest:
+            # refuse only when the measured release is outside it (catalog AS OF the verified head).
+            catalog_row = plane._runtime_authority().read_release_catalog_row(
+                head, policy["catalog"], measured
             )
+            if not admits(measured, desired, catalog_row):
+                raise HeartbeatError(
+                    f"installed release {measured['id']} is outside the granted release policy "
+                    f"{policy['spec']} or not an active catalogued release; "
+                    "operator upgrade required"
+                )
         documents = [item for item in snapshot.documents if item.path == f"hosts/{local_id}.yaml"]
         if len(documents) != 1:
             raise HeartbeatError("committed host manifest unavailable")
@@ -178,7 +207,9 @@ def generate(
             or manifest.instance_ref != route.instance_ref
             or manifest.beadyard_id != authority.get("beadyard_id")
             or not manifest.release
-            or manifest.release.model_dump() != release
+            or not _manifest_release_ok(
+                plane, head, manifest.release.model_dump(), measured, desired
+            )
         ):
             raise HeartbeatError(
                 "committed manifest differs from current grant or installed release"
@@ -235,7 +266,9 @@ def generate(
                 "renewTime": datetime.fromtimestamp(beat_at, UTC).isoformat(),
                 "leaseDurationSeconds": heartbeat_conformance.LEASE_DURATION_SECONDS,
                 "intervalSeconds": heartbeat_conformance.INTERVAL_SECONDS,
-                "release": release,
+                # An exact pin reports the grant's release (digest-equal to the measurement);
+                # under a policy the beat carries the measured release itself.
+                "release": measured if policy is not None else release,
                 "state_seen": record["state"],
                 "conformance": {
                     "profile": desired["profile"],
