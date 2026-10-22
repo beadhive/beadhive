@@ -108,7 +108,14 @@ workflow's GitHub attestation, so a frame cannot claim a version it did not buil
    record, so one policy on one frame makes the whole authority state unreadable to them. This is
    not per frame: upgrade **every** frame in the fleet first, by the ordinary rotation below.
    `release-policy plan` refuses while any frame attests an older release (no override) or an
-   unknown one (`--allow-unknown-readers` accepts that risk).
+   unknown one (`--allow-unknown-readers` accepts that risk). The attested release is read from
+   the carrier your HQ uses, not from the authority record: the frame's session evidence row
+   (`hq-server-session-row`) or the newest verified signed beat in its inbox (signed liveness),
+   each only for the grant's current epoch and AS OF the verified runtime head; the legacy
+   receipt in the authority record is the fallback for the Git/receiver carrier. A frame is
+   `unknown` only when no verified evidence for its current epoch exists (never reported,
+   unmeasured, a previous epoch, or a beat that does not verify). The same read feeds the
+   downgrade guard.
 2. **A SQL (`dolt-server`) HQ.** The Git-backed HQ refuses `release_policy`.
 3. **The catalog is provisioned and has a writer** (next section).
 4. **`beadhive[release-verify]` on the host that imports**

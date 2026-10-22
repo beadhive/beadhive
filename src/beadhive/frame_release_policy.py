@@ -37,8 +37,16 @@ def _slot(state, frame):
     raise ValueError(f"no active or candidate grant for frame {frame}")
 
 
-def attested_release(record):
-    """The release id the frame currently attests (accepted beat, else registration), or None."""
+def attested_release(record, evidence=None):
+    """The release id the frame currently attests, or None.
+
+    ``evidence`` is the release id read from the carrier this HQ uses (session evidence row or
+    the newest verified signed beat, current epoch, AS OF the verified head; see
+    ``SqlRuntimeOperator.attested_releases``). It wins when present; otherwise the legacy
+    receiver carrier in the authority record (accepted beat, else registration) is read.
+    """
+    if evidence:
+        return evidence
     receipt = record.get("receipt") or {}
     for carrier in (receipt.get("lease"), receipt.get("registration")):
         release = (carrier or {}).get("release")
@@ -47,12 +55,14 @@ def attested_release(record):
     return None
 
 
-def unsafe_readers(state):
+def unsafe_readers(state, evidence=None):
     """Frames that could not read a release_policy: ``(frame, release|None, kind)``.
 
     ``kind`` is ``"old"`` for a parseable release below the floor (never waivable) or
-    ``"unknown"`` for no attested release or an unparseable one (waivable).
+    ``"unknown"`` for no attested release or an unparseable one (waivable). ``evidence`` maps
+    ``(frame, slot)`` to the release read from the evidence carrier (see :func:`attested_release`).
     """
+    evidence = evidence or {}
     floor = Version(MIN_RELEASE_POLICY_READER)
     found = []
     for frame, entry in sorted((state.get("frames") or {}).items()):
@@ -60,7 +70,7 @@ def unsafe_readers(state):
             record = entry.get(slot)
             if record is None:
                 continue
-            release = attested_release(record)
+            release = attested_release(record, evidence.get((frame, slot)))
             if release is None:
                 found.append((frame, None, "unknown"))
                 continue
@@ -72,8 +82,21 @@ def unsafe_readers(state):
     return found
 
 
-def prepare(original, frame, head, spec, *, allow_downgrade=False, allow_unknown_readers=False):
-    """Return ``(new_state, plan)`` for setting (or dropping) ``frame``'s policy."""
+def prepare(
+    original,
+    frame,
+    head,
+    spec,
+    *,
+    allow_downgrade=False,
+    allow_unknown_readers=False,
+    evidence=None,
+):
+    """Return ``(new_state, plan)`` for setting (or dropping) ``frame``'s policy.
+
+    ``evidence`` maps ``(frame, slot)`` to the release each frame attests on the evidence
+    carrier, gathered by the caller from verified reads; this function stays pure."""
+    evidence = evidence or {}
     guard.validate_state(original)
     name = _slot(original, frame)
     old = original["frames"][frame][name]
@@ -83,7 +106,7 @@ def prepare(original, frame, head, spec, *, allow_downgrade=False, allow_unknown
     else:
         new_policy = policy_mod.policy_for(policy_mod.normalize(spec))
         policy_mod.validate_policy(new_policy, desired["release"]["id"])
-    attested = attested_release(old)
+    attested = attested_release(old, evidence.get((frame, name)))
     downgrade = new_policy is not None and policy_mod.downgrades(new_policy["spec"], attested)
     if downgrade and not allow_downgrade:
         raise ValueError(
@@ -91,7 +114,7 @@ def prepare(original, frame, head, spec, *, allow_downgrade=False, allow_unknown
             "while admitting lower releases (a downgrade); pass --allow-downgrade to accept"
         )
     if new_policy is not None:
-        blocked = unsafe_readers(original)
+        blocked = unsafe_readers(original, evidence)
         too_old = [(f, r) for f, r, kind in blocked if kind == "old"]
         unknown = [(f, r) for f, r, kind in blocked if kind == "unknown"]
         if too_old:
@@ -161,6 +184,7 @@ def release_policy(
     operator = plane._operator()
     budget = plane._operator_deadline()
     head, original, _crossref, _policies = operator.load(deadline=budget)
+    evidence = operator.attested_releases(original, expected_revision=head, deadline=budget)
     state, result = prepare(
         original,
         frame,
@@ -168,6 +192,7 @@ def release_policy(
         spec,
         allow_downgrade=allow_downgrade,
         allow_unknown_readers=allow_unknown_readers,
+        evidence=evidence,
     )
     result = {"revision": head, **result}
     if action == "plan":

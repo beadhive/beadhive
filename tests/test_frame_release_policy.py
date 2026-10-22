@@ -264,6 +264,9 @@ class FakeOperator:
     def load(self, deadline=None):
         return self.head, copy.deepcopy(self.state), None, None
 
+    def attested_releases(self, state, *, expected_revision, deadline=None):
+        return {}
+
     def publish(self, state, *, expected_revision, operator_key, deadline=None):
         self.published.append((state, expected_revision, operator_key))
         return "newhead"
