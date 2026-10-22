@@ -427,7 +427,14 @@ def test_rotated_lease_predecessor_is_the_same_incumbent_only_for_active_archive
     current = state["frames"]["frame"]["active"]
     predecessor = {"frame_id": "frame", **old["authority"]}
     assert guard.same_incumbent_after_rotation(predecessor, "frame", current)
-    assert not guard.same_incumbent_after_rotation({**predecessor, "epoch": 2}, "frame", current)
+    # Never the current (or a newer) epoch under a different snapshot of the same grant.
+    at_current = current["authority"]["epoch"]
+    assert not guard.same_incumbent_after_rotation(
+        {**predecessor, "epoch": at_current, "config_revision": "other"}, "frame", current
+    )
+    assert not guard.same_incumbent_after_rotation(
+        {**predecessor, "epoch": at_current + 1}, "frame", current
+    )
     assert not guard.same_incumbent_after_rotation(None, "frame", current)
     # A pending archive never held a hive lease, so it never carries one forward.
     fixture.state["frames"]["frame"].update(active=None, candidate=fixture.record)

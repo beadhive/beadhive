@@ -635,6 +635,40 @@ def test_rotated_session_owner_uses_fresh_current_evidence_and_advisory_lease(mo
     assert not any("hq_live_inbox_" in sql for sql, _ in world.statements)
 
 
+# bh-yh8sk: the bounded archive no longer names the grant that minted the lease.
+@pytest.mark.parametrize("signed", [False, True])
+def test_rotated_session_owner_keeps_a_lease_whose_minting_grant_left_the_archive(
+    monkeypatch, signed
+):
+    plane, world, record = _ownership_world(monkeypatch, signed=signed)
+    record["release_upgrade_history"] = []  # truncated by HISTORY_LIMIT
+    revision, lease = plane.read_hive_lease_record("bh", holder_identity="host-1")
+    assert revision == "lease-revision" and lease.held_by("host-1")
+    assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1] == lease
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("frame_id", "other-frame"),
+        ("key_fingerprint", "SHA256:other"),
+        ("holder_identity", "other-host"),
+        ("epoch", 3),
+    ],
+)
+def test_truncated_archive_lease_refuses_foreign_or_newer_authority(monkeypatch, field, value):
+    import json
+
+    from beadhive.hq_sql_signatures import canonical
+
+    plane, world, record = _ownership_world(monkeypatch)
+    record["release_upgrade_history"] = []
+    envelope = json.loads(world.lease_row[1])
+    envelope["authority"][field] = value
+    world.lease_row = (world.lease_row[0], canonical(envelope), "", "")
+    assert plane.read_hive_lease_record("bh", holder_identity="host-1")[1] is None
+
+
 @pytest.mark.parametrize("index,value", [(1, 1), (3, 1), (14, 0), (15, 0), (16, 0), (17, 0)])
 def test_session_qualified_owner_refuses_stale_wrong_epoch_and_evidence(monkeypatch, index, value):
     plane, world, _ = _ownership_world(monkeypatch)
