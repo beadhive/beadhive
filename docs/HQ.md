@@ -985,14 +985,15 @@ each admitted `bh` version to the measured digest the release workflow signed fo
 row, never an edit. It is opt-in: nothing reads it until a frame has a release policy, and an HQ
 without the table behaves exactly as before.
 
-- **Provision** once, server-local: `provision_release_catalog` creates the empty table and
-  commits it (a clean working tree is required). Frames provisioned afterwards get `SELECT` on
-  it from the provisioning plan; a frame provisioned earlier reads it through its database-wide
+- **Provision** once, server-local: `bh hq release-catalog provision` (the administrative
+  operator settings file; idempotent) runs `provision_release_catalog`, which creates the empty
+  table and commits it (a clean working tree is required). Frames provisioned afterwards get
+  `SELECT` on it from the provisioning plan; a frame provisioned earlier reads it through its database-wide
   `SELECT`, and `check_provisioning` reports a frame that can do neither. Create the writer with
   `catalog_account_statements` (TLS-required, host-pinned) and bind it as `hq.sql.release_catalog`
   in the operator settings file. It is a different credential from the authority writer and holds
   no operator key.
-- **Verbs** (hidden while ranges are dormant), all bound by that credential:
+- **Verbs** (hidden while ranges are dormant); all but `provision` are bound by that credential:
   `bh hq release-catalog import <version>` fetches the wheel and its Sigstore bundle,
   verifies the bundle, recomputes the measured digest from the wheel and appends the row (the
   bundle comes from GitHub's attestation API keyed by the wheel's sha256, the wheel from PyPI;

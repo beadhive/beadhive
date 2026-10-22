@@ -15,6 +15,9 @@ that the reviewed `--expected-revision` pins:
   and every claim fenced by that lease survive. The safety argument is in
   [active-frame-release-rotation-adr.md](active-frame-release-rotation-adr.md).
 
+Inside a release range an in-range upgrade needs none of this:
+see [Release ranges](#release-ranges-in-range-upgrades-without-rotation).
+
 Quarantined, draining/drained/parked, live or unreviewed emergency, and
 coexisting active/candidate states are explicitly unsupported. Do not retire or
 remove identity records to evade this restriction.
@@ -83,6 +86,156 @@ remove identity records to evade this restriction.
    new incarnation. Complete the normal reviewed `bh host admit plan|apply|check`
    flow. Verify config, authority, hive readiness and host eligibility before
    enabling recurring sender/receiver services.
+
+## Release ranges: in-range upgrades without rotation
+
+Since 0.29.0 a SQL frame grant can admit a **range** of releases instead of one pinned release
+(`bh-vfrem`, [frame-release-range-adr.md](frame-release-range-adr.md)). Inside the range an
+upgrade is an install and a daemon restart: no epoch advance, no new principal, no operator key,
+no ineligibility window beyond the restart. Everything outside the range, and every grant without
+a policy, keeps the full rotation below. Ranges are opt-in: a grant has no `release_policy` until
+the operator signs one, and an HQ without the catalog behaves exactly as before.
+
+What admits a release under a policy: the frame's measured digest must have an **active** row in
+the signed release catalog, that row's version must equal the version the frame reports, and the
+version must satisfy the grant's spec. The catalog row is verified at import against the release
+workflow's GitHub attestation, so a frame cannot claim a version it did not build.
+
+### Requirements, in order
+
+1. **Every frame reads 0.29.0 or later first.** `MIN_RELEASE_POLICY_READER` is `0.29.0`. Readers
+   on 0.28.4 or older require the exact `desired` key set, and every reader validates every
+   record, so one policy on one frame makes the whole authority state unreadable to them. This is
+   not per frame: upgrade **every** frame in the fleet first, by the ordinary rotation below.
+   `release-policy plan` refuses while any frame attests an older release (no override) or an
+   unknown one (`--allow-unknown-readers` accepts that risk).
+2. **A SQL (`dolt-server`) HQ.** The Git-backed HQ refuses `release_policy`.
+3. **The catalog is provisioned and has a writer** (next section).
+4. **`beadhive[release-verify]` on the host that imports**
+   (`uv tool install 'beadhive[release-verify]'`). Frames never need it.
+
+### Provision the catalog (once per HQ)
+
+Server-local, with the administrative operator settings file (an `hq.sql.authority_writer` that
+holds `CREATE` and `DOLT_ADD`/`DOLT_COMMIT`, the same file session provisioning uses):
+
+```sh
+BH_HQ_OPERATOR_SETTINGS=<admin-settings> bh hq release-catalog provision
+```
+
+It creates and commits the empty `hq_release_catalog` table and prints
+`{"created": true, "head": "<runtime head>"}`. A repeat run prints `"created": false` and writes
+nothing. It refuses a dirty working tree. The restore floor accepts that one commit, and both the
+head before and after must verify. Then create the INSERT-only writer with
+`catalog_account_statements` (TLS-required, host-pinned) and bind it as `hq.sql.release_catalog`
+in the settings file used for imports. That credential is not the authority writer and holds no
+operator key. Details: [HQ: The signed release catalog](../HQ.md#release-catalog).
+
+### Import a release
+
+```sh
+BH_HQ_OPERATOR_SETTINGS=<catalog-settings> bh hq release-catalog import 0.29.1
+```
+
+This fetches the wheel from PyPI and its Sigstore bundle from GitHub's attestation API (keyed by
+the wheel's sha256), verifies the bundle, **recomputes** the measured digest from the wheel, and
+appends one row. Air-gapped: add `--wheel <file> --bundle <file>` and, for offline verification,
+`--trusted-root <trusted_root.json>`. One active digest exists per version; a second one is
+refused until the first is revoked. `bh hq release-catalog verify --all` re-checks every stored
+bundle without fetching. With `hq.release_catalog.auto_import: true` a host daemon imports each
+new PyPI release itself, but only after the first release was imported by hand.
+
+### Set a range on a frame
+
+Reviewed and operator-signed, like a grant change, but it does **not** advance the epoch:
+
+```sh
+bh hq authority release-policy plan  --frame <frame> --spec '0.29.x'
+bh hq authority release-policy apply --frame <frame> --spec '0.29.x' \
+  --plan-sha256 <digest from plan> --operator-key <key> --confirm
+```
+
+`--spec` takes PEP 440 or shorthand (`0.29.x`, `~0.29`, `^0.29.2`, `0.28.2 - 0.28.6`, `1.x`) and is
+normalised before signing; the plan echoes the stored form (`stored_spec`). Read it: npm's caret on
+`0.x` fixes the minor. The frame's current `desired.release` becomes the policy's **reference
+release** and must satisfy the spec. Prereleases are never admitted unless the spec names one.
+
+The **downgrade guard** refuses a spec that excludes the frame's attested release while admitting
+lower ones. `--allow-downgrade` accepts that deliberately. `--spec none` drops the policy and
+returns to the exact pin on the reference release. A frame running a different in-range patch is
+then ineligible, so move it back to the reference first, or rotate.
+
+### Upgrade within the range
+
+On the frame host, with the new release already imported:
+
+```sh
+uv tool install 'beadhive==0.29.1'   # then restart the host daemon the way this host does
+bh host eligible <frame> --hive <hive>
+```
+
+The next beat reports the **measured** release. `heartbeat_report` refuses to report only when the
+installed release is outside the spec or not an active catalog row, and says which. The committed
+host manifest is not rewritten for an in-range patch; it stays at the reference. A fleet may now
+run mixed in-range patches; check every reader's release before any change to a fleet-document
+field (`bh-71wk9`).
+
+### Revoke a release
+
+```sh
+BH_HQ_OPERATOR_SETTINGS=<catalog-settings> bh hq release-catalog revoke 0.29.1 \
+  --reason 'compromised build host'
+```
+
+This appends a tombstone; nothing is edited. Every frame running that digest turns ineligible at
+its next evaluation. A PyPI yank never revokes: it is a separate operator decision. Recover by
+installing another in-range, active release and restarting. No rotation is needed. A revoked
+digest cannot be re-activated.
+
+### When rotation is still required
+
+- The target release is **outside the spec**. The reference must satisfy the spec, so widen the
+  range first (`release-policy apply` with a spec admitting both), or drop it (`--spec none`),
+  rotate, and set the range again. A rotation keeps `release_policy` and replaces the reference.
+- The conformance **profile** changes, or a frame moves between exact pin and policy in a way that
+  changes its profile.
+- The frame has no policy (every Git-HQ frame, and any SQL frame not opted in).
+- **Emergency admission** stays pinned to the exact release authorised at the time.
+- A frame on a release **older than 0.29.0** cannot read a policy at all; it is rotated, never
+  ranged.
+
+### Admit and re-provision use the reference release
+
+`admit` (Git and SQL) still pins the registration and first beat to `desired.release` exactly.
+That is fine for a fresh grant, whose reference the operator chooses. An already-upgraded in-range
+host cannot be re-admitted as it stands: **admit or re-provision a host on the grant's reference
+release, or re-plan the reference** (rotate to the new release as the reference) first.
+
+### Factory dogfood (operator-approved, not yet run)
+
+The acceptance for `bh-vfrem` is to move the factory frame from one in-range patch to the next
+with no grant change and no rotation. Rehearse every step on `beadhive-scratch` first, and take
+the shown evidence at each step. Let `A` and `B` be two consecutive published patches of one
+minor, both built by the attested release workflow, with `A` at least 0.29.0.
+
+1. **Gate.** `BH_HQ_AUTHORITY_MIN_REMAINING=6h bh hq authority check` exits 0. `bh host list`
+   shows no cordoned or draining frame and a lease with more than 30 minutes left.
+2. **Bring every frame to `A` by rotation** (the existing procedure below), factory last.
+   Evidence: `bh host release-upgrade check <frame>` per frame shows `release.id` `A`.
+3. **Provision and bind.** `bh hq release-catalog provision`, then bind `hq.sql.release_catalog`.
+   Evidence: the printed head, and `bh hq authority check` still exit 0.
+4. **Import `A`, then `B`.** `bh hq release-catalog import A`, `import B`, then `verify --all`.
+   Evidence: two `inserted` results and a clean verify.
+5. **Set the range on the factory frame only.** `release-policy plan --spec '<minor>.x'`; review
+   `stored_spec`, `epoch_advanced: false`, `downgrade: false`; `apply` with the digest.
+   Evidence: epoch unchanged in `release-upgrade check`, and the frame still `ELIGIBLE`.
+6. **Upgrade the factory to `B` in place.** `uv tool install 'beadhive==B'`, restart the daemon.
+   Evidence: `bh host eligible <frame> --hive <hive>` is `ELIGIBLE` with measured release `B`;
+   the grant revision and epoch are identical to step 5; no operator key was used.
+7. **Rollback proof (scratch only, not the factory).** Revoke `B`, observe ineligibility,
+   reinstall `A`, observe `ELIGIBLE` again with no rotation.
+8. Record the evidence on `bh-vfrem`. Abort at any step by `--spec none`; the frame returns to
+   the exact pin on `A`, so keep `A` installed until step 6 is accepted.
 
 ## Active frame release rotation
 
