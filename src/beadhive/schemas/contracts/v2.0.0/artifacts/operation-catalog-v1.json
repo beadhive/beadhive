@@ -10365,6 +10365,120 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "hq.release-catalog",
+      "parameters": [
+        {
+          "name": "action",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "version",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "reason",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "all_",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "bundle",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "wheel",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "trusted_root",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "operator_settings",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "privilege": "privileged",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": true,
+          "effective_hidden": true,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "action",
+            "version",
+            "reason",
+            "all_",
+            "bundle",
+            "wheel",
+            "trusted_root",
+            "operator_settings"
+          ],
+          "path": "hq release-catalog",
+          "progress": {
+            "mode": "stdout",
+            "notification_uris": [],
+            "reason": "CLI reports human-oriented progress on stdout/stderr"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": true,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "hq.restore",
       "parameters": [
         {

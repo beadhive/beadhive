@@ -34,6 +34,10 @@ OPTION_HELP = (
 #: only, SELECT on what it verifies. Optional; carried beside ``authority_writer`` or alone in a
 #: director-only file (:func:`load_placement_settings`).
 PLACEMENT_KEY = "placement_writer"
+#: The release-catalog writer credential (bh-vfrem.4): INSERT on ``hq_release_catalog`` only.
+#: Separately credentialed like the placement writer, optional beside ``authority_writer`` or
+#: alone in a catalog-only file (:func:`load_release_catalog_settings`).
+RELEASE_CATALOG_KEY = "release_catalog"
 
 
 def load_settings(path) -> dict:
@@ -48,6 +52,24 @@ def load_placement_settings(path) -> dict:
     return _load(path, require=PLACEMENT_KEY)
 
 
+def load_release_catalog_settings(path) -> dict:
+    """A settings file for the catalog writer (``release_catalog`` required, ``authority_writer``
+    optional). Refused, like every operator file, when it binds ``runtime``."""
+    return _load(path, require=RELEASE_CATALOG_KEY)
+
+
+def release_catalog_store(path=None, *, broker=None, clock=time.time):
+    """A :class:`beadhive.hq_release_catalog.ReleaseCatalogStore` from the file named by `path`
+    or ``$BH_HQ_OPERATOR_SETTINGS``."""
+    from .hq_release_catalog import ReleaseCatalogStore
+
+    path = path or os.environ.get(ENV)
+    if not path:
+        raise ControlPlaneError(f"the release catalog needs {ENV} (or a settings path)")
+    binding = load_release_catalog_settings(path)[RELEASE_CATALOG_KEY]
+    return ReleaseCatalogStore(binding, broker=broker, clock=clock)
+
+
 def placement_director(path=None, *, broker=None, clock=time.time):
     """A :class:`beadhive.hq_sql_placement.SqlPlacementDirector` from the file named by `path`
     or ``$BH_HQ_OPERATOR_SETTINGS``."""
@@ -59,10 +81,11 @@ def placement_director(path=None, *, broker=None, clock=time.time):
     settings = load_placement_settings(path)
     settings.pop(CEILING_KEY, None)
     settings.pop(RETENTION_KEY, None)
+    settings.pop(RELEASE_CATALOG_KEY, None)  # a different credential; the director never holds it
     return SqlPlacementDirector(settings, broker=broker, clock=clock)
 
 
-def _placement_binding(raw):
+def _placement_binding(raw, key=PLACEMENT_KEY):
     from pydantic import ValidationError
 
     from .modules.config.contracts import HqSqlConnection
@@ -70,7 +93,7 @@ def _placement_binding(raw):
     try:
         return HqSqlConnection.model_validate(raw).model_dump()
     except (ValidationError, TypeError, ValueError):
-        raise ControlPlaneError(f"operator settings key hq.sql.{PLACEMENT_KEY} invalid") from None
+        raise ControlPlaneError(f"operator settings key hq.sql.{key} invalid") from None
 
 
 def _load(path, *, require: str) -> dict:
@@ -101,6 +124,8 @@ def _load(path, *, require: str) -> dict:
     sql = dict(sql)
     placement = sql.pop(PLACEMENT_KEY, None)
     placement = _placement_binding(placement) if placement is not None else None
+    catalog = sql.pop(RELEASE_CATALOG_KEY, None)
+    catalog = _placement_binding(catalog, RELEASE_CATALOG_KEY) if catalog is not None else None
     ceiling = sql.pop("authority_max_duration_s", None)
     if ceiling is not None:
         from .hq_authority_ceiling import parse_duration
@@ -135,6 +160,8 @@ def _load(path, *, require: str) -> dict:
         settings[RETENTION_KEY] = retention
     if placement is not None:
         settings[PLACEMENT_KEY] = placement
+    if catalog is not None:
+        settings[RELEASE_CATALOG_KEY] = catalog
     return settings
 
 
@@ -144,6 +171,7 @@ def operator_plane(path, *, broker=None, clock=time.time) -> SqlControlPlane:
     ceiling = settings.pop(CEILING_KEY, None)
     retention = settings.pop(RETENTION_KEY, None)
     settings.pop(PLACEMENT_KEY, None)  # the director's credential never rides the control plane
+    settings.pop(RELEASE_CATALOG_KEY, None)  # nor does the catalog writer's
     plane = SqlControlPlane(settings, broker=broker, clock=clock)
     # Passed to hq_authority_ceiling.resolve_ceiling(settings=...) once that lands (bh-od8ve).
     plane.authority_max_duration_s = ceiling

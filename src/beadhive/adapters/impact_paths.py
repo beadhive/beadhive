@@ -83,6 +83,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_fence_data.py",
         "tests/test_fence_data_int.py",
         "tests/test_fence_orphan_int.py",
+        "tests/test_hq_release_catalog_int.py",
         "tests/test_writer_adopt_int.py",
     ),
     "beadhive-pants": (

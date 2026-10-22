@@ -33,6 +33,7 @@ from . import (
     host_cli,
     hq_authority_cli,
     hq_placement_cli,
+    hq_release_catalog_cli,
     jsonout,
     log,
     otel,
@@ -90,6 +91,10 @@ hq_app.command("authority")(otel.trace_verb("hq.authority")(hq_authority_cli.aut
 # docs/design/hq-placement-runbook.md while 0.23.0 is dormant, like `bh hive fence`.
 hq_app.command("placement", hidden=True)(
     otel.trace_verb("hq.placement")(hq_placement_cli.placement_cmd)
+)
+# Hidden signed release catalog (bh-vfrem.4): import/verify/revoke, behind beadhive[release-verify].
+hq_app.command("release-catalog", hidden=True)(
+    otel.trace_verb("hq.release-catalog")(hq_release_catalog_cli.release_catalog_cmd)
 )
 harness_app = typer.Typer(
     no_args_is_help=True,
