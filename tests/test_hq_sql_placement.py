@@ -29,6 +29,7 @@ from beadhive.hq_sql_placement import (
     CAUSE_PLANNED,
     DEFAULT_TENURE_S,
     PLACEMENT_TABLE,
+    PROTECTED_TABLES,
     PlacementError,
     PlacementLost,
     PlacementUnknown,
@@ -1046,3 +1047,32 @@ def test_git_hq_keeps_the_gitref_cas_placement_path(tmp_path, monkeypatch):
     outcome = host_lease.adopt("origin", "ah", host_id="host-a", label="a", cwd=tmp_path)
     assert calls == [("refs/bh/lease/ah", 1, gitref.ABSENT)]
     assert outcome.lease.epoch == 1
+
+
+def test_catalog_grant_shape_is_insert_only_on_the_catalog_table():
+    """The release-catalog writer (bh-vfrem.4): INSERT on one table, nothing else writable."""
+    good = [
+        f"GRANT SELECT ON `{DB}`.* TO `w`@`h`",
+        f"GRANT INSERT ON `{DB}`.`hq_release_catalog` TO `w`@`h`",
+        f"GRANT EXECUTE ON PROCEDURE `{DB}`.`dolt_add` TO `w`@`h`",
+        f"GRANT EXECUTE ON PROCEDURE `{DB}`.`dolt_commit` TO `w`@`h`",
+    ]
+    assert check_grants(good, role="catalog", database=DB) == []
+    assert check_grants(good[:1], role="catalog", database=DB) == [
+        f"catalog writer lacks INSERT on {DB}.hq_release_catalog"
+    ]
+    for bad in (
+        f"GRANT UPDATE ON `{DB}`.`hq_release_catalog` TO `w`@`h`",
+        f"GRANT DELETE ON `{DB}`.`hq_release_catalog` TO `w`@`h`",
+        f"GRANT INSERT ON `{DB}`.`hq_authority` TO `w`@`h`",
+        f"GRANT INSERT ON `{DB}`.* TO `w`@`h`",
+        f"GRANT TRIGGER ON `{DB}`.* TO `w`@`h`",
+        f"GRANT EXECUTE ON PROCEDURE `{DB}`.`dolt_reset` TO `w`@`h`",
+        f"GRANT INSERT ON `{DB}`.`hq_release_catalog` TO `w`@`h` WITH GRANT OPTION",
+    ):
+        assert check_grants([*good, bad], role="catalog", database=DB), bad
+    # Nobody else may write the catalog: not the director, not a frame.
+    line = f"GRANT INSERT ON `{DB}`.`hq_release_catalog` TO `x`@`h`"
+    assert check_grants([line], role="frame", database=DB)
+    assert any("director holds" in p for p in check_grants([line], role="director", database=DB))
+    assert "hq_release_catalog" in PROTECTED_TABLES

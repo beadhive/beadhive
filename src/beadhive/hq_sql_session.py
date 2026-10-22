@@ -188,7 +188,13 @@ def _account(principal: str, address: str) -> str:
 
 
 def account_statements(
-    principal: str, epoch: int, *, frame_address: str, database: str, inbox: bool = False
+    principal: str,
+    epoch: int,
+    *,
+    frame_address: str,
+    database: str,
+    inbox: bool = False,
+    catalog: bool = False,
 ) -> tuple[str, ...]:
     """The host-pinned, TLS-required account and its grants. ``CREATE USER`` takes the password
     as the one bound parameter (``%s``). Grants on the HQ authority tables a frame already reads
@@ -202,6 +208,7 @@ def account_statements(
         session=session_table(principal, epoch),
         evidence=evidence_table(principal, epoch),
         inbox=inbox_table(principal, epoch) if inbox else None,
+        catalog=catalog,
     )
 
 
