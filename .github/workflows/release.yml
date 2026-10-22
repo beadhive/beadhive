@@ -49,6 +49,21 @@ jobs:
           uv run --isolated --no-project --with dist/*.whl python -c "import beadhive"
           uv run --isolated --no-project --with dist/*.whl bh --version
 
+      - name: Assert the wheel-derived digest equals the installed measurement
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel_digest="$(python3 scripts/release-manifest.py dist/*.whl --commit "$GITHUB_SHA" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["measured_digest"])')"
+          installed_digest="$(uv run --isolated --no-project --with dist/*.whl python -c \
+            'from beadhive.release_measurement import installed_release; print(installed_release()["digest"])')"
+          echo "wheel:     ${wheel_digest}"
+          echo "installed: ${installed_digest}"
+          if [[ "$wheel_digest" != "$installed_digest" ]]; then
+            echo "wheel-derived digest does not match installed_release()" >&2
+            exit 1
+          fi
+
       - name: Require and hash the wheel and source distribution
         shell: bash
         run: |
@@ -90,6 +105,49 @@ jobs:
         with:
           packages-dir: dist
           attestations: true
+
+  # Sign a version -> measured-digest manifest for the HQ release catalog
+  # (docs/design/frame-release-range-adr.md, section 3). Keyless through GitHub OIDC; the
+  # PEP 740 attestation published above stays an independent cross-check on the same wheel.
+  attest:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # upload the bundle as a release asset
+      id-token: write  # keyless Sigstore signing
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Receive checked distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-distributions
+          path: dist
+
+      - name: Compute the release manifest predicate
+        run: python3 scripts/release-manifest.py dist/*.whl --commit "$GITHUB_SHA" --output release-manifest.json
+
+      - name: Attest the release manifest
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*.whl
+          predicate-type: https://beadhive.ai/attestation/release-manifest/v1
+          predicate-path: release-manifest.json
+
+      - name: Upload the bundle as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          asset="release-manifest-${TAG}.sigstore.json"
+          cp "$BUNDLE" "$asset"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes ""
+          gh release upload "$TAG" "$asset" --clobber
 
   mcp-registry:
     needs: publish

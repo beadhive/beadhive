@@ -136,3 +136,50 @@ def test_mcp_publication_waits_for_pypi_and_uses_oidc_without_secrets() -> None:
     assert "sha256sum --check" in commands
     assert commands.index("login github-oidc") < commands.index("publish server.json")
     assert "secrets." not in commands
+
+
+def test_build_smoke_asserts_wheel_digest_equals_installed_release() -> None:
+    steps = _workflow()["jobs"]["build"]["steps"]
+    step = next(s for s in steps if "installed_release" in str(s.get("run", "")))
+    run = step["run"]
+
+    assert "scripts/release-manifest.py dist/*.whl" in run
+    assert 'installed_release()["digest"]' in run
+    assert '"$wheel_digest" != "$installed_digest"' in run
+    assert "exit 1" in run
+    assert steps.index(step) < next(
+        i for i, s in enumerate(steps) if _uses(s, "actions/upload-artifact")
+    )
+
+
+def test_attest_job_signs_manifest_on_tags_only_with_least_privilege() -> None:
+    job = _workflow()["jobs"]["attest"]
+    attest = next(s for s in job["steps"] if _uses(s, "actions/attest"))
+    commands = "\n".join(str(s.get("run", "")) for s in job["steps"])
+
+    assert job["needs"] == "build"
+    assert job["if"] == "startsWith(github.ref, 'refs/tags/v')"
+    assert job["permissions"] == {
+        "contents": "write",
+        "id-token": "write",
+        "attestations": "write",
+    }
+    assert "environment" not in job
+    assert re.fullmatch(r"actions/attest@[0-9a-f]{40}", attest["uses"])
+    assert attest["with"] == {
+        "subject-path": "dist/*.whl",
+        "predicate-type": "https://beadhive.ai/attestation/release-manifest/v1",
+        "predicate-path": "release-manifest.json",
+    }
+    assert "scripts/release-manifest.py" in commands
+    assert "release-manifest-${TAG}.sigstore.json" in commands
+    assert "gh release upload" in commands
+    assert "secrets." not in commands
+
+
+def test_attest_does_not_alter_pep740_publish() -> None:
+    jobs = _workflow()["jobs"]
+
+    assert jobs["publish"]["needs"] == "build"
+    assert "attest" not in str(jobs["publish"]["needs"])
+    assert jobs["publish"]["permissions"] == {"id-token": "write"}
