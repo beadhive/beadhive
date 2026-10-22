@@ -54,7 +54,8 @@ def authority_cmd(
         ...,
         help="install, bind, bind-beadyard, grant, observe, rebind, renew (deprecated alias of "
         "rebind), status, check, prune-inbox, mode (show the fleet default authority mode), "
-        "mode-signed / mode-trusted (set it), or join (open admission in a trusted fleet)",
+        "mode-signed / mode-trusted (set it), join (open admission in a trusted fleet), or "
+        "release-policy <plan|apply> (SQL HQ: reviewed per-frame release range, no epoch advance)",
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -103,7 +104,32 @@ def authority_cmd(
             "$BH_HQ_AUTHORITY_MIN_REMAINING",
         ),
     ] = None,
+    spec: str = typer.Option(
+        "",
+        "--spec",
+        help="release-policy: range, e.g. 0.28.x, ~0.28, ^0.28.2, 1.x, '0.27 - 0.29' or PEP 440; "
+        "normalised before signing and echoed as stored. 'none' drops the policy",
+    ),
+    allow_downgrade: bool = typer.Option(
+        False,
+        "--allow-downgrade",
+        help="release-policy: accept a range that excludes the attested release but admits lower",
+    ),
+    allow_unknown_readers: bool = typer.Option(
+        False,
+        "--allow-unknown-readers",
+        help="release-policy: waive frames with no (or an unparseable) attested release; a "
+        "release below 0.29.0 can never be waived",
+    ),
+    plan_sha256: str = typer.Option(
+        "", "--plan-sha256", help="release-policy apply: exact reviewed plan digest"
+    ),
+    verb: str = typer.Argument("", help="release-policy: plan or apply"),
 ) -> None:
+    if verb and action != "release-policy":
+        # The second positional belongs to release-policy only; keep every other action's
+        # usage error (exit 2) for stray arguments, e.g. `mode trusted`.
+        raise typer.BadParameter(f"unexpected extra argument ({verb})")
     try:
         # The fleet default rides in the action value (`mode-trusted`), so the published
         # hq.authority operation keeps its parameter list (bh-taa04.3).
@@ -161,6 +187,21 @@ def authority_cmd(
             if not healthy:
                 raise SystemExit(1)
             return
+        elif action == "release-policy":
+            if verb not in {"plan", "apply"} or not frame:
+                raise hq_control_plane.ControlPlaneError(
+                    "release-policy requires 'plan' or 'apply' and --frame"
+                )
+            result = plane.release_policy(
+                frame,
+                verb,
+                spec=spec,
+                plan_sha256=plan_sha256,
+                operator_key=str(operator_key) if operator_key is not None else "",
+                confirm=confirm,
+                allow_downgrade=allow_downgrade,
+                allow_unknown_readers=allow_unknown_readers,
+            )
         elif action == "prune-inbox":
             # Signed-mode inbox retention (bh-ce886): a dry run unless --confirm. The margin
             # comes from hq.sql.inbox_retention_s > $BH_HQ_INBOX_RETENTION > 1 h; a CLI flag

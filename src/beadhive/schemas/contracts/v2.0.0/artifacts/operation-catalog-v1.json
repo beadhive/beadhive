@@ -9458,6 +9458,46 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "spec",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "allow_downgrade",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "allow_unknown_readers",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "plan_sha256",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "verb",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "privileged",
@@ -9499,7 +9539,12 @@
             "confirm",
             "operator_settings",
             "max_duration",
-            "min_remaining"
+            "min_remaining",
+            "spec",
+            "allow_downgrade",
+            "allow_unknown_readers",
+            "plan_sha256",
+            "verb"
           ],
           "path": "hq authority",
           "progress": {

@@ -166,7 +166,7 @@ host release-upgrade|action:string:r,frame_id:string:r,expected:string:o,expecte
 host rm|host_id:string:r,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 host show|host_id:string:r,as_json:boolean:o
 hq bd|
-hq authority|action:string:r,record:string:o,frame:string:o,public_key:string:o,generation:string:o,expected:string:o,operator_key:string:o,interpreter:string:o,confirm_server_custody:boolean:o,server_root:string:o,socket_path:string:o,policy_digest:string:o,role:string:o,holder_id:string:o,duration:integer:o,client_interpreter:string:o,confirm:boolean:o,operator_settings:string:o,max_duration:string:o,min_remaining:string:o
+hq authority|action:string:r,record:string:o,frame:string:o,public_key:string:o,generation:string:o,expected:string:o,operator_key:string:o,interpreter:string:o,confirm_server_custody:boolean:o,server_root:string:o,socket_path:string:o,policy_digest:string:o,role:string:o,holder_id:string:o,duration:integer:o,client_interpreter:string:o,confirm:boolean:o,operator_settings:string:o,max_duration:string:o,min_remaining:string:o,spec:string:o,allow_downgrade:boolean:o,allow_unknown_readers:boolean:o,plan_sha256:string:o,verb:string:o
 hq beadyard|as_json:boolean:o
 hq beadyard-adopt|expected_revision:string:r,confirm:boolean:o,operator_key:string:o,as_json:boolean:o
 hq beadyard-policy-refresh|expected_policy_digest:string:r,expected_config_head:string:r,expected_config_parent:string:r,anchor:array:r,operator_anchor:string:r,confirm:boolean:o

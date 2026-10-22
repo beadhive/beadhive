@@ -122,7 +122,9 @@ def validate_record(identity, record, issued):
         raise ValueError("public key fingerprint mismatch")
     desired = record["desired"]
     if (
-        set(desired) != {"declared", "release", "caps", "profile"}
+        not {"declared", "release", "caps", "profile"}
+        <= set(desired)
+        <= {"declared", "release", "caps", "profile", "release_policy"}
         or type(desired["declared"]) is not bool
         or not isinstance(desired["profile"], str)
         or not desired["profile"]
@@ -135,6 +137,14 @@ def validate_record(identity, record, issued):
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", release["digest"])
     ):
         raise ValueError("invalid approved release")
+    if "release_policy" in desired:
+        try:
+            # Lazy: this guard also runs standalone on the Git server, which has no package and
+            # no catalog, so a policy there fails closed here as well as in read_state.
+            from .release_policy import validate_policy
+        except ImportError:
+            raise ValueError("release_policy unsupported by this verifier") from None
+        validate_policy(desired["release_policy"], release["id"])
     r = record["receipt"]
     if set(r) != {"sequence", "sha", "first_seen", "consecutive", "lease", "registration"}:
         raise ValueError("invalid observer receipt")
@@ -167,6 +177,13 @@ def validate_record(identity, record, issued):
         validate_release_upgrade_history(identity, record, issued)
     if "emergency" in record:
         validate_emergency(record, issued)
+
+
+def refuse_release_policy(state):
+    """Fail closed: the Git-backed HQ has no release catalog, so it never carries a policy."""
+    for _identity, record in records(state):
+        if "release_policy" in record["desired"]:
+            raise ValueError("release_policy requires the SQL HQ release catalog")
 
 
 def validate_release_upgrade_history(identity, record, issued):
@@ -361,6 +378,7 @@ def read_state(sha):
         raise ValueError("invalid authority carrier")
     state = json.loads(git("show", f"{sha}:authority.json"))
     validate_state(state)
+    refuse_release_policy(state)
     return state
 
 
