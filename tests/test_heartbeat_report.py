@@ -47,8 +47,21 @@ def plane(monkeypatch):
         documents=[SimpleNamespace(path="hosts/host-a.yaml", content=stream.getvalue())]
     )
     composite = ("head", {}, route, "candidate", record, snapshot, {}, (8,), None)
+    catalog_calls = []
+    catalog_rows = {}
+
+    def read_row(head, catalog, measured):
+        catalog_calls.append((head, catalog, dict(measured)))
+        return catalog_rows.get(measured["digest"])
+
     plane = SimpleNamespace(
-        _runtime_authority=lambda: SimpleNamespace(read_frame_composite=lambda: composite)
+        _runtime_authority=lambda: SimpleNamespace(
+            read_frame_composite=lambda: composite, read_release_catalog_row=read_row
+        ),
+        record=record,
+        catalog_calls=catalog_calls,
+        catalog_rows=catalog_rows,
+        manifest_content=stream,
     )
     monkeypatch.setattr(report.host, "host_id", lambda: "host-a")
     monkeypatch.setattr(
@@ -529,3 +542,101 @@ def test_mixed_version_0_22_reader_accepts_new_sender_beats(plane, cache, tmp_pa
         reread = HeartbeatLease.model_validate_json(row[3])
         assert reread == lease
         assert reader_conformance_pass(reread) is expected
+
+
+_NEW = {"id": "0.21.4", "digest": "sha256:" + "b" * 64}
+
+
+def _row(version, digest, **over):
+    row = {
+        "catalog": "beadhive",
+        "version": version,
+        "status": "active",
+        "algorithm": release_measurement.ALGORITHM,
+        "active_digests": 1,
+        "measured_digest": digest,
+    }
+    return {**row, **over}
+
+
+def _policy(plane, monkeypatch, spec=">=0.21.0,==0.21.*", installed=_NEW):
+    plane.record["desired"]["release_policy"] = {
+        "format": 1,
+        "spec": spec,
+        "catalog": "beadhive",
+    }
+    plane.catalog_rows[installed["digest"]] = _row(installed["id"], installed["digest"])
+    monkeypatch.setattr(report, "installed_release", lambda: dict(installed))
+
+
+def test_exact_pin_never_reads_the_catalog_and_reports_the_grant_release(plane):
+    lease = report.generate(plane)
+    assert plane.catalog_calls == []
+    assert lease.release.model_dump() == plane.record["desired"]["release"]
+
+
+def test_policy_in_range_install_beats_with_the_measured_release(plane, monkeypatch):
+    _policy(plane, monkeypatch)
+    lease = report.generate(plane)
+    assert lease.release.model_dump() == _NEW
+    assert lease.conformance.status == "conformant"
+    # Read AS OF the verified head of the composite, for the measured digest.
+    assert plane.catalog_calls[0] == ("head", "beadhive", _NEW)
+
+
+def test_policy_out_of_range_refuses_naming_version_and_spec(plane, monkeypatch):
+    _policy(plane, monkeypatch, spec=">=0.22.0,==0.22.*")
+    with pytest.raises(HeartbeatError) as caught:
+        report.generate(plane)
+    text = str(caught.value)
+    assert "0.21.4" in text and ">=0.22.0,==0.22.*" in text
+    assert report.refusal_category(caught.value) == "release"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        _row("0.21.4", _NEW["digest"], status="revoked"),
+        _row("0.21.4", _NEW["digest"], active_digests=2),
+        _row("0.21.5", _NEW["digest"]),
+    ],
+)
+def test_policy_refuses_an_uncatalogued_or_unusable_row(plane, monkeypatch, row):
+    _policy(plane, monkeypatch)
+    plane.catalog_rows[_NEW["digest"]] = row
+    with pytest.raises(HeartbeatError):
+        report.generate(plane)
+
+
+def _set_manifest_release(plane, value):
+    manifest = YAML(typ="safe").load(plane.manifest_content.getvalue())
+    manifest["release"] = dict(value)
+    out = StringIO()
+    YAML().dump(manifest, out)
+    plane._runtime_authority().read_frame_composite()[5].documents[0].content = out.getvalue()
+
+
+def test_policy_manifest_is_the_reference_and_is_not_rewritten(plane, monkeypatch):
+    _policy(plane, monkeypatch)  # manifest == grant reference, measured is a newer in-range one
+    assert report.generate(plane).release.model_dump() == _NEW
+
+
+def test_policy_manifest_other_than_the_reference_must_be_admitted(plane, monkeypatch):
+    _policy(plane, monkeypatch)
+    older = {"id": "0.21.2", "digest": "sha256:" + "c" * 64}
+    _set_manifest_release(plane, older)
+    with pytest.raises(HeartbeatError):  # not catalogued
+        report.generate(plane)
+    plane.catalog_rows[older["digest"]] = _row("0.21.2", older["digest"])
+    assert report.generate(plane).release.model_dump() == _NEW
+    _set_manifest_release(plane, {"id": "0.20.9", "digest": "sha256:" + "d" * 64})
+    plane.catalog_rows["sha256:" + "d" * 64] = _row("0.20.9", "sha256:" + "d" * 64)
+    with pytest.raises(HeartbeatError):  # catalogued but outside the range
+        report.generate(plane)
+
+
+def test_exact_pin_manifest_must_equal_the_grant(plane):
+    _set_manifest_release(plane, {"id": "0.21.2", "digest": "sha256:" + "c" * 64})
+    with pytest.raises(HeartbeatError):
+        report.generate(plane)

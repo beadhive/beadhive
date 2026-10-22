@@ -253,7 +253,7 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
                 "release_matches",
                 bool(beat.release_matches)
                 and release is not None
-                and release == desired.get("release"),
+                and _manifest_release_ok(release, desired, beat),
             ),
             ("conformance_pass", bool(trusted_emergency or beat.conformance_pass)),
             ("capabilities_match_admission", bool(caps) and caps == desired.get("caps")),
@@ -273,6 +273,18 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
     return EligibilityDecision(
         predicates, waived_authority, enforcement_disabled=True, admission=decision.admission
     )
+
+
+def _manifest_release_ok(release, desired, beat) -> bool:
+    """Session carrier: the manifest release is the grant's reference exactly (an exact pin), or,
+    under a ``release_policy``, either that reference or itself admitted (ADR section 4)."""
+    if release == desired.get("release"):
+        return True
+    if "release_policy" not in desired:
+        return False
+    from .release_policy import admits
+
+    return admits(release, desired, getattr(beat, "manifest_release_catalog_row", None))
 
 
 def _signed_release_matches(lease, frame, desired, beat) -> bool:
