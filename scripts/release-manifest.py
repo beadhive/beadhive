@@ -43,9 +43,7 @@ def build_manifest(wheel_path: Path, commit: str) -> dict[str, object]:
     measurement = _measurement()
     with zipfile.ZipFile(wheel_path) as wheel:
         entries = [
-            (info.filename, wheel.read(info))
-            for info in wheel.infolist()
-            if not info.is_dir()
+            (info.filename, wheel.read(info)) for info in wheel.infolist() if not info.is_dir()
         ]
         version = wheel_version(wheel)
     digest, count = measurement.fold_digest(entries)
