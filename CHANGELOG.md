@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.29.2 (2026-10-22)
+
+### Fix
+
+- **fleet**: read release-policy reader versions from the session or signed-beat carrier
+
 ## v0.29.1 (2026-10-22)
 
 ### Fix
