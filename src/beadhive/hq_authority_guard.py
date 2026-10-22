@@ -450,24 +450,81 @@ def same_incumbent_after_binding(previous, current):
     )
 
 
-def same_incumbent_after_rotation(previous, frame, record):
-    """A hive lease minted by a reviewed active-rotation predecessor stays with its lineage.
+#: Authority fields that never change across a reviewed active rotation of one incarnation
+#: lineage (mirrors ``stable`` in :func:`validate_release_upgrade_history`). ``beadyard_id`` is
+#: handled separately: a pre-binding lease may lack it (see :func:`same_incumbent_after_binding`).
+_LINEAGE_STABLE = ("frame_id", "holder_identity", "instance_ref", "key_fingerprint", "audience")
+_LINEAGE_FIELDS = frozenset(_LINEAGE_STABLE) | {"epoch", "config_revision", "candidate_expires_at"}
 
-    Only an archived ``active`` grant inside the current record's operator-signed
-    ``release_upgrade_history`` qualifies. Its stable identity already equals the
-    current record's (validated with the archive), and archives authorize no
-    principal, so this never revives the old epoch; it only lets the current
-    incarnation renew or release the lease without advancing its fencing epoch.
+
+def _same_lineage(previous, frame, record):
+    """``previous`` is an earlier-epoch snapshot of ``record``'s own incarnation (bh-yh8sk).
+
+    Matches only when every stable identity field equals the current active grant's, the
+    epoch is strictly older, and nothing else differs but the fields a rotation legitimately
+    advances (``epoch``, ``config_revision``, ``candidate_expires_at``). ``beadyard_id`` must
+    be equal, or absent from the lease while the grant has since been bound to one.
+    """
+    current = record.get("authority")
+    if (
+        record.get("state") != "active"
+        or record.get("emergency") is not None
+        or not isinstance(current, dict)
+        or previous.get("frame_id") != frame
+        or current.get("frame_id", frame) != frame
+    ):
+        return False
+    keys = set(previous)
+    if not _LINEAGE_FIELDS <= keys <= _LINEAGE_FIELDS | {"beadyard_id"}:
+        return False
+    if "beadyard_id" in previous and previous["beadyard_id"] != current.get("beadyard_id"):
+        return False
+    old_epoch, new_epoch = previous["epoch"], current.get("epoch")
+    return (
+        all(previous[key] == current.get(key) for key in _LINEAGE_STABLE if key != "frame_id")
+        and all(isinstance(previous[key], str) and previous[key] for key in _LINEAGE_STABLE)
+        and type(old_epoch) is int
+        and type(new_epoch) is int
+        and 0 <= old_epoch < new_epoch
+    )
+
+
+def same_incumbent_after_rotation(previous, frame, record):
+    """A hive lease minted by an earlier active grant of the same lineage stays with it.
+
+    Under signed/session liveness nothing renews or rebinds a lease, so its envelope
+    ``authority`` stays the grant snapshot that minted it, however many reviewed active
+    rotations follow. Two ways to qualify:
+
+    1. an archived ``active`` grant inside the current record's operator-signed
+       ``release_upgrade_history`` equals ``previous`` (that archive is validated to share
+       the current record's stable identity); or
+    2. lineage match (bh-yh8sk), needed once the bounded archive
+       (``frame_release_upgrade.HISTORY_LIMIT``) has dropped the minting grant: ``previous``
+       equals the current *active*, non-emergency grant in every stable identity field
+       (frame_id, holder_identity, instance_ref, key_fingerprint, audience, beadyard_id), has
+       a strictly lower epoch, and differs in nothing but epoch, config_revision and
+       candidate_expires_at.
+
+    Safe because the lease is only ever honoured for the current record's own principal: a
+    different frame, holder, instance, key or audience never matches; a newer-epoch snapshot
+    never matches; and pending/draining/retired/quarantined or emergency-scoped records
+    (state != active) take no lineage path, so re-admission under a new identity or key
+    cannot claim it. Archives authorize no runtime signer and neither does this: it never
+    revives an old epoch's principal, it only lets the current incarnation renew or release
+    its own lease without advancing the fencing epoch.
     """
     if not isinstance(previous, dict) or not isinstance(record, dict):
         return False
-    return any(
+    if any(
         isinstance(item, dict)
         and isinstance(item.get("record"), dict)
         and item["record"].get("state") == "active"
         and previous == {"frame_id": frame, **item["record"]["authority"]}
         for item in record.get("release_upgrade_history", [])
-    )
+    ):
+        return True
+    return _same_lineage(previous, frame, record)
 
 
 def verify_operator_commit(sha, policy, carrier):

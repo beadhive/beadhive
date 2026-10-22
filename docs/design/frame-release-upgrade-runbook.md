@@ -321,9 +321,18 @@ binding (`hq.sql.authority_writer`, `runtime: null`).
    digest. Claims minted before the rotation stay valid because the lease epoch
    does not change. Do not expect a renewal to rebind the lease to the new
    grant: in signed liveness mode nothing renews the lease (`renew_if_due`
-   returns without a round trip), so the lease stays bound to the archived
-   predecessor and survives only through `same_incumbent_after_rotation`. In the
-   legacy receiver mode the next lease renewal does rebind it.
+   returns without a round trip), so the lease stays bound to the grant
+   that minted it and survives only through `same_incumbent_after_rotation`. That
+   helper accepts the lease when (a) an archived `active` grant in
+   `release_upgrade_history` equals its authority, or (b) it matches the current
+   record's identity lineage: an active, non-emergency grant whose `frame_id`,
+   `holder_identity`, `instance_ref`, `key_fingerprint`, `audience` and
+   `beadyard_id` equal the lease's (a lease minted before the beadyard binding
+   may lack `beadyard_id`), with a strictly lower epoch and no other difference
+   than `epoch`, `config_revision` and `candidate_expires_at`. Path (b) keeps the
+   lease after the bounded archive (`HISTORY_LIMIT`, 16) has dropped the minting
+   grant; it never revives the old epoch's principal. In the legacy receiver mode
+   the next lease renewal does rebind it.
 9. **Retire the old environment** only after the frame is eligible and its
    lease has renewed. The old principal can no longer publish (no current grant
    names its epoch); disabling that SQL account is optional hygiene and must not
