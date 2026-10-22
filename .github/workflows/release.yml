@@ -110,11 +110,11 @@ jobs:
   # (docs/design/frame-release-range-adr.md, section 3). Keyless through GitHub OIDC; the
   # PEP 740 attestation published above stays an independent cross-check on the same wheel.
   attest:
-    needs: build
+    needs: [build, publish]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # upload the bundle as a release asset
+      contents: read
       id-token: write  # keyless Sigstore signing
       attestations: write
     steps:
@@ -136,18 +136,6 @@ jobs:
           subject-path: dist/*.whl
           predicate-type: https://beadhive.ai/attestation/release-manifest/v1
           predicate-path: release-manifest.json
-
-      - name: Upload the bundle as a release asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-        run: |
-          set -euo pipefail
-          asset="release-manifest-${TAG}.sigstore.json"
-          cp "$BUNDLE" "$asset"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes ""
-          gh release upload "$TAG" "$asset" --clobber
 
   mcp-registry:
     needs: publish

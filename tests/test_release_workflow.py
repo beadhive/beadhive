@@ -157,10 +157,10 @@ def test_attest_job_signs_manifest_on_tags_only_with_least_privilege() -> None:
     attest = next(s for s in job["steps"] if _uses(s, "actions/attest"))
     commands = "\n".join(str(s.get("run", "")) for s in job["steps"])
 
-    assert job["needs"] == "build"
+    assert job["needs"] == ["build", "publish"]
     assert job["if"] == "startsWith(github.ref, 'refs/tags/v')"
     assert job["permissions"] == {
-        "contents": "write",
+        "contents": "read",
         "id-token": "write",
         "attestations": "write",
     }
@@ -172,8 +172,8 @@ def test_attest_job_signs_manifest_on_tags_only_with_least_privilege() -> None:
         "predicate-path": "release-manifest.json",
     }
     assert "scripts/release-manifest.py" in commands
-    assert "release-manifest-${TAG}.sigstore.json" in commands
-    assert "gh release upload" in commands
+    assert "gh release" not in commands
+    assert "bundle-path" not in str(job)
     assert "secrets." not in commands
 
 
