@@ -13,6 +13,22 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.29.0 (2026-10-22)
+
+### Feat
+
+- **hq**: add release-catalog provision verb and cover verify_dsse
+- **fleet**: heartbeat reports the measured release and refuses only outside the policy
+- **fleet**: range-aware release eligibility on the session and signed-beat carriers
+- **fleet**: optional release_policy in frame grants with a reviewed policy publication
+- **hq**: import, verify and revoke signed release catalog entries behind beadhive[release-verify]
+- **hq**: add the append-only release catalog table, its INSERT-only grants and a floor exception
+- **release**: sign a version-to-measured-digest manifest in the release workflow
+
+### Fix
+
+- **release**: keep the attestation bundle in GitHub's attestation service
+
 ## v0.28.4 (2026-10-21)
 
 ### Fix
