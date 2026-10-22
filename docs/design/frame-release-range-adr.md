@@ -164,15 +164,19 @@ runs after `build`:
 3. It signs that predicate with `actions/attest`, keyless through GitHub OIDC.
    - The subject is the wheel. The predicate type is
      `https://beadhive.ai/attestation/release-manifest/v1`.
-   - The job needs `id-token: write` and `attestations: write`. It uploads the bundle as the GitHub
-     release asset `release-manifest-vX.sigstore.json`.
+   - The job needs `build` and `publish`, so only a version that is actually on PyPI is signed. Its
+     permissions are `contents: read`, `id-token: write` and `attestations: write`.
+   - There is no release asset. `actions/attest` stores the bundle in GitHub's attestation service,
+     and ingest fetches it from the GitHub attestation API by the wheel's sha256. An air-gapped
+     import uses a local `--bundle` file instead.
    - PyPI's PEP 740 publish attestation is unchanged. It remains an independent cross-check on the
      same wheel hash.
 
 **Ingest** is `bh hq release-catalog import <version>`, run from any host holding the catalog
 binding. It:
 
-1. fetches the bundle and the wheel;
+1. fetches the bundle (from the GitHub attestation API by wheel sha256, or from a local `--bundle`
+   file) and the wheel;
 2. verifies the bundle with the identity policy below;
 3. requires the statement's subject to equal the wheel's sha256;
 4. **recomputes** the measured digest from the wheel and requires it to equal the predicate;
@@ -274,7 +278,7 @@ existing pin, so it is **out of scope** here. It is filed as a follow-up for `-v
 ## Implementation slices (children of `bh-vfrem`)
 
 1. **Measurement and CI.** The shared digest fold, `scripts/release-manifest.py`, an equality test
-   against an installed wheel, the `attest` job and release asset, and `tests/test_release_workflow.py`.
+   against an installed wheel, the `attest` job, and `tests/test_release_workflow.py`.
 2. **Catalog.** The `hq_release_catalog` DDL, the catalog binding, frame `SELECT` grants and their
    checks, the restore-floor append-only exception, and the `import`/`verify`/`revoke` verbs behind
    `beadhive[release-verify]`. This slice settles open question 1.
