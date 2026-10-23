@@ -13,6 +13,14 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.29.3 (2026-10-23)
+
+### Fix
+
+- **remote**: scrub bd's nested sync: remote: form as well as the flat key
+- **onboard**: make footprint repair report-only when re-onboarding a furnished hive
+- **remote**: keep bd's sync.remote write out of tracked config and git history
+
 ## v0.29.2 (2026-10-22)
 
 ### Fix
