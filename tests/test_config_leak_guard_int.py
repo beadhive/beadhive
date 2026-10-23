@@ -174,3 +174,35 @@ def test_hive_ready_requires_no_tracked_sync_remote(tmp_path):
     git("commit", "-qam", "oops", cwd=repo)
     check = hive_ready._tracked_sync_remote_check(entry, repo)
     assert (check.required, check.state) == (True, "missing")
+
+
+@pytest.mark.parametrize("commit", [True, False], ids=["committed", "uncommitted"])
+def test_nested_sync_remote_form_is_scrubbed_too(tmp_path, commit):
+    """bh-glpwp: in server mode bd 1.3.0 writes the nested ``sync:`` / ``remote:`` mapping, not
+    the flat key. The guard must undo that spelling as well and leave the file byte-identical."""
+    repo = _hive(tmp_path)
+    head = _head(repo)
+    cfg = repo / ".beads/config.yaml"
+    before = cfg.read_text()
+    snap = config_leak_guard.snapshot(repo)
+    cfg.write_text(before.rstrip("\n") + '\nsync:\n    remote: "s3://private/internal/db"\n')
+    if commit:
+        git("commit", "-q", "-am", "bd: update sync.remote", cwd=repo)
+    config_leak_guard.scrub(snap)
+    assert cfg.read_text() == before
+    assert "s3://private" not in cfg.read_text()
+    _assert_clean(repo, head)
+
+
+def test_nested_form_keeps_other_sync_keys(tmp_path):
+    repo = _hive(tmp_path)
+    cfg = repo / ".beads/config.yaml"
+    cfg.write_text(cfg.read_text().rstrip("\n") + "\nsync:\n  mode: manual\n")
+    git("commit", "-q", "-am", "chore: sync mode", cwd=repo)
+    head, before = _head(repo), cfg.read_text()
+    snap = config_leak_guard.snapshot(repo)
+    cfg.write_text(before.replace("sync:\n", 'sync:\n  remote: "s3://p/x"\n') + "other: 1\n")
+    config_leak_guard.scrub(snap)
+    text = cfg.read_text()
+    assert "s3://p/x" not in text and "mode: manual" in text and "other: 1" in text
+    assert _head(repo) == head
