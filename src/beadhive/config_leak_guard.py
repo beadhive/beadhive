@@ -81,8 +81,32 @@ def snapshot(cwd) -> Snapshot | None:
         return None
 
 
+_NESTED = re.compile(r"^sync:[ \t]*\n((?:[ \t]+.*(?:\n|$))+)", re.MULTILINE)
+_NESTED_REMOTE = re.compile(r"^[ \t]+remote\s*:")
+
+
 def _without_sync_remote(text: str) -> str:
-    return _LINE.sub("", text)
+    """*text* minus ``sync.remote`` in either spelling: bd's flat ``sync.remote:`` line, or the
+    nested ``sync:`` / ``  remote:`` mapping bd 1.3.0 writes in server mode (bh-glpwp). An emptied
+    ``sync:`` block goes too; its other keys stay."""
+
+    def nested(m: re.Match) -> str:
+        kept = [ln for ln in m.group(1).splitlines(keepends=True) if not _NESTED_REMOTE.match(ln)]
+        return "sync:\n" + "".join(kept) if any(ln.strip() for ln in kept) else ""
+
+    return _NESTED.sub(nested, _LINE.sub("", text))
+
+
+def _sync_remote_text(text: str) -> str:
+    """Just the ``sync.remote`` lines of *text*, in whichever spelling it uses ("" if none)."""
+    flat = "".join(_LINE.findall(text))
+    nested = "".join(
+        "sync:\n"
+        + "".join(ln for ln in m.group(1).splitlines(keepends=True) if _NESTED_REMOTE.match(ln))
+        for m in _NESTED.finditer(text)
+        if any(_NESTED_REMOTE.match(ln) for ln in m.group(1).splitlines())
+    )
+    return flat + nested
 
 
 def scrub(snap: Snapshot | None) -> str:
@@ -109,9 +133,9 @@ def scrub(snap: Snapshot | None) -> str:
                 # Only sync.remote moved: put the original bytes back.
                 path.write_text(snap.content)
                 notes.append("reverted tracked sync.remote")
-            elif _LINE.findall(now) != _LINE.findall(snap.content):
+            elif _sync_remote_text(now) != _sync_remote_text(snap.content):
                 # bd (or a concurrent editor) also changed other lines; restore only the key.
-                old = "".join(_LINE.findall(snap.content))
+                old = _sync_remote_text(snap.content)
                 rest = _without_sync_remote(now)
                 path.write_text(rest + ("" if rest.endswith("\n") or not rest else "\n") + old)
                 notes.append("reverted tracked sync.remote")
