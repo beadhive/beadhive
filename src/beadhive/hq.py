@@ -43,6 +43,7 @@ import typer
 
 from . import (
     config,
+    config_leak_guard,
     engine,
     git_identity,
     gitworkspace,
@@ -1130,7 +1131,8 @@ def _wire_remote(
         typer.echo(f"✗ git push origin main failed: {err_line(push_main)}", err=True)
         raise typer.Exit(1)
 
-    remote_add = _bd(["dolt", "remote", "add", "origin", dolt_url], hq_dir)
+    with config_leak_guard.guarded(hq_dir):  # bd 1.3.0 would commit sync.remote (bh-j75nl)
+        remote_add = _bd(["dolt", "remote", "add", "origin", dolt_url], hq_dir)
     if remote_add.returncode:
         typer.echo(f"✗ bd dolt remote add failed: {err_line(remote_add)}", err=True)
         raise typer.Exit(1)

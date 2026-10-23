@@ -1020,7 +1020,14 @@ class BdEngine:
         blocked = self._backup_claims(cwd, str(url), args, "added")
         if blocked is not None:
             return blocked
-        return self.invoke(args, cwd=cwd, capture=True, env=_extra_env(None, extra_env))
+        return self._register(args, cwd, extra_env)
+
+    def _register(self, args, cwd, extra_env=None):
+        """``bd dolt remote add`` without bd 1.3.0's tracked ``sync.remote`` write + commit
+        (bh-j75nl; see ``config_leak_guard``). Every registering path goes through here."""
+        guard = importlib.import_module("beadhive.config_leak_guard")
+        with guard.guarded(cwd):
+            return self.invoke(args, cwd=cwd, capture=True, env=_extra_env(None, extra_env))
 
     def remove_remote(self, cwd, name):
         return self.invoke(["dolt", "remote", "remove", str(name)], cwd=cwd, capture=True)
@@ -1042,11 +1049,9 @@ class BdEngine:
             return blocked
         # bd's add re-points an existing name in one call, so a replace is a single add; the
         # prior URL is restored if that add fails part-way.
-        added = self.invoke(args, cwd=cwd, capture=True, env=_extra_env(None, extra_env))
+        added = self._register(args, cwd, extra_env)
         if added.returncode and prior is not None:
-            restored = self.invoke(
-                ["dolt", "remote", "add", str(name), prior.url], cwd=cwd, capture=True
-            )
+            restored = self._register(["dolt", "remote", "add", str(name), prior.url], cwd)
             note = "restored the previous URL" if restored.returncode == 0 else "RESTORE FAILED"
             added = subprocess.CompletedProcess(
                 args=getattr(added, "args", ["bd", *args]),
@@ -1299,12 +1304,7 @@ class BdEngine:
                 if want is None:
                     continue
                 if which == kind.REMOTE:
-                    res = self.invoke(
-                        ["dolt", "remote", "add", name, want.url],
-                        cwd=cwd,
-                        capture=True,
-                        env=_extra_env(None, extra_env),
-                    )
+                    res = self._register(["dolt", "remote", "add", name, want.url], cwd, extra_env)
                 elif name == dolt_remote.BD_BACKUP_SLOT:
                     res = self._state_call(["backup", "add", want.url], cwd)
                 else:
@@ -1383,12 +1383,7 @@ class BdEngine:
                 detail=back.detail,
             )
 
-        kept = self.invoke(
-            ["dolt", "remote", "add", retain_as, prior.url],
-            cwd=cwd,
-            capture=True,
-            env=_extra_env(None, extra_env),
-        )
+        kept = self._register(["dolt", "remote", "add", retain_as, prior.url], cwd, extra_env)
         if kept.returncode:
             return fail(f"could not retain {name!r} as {retain_as!r}: {_stderr_tail(kept)}")
         swapped = self.replace_remote(cwd, name, url, extra_env=extra_env)

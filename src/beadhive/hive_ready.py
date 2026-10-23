@@ -15,6 +15,7 @@ import typer
 
 from . import (
     config,
+    config_leak_guard,
     daemon_supervisor,
     dolt_health,
     gitworkspace_plugin,
@@ -361,6 +362,17 @@ def _dolt_server_check(root: Path) -> Check:
     )
 
 
+def _tracked_sync_remote_check(entry, root: Path) -> Check:
+    """Required: a tracked ``.beads/config.yaml`` ``sync.remote`` on a hive with a non-Git
+    internal remote publishes a private store address into code history (bh-j75nl). Silent
+    (``na``) for every hive that cannot leak: untracked config, no ``sync.remote``, or a Git
+    remote."""
+    finding = config_leak_guard.leak_finding(entry, root)
+    if finding is None:
+        return Check("tracked sync.remote", False, "na", "none exposed")
+    return Check("tracked sync.remote", True, "missing", finding)
+
+
 def _host_daemon_check(cfg) -> Check:
     """Optional daemon availability; direct CLI/stdio readiness never depends on it."""
     if not daemon_supervisor.configured(cfg):
@@ -552,6 +564,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     # ---- Optional: integrations that could be set up ----
     checks.append(_validate_cmd_check(cfg, entry, root))
     checks.append(_dolt_server_check(root))
+    checks.append(_tracked_sync_remote_check(entry, root))
     checks.append(_host_daemon_check(cfg))
     checks.append(_schema_version_check(entry, root))
     checks.append(_otel_sdk_check(cfg))
