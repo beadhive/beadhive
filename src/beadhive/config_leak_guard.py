@@ -16,8 +16,8 @@ Two layers, both CORRECTNESS rules rather than policy (nothing here is optional)
   the pre-call value. A call that changed nothing, an UNTRACKED config (bd's write is then local
   and harmless) and a hive outside Git are no-ops.
 * :func:`leak_finding` is the standing detector for ``bh doctor`` / ``bh hive ready``: a tracked
-  ``sync.remote`` on a hive whose internal remote is not Git-hosted (partitioned stores, an HQ
-  descriptor, or a non-Git URL) is a leak waiting to be pushed.
+  ``sync.remote`` holding an object-store address is a leak waiting to be pushed; a Git hint
+  is not.
 
 The undo is preferred over registering through ``CALL DOLT_REMOTE`` because it keeps bd's own
 validation (the git-origin guard, URL checks) on the path and changes no registration
@@ -33,7 +33,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import bd, dolt_remote, store_target
+from . import bd, dolt_remote
 
 _REL = ".beads/config.yaml"
 _COMMIT_SUBJECT = "bd: update sync.remote"
@@ -156,25 +156,28 @@ def guarded(cwd) -> Iterator[None]:
         scrub(snap)
 
 
+_STORE_FAMILIES = frozenset(
+    {dolt_remote.RemoteFamily.S3, dolt_remote.RemoteFamily.AWS, dolt_remote.RemoteFamily.GS}
+)
+
+
 def leak_finding(entry: Mapping | None, root: Path) -> str | None:
-    """A hive-ready/doctor message when a tracked ``sync.remote`` would expose a non-Git internal
-    remote, else None."""
+    """A hive-ready/doctor message when a tracked ``sync.remote`` holds an object-store address,
+    else None.
+
+    Only the URL itself decides (bh-uhvf5): an object-store address (S3, an S3-compatible
+    endpoint, GCS) in code history is the exposure. A Git or forge URL (``git+ssh``, ``https``,
+    scp-style) names the code origin the repository already points at, so a stale hint is not a
+    leak, even on a hive whose internal store moved to an HQ descriptor; flagging it failed a
+    frame's conformance over harmless state."""
     if entry is None or not _tracked(root):
         return None
     url = bd.sync_remote(root)
     if not url:
         return None
-    target = dolt_remote.classify(url)
-    non_git = target.family is not dolt_remote.RemoteFamily.GIT
-    private = (
-        store_target.is_partitioned(entry)
-        or store_target.hive_descriptor_name(entry) is not None
-        or non_git
-    )
-    if not private:
+    if dolt_remote.classify(url).family not in _STORE_FAMILIES:
         return None
     return (
-        f"tracked {_REL} carries sync.remote={dolt_remote.redact_url(url)} on a hive with a "
-        "non-Git internal remote; that address is committed to code history — "
-        "`bd config unset sync.remote` and commit the removal"
+        f"tracked {_REL} carries sync.remote={dolt_remote.redact_url(url)}, an object-store "
+        "address committed to code history — `bd config unset sync.remote` and commit the removal"
     )

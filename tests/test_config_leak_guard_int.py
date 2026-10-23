@@ -144,9 +144,21 @@ def test_leak_finding_detects_planted_sync_remote(tmp_path):
     cfg.write_text(cfg.read_text().replace(secret, "git+ssh://git@example.test/a/b.git"))
     git("commit", "-qam", "git hint", cwd=repo)
     assert config_leak_guard.leak_finding(entry, repo) is None
-    # A descriptor-declared (partitioned-style) hive is flagged even for a Git URL.
+    # bh-uhvf5: nor is a descriptor-declared hive with a stale Git hint (uncommitted, as seen on a
+    # frame): a Git URL exposes nothing, and flagging it failed the frame's conformance.
     entry["dolt_remote"] = {"name": "internal", "url": secret}
-    assert config_leak_guard.leak_finding(entry, repo)
+    entry["stores"] = {"internal": {"remote": "internal"}}
+    cfg.write_text(
+        cfg.read_text().replace(
+            "git+ssh://git@example.test/a/b.git", "https://example.test/a/b.git"
+        )
+    )
+    assert config_leak_guard.leak_finding(entry, repo) is None
+    for hint in ("git@example.test:a/b.git", "git+https://example.test/a/b.git"):
+        text = cfg.read_text()
+        cfg.write_text(text.replace("https://example.test/a/b.git", hint))
+        assert config_leak_guard.leak_finding(entry, repo) is None, hint
+        cfg.write_text(text)
 
 
 def test_every_bd_remote_add_goes_through_the_guard():
