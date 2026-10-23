@@ -489,6 +489,13 @@ commits the scaffold as `chore(agf): hive scaffolding (beads + agent config)` (r
 if unpushed, or commit as `chore(agf): hive scaffolding repair`). External hives (forks /
 distinct-upstream repos) can never be furnished.
 
+Re-onboarding an already-registered furnished hive (for example `bh hive onboard <hive>
+--no-hub-sync` just to mint a second store) is **report-only** for tracked scaffolding: it does
+not run `bd config set export.auto`, untrack files, or commit, and prints a `footprint:` warning
+(exit stays 0) naming any drift. Set `BH_ONBOARD_REPAIR_FOOTPRINT=1` (default off) for that run to
+apply the repair and commit it as above. A fresh onboard, or a run that declares `--furnish` / an
+installer flag, is unchanged.
+
 Recurring Dolt backups are opt-in for shared-server hives; onboarding does not enable them based
 on a Git remote. If you explicitly enable bd's filesystem backup, keep its destination at the
 gitignored `.beads/backup/` path (or outside the checkout). Onboarding also ignores rotated

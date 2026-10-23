@@ -2558,7 +2558,9 @@ def hive_sync_remote(
     "onboard",
     help="onboard a hive end-to-end: clone it down (if --clone-url and absent), run hive init in "
     "the target, then sync this hive into the hub (fleet-wide aggregation deferred to the "
-    "background by default — see --hub-sync). Works for an already-local folder or a remote repo.",
+    "background by default — see --hub-sync). Works for an already-local folder or a remote repo. "
+    "Re-onboarding a registered furnished hive only REPORTS tracked scaffolding drift (no edit, no "
+    "commit); set BH_ONBOARD_REPAIR_FOOTPRINT=1 to apply and commit the repair.",
 )
 def hive_onboard(
     hive_id: str = typer.Argument(..., metavar="PROVIDER/ORG/REPO"),

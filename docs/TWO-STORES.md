@@ -185,7 +185,9 @@ shared dolt sql-server               database `widget` (internal) and `widpub` (
 
 `bh hive onboard` / `bh hive init` run one ordered flow (ADR section 6): **internal first**,
 then **public**. Each phase names itself on failure, removes only what it created, and is
-skipped when its store already exists, so re-running onboarding is the retry.
+skipped when its store already exists, so re-running onboarding is the retry. On a furnished
+hive that re-run does not touch tracked scaffolding (it reports drift only); set
+`BH_ONBOARD_REPAIR_FOOTPRINT=1` if you also want the scaffolding repair committed.
 
 | Situation | What happens | Operator action |
 |---|---|---|

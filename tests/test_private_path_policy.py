@@ -466,7 +466,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hive.py", "_install_claude_settings", ".claude", ".claude/settings.json")
     | _owned("hive.py", "_install_agents_opencode", ".opencode")
     | _owned("hive.py", "_install_bd_steer_opencode", ".opencode")
-    | _owned("hive.py", "_commit_scaffolding", ".beads", ".claude", ".opencode")
+    | _owned("hive.py", "_live_scaffold_paths", ".beads", ".claude", ".opencode")
     | _owned("hive.py", "_jsonl_is_authoritative", ".beads/config.yaml")
     | _owned("config_leak_guard.py", "_tracked", ".beads/config.yaml")
     | _owned("config_leak_guard.py", "snapshot", ".beads/config.yaml")
