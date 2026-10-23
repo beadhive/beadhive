@@ -226,7 +226,8 @@ the shown evidence at each step. Let `A` and `B` be two consecutive published pa
 minor, both built by the attested release workflow, with `A` at least 0.29.0.
 
 1. **Gate.** `BH_HQ_AUTHORITY_MIN_REMAINING=6h bh hq authority check` exits 0. `bh host list`
-   shows no cordoned or draining frame and a lease with more than 30 minutes left.
+   shows no cordoned or draining frame and the lease guard of
+   [Active frame release rotation](#active-frame-release-rotation) step 3 holds.
 2. **Bring every frame to `A` by rotation** (the existing procedure below), factory last.
    Evidence: `bh host release-upgrade check <frame>` per frame shows `release.id` `A`.
 3. **Provision and bind.** `bh hq release-catalog provision`, then bind `hq.sql.release_catalog`.
@@ -275,10 +276,27 @@ binding (`hq.sql.authority_writer`, `runtime: null`).
    capability unavailable".
 3. **Budget the lease window.** From step 4 until the first accepted beat at
    the new epoch (step 8) the frame is ineligible, so it neither takes new
-   claims nor renews its hive lease. Begin only with more than that window left
-   on the lease (`bh host list --lease-hive <prefix>`; default TTL 30 minutes)
-   and do not cordon the frame first (a cordoned frame cannot renew). Claims
-   already in flight keep finishing: their incumbent lease read accepts the
+   claims nor renews its hive lease. Do not cordon the frame first (a cordoned
+   frame cannot renew). Begin only when the guard for your lease mode holds:
+
+   - **Legacy (expiring) leases:** more than the window is left on the lease
+     (`bh host list --lease-hive <prefix>`; default TTL 30 minutes).
+   - **Session or signed-heartbeat liveness:** `expires_at` is advisory, so the
+     time left proves nothing. Instead, (a) the frame passes
+     `current_hive_lease_holder` in `bh host eligible --hive <prefix>` (a frame
+     on a pre-fix release shows it holds the lease row in
+     `bh host list --lease-hive <prefix>`); (b) the hive's
+     `managed_repos[].frame_policy.evict_after_s` exceeds the planned window
+     (read it with `bh config get managed_repos` and take the hive's
+     `frame_policy`); and (c) no other frame is placed on or eligible for that
+     hive (`bh host eligible <frame> --hive <prefix>` per candidate), so
+     nothing can take over during the window.
+
+   Why: under these modes expiry is only a failover hint; the real exposure is
+   protected takeover once the frame's liveness evidence is older than
+   `evict_after_s`.
+
+   Claims already in flight keep finishing: their incumbent lease read accepts the
    reviewed predecessor.
    `BH_FRAME_HEARTBEAT=advisory` does not cover this window: it waives only
    the `authenticated_fresh_heartbeat` predicate. With no beat at the new epoch
