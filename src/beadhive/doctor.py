@@ -29,6 +29,7 @@ from . import (
     bd,
     channels,
     config,
+    config_leak_guard,
     daemon_supervisor,
     doctor_ram,
     dolt_health,
@@ -2711,6 +2712,9 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     "local state as unconfirmed and DO NOT publish it until you re-adopt this "
                     f"host or coordinate with {holder} through the managed sync path"
                 )
+            leak = config_leak_guard.leak_finding(e, path)
+            if leak:
+                warns.append(f"hive '{e['prefix']}': {leak}")
             split_brain = _split_brain_lineage_warning(e, path)
             if split_brain:
                 warns.append(split_brain)
