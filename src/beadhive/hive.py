@@ -933,6 +933,34 @@ def _head_is_unpushed_scaffold(base: Path) -> bool:
     return on_remote.returncode == 0 and not (on_remote.stdout or "").strip()
 
 
+def _live_scaffold_paths(base: Path) -> list[str]:
+    """Scaffold paths that exist and are not gitignored (a deliberately ignored path is never
+    force-added or reported)."""
+    return [
+        p
+        for p in _SCAFFOLD_PATHS
+        if (base / p).exists()
+        and run(["git", "check-ignore", "-q", p], cwd=str(base), check=False).returncode != 0
+    ]
+
+
+def _scaffold_drift(base=None) -> str:
+    """Read-only: comma-joined scaffold paths with uncommitted changes (empty = clean).
+
+    Same path filter as `_commit_scaffolding` (existing, not gitignored) but never stages."""
+    base = _base(base)
+    paths = _live_scaffold_paths(base)
+    if not paths:
+        return ""
+    st = run(
+        ["git", "status", "--porcelain", "--", *paths], cwd=str(base), check=False, capture=True
+    )
+    changed = sorted(
+        {ln[3:].split("/")[0].strip('"') for ln in (st.stdout or "").splitlines() if ln[3:]}
+    )
+    return ", ".join(changed)
+
+
 def _commit_scaffolding(base=None) -> bool:
     """Stage + commit the onboarding artifacts (furnished-hive convention).
 
@@ -944,12 +972,7 @@ def _commit_scaffolding(base=None) -> bool:
     history) commits under a distinct subject.
     Returns True when a commit was created/amended (False = tree already clean)."""
     base = _base(base)
-    paths = [
-        p
-        for p in _SCAFFOLD_PATHS
-        if (base / p).exists()
-        and run(["git", "check-ignore", "-q", p], cwd=str(base), check=False).returncode != 0
-    ]
+    paths = _live_scaffold_paths(base)
     if not paths:
         return False
     _git_locked_run(["git", "add", "--", *paths], base)

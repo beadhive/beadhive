@@ -1411,6 +1411,53 @@ def _dolt_status_has_dirty_config(raw_stdout: str) -> bool:
 _EXPORT_CONFIG = (("export.auto", "true"), ("export.git-add", "false"))
 
 
+REPAIR_FOOTPRINT_ENV = "BH_ONBOARD_REPAIR_FOOTPRINT"
+
+
+def _repair_footprint_opted_in() -> bool:
+    """bh-h7o9c opt-in (default off): ``BH_ONBOARD_REPAIR_FOOTPRINT=1`` applies and commits the
+    scaffolding repair when re-onboarding an already-registered furnished hive."""
+    return os.environ.get(REPAIR_FOOTPRINT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _footprint_report_only(ctx: Ctx) -> bool:
+    """bh-h7o9c: True when this run must NOT mutate or commit tracked scaffolding.
+
+    A furnished hive tracks ``.beads/config.yaml`` and friends, so re-onboarding an
+    already-registered one (e.g. just to mint a second store) must not silently edit them and
+    leave an unpushed commit on the live checkout. Fresh onboarding, a footprint declared this
+    invocation (``--furnish`` / an installer flag) and the ``BH_ONBOARD_REPAIR_FOOTPRINT`` opt-in
+    all keep the apply-and-commit behaviour."""
+    return (
+        bool(ctx.furnish)
+        and getattr(ctx, "existing", None) is not None
+        and not getattr(ctx, "furnish_explicit", False)
+        and not _repair_footprint_opted_in()
+    )
+
+
+def _note_footprint_drift(ctx: Ctx, drift: str) -> None:
+    """Report-only drift: a warning (exit stays 0, like every other advisory) naming the opt-in."""
+    warning = (
+        f"{drift} — not repaired on re-onboard; set {REPAIR_FOOTPRINT_ENV}=1 to apply and commit"
+    )
+    typer.echo(f"{_GLYPH_WARN} footprint: {warning}", err=True)
+    if ctx.plan is not None:
+        ctx.plan.warnings.append(f"footprint: {warning}")
+
+
+def _report_export_drift(ctx: Ctx) -> None:
+    """Read-only twin of the ``bd config set`` loop in `_configure_auto_export`."""
+    drifted = []
+    for key, value in _EXPORT_CONFIG:
+        data = bd_mod.json(["config", "get", key], ctx.base)
+        raw = data.get("value", data.get("effective")) if isinstance(data, dict) else None
+        if str(raw).strip().lower() != value:
+            drifted.append(f"{key}={value}")
+    if drifted:
+        _note_footprint_drift(ctx, f"beads config differs from the template ({', '.join(drifted)})")
+
+
 def _configure_auto_export(ctx: Ctx) -> None:
     """Turn on bd's throttled JSONL auto-export so external consumers get a fresh
     ``.beads/issues.jsonl`` without spawning bd, and keep that file out of git.
@@ -1425,6 +1472,10 @@ def _configure_auto_export(ctx: Ctx) -> None:
     from . import hive
 
     if hive._jsonl_is_authoritative(ctx.base):
+        return
+
+    if _footprint_report_only(ctx):
+        _report_export_drift(ctx)
         return
 
     for key, value in _EXPORT_CONFIG:
@@ -1731,6 +1782,13 @@ def _act_footprint(ctx: Ctx) -> None:
         if hive._ensure_stealth_exclude(ctx.base):
             typer.echo("✓ footprint: .beads/ stealth-excluded (zero-footprint)")
         typer.echo("• footprint: zero — nothing tracked, nothing committed")
+        return
+    if _footprint_report_only(ctx):
+        dirty = hive._scaffold_drift(ctx.base)
+        if dirty:
+            _note_footprint_drift(ctx, f"tracked scaffolding has uncommitted changes ({dirty})")
+        else:
+            typer.echo("• footprint: report-only on re-onboard — no tracked scaffolding drift")
         return
     if hive._remove_stealth_exclude(ctx.base):
         typer.echo("✓ footprint: removed .beads/ stealth exclusion (furnished hive)")
