@@ -192,12 +192,18 @@ hive that re-run does not touch tracked scaffolding (it reports drift only); set
 | Situation | What happens | Operator action |
 |---|---|---|
 | First host, internal remote verified **empty** | a fresh internal store is minted, registered and pushed to the remote; the public store is minted | onboard with `BH_ONBOARD_SEED_REMOTE=<prefix>` for this one run |
-| Another host, remote **populated** | the internal store is cloned from the descriptor with full history — the code origin is never probed; the public store is minted fresh | plain onboard |
+| Another host, remote **populated** | the internal store is cloned from the descriptor with full history — the code origin is never probed; the public store is minted fresh. A furnished hive's checkout already has its tracked `.beads/` scaffolding (config.yaml, metadata.json, ...): that is **not** a store, so onboard still clones when the server-mode database is absent and leaves the tracked files unchanged | plain onboard |
 | Ordinary public clone (no HQ entry) | `git clone` + `bd bootstrap` reads the code origin's `refs/dolt/data`: the public corpus only | none — this is what contributors get |
-| Store already present | skipped | none |
+| Store already present (database exists on the shared server, or an embedded store) | skipped | none |
 
 Notes:
 
+- **Do not run `bd bootstrap` on a hive with a non-Git HQ descriptor.** When the internal
+  database is missing, bd's own tip ("run `bd bootstrap`") plans a clone of the code origin's
+  `refs/dolt/data`: a stale or public corpus, with the public Git ref as the default remote, so a
+  later push could publish private beads. `bh hive ready` fails with `internal store` when a
+  server-mode hive's database is missing; the fix is re-running `bh hive onboard`, which clones
+  from the descriptor.
 - A failed clone is never taken to mean "empty"; seed only a remote you have verified empty.
   A seed never reads the code origin: it runs `bd init --remote <descriptor url>`, so bd
   consults the verified-empty HQ remote instead of auto-cloning the origin's `refs/dolt/data`

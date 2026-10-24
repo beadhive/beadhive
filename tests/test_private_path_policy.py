@@ -412,6 +412,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hive_migrate.py", "<module>", ".beads")
     | _owned("hive_ready.py", "_deprecation_checks", ".beads/PRIME.md")
     | _owned("hive_ready.py", "_schema_version_check", ".beads")
+    | _owned("hive_ready.py", "_internal_store_check", ".beads")
     | _owned("hive_ready.py", "scan", ".beads")
     | _owned("hive_repair.py", "detect", ".beads")
     | _owned("hive_repair.py", "detect_node_id", ".beads")

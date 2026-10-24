@@ -297,11 +297,17 @@ def _hint_line(url: str) -> str:
 _CLONE_IDENTITY_KEYS = frozenset({"dolt_mode", "dolt_database"})
 
 
-def _initialised_store(beads: Path) -> bool:
+def _initialised_store(beads: Path, *, tracked_scaffold: bool = False) -> bool:
     """Whether ``beads`` already holds a store a clone must not land over: Dolt data on disk,
-    or a ``metadata.json`` recording more than the pre-clone identity stamp."""
+    or a ``metadata.json`` recording more than the pre-clone identity stamp.
+
+    ``tracked_scaffold`` is the caller's attestation that the metadata is a furnished hive's
+    checked-out scaffolding and its server database is verifiably absent (bh-ky918): the
+    metadata check is then waived; Dolt data on disk still refuses."""
     if any((beads / marker).exists() for marker in ("embeddeddolt", "dolt")):
         return True
+    if tracked_scaffold:
+        return False
     path = beads / "metadata.json"
     if not path.exists():
         return False
@@ -609,7 +615,7 @@ class Engine(Protocol):
         An explicit operation for migration tooling; reconciliation never calls it."""
         ...
 
-    def clone_remote(self, cwd, url: str, *, env=None, extra_env=None):
+    def clone_remote(self, cwd, url: str, *, env=None, extra_env=None, tracked_scaffold=False):
         """Initialise ``cwd``'s store from ``url`` with full history (``bd bootstrap`` against
         an explicit source). Refuses an already-initialised store; never treats a failed clone
         as an empty remote."""
@@ -1061,7 +1067,7 @@ class BdEngine:
             )
         return added
 
-    def clone_remote(self, cwd, url, *, env=None, extra_env=None):
+    def clone_remote(self, cwd, url, *, env=None, extra_env=None, tracked_scaffold=False):
         """Full-history initialisation from an explicit URL (bd 1.3.0 evidence, ADR "Bootstrap
         from a descriptor"): ``bd bootstrap`` clones when ``sync.remote`` names a source and
         exits non-zero when the source holds no Dolt data. ``bd init --remote`` is deliberately
@@ -1079,7 +1085,7 @@ class BdEngine:
         from . import store_locator
 
         beads = store_locator.embedded_store_dir(Path(cwd)).parent  # the hive's .beads/
-        if _initialised_store(beads):
+        if _initialised_store(beads, tracked_scaffold=tracked_scaffold):
             return _refused(args, "refusing to clone over an already-initialised beads store")
         config_path = beads / "config.yaml"
         prior = config_path.read_text() if config_path.is_file() else None

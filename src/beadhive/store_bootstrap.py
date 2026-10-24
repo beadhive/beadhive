@@ -112,13 +112,20 @@ def entry_remote_url(entry: Mapping[str, Any], name: str) -> str:
     )
 
 
-def plan_bootstrap(entry: Mapping[str, Any]) -> list[Phase]:
-    """The ordered phases for ``entry``. Pure apart from checking which stores exist."""
+def plan_bootstrap(
+    entry: Mapping[str, Any], *, internal_present: bool | None = None
+) -> list[Phase]:
+    """The ordered phases for ``entry``. Pure apart from checking which stores exist.
+
+    ``internal_present`` lets a caller that can tell better than "``.beads/`` exists" say the
+    internal store is NOT there (a furnished hive's tracked ``.beads/`` scaffolding, bh-ky918);
+    None keeps the directory check."""
     internal = store_target.operational_store(entry)
     phases: list[Phase] = []
     remote = internal.remote
     if internal.scope == store_target.SCOPE_INTERNAL and remote and remote != GIT_ORIGIN_REMOTE:
-        action = ACTION_SKIP if internal.beads_dir.is_dir() else ACTION_CLONE
+        present = internal.beads_dir.is_dir() if internal_present is None else internal_present
+        action = ACTION_SKIP if present else ACTION_CLONE
         phases.append(Phase(PHASE_INTERNAL, action, internal, remote))
     else:
         phases.append(Phase(PHASE_LEGACY, ACTION_DELEGATE, internal, remote))
@@ -163,6 +170,7 @@ def execute_bootstrap(
     register_public: RegisterDelegate | None = None,
     runner: Runner | None = None,
     env: Mapping[str, str] | None = None,
+    internal_present: bool | None = None,
 ) -> list[Phase]:
     """Run :func:`plan_bootstrap`'s phases in order and return them — the ONE ordered flow.
 
@@ -174,7 +182,7 @@ def execute_bootstrap(
     (default: ``Engine.add_remote``). Every URL is resolved BEFORE its phase touches anything,
     so an unresolvable descriptor fails closed with nothing created."""
     del origin_probe  # never consulted here: the managed path must not probe origin at all
-    phases = plan_bootstrap(entry)
+    phases = plan_bootstrap(entry, internal_present=internal_present)
     base_env = _clean_env(env)
     runner = runner or _default_runner
     for phase in phases:

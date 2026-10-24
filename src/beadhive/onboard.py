@@ -853,7 +853,9 @@ def _act_bd_init(ctx: Ctx) -> None:
 
     _ensure_derived(ctx)
     stores_entry = _partitioned_entry(ctx)
-    if (ctx.base / ".beads").exists():
+    descriptor = _hq_remote_descriptor(ctx)
+    tracked_scaffold = (ctx.base / ".beads").exists()
+    if tracked_scaffold and not _internal_store_missing(ctx, descriptor):
         # ponytail: idempotent — skip bd init so re-runs (e.g. to add --skills) never abort.
         # Never touches dolt_mode: an already-initialized hive (embedded or otherwise) is left
         # in its current storage mode; only the local backup-artifact ignore rules are healed.
@@ -863,7 +865,7 @@ def _act_bd_init(ctx: Ctx) -> None:
         hive._ensure_bd_backup_gitignored(ctx.base)
         _configure_auto_export(ctx)
         if stores_entry is not None:  # a partitioned hive may still lack its public store
-            _bootstrap_stores(ctx, stores_entry, descriptor=_hq_remote_descriptor(ctx))
+            _bootstrap_stores(ctx, stores_entry, descriptor=descriptor)
         return
     env = dict(os.environ, BD_NON_INTERACTIVE="1")
     # ONE ordered flow (bh-rz379). The operational store comes first: from the HQ
@@ -873,7 +875,6 @@ def _act_bd_init(ctx: Ctx) -> None:
     # (bh-lniwf.4) runs the same two steps through `store_bootstrap`'s phase order, which then
     # initialises the public store; its internal phase delegates the clone to the HQ bootstrap
     # below, so there is exactly one clone path and no double clone.
-    descriptor = _hq_remote_descriptor(ctx)
     hq_sourced = False
 
     def operational_store() -> None:
@@ -884,10 +885,22 @@ def _act_bd_init(ctx: Ctx) -> None:
         else:
             _bootstrap_from_origin_or_mint(ctx, env)
 
+    if tracked_scaffold:
+        typer.echo(
+            "• beads: .beads/ is checked-out scaffolding without its store — "
+            "cloning from the HQ remote."
+        )
     if stores_entry is None:
         operational_store()
     else:
-        _bootstrap_stores(ctx, stores_entry, descriptor=descriptor, legacy=operational_store)
+        _bootstrap_stores(
+            ctx,
+            stores_entry,
+            descriptor=descriptor,
+            legacy=operational_store,
+            # `.beads/` here is only checked-out scaffolding, never a store (bh-ky918).
+            internal_present=False if tracked_scaffold else None,
+        )
         hq_sourced = hq_sourced or descriptor is not None
     # One call site for every fresh-store path above (never reached by the existing-hive skip
     # branch): persist dolt_mode for real. Automatic Dolt backup stays at bd's shared-server
@@ -897,6 +910,38 @@ def _act_bd_init(ctx: Ctx) -> None:
     _configure_auto_export(ctx)
     if not hq_sourced:  # an HQ-declared remote is never the Git origin's (bh-dhl6 guard)
         _guard_beads_remote(ctx)
+
+
+def _internal_store_missing(ctx: Ctx, descriptor) -> bool:
+    """True when `.beads/` is present but the internal store behind it is demonstrably absent
+    and the hive's HQ descriptor can supply it (bh-ky918).
+
+    A furnished hive TRACKS `.beads/` scaffolding (config.yaml, metadata.json, ...), so on a
+    new host a plain `git clone` already has `.beads/` while the server-mode database does not
+    exist; the `.beads`-exists skip would call that "initialized" and every bd verb would then
+    fail with `database not found`. Narrowest correct predicate, chosen over a blanket
+    store-presence probe so the wide hermetic-test convention (a pre-created `.beads/` means
+    "skip bd") keeps holding: it is only true when ALL of these hold --
+    * the hive declares an HQ descriptor (otherwise there is nothing bh may clone from, and
+      the origin-bootstrap path is exactly what this must never reach);
+    * `.beads/metadata.json` records `dolt_mode: "server"` -- an embedded store lives inside
+      `.beads/` (moving it is `bh hive migrate-storage`'s job), and a bare `.beads/` with no
+      recorded mode (the hermetic-test convention, or an interrupted init) is left alone;
+    * bd is not pointed at a remote server (`BEADS_DOLT_SERVER_HOST` non-local): the shared
+      server's data directory cannot be probed from here, so presence is assumed;
+    * the shared server's on-disk database (`store_locator.has_direct_server_database`, a pure
+      filesystem probe: never starts a server) is absent.
+    Trade-off: a filesystem probe cannot see a server whose data dir differs from
+    `BEADS_SHARED_SERVER_DIR`; in that case we assume present (today's behaviour) rather than
+    risk a clone over a live database."""
+    if descriptor is None or store_locator.dolt_mode(ctx.base) != "server":
+        return False
+    if os.environ.get("BEADS_DOLT_SERVER_HOST", "") not in {"", "127.0.0.1", "localhost", "::1"}:
+        return False
+    database = store_locator.server_database(ctx.base, ctx.prefix or "")
+    if not database:
+        return False
+    return not store_locator.has_direct_server_database(database)
 
 
 def _bootstrap_from_origin_or_mint(ctx: Ctx, env: dict) -> None:
@@ -982,7 +1027,9 @@ def _partitioned_entry(ctx: Ctx):
     return entry
 
 
-def _bootstrap_stores(ctx: Ctx, entry, *, descriptor=None, legacy=None) -> None:
+def _bootstrap_stores(
+    ctx: Ctx, entry, *, descriptor=None, legacy=None, internal_present: bool | None = None
+) -> None:
     """Run the partitioned-store phases (store_bootstrap) in their one order: the internal
     store first — cloned from the hive's HQ descriptor through `_bootstrap_from_hq_remote`
     (credentials, seeding, redaction, registration) when one is declared and the store is
@@ -1004,6 +1051,7 @@ def _bootstrap_stores(ctx: Ctx, entry, *, descriptor=None, legacy=None) -> None:
         phases = store_bootstrap.execute_bootstrap(
             entry,
             legacy=legacy,
+            internal_present=internal_present,
             clone_internal=clone_internal,
             register_public=lambda phase, url: _register_public_remote(ctx, entry, phase, url),
         )
@@ -1099,9 +1147,13 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
     server_env = dict(env, BEADS_DOLT_SHARED_SERVER="1")
     if not _seed_requested(ctx):
         typer.echo(f"• beads: cloning full history from the HQ remote {shown}")
+        scaffold = _internal_store_missing(ctx, descriptor)  # BEFORE the stamp writes metadata
         database = _stamp_clone_identity(ctx)
         _start_shared_server_for_clone(ctx)
-        cloned = eng.clone_remote(ctx.base, descriptor.url, env=server_env, extra_env=creds.env)
+        extra = {"tracked_scaffold": True} if scaffold else {}
+        cloned = eng.clone_remote(
+            ctx.base, descriptor.url, env=server_env, extra_env=creds.env, **extra
+        )
         if cloned.returncode:
             tail = (getattr(cloned, "stderr", "") or "").strip().splitlines()
             reason = (tail[-1] if tail else f"exit {cloned.returncode}").replace(
@@ -1115,7 +1167,14 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
                 "seed it from a fresh store",
                 cleanup=True,
             )
-        if database:  # recorded, never re-derived (bh-g5ujg); bd's bootstrap drops the key
+        if scaffold:
+            # The team's committed scaffolding stays authoritative: bd re-serialises
+            # metadata.json (key order, project_id) and the engine's one-call hint touches
+            # config.yaml, which would leave the tracked tree dirty. The database name needs no
+            # `dolt_server_database` key here: a server-mode hive resolves it from the tracked
+            # `dolt_database` (store_locator.server_database, grandfathered).
+            hive.restore_tracked_beads(ctx.base)
+        elif database:  # recorded, never re-derived (bh-g5ujg); bd's bootstrap drops the key
             store_locator.ensure_server_database_persisted(ctx.base, database)
         _exclude_clone_footprint(ctx)
         if descriptor.name != "origin":
@@ -1240,13 +1299,19 @@ def _stamp_clone_identity(ctx: Ctx) -> str | None:
     clone then keeps bd's own default)."""
     from . import hub_bulk
 
+    recorded = store_locator._read_metadata(ctx.base)
+    if recorded.get("dolt_mode") == "server" and recorded.get("dolt_database"):
+        return str(recorded["dolt_database"])  # a checked-out scaffold names its own database
     database = store_locator.sanitize_database_name(ctx.prefix or "")
     if not database or database in hub_bulk.GENERIC_DATABASE_NAMES:
         return None
     beads = ctx.base / ".beads"
     beads.mkdir(exist_ok=True)
-    stamp = {"dolt_database": database, "dolt_mode": "server"}
-    (beads / "metadata.json").write_text(json.dumps(stamp, indent=2, sort_keys=True) + "\n")
+    path = beads / "metadata.json"
+    current = store_locator._read_metadata(ctx.base)  # a tracked file keeps its other keys
+    stamp = dict(current, dolt_database=database, dolt_mode="server")
+    if stamp != current or not path.is_file():  # unchanged tracked metadata stays byte-identical
+        path.write_text(json.dumps(stamp, indent=2, sort_keys=True) + "\n")
     return database
 
 
