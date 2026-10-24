@@ -699,6 +699,37 @@ routing rule bh uses instead is in
 Worked example (the operator-approved bh profiles) and the per-field rollback table:
 [ATTEST-KEYS.md](ATTEST-KEYS.md#gate-settings-reference).
 
+## `work.attest.version_bump` — carry the parent's verdicts through a version-only bump
+
+A release bump commit changes only the changelog plus the bh version value in `pyproject.toml`,
+`uv.lock` and `server.json`, yet every behaviour key selects those files. This opt-in policy lets
+the bump reuse the parent's verdicts for the keys you name. Unlike `work.attest.trivial` (a policy
+skip that leaves the revision not fully attested), a carry is evidence: it is written to the
+ledger as a **carried** verdict (kind `carried`, `source_tree` = the parent tree, and the full
+receipt including the judge record), and `attested_green` and `release` accept it like any other
+carried key. Keys not named still run (unit, docs and packages observe the version string).
+
+| Key | Default | Values | Effect |
+|---|---|---|---|
+| `work.attest.version_bump.enabled` | `false` | bool, per hive or global | Master switch. Rollback: `false`. |
+| `work.attest.version_bump.keys` | `[]` | list of key names | Behaviour keys whose parent verdict is carried (e.g. `integration`, `stateful`, `demos`, `architecture-contracts`, `root-composition`). Empty disables the policy. |
+| `work.attest.version_bump.paths` | `CHANGELOG.md`, `pyproject.toml`, `uv.lock`, `server.json` | fnmatch globs | The path judge: every changed path must match. |
+
+Two judges must agree (the path globs AND a content judge that parses old/new file content:
+`[project].version` only; the root package `version` in `uv.lock` only; `version` fields only in
+`server.json`; any change to `CHANGELOG.md`), HEAD must have exactly one parent whose tree is the
+base, and each carried key needs a qualifying green run at that parent tree. Anything else (a
+dependency change, an extra or edited file, unparsable content, a merge commit, a missing or red
+parent verdict) takes the normal route. Invalid config degrades to off.
+
+To enable it on a hive (operator decision), in the hive's `work.attest` config:
+
+```toml
+[work.attest.version_bump]
+enabled = true
+keys = ["integration", "stateful", "demos", "architecture-contracts", "root-composition"]
+```
+
 ## `work.attest.drift_check` — runtime catalog drift guard
 
 HQ `work.attest.keys` is the single catalog source; the drift check guards it against the repo's

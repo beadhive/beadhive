@@ -533,6 +533,106 @@ def semantic_selection(attest, repo: str, base_rev: str, head_rev: str, keys: Se
         return None, record
 
 
+def _git_out(repo: str, *args: str) -> str | None:
+    """stdout of ``git -C repo args`` or ``None`` on any failure (doubt, never a guess)."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, *args], capture_output=True, text=True, check=False, timeout=60
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def version_bump_carry(
+    attest,
+    repo: str,
+    head_rev: str,
+    receipt,
+    keys: Sequence,
+    *,
+    parent_green=None,
+):
+    """``(receipt, record)`` -- the receipt with a version-only bump's behaviour keys moved to
+    *unaffected* so the existing receipt carry path (``carry_key_verdict``) transfers the parent's
+    green verdicts, recorded as carried with the parent tree and this judge's record.
+
+    Two independent judges must agree (configured path globs AND the parsing content judge,
+    ``version_bump_judge``), HEAD must have exactly one parent whose tree is the receipt's base,
+    and each carried key needs a green verdict of its own at the parent (``parent_green(key)``).
+    Everything else -- a fallback receipt, any doubt, any git failure -- returns the receipt
+    unchanged: the normal route, which only ever runs more.
+    """
+    from . import version_bump_judge as judge
+
+    policy = getattr(attest, "version_bump", None)
+    if policy is None or not policy.enabled or not policy.keys or receipt is None:
+        return receipt, {"applied": False}
+    if receipt.fallback_reason or not receipt.base_tree or receipt.base_tree == receipt.head_tree:
+        return receipt, {"applied": False}
+    line = _git_out(repo, "rev-list", "--parents", "-n", "1", head_rev)
+    parents = line.split()[1:] if line else []
+    parent_tree = ""
+    if len(parents) == 1:
+        parent_tree = (
+            _git_out(repo, "rev-parse", "--verify", f"{parents[0]}^{{tree}}") or ""
+        ).strip()
+
+    def read(paths):
+        out = {}
+        for path in paths:
+            pair = []
+            for rev in (parents[0], head_rev):
+                text = _git_out(repo, "show", f"{rev}:{path}")
+                pair.append(text)
+            out[path] = (pair[0], pair[1])
+        return out
+
+    carry, record = judge.decide(
+        policy,
+        receipt.changed_paths,
+        read,
+        parents=parents,
+        base_tree=receipt.base_tree,
+        parent_tree=parent_tree,
+    )
+    if not carry:
+        return receipt, record
+    wanted = set(policy.keys)
+    eligible = [
+        key.name
+        for key in keys
+        if key.name in wanted
+        and key.name in receipt.invalidated_keys
+        and (parent_green is None or parent_green(key))
+    ]
+    if not eligible:
+        record.update(applied=False, reason="no named key has a green parent verdict")
+        return receipt, record
+    from dataclasses import replace
+
+    from .modules.work.domain.impact import KeyEvidence
+
+    record.update(
+        carried_keys=sorted(eligible),
+        original_backend=receipt.backend,
+        original_backend_version=receipt.backend_version,
+    )
+    evidence = dict(receipt.evidence)
+    for name in eligible:
+        evidence[name] = KeyEvidence("version-bump")
+    rewritten = replace(
+        receipt,
+        backend="version-bump",
+        backend_version="1",
+        invalidated_keys=tuple(n for n in receipt.invalidated_keys if n not in eligible),
+        unaffected_keys=(*receipt.unaffected_keys, *eligible),
+        evidence=evidence,
+        judge=record,
+    )
+    return rewritten, record
+
+
 def _root_receipt_doubt(root_receipt, root, head_tree: str) -> str:
     """Why a root-to-head receipt cannot carry anything, or ``""`` when it may.
 
@@ -814,6 +914,28 @@ def _run(
 
         resolver = NativeFullResolver(GitTreeDiff())
     receipt = receipt_override or resolver.resolve(repo, base_rev, head_rev, active_keys)
+    if receipt_override is None and not full:
+
+        def _parent_green(key) -> bool:
+            try:
+                verdict = validation_ledger.key_verdict(entry, base_rev, key, cfg=cfg)
+            except (KeyError, OSError, ValueError):
+                return False
+            return verdict.state == validation_ledger.KeyVerdictState.CURRENT and (
+                validation_ledger.is_qualifying_green(verdict.record or {})
+            )
+
+        receipt, bump_record = version_bump_carry(
+            attest, repo, head_rev, receipt, active_keys, parent_green=_parent_green
+        )
+        if bump_record.get("applied"):
+            typer.echo(
+                "  · version-bump judge: carrying "
+                f"{', '.join(bump_record['carried_keys'])} from parent tree "
+                f"{str(bump_record['parent_tree'])[:12]} (path+content judges agree)"
+            )
+        elif bump_record.get("reason") and bump_record.get("path_verdict") == TRIVIAL_YES:
+            typer.echo(f"  · version-bump judge: not applied — {bump_record['reason']}")
     if receipt.fallback_reason:
         if attest.impact.on_unresolved == "strict":
             error_unresolved_impact(receipt.fallback_reason)

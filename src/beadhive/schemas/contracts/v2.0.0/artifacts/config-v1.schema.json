@@ -99,6 +99,10 @@
         "trivial": {
           "$ref": "#/$defs/AttestTrivialConfig",
           "description": "Policy short-circuit for trivially non-behavioral changes."
+        },
+        "version_bump": {
+          "$ref": "#/$defs/AttestVersionBumpConfig",
+          "description": "Carry the parent's verdicts through a content-checked version-only bump."
         }
       },
       "title": "AttestConfig",
@@ -327,6 +331,36 @@
         }
       },
       "title": "AttestTrivialConfig",
+      "type": "object"
+    },
+    "AttestVersionBumpConfig": {
+      "additionalProperties": false,
+      "description": "CARRY the parent's behaviour-key verdicts through a version-only release bump.\n\nUnlike ``trivial`` (a policy skip that leaves the revision not fully attested), this is\nevidence: when HEAD differs from its single, attested-green parent ONLY by a version bump\n(two judges must agree: these path globs AND a content judge that parses the diff), the\nnamed keys are carried from the parent tree and recorded as carried, with the parent tree\nand the judge record in the receipt. Every other key runs normally.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Whether a version-only bump carries the parent's verdicts. Off by default: a hive must opt in.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "keys": {
+          "description": "Key names whose parent verdict is carried (the behaviour keys, e.g. integration, stateful, demos, architecture-contracts, root-composition). Keys not named run normally. An empty list disables the policy.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "paths": {
+          "description": "fnmatch globs; EVERY changed path must match one (path judge). The content judge additionally requires the diff to be a version bump only.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        }
+      },
+      "title": "AttestVersionBumpConfig",
       "type": "object"
     },
     "BackupConfig": {

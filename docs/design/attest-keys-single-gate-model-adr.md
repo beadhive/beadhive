@@ -134,6 +134,16 @@ profile wins for a merge onto main, else `merge`.
 Trivial and semantic selection keep their existing opt-in seams inside step 4. Keys they skip
 remain unproven, so they can never satisfy the aggregate predicate.
 
+**Version-bump carry (bh-d21ng).** A third, opt-in seam sits after impact resolution and is
+evidence, not policy: when two judges agree (path globs and a content judge that parses the diff:
+only `[project].version`, the `uv.lock` root package version, `server.json` version fields and the
+changelog differ) on a single-parent HEAD whose parent tree is the receipt base, the configured
+behaviour keys are moved to *unaffected* in a rewritten receipt (`backend: version-bump`, the judge
+record inside the digest). The existing `carry_key_verdict` then transfers the parent's green
+verdict, so the ledger records `carried` with `source_tree` and the judge record, never a fresh
+run. A key without a qualifying green parent verdict, or any doubt, runs normally. Config:
+`work.attest.version_bump.{enabled,keys,paths}` (off by default; see CONFIGURATION.md).
+
 ### 3.4 The aggregate predicate
 
 ```text
