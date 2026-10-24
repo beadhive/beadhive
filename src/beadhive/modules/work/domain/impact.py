@@ -191,6 +191,9 @@ class ImpactReceipt:
     fallback_reason: str = ""
     elapsed_ms: int = 0
     schema: str = RECEIPT_SCHEMA
+    #: Optional record of a content judge that rewrote this receipt (e.g. the version-bump
+    #: judge). Part of the digest ONLY when set, so receipts without one keep their digests.
+    judge: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name in (
@@ -215,6 +218,12 @@ class ImpactReceipt:
         return not self.fallback_reason and key in self.unaffected_keys
 
     def _content(self) -> dict[str, Any]:
+        content = self._base_content()
+        if self.judge:
+            content["judge"] = json.loads(json.dumps(dict(self.judge), sort_keys=True))
+        return content
+
+    def _base_content(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
             "backend": self.backend,
@@ -265,6 +274,7 @@ class ImpactReceipt:
             },
             fallback_reason=str(data.get("fallback_reason", "")),
             elapsed_ms=int(data.get("elapsed_ms", 0)),
+            judge=dict(data.get("judge") or {}),
         )
         recorded = data.get("digest")
         if recorded is not None and recorded != receipt.digest:

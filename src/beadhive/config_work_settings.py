@@ -583,6 +583,7 @@ def attest_config(cfg, entry):
         AttestKeyConfig,
         AttestSemanticConfig,
         AttestTrivialConfig,
+        AttestVersionBumpConfig,
     )
 
     raw_keys = layered(cfg, entry, "work.attest", "keys", []) or []
@@ -610,6 +611,15 @@ def attest_config(cfg, entry):
         # An invalid trivial section degrades to OFF, which invalidates more, never less --
         # the same direction every other degradation in this function takes.
         trivial_cfg = AttestTrivialConfig()
+    bump = {}
+    for field in ("enabled", "paths", "keys"):
+        value = layered(cfg, entry, "work.attest.version_bump", field, None)
+        if value is not None:
+            bump[field] = value
+    try:
+        bump_cfg = AttestVersionBumpConfig(**bump)
+    except ValueError:
+        bump_cfg = AttestVersionBumpConfig()  # invalid degrades to OFF: invalidates more
     semantic = {}
     for field in ("enabled", "command", "timeout_seconds"):
         value = layered(cfg, entry, "work.attest.semantic", field, None)
@@ -631,7 +641,12 @@ def attest_config(cfg, entry):
         # is itself drift, so this only ever invalidates more.
         drift = {}
     return AttestConfig(
-        keys=keys, impact=impact_cfg, trivial=trivial_cfg, semantic=semantic_cfg, **drift
+        keys=keys,
+        impact=impact_cfg,
+        trivial=trivial_cfg,
+        version_bump=bump_cfg,
+        semantic=semantic_cfg,
+        **drift,
     )
 
 

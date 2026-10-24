@@ -741,6 +741,39 @@ class AttestTrivialConfig(_Section):
     )
 
 
+class AttestVersionBumpConfig(_Section):
+    """CARRY the parent's behaviour-key verdicts through a version-only release bump.
+
+    Unlike ``trivial`` (a policy skip that leaves the revision not fully attested), this is
+    evidence: when HEAD differs from its single, attested-green parent ONLY by a version bump
+    (two judges must agree: these path globs AND a content judge that parses the diff), the
+    named keys are carried from the parent tree and recorded as carried, with the parent tree
+    and the judge record in the receipt. Every other key runs normally."""
+
+    enabled: bool = Field(
+        False,
+        description=(
+            "Whether a version-only bump carries the parent's verdicts. Off by default: a hive "
+            "must opt in."
+        ),
+    )
+    paths: list[str] = Field(
+        default_factory=lambda: ["CHANGELOG.md", "pyproject.toml", "uv.lock", "server.json"],
+        description=(
+            "fnmatch globs; EVERY changed path must match one (path judge). The content judge "
+            "additionally requires the diff to be a version bump only."
+        ),
+    )
+    keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Key names whose parent verdict is carried (the behaviour keys, e.g. integration, "
+            "stateful, demos, architecture-contracts, root-composition). Keys not named run "
+            "normally. An empty list disables the policy."
+        ),
+    )
+
+
 class AttestSemanticConfig(_Section):
     """Optional fail-closed policy selector for attest keys.
 
@@ -769,6 +802,10 @@ class AttestConfig(_Section):
     trivial: AttestTrivialConfig = Field(
         default_factory=AttestTrivialConfig,
         description="Policy short-circuit for trivially non-behavioral changes.",
+    )
+    version_bump: AttestVersionBumpConfig = Field(
+        default_factory=AttestVersionBumpConfig,
+        description="Carry the parent's verdicts through a content-checked version-only bump.",
     )
     semantic: AttestSemanticConfig = Field(
         default_factory=AttestSemanticConfig,
@@ -3472,6 +3509,7 @@ __all__ = (
     "AttestImpactConfig",
     "AttestSemanticConfig",
     "AttestTrivialConfig",
+    "AttestVersionBumpConfig",
     "AttestKeyConfig",
     "BackupConfig",
     "BeadhiveConfig",
