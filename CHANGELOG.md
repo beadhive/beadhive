@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.29.5 (2026-10-24)
+
+### Fix
+
+- **onboard**: clone the internal store when tracked .beads/ has no database (bh-ky918)
+
 ## v0.29.4 (2026-10-23)
 
 ### Fix
