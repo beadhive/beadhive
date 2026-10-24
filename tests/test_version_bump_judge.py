@@ -288,3 +288,40 @@ def test_carried_ledger_record_names_parent_tree_and_judge(tmp_path, monkeypatch
     assert found.state == validation_ledger.KeyVerdictState.CARRIED
     assert found.record["source_tree"] == "parent"
     assert found.record["receipt"]["judge"]["kind"] == "version-bump"
+
+
+# ---- real bump shapes (0.29.5 -> 0.29.6): the launch arg pins beadhive==<version> ---------
+
+REAL = __import__("pathlib").Path(__file__).parent / "fixtures" / "version_bump_real"
+
+
+def real(name):
+    return {
+        "pyproject.toml": REAL.joinpath(f"pyproject.{name}.toml").read_text(),
+        "uv.lock": REAL.joinpath(f"uv.{name}.lock").read_text(),
+        "server.json": REAL.joinpath(f"server.{name}.json").read_text(),
+    }
+
+
+def test_real_bump_with_launch_pin_is_yes():
+    old, new = real("old"), real("new")
+    assert "beadhive==" in new["server.json"]
+    assert judge.judge_version_bump(diff(old, new))[0] == judge.YES
+
+
+def test_pin_to_a_different_version_is_no():
+    old, new = real("old"), real("new")
+    new["server.json"] = new["server.json"].replace("beadhive==0.29.6", "beadhive==0.29.9")
+    assert judge.judge_version_bump(diff(old, new))[0] == judge.NO
+
+
+def test_pin_of_a_different_package_is_no():
+    old, new = real("old"), real("new")
+    new["server.json"] = new["server.json"].replace("beadhive==0.29.6", "other==0.29.6")
+    assert judge.judge_version_bump(diff(old, new))[0] == judge.NO
+
+
+def test_pin_that_did_not_move_is_no():
+    old, new = real("old"), real("new")
+    new["server.json"] = new["server.json"].replace("beadhive==0.29.6", "beadhive==0.29.5")
+    assert judge.judge_version_bump(diff(old, new))[0] == judge.NO

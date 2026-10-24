@@ -92,7 +92,27 @@ def _strip_lock_versions(doc: dict[str, Any], name: str) -> tuple[dict[str, Any]
     return doc, versions
 
 
-def _strip_server_versions(text: str | None) -> tuple[dict[str, Any], list[Any]]:
+_PIN = "@pin@"
+
+
+def _mask_pins(node: Any, name: str, pins: list[str]) -> Any:
+    """Replace every string exactly ``<name>==<ver>`` with a placeholder, collecting ``ver``."""
+    if isinstance(node, str):
+        prefix = f"{name}=="
+        if node.startswith(prefix) and len(node) > len(prefix):
+            pins.append(node[len(prefix) :])
+            return _PIN
+        return node
+    if isinstance(node, list):
+        return [_mask_pins(item, name, pins) for item in node]
+    if isinstance(node, dict):
+        return {k: _mask_pins(v, name, pins) for k, v in node.items()}
+    return node
+
+
+def _strip_server_versions(
+    text: str | None, name: str
+) -> tuple[dict[str, Any], list[Any], list[str]]:
     if text is None:
         raise _Unparsable("file added or deleted")
     try:
@@ -107,7 +127,8 @@ def _strip_server_versions(text: str | None) -> tuple[dict[str, Any], list[Any]]
         for pkg in packages:
             if isinstance(pkg, dict):
                 versions.append(pkg.pop("version", None))
-    return doc, versions
+    pins: list[str] = []
+    return _mask_pins(doc, name, pins), versions, pins
 
 
 def judge_version_bump(changes: Mapping[str, Change]) -> tuple[str, str, bool]:
@@ -147,10 +168,17 @@ def judge_version_bump(changes: Mapping[str, Change]) -> tuple[str, str, bool]:
             bumped = bumped or old_vs != new_vs
         server = changes.get(SERVER_JSON)
         if server is not None:
-            old_stripped, old_vs = _strip_server_versions(server[0])
-            new_stripped, new_vs = _strip_server_versions(server[1])
+            if old_py is None:
+                return UNKNOWN, "server.json changed without pyproject.toml", False
+            name = _project_name(old_py, new_py)
+            old_stripped, old_vs, old_pins = _strip_server_versions(server[0], name)
+            new_stripped, new_vs, new_pins = _strip_server_versions(server[1], name)
             if old_stripped != new_stripped:
                 return NO, "server.json changes more than its version fields", False
+            # The launch pin must move with the version fields: old pin == old top-level
+            # version and new pin == new top-level version, nothing else.
+            if set(old_pins) - {old_vs[0]} or set(new_pins) - {new_vs[0]}:
+                return NO, "server.json pins a version other than the bumped one", False
             bumped = bumped or old_vs != new_vs
     except _Unparsable as exc:
         return UNKNOWN, f"unparsable: {exc}", False
