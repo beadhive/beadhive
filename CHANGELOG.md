@@ -13,6 +13,16 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.30.0 (2026-10-24)
+
+### Feat
+
+- **attest**: carry parent verdicts through a content-judged version-only bump (bh-d21ng)
+
+### Fix
+
+- **attest**: accept the server.json launch pin moving with the version (bh-d21ng)
+
 ## v0.29.6 (2026-10-24)
 
 ### Fix
