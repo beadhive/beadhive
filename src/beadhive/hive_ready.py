@@ -344,7 +344,13 @@ def _internal_store_check(entry, root: Path) -> Check | None:
     starts a server); None (not applicable) for embedded/unknown mode, a missing `.beads/`
     (already reported by `beads initialized`) or a remote bd server whose data dir is not local.
     The remediation is re-running onboarding, never `bd bootstrap`: with no local store bd's
-    tip plans a clone of the code origin's refs/dolt/data, a stale or public corpus."""
+    tip plans a clone of the code origin's refs/dolt/data, a stale or public corpus.
+
+    Also None unless the hive entry declares an HQ `dolt_remote` descriptor (bh-8stik): the same
+    gate as onboard's `_internal_store_missing`. Without one there is nothing to clone from, so a
+    personal/zero-footprint hive whose database lives elsewhere must not fail `hives-ready`."""
+    if not (entry or {}).get("dolt_remote"):
+        return None
     if not (root / ".beads").is_dir() or store_locator.dolt_mode(root) != "server":
         return None
     if os.environ.get("BEADS_DOLT_SERVER_HOST", "") not in {"", "127.0.0.1", "localhost", "::1"}:
