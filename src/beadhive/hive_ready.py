@@ -8,6 +8,7 @@ enabled (otherwise the line is N/A, never probed).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import NamedTuple
 
@@ -334,6 +335,34 @@ def _validate_cmd_check(cfg, entry, root: Path) -> Check:
     return Check("validate_cmd", False, "ok", detail)
 
 
+def _internal_store_check(entry, root: Path) -> Check | None:
+    """Required: a server-mode hive's internal database must EXIST (bh-ky918).
+
+    A furnished hive tracks `.beads/` scaffolding, so `.beads/` present proves nothing: on a new
+    host the database may never have been cloned, and every bd verb then fails with
+    `database not found`. Pure filesystem probe of the shared server's data directory (never
+    starts a server); None (not applicable) for embedded/unknown mode, a missing `.beads/`
+    (already reported by `beads initialized`) or a remote bd server whose data dir is not local.
+    The remediation is re-running onboarding, never `bd bootstrap`: with no local store bd's
+    tip plans a clone of the code origin's refs/dolt/data, a stale or public corpus."""
+    if not (root / ".beads").is_dir() or store_locator.dolt_mode(root) != "server":
+        return None
+    if os.environ.get("BEADS_DOLT_SERVER_HOST", "") not in {"", "127.0.0.1", "localhost", "::1"}:
+        return None
+    prefix = str((entry or {}).get("prefix") or "")
+    database = store_locator.server_database(root, prefix)
+    if not database or store_locator.has_direct_server_database(database):
+        return None
+    return Check(
+        "internal store",
+        True,
+        "missing",
+        f"database {database!r} not found on the shared Dolt server — re-run "
+        f"`{config.BINARY_ALIAS} hive onboard` to clone it from the HQ remote "
+        "(do NOT run `bd bootstrap`: it targets the code origin's refs/dolt/data)",
+    )
+
+
 def _dolt_server_check(root: Path) -> Check:
     """Store-engine liveness (bh-areg.3): embedded mode has no liveness question at all (the
     engine is in-process) — ``na`` there, matching observaloop's disabled-integration
@@ -487,6 +516,9 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
             f"missing — `{config.BINARY_ALIAS} hive init`",
         )
     )
+    store_check = _internal_store_check(entry, root)
+    if store_check is not None:
+        checks.append(store_check)
     # Escalation parent: every host needs a kind=hq hive so `bh escalate` always has a
     # target — 'escalation parent: none' is on track to become invalid config (bh-ufne).
     hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)

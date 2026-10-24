@@ -874,6 +874,22 @@ def _ensure_bd_backup_gitignored(base=None) -> bool:
     return True
 
 
+def _tracked_beads_files(base: Path) -> bool:
+    res = run(["git", "ls-files", "--", ".beads"], cwd=str(base), check=False, capture=True)
+    return res.returncode == 0 and bool((res.stdout or "").strip())
+
+
+def restore_tracked_beads(base=None) -> None:
+    """Put every TRACKED `.beads/` file back to its committed bytes (untracked files stay).
+
+    For the one caller that cloned a store under a furnished hive's checked-out scaffolding
+    (bh-ky918): bd re-serialises tracked `metadata.json` and the clone hint touches
+    `config.yaml`, and the committed copies stay authoritative."""
+    base = _base(base)
+    if _tracked_beads_files(base):
+        run(["git", "checkout", "--", ".beads"], cwd=str(base), check=False, capture=True)
+
+
 def cleanup_failed_bd_init(base=None) -> None:
     """Undo whatever a FAILED, fresh `bd init`/`bd bootstrap` left behind, so a retry starts
     genuinely clean instead of tripping over wreckage (bh-areg.7's own review finding: a
@@ -902,6 +918,12 @@ def cleanup_failed_bd_init(base=None) -> None:
     and a block appended to one that already existed)."""
     base = _base(base)
     beads_dir = base / ".beads"
+    if _tracked_beads_files(base):
+        # A furnished hive's checkout TRACKS `.beads/` scaffolding (bh-ky918): the precondition
+        # above does not hold for those files, so restore them and drop only untracked debris.
+        restore_tracked_beads(base)
+        run(["git", "clean", "-fdq", "--", ".beads"], cwd=str(base), check=False, capture=True)
+        return
     if beads_dir.exists():
         shutil.rmtree(beads_dir, ignore_errors=True)
     _relocate_bd_gitignore(base)
