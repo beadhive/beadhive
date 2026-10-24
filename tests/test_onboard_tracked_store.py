@@ -135,11 +135,23 @@ def test_failed_clone_restores_tracked_scaffold_and_keeps_it(tmp_path):
 
 # ---- hive ready ------------------------------------------------------------
 
+_ENTRY = {"prefix": "widget", "dolt_remote": {"name": "hq", "url": "file:///hq/widget"}}
+
+
+def test_hive_ready_is_not_applicable_without_an_hq_descriptor(host):
+    checkout, _ = host
+    _scaffold(checkout)
+    assert store_locator.dolt_mode(checkout) == "server"
+    assert hive_ready._internal_store_check({"prefix": "widget"}, checkout) is None
+    checks = hive_ready.scan({"managed_repos": []}, ("github", "acme", "widget"),
+                             {"prefix": "widget", "kind": "personal"}, checkout)  # fmt: skip
+    assert all(c.label != "internal store" for c in checks)
+
 
 def test_hive_ready_fails_when_the_server_database_is_missing(host):
     checkout, _ = host
     _scaffold(checkout)
-    check = hive_ready._internal_store_check({"prefix": "widget"}, checkout)
+    check = hive_ready._internal_store_check(_ENTRY, checkout)
     assert check is not None and check.required and check.state == "missing"
     assert "hive onboard" in check.detail
     assert "do NOT run `bd bootstrap`" in check.detail
@@ -149,15 +161,15 @@ def test_hive_ready_passes_when_the_database_exists(host):
     checkout, server = host
     _scaffold(checkout)
     _database(server)
-    assert hive_ready._internal_store_check({"prefix": "widget"}, checkout) is None
+    assert hive_ready._internal_store_check(_ENTRY, checkout) is None
 
 
 def test_hive_ready_is_not_applicable_for_embedded_or_unknown_mode(host):
     checkout, _ = host
     _scaffold(checkout, dolt_mode="embedded", dolt_database="widget")
-    assert hive_ready._internal_store_check({"prefix": "widget"}, checkout) is None
+    assert hive_ready._internal_store_check(_ENTRY, checkout) is None
     (checkout / ".beads" / "metadata.json").unlink()
-    assert hive_ready._internal_store_check({"prefix": "widget"}, checkout) is None
+    assert hive_ready._internal_store_check(_ENTRY, checkout) is None
 
 
 def test_missing_store_reaches_the_scan_as_a_required_failure(host):
@@ -165,6 +177,6 @@ def test_missing_store_reaches_the_scan_as_a_required_failure(host):
     _scaffold(checkout)
     assert store_locator.dolt_mode(checkout) == "server"
     checks = hive_ready.scan({"managed_repos": []}, ("github", "acme", "widget"),
-                             {"prefix": "widget", "kind": "personal"}, checkout)  # fmt: skip
+                             {**_ENTRY, "kind": "personal"}, checkout)  # fmt: skip
     line = next(c for c in checks if c.label == "internal store")
     assert line.required and line.state == "missing"
