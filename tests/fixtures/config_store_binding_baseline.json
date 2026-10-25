@@ -1,0 +1,1600 @@
+{
+  "combinations": {
+    "[\"local\", \"none\", \"github-issues\", null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"none\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"none\", null, null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"none\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"pull-only\", \"github-issues\", null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='pull-only' is invalid with authority='local' (allowed: none|push-pull); stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"pull-only\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='pull-only' is invalid with authority='local' (allowed: none|push-pull); stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"pull-only\", null, null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='pull-only' is invalid with authority='local' (allowed: none|push-pull); stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"pull-only\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='pull-only' is invalid with authority='local' (allowed: none|push-pull); stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"push-pull\", \"github-issues\", null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"push-pull\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"push-pull\", null, null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", \"push-pull\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", null, \"github-issues\", null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", null, \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", null, null, null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"local\", null, null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: authority must be 'remote' (GitHub is authoritative for the projection; sync is pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"none\", \"github-issues\", null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "authority": "remote",
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "none"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[\"remote\", \"none\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"none\", null, null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "authority": "remote",
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "none"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[\"remote\", \"none\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"pull-only\", \"github-issues\", null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "authority": "remote",
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "pull-only"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[\"remote\", \"pull-only\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"pull-only\", null, null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "authority": "remote",
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "pull-only"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[\"remote\", \"pull-only\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"push-pull\", \"github-issues\", null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"push-pull\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"push-pull\", null, null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", \"push-pull\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", null, \"github-issues\", null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "authority": "remote",
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[\"remote\", null, \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[\"remote\", null, null, null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "authority": "remote",
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[\"remote\", null, null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"none\", \"github-issues\", null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "none"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[null, \"none\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"none\", null, null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "none"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[null, \"none\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"pull-only\", \"github-issues\", null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "pull-only"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[null, \"pull-only\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"pull-only\", null, null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues",
+              "sync": "pull-only"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[null, \"pull-only\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"push-pull\", \"github-issues\", null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"push-pull\", \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"push-pull\", null, null]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, \"push-pull\", null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only); stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, null, \"github-issues\", null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[null, null, \"github-issues\", true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "[null, null, null, null]": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "[null, null, null, true]": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: dispatch cannot be true — a public store is never operational"
+        }
+      ],
+      "top_level_keys": null
+    }
+  },
+  "corpus": {
+    "config.example.yaml": {
+      "managed_repos": [],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "docs/CONFIGURATION.md stores example": {
+      "managed_repos": [
+        {
+          "dolt_remote": {
+            "credentials": "",
+            "name": "beadhive-private",
+            "url": "s3://<bucket>/internal/beadhive"
+          },
+          "org": "beadhive",
+          "prefix": "bh",
+          "provider": "github",
+          "repo": "beadhive",
+          "stores": {
+            "internal": {
+              "remote": "beadhive-private"
+            },
+            "public": {
+              "path": "~/.beadhive/stores/github/beadhive/beadhive/public",
+              "prefix": "bhpub",
+              "remote": "git-origin",
+              "source": "github-issues"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "fork + host sections": {
+      "managed_repos": [
+        {
+          "kind": "fork",
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "upstream": "up/widget",
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "internal-only stores": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "invalid: internal source": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.internal: source is only valid on a public store"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "invalid: public sync push-pull": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "`managed_repos.0.stores`: Value error, stores.public: sync='push-pull' is invalid with authority='remote' (allowed: none|pull-only)"
+        }
+      ],
+      "top_level_keys": null
+    },
+    "invalid: unknown key": {
+      "managed_repos": null,
+      "problems": [
+        {
+          "level": "error",
+          "message": "unknown config key `plugins_x` — not part of schema v1."
+        }
+      ],
+      "top_level_keys": null
+    },
+    "legacy hive without stores": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "public source github-issues": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin",
+              "source": "github-issues"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "public store without source": {
+      "managed_repos": [
+        {
+          "org": "acme",
+          "prefix": "wid",
+          "provider": "github",
+          "repo": "widget",
+          "stores": {
+            "internal": {
+              "remote": "widget-private"
+            },
+            "public": {
+              "path": "/stores/widget-public",
+              "prefix": "widpub",
+              "remote": "git-origin"
+            }
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    },
+    "tests/fixture_config.yaml": {
+      "managed_repos": [
+        {
+          "kind": "org-native",
+          "org": "agentguides",
+          "prefix": "ag-infra",
+          "provider": "github",
+          "repo": "infra",
+          "worktree_init": []
+        },
+        {
+          "kind": "personal",
+          "org": "briancripe",
+          "prefix": "workspace",
+          "provider": "github",
+          "repo": "workspace",
+          "work": {
+            "always_run": "",
+            "attest": {
+              "drift_check_timeout_seconds": 60.0,
+              "impact": {
+                "backend": "native-full",
+                "on_unresolved": "fallback",
+                "timeout_seconds": 300.0
+              },
+              "keys": [],
+              "semantic": {
+                "command": "jevwrap select",
+                "enabled": false,
+                "timeout_seconds": 30.0
+              },
+              "trivial": {
+                "enabled": false,
+                "keys": [],
+                "paths": []
+              },
+              "version_bump": {
+                "enabled": false,
+                "keys": [],
+                "paths": [
+                  "CHANGELOG.md",
+                  "pyproject.toml",
+                  "uv.lock",
+                  "server.json"
+                ]
+              }
+            },
+            "batch_max_size": 5,
+            "beads": {
+              "explicit_routing": false,
+              "route": "api"
+            },
+            "conflict": {
+              "union_globs": []
+            },
+            "demo_cmd": "",
+            "dispatch": {
+              "auto_budget": 8,
+              "envelope_grace": 3.0,
+              "max_action_retries": 2,
+              "max_beads_per_session": 8,
+              "max_concurrency": 2,
+              "max_depth": 2,
+              "max_run_seconds": 1800.0,
+              "mode": "fanout",
+              "poll_interval": 5.0,
+              "review_mode": "self",
+              "reviewer_cross_seat": "hard",
+              "seat_bundle": "",
+              "seat_command": "",
+              "terminate_grace": 5.0
+            },
+            "enforce_signing": false,
+            "gate": {
+              "carry": {
+                "max_roots": 3
+              },
+              "model": "legacy",
+              "profiles": {},
+              "push": {
+                "accept_attested_green": false
+              },
+              "subsets": {}
+            },
+            "identity": {
+              "authority": "local",
+              "crews": {},
+              "devs": {},
+              "name": "crew/workspace",
+              "sign": false
+            },
+            "integration_branch": "main",
+            "junk_globs": [
+              ".beads/backup/**",
+              ".beads/backup.*/**",
+              "node_modules/**",
+              ".venv/**",
+              "__pycache__/**",
+              "*.pyc",
+              ".pytest_cache/**",
+              ".ruff_cache/**",
+              "dist/**",
+              "build/**",
+              ".mypy_cache/**"
+            ],
+            "landing": "local",
+            "ledger_ttl": "P1D",
+            "max_commits": 10,
+            "precious_globs": [
+              ".env",
+              ".env.*",
+              "*.db",
+              "*.sqlite*",
+              "*.duckdb",
+              "dumps/**",
+              "data/**",
+              "*.dump",
+              "*.sql",
+              "downloads/**",
+              "outputs/**",
+              "*.pem",
+              "*.key"
+            ],
+            "precious_min_bytes": 1048576,
+            "push_remote": "origin",
+            "review_gate": "gh:pr",
+            "routing": {
+              "policy": "loose",
+              "tiers": []
+            },
+            "runtime": "local",
+            "validate_cmd": "just check",
+            "validate_overrides": {},
+            "validate_subset": "",
+            "validation": "relaxed",
+            "validation_artifact_root": "",
+            "validation_broker": {
+              "budget": {
+                "cpu": 0.0,
+                "memory": "100%",
+                "pools": {
+                  "dolt-servers": 28
+                }
+              },
+              "engine": "slots",
+              "floor": {
+                "cpu": 0.0,
+                "memory": "4G",
+                "memory_percent": 8.5
+              },
+              "packer": {
+                "aging": 4.0,
+                "easy": true,
+                "group_major": false,
+                "headroom_cpu": 8.0,
+                "laggard_first": true,
+                "laggard_flex": true
+              },
+              "repoll_seconds": 1.0,
+              "roots": [],
+              "setup": [
+                "uv sync --all-packages --inexact"
+              ]
+            },
+            "validation_bypass": false,
+            "validation_memory": {
+              "admission_floor": "10%",
+              "admission_poll_seconds": 5.0,
+              "admission_timeout_seconds": 1800.0,
+              "enabled": true,
+              "memory_high": "50%",
+              "memory_max": "60%",
+              "memory_swap_max": "0"
+            },
+            "validation_priority": {
+              "enabled": true,
+              "ionice_class": 2,
+              "ionice_priority": 7,
+              "nice": 10
+            },
+            "validation_protocol": "none",
+            "validation_slots": 1
+          },
+          "worktree_init": []
+        }
+      ],
+      "problems": [
+        {
+          "level": "error",
+          "message": "schema_version is not set — this config predates schema versioning; add `schema_version: 1` (the current schema)."
+        }
+      ],
+      "top_level_keys": [
+        "alerts",
+        "archive",
+        "backup",
+        "claude",
+        "delimiter",
+        "dimensions",
+        "dolt",
+        "exclude",
+        "git_workspace",
+        "harness",
+        "herdr",
+        "hitch",
+        "host",
+        "hq",
+        "log",
+        "managed_repos",
+        "metadata",
+        "observaloop",
+        "orca",
+        "orgs",
+        "otel",
+        "passthrough",
+        "providers",
+        "release",
+        "repowise",
+        "schema_version",
+        "work",
+        "worktrees"
+      ]
+    }
+  },
+  "recorded_at": "baee1df8 (main, before bh-w22e8)"
+}
