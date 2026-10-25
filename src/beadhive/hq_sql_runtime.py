@@ -470,11 +470,13 @@ class SqlRuntimeAuthority:
         floor taken before an HQ was first provisioned for session rows stays connected
         (bh-lso8w). After it, a transition may only add immutable session/evidence
         timestamp-trigger pairs. Incarnation rows are ignored by Dolt; their triggers are
-        committed separately before the reviewed authority cutover. Neither the authority,
-        registry, an existing policy or ignore rule, nor existing schema may change at the
-        same authority sequence. Additions cannot target an existing registered or authorized
-        incarnation; canonical unused pairs are inert structure, not an authorization proof.
-        Commit messages and working-table contents supply no part of this proof.
+        committed separately before the reviewed authority cutover. A pair's epoch is either
+        an existing frame's next epoch (``epoch_floor + 1``) or, for a new frame's first
+        incarnation, epoch 0 (bh-a0wem). Neither the authority, registry, an existing policy
+        or ignore rule, nor existing schema may change at the same authority sequence.
+        Additions cannot target an existing registered or authorized incarnation; canonical
+        unused pairs are inert structure, not an authorization proof. Commit messages and
+        working-table contents supply no part of this proof.
 
         A refusal names the offending commit, the reason and the tables changed since the
         floor, never row contents, so an operator can recover natively
@@ -496,6 +498,13 @@ class SqlRuntimeAuthority:
             ):
                 authority = ObservationAuthority(**existing["authority"])
                 reserved.add((sql_principal(authority), authority.epoch))
+        # A new frame has no entry until its first admission, which treats the missing floor
+        # as -1 and grants epoch 0, while its triggers are committed before that cutover
+        # (bh-a0wem). A principal hashes one incarnation's authority, so it cannot be tied to
+        # a frame before the record exists: epoch 0 is allowed only for a principal that no
+        # current or archived record names. The registry check below still refuses a
+        # registered one.
+        known = frozenset(principal for principal, _epoch in reserved)
         # Check every first-parent transition, so an unsafe edit followed by its
         # reversal cannot hide behind a safe endpoint diff. Merges and an excessive
         # unobserved provisioning history refuse rather than widen the exception.
@@ -509,7 +518,7 @@ class SqlRuntimeAuthority:
             parent = parents[0][0]
             try:
                 SqlRuntimeAuthority._check_provisioning_commit(
-                    sql, parent, head, epochs=epochs, reserved=reserved
+                    sql, parent, head, epochs=epochs, reserved=reserved, known=known
                 )
             except _ProvisioningRefusal as refusal:
                 raise self._amended(
@@ -590,7 +599,7 @@ class SqlRuntimeAuthority:
         return True
 
     @staticmethod
-    def _check_provisioning_commit(cursor, previous_head, head, *, epochs, reserved):
+    def _check_provisioning_commit(cursor, previous_head, head, *, epochs, reserved, known):
         from .hq_sql_session import evidence_ddl, session_ddl
 
         sql = runtime_statements(cursor)
@@ -669,12 +678,13 @@ class SqlRuntimeAuthority:
             principal, epoch_text, route = match.groups()
             epoch = int(epoch_text)
             if (
-                epoch not in epochs
+                (epoch not in epochs and (epoch != 0 or principal in known))
                 or not re.fullmatch(r"frame_[0-9a-f]{20}", principal)
                 or (principal, epoch) in reserved
             ):
                 raise _ProvisioningRefusal(
-                    "adds stamp triggers for an incarnation that is not an unauthorized next epoch"
+                    "adds stamp triggers for an incarnation that is not an unauthorized next or "
+                    "first (epoch 0) epoch"
                 )
             expected = (session_ddl if route == "session" else evidence_ddl)(principal, epoch)[1]
             if fragment != expected:
