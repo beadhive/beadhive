@@ -364,12 +364,19 @@ DEPS: tuple[Dep, ...] = (
         # was invisible on the one base this project ships and present on every other. Absent,
         # `bh work loop` died as a bare `ExceptionGroup` naming nothing at all.
         #
-        # `--version` deliberately, not `-V`: procps-ng accepts both, BusyBox `ps` accepts
-        # neither and exits non-zero — the right answer, because BusyBox `ps` also supports none
-        # of the `-o` selectors above yet would satisfy a bare `which` check.
+        # The probe is `ps -o pid= -p 1` — the `-o <field>= -p <pid>` shape the pid_start
+        # liveness probe above uses (`ps -o lstart= -p <pid>`) — rather than `--version`:
+        # `--version` is procps-ng-only. BSD `ps` (macOS) rejects it with `ps: illegal option`
+        # and exit 1, which `bh setup check` rendered as `✓ procps  (ps: illegal option -- -)`,
+        # a green row with the error as its version. This form exits 0 on procps-ng AND BSD;
+        # BusyBox `ps` (no `-o`/`-p`) exits non-zero, which `probe_one` now records as
+        # version=None — the row still reads found (presence is `which`), so a BusyBox host is
+        # not yet refused, only no longer shown a bogus version. pid 1 exists in every pid
+        # namespace; under a `hidepid=2` /proc mount the probe degrades the same way. (The
+        # "version" it yields is `1`; `ps` has no portable version string to offer.)
         name="procps",
         binary="ps",
-        version_cmd=("ps", "--version"),
+        version_cmd=("ps", "-o", "pid=", "-p", "1"),
         required=ALWAYS,
     ),
     # -- group: store-runtime (selector `dolt.backend`) ---------------------------

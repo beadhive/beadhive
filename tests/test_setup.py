@@ -233,8 +233,27 @@ def test_probe_one_found_but_version_cmd_fails(monkeypatch):
     )
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake)
     result = setup_mod.probe_one("dolt", "dolt", ["dolt", "version"])
-    # returncode != 0 but binary was found; version is parsed from combined output
-    assert result["found"] is True
+    # returncode != 0 but binary was found; a FAILED version command yields no version — its
+    # output is an error, and printing it after a green ✓ is how macOS showed
+    # `✓ procps  (ps: illegal option -- -)` for a probe that had actually failed.
+    assert result == {"found": True, "version": None}
+
+
+def test_probe_one_does_not_report_a_failed_probes_stderr_as_the_version(monkeypatch):
+    """The macOS shape: BSD `ps` rejects a GNU flag on stderr with exit 1. The binary IS present
+    (found=True) but nothing about that output is a version."""
+    import subprocess
+
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda _: "/bin/ps")
+    fake = subprocess.CompletedProcess(
+        args=["ps", "--version"],
+        returncode=1,
+        stdout="",
+        stderr="ps: illegal option -- -\nusage: ps [-AaCcEefhjlMmrSTvwXx] ...",
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake)
+    result = setup_mod.probe_one("procps", "ps", ["ps", "--version"])
+    assert result == {"found": True, "version": None}
 
 
 def test_probe_one_file_not_found_exception(monkeypatch):

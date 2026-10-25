@@ -272,3 +272,19 @@ def test_archive_dir_config_override_is_honored(world):
     assert dest.exists()
     assert not clone.exists()
     assert _is_registered() is True
+
+
+def test_reclaim_registry_line_names_the_verb_that_unregisters():
+    """`reclaim` stops at `registry: left untouched`; the verb an operator then reaches for
+    (`bh hive forget`) does not exist, and the fleet-wide unregister is `bh hive rm --confirm`.
+    Both renderers of that event — cli's (what `bh hive reclaim` prints) and retire's
+    (`reclaim_hive(render=True)`, the host-retire path) — name it."""
+    from types import SimpleNamespace
+
+    from beadhive import cli
+
+    result = SimpleNamespace(scope=SimpleNamespace(value="host"), dry_run=False)
+    event = SimpleNamespace(code="registry_retained", facts={"identity": "acme/infra"}, error=False)
+    for text in (cli._retire_event_text(result, event), retire._event_text(result, event)):
+        assert "acme/infra remains registered for the fleet" in text
+        assert "hive rm --confirm" in text
