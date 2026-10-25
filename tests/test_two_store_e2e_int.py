@@ -48,6 +48,7 @@ from beadhive import (
     store_target,
 )
 from beadhive.run import run
+from beadhive_plugins.credentials import ResolvedToken
 from harness.beads import embedded_env, skip_if_no_bd
 from harness.s3 import MotoS3, moto_s3  # noqa: F401 - pytest fixture
 from harness.world import free_port, git, reap_dolt_server
@@ -138,7 +139,7 @@ def github(monkeypatch):
 
 
 def _pull(entry):
-    return github_projection.project(entry, token_source=lambda _env: TOKEN)
+    return github_projection.project(entry, token_source=lambda: ResolvedToken(TOKEN, "injected"))
 
 
 # --------------------------------------------------------------------------------------------

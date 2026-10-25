@@ -21,10 +21,16 @@ from beadhive import bd as bd_mod
 from beadhive import cli, github_projection, guard, store_target
 from beadhive.github_projection import ProjectionError
 from beadhive.store_target import StoreMissing, StoreNotConfigured
+from beadhive_plugins.credentials import ResolvedToken
 
 FIXTURES = Path(__file__).parent / "fixtures" / "github_projection"
 TOKEN = "ghp_recordedFixtureTokenNeverReal"
 PULL = ["github", "sync", "--pull-only", "--prefer-github"]
+
+
+def _token_source(value):
+    """An injected zero-argument TokenSource (the shared port): fixed value, or None."""
+    return lambda: ResolvedToken(value, "injected") if value else None
 
 
 def _fixture(name: str) -> str:
@@ -101,7 +107,7 @@ def recorded(monkeypatch):
 
 
 def _project(ws, **kw):
-    kw.setdefault("token_source", lambda env: TOKEN)
+    kw.setdefault("token_source", _token_source(TOKEN))
     return github_projection.project(_entry(ws), **kw)
 
 
@@ -111,7 +117,7 @@ def _project(ws, **kw):
 def test_legacy_hive_is_refused_never_answered_from_its_one_store(ws, recorded):
     legacy = {k: v for k, v in _entry(ws).items() if k != "stores"}
     with pytest.raises(StoreNotConfigured):
-        github_projection.project(legacy, token_source=lambda env: TOKEN)
+        github_projection.project(legacy, token_source=_token_source(TOKEN))
     assert recorded.calls == []
 
 
@@ -119,13 +125,13 @@ def test_internal_only_hive_is_refused(ws, recorded):
     entry = _entry(ws)
     del entry["stores"]["public"]
     with pytest.raises(StoreNotConfigured, match="no public store"):
-        github_projection.project(entry, token_source=lambda env: TOKEN)
+        github_projection.project(entry, token_source=_token_source(TOKEN))
     assert recorded.calls == []
 
 
 def test_a_public_store_with_sync_none_is_not_projected(ws, recorded):
     with pytest.raises(ProjectionError, match="pull-only"):
-        github_projection.project(_entry(ws, sync="none"), token_source=lambda env: TOKEN)
+        github_projection.project(_entry(ws, sync="none"), token_source=_token_source(TOKEN))
     assert recorded.calls == []
 
 
@@ -133,7 +139,7 @@ def test_a_public_store_without_the_github_source_is_not_projected(ws, recorded)
     entry = _entry(ws)
     del entry["stores"]["public"]["source"]
     with pytest.raises(ProjectionError, match="github-issues"):
-        github_projection.project(entry, token_source=lambda env: TOKEN)
+        github_projection.project(entry, token_source=_token_source(TOKEN))
 
 
 def test_an_uninitialised_public_store_is_refused_before_any_bd_call(ws, recorded):
@@ -271,18 +277,29 @@ def test_no_ambient_token_leaves_the_credential_to_the_stores_host_local_config(
     ws, recorded, monkeypatch
 ):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    _project(ws, token_source=lambda env: None)
+    _project(ws, token_source=_token_source(None))
     (pull,) = recorded.github_calls()
     assert "GITHUB_TOKEN" not in pull.env
 
 
-def test_ambient_token_uses_the_launchers_precedence(monkeypatch):
+def test_ambient_token_uses_the_launchers_precedence_and_reports_the_winner(monkeypatch):
     from beadhive import run as run_mod
 
-    assert github_projection.ambient_token({"GITHUB_TOKEN": "a", "GH_TOKEN": "b"}) == "a"
-    assert github_projection.ambient_token({"GH_TOKEN": "b"}) == "b"
-    monkeypatch.setattr(run_mod, "_fill_github_token", lambda env: None)
+    both = github_projection.ambient_token({"GITHUB_TOKEN": "a", "GH_TOKEN": "b"})
+    assert (both.value, both.source) == ("a", "env:GITHUB_TOKEN")
+    only = github_projection.ambient_token({"GH_TOKEN": "b"})
+    assert (only.value, only.source) == ("b", "env:GH_TOKEN")
+    monkeypatch.setattr(run_mod, "_derive_gh_auth_token", lambda: None)
     assert github_projection.ambient_token({}) is None
+
+
+def test_a_bd_failure_echoing_an_unknown_token_shape_is_scrubbed_too(ws, recorded):
+    stray = "ghp_" + "Q" * 36
+    recorded.pull_rc = 1
+    recorded.pull_err = f"Error: upstream echoed {stray} back\n"
+    with pytest.raises(ProjectionError) as info:
+        _project(ws)
+    assert stray not in str(info.value) and "***" in str(info.value)
 
 
 # --- the guard: only the pull-only shape ever runs against a public store -----------------
