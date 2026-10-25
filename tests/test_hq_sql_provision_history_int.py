@@ -1106,3 +1106,157 @@ def test_public_cli_provisions_and_rotates_session_route_with_persisted_floors(
             cursor.execute("SELECT revision,lease_json FROM hq_live_hive_leases WHERE prefix='bh'")
             assert cursor.fetchone() == (lease_revision, body)
         connection.close()
+
+
+def _first_incarnation(fixture, frame_id="new-frame"):
+    """A frame with no authority entry yet: admission grants it epoch 0 (bh-a0wem)."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from beadhive.hq_sql_signatures import fingerprint
+
+    public_key = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        .decode()
+    )
+    authority = {
+        **fixture.record["authority"],
+        "frame_id": frame_id,
+        "holder_identity": str(uuid4()),
+        "instance_ref": "vm-new",
+        "key_fingerprint": fingerprint(public_key),
+        "epoch": 0,
+    }
+    return sql_principal(ObservationAuthority(**authority)), authority, public_key
+
+
+def test_new_frame_first_incarnation_provisioning_advances_every_floor(
+    tmp_path, fixture, monkeypatch
+):
+    """Epoch-0 stamps for a frame with no authority entry are reviewed provisioning."""
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+    assert "new-frame" not in fixture.state["frames"]
+    with _server(tmp_path) as port:
+        connection = _root(port)
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE {DB}")
+            cursor.execute(f"USE {DB}")
+            initial = _initial(cursor, fixture)
+            readers = [
+                _reader(tmp_path, fixture, initial, name)
+                for name in ("operator", "frame", "observer")
+            ]
+            for reader in readers:
+                reader.verified_state_at(cursor, initial)
+            principal, _authority, _key = _first_incarnation(fixture)
+            provision_incarnation(
+                cursor,
+                principal,
+                0,
+                frame_address="127.0.0.1",
+                password=PASSWORD,
+                database=DB,
+            )
+            provisioned = _head(cursor)
+            assert provisioned != initial
+            for reader in readers:
+                state, _crossref, _policies = reader.verified_state_at(cursor, provisioned)
+                assert state == fixture.state
+                floor = json.loads(Path(reader.settings["runtime_floor_path"]).read_text())
+                assert floor["head"] == provisioned and floor["sequence"] == 4
+            cursor.execute(
+                "SELECT principal FROM hq_principal_registry WHERE principal=%s", (principal,)
+            )
+            assert not cursor.fetchall()
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["registered", "reserved", "archived", "wrong_epoch", "partial", "noncanonical"]
+)
+def test_first_incarnation_provisioning_refuses_everything_else(
+    tmp_path, fixture, monkeypatch, unsafe
+):
+    """Epoch 0 is only for a principal no record or registry row names (bh-a0wem)."""
+    import copy
+
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+    principal, authority, public_key = _first_incarnation(fixture)
+    epoch = 0
+    if unsafe in ("reserved", "archived"):
+        record = copy.deepcopy(fixture.record)
+        record.update(public_key=public_key, authority=dict(authority))
+        if unsafe == "archived":
+            # The epoch-0 record survives only in the signed release-upgrade archive.
+            current = copy.deepcopy(record)
+            current["authority"]["epoch"] = 1
+            current["release_upgrade_history"] = [
+                {
+                    "authority_revision": "reviewed-prior-head",
+                    "config_head": "c" * 32,
+                    "plan_sha256": "sha256:" + "a" * 64,
+                    "record": record,
+                }
+            ]
+            record = current
+        fixture.state["frames"]["new-frame"] = {
+            "active": None,
+            "candidate": record,
+            "retired": [],
+            "epoch_floor": record["authority"]["epoch"],
+        }
+    elif unsafe == "wrong_epoch":
+        # Neither a first incarnation nor any existing frame's next epoch (4).
+        epoch = 1
+        principal = sql_principal(ObservationAuthority(**{**authority, "epoch": epoch}))
+    with _server(tmp_path) as port:
+        connection = _root(port)
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE {DB}")
+            cursor.execute(f"USE {DB}")
+            initial = _initial(cursor, fixture)
+            if unsafe == "registered":
+                cursor.execute(
+                    "INSERT INTO hq_principal_registry VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        principal,
+                        authority["frame_id"],
+                        authority["holder_identity"],
+                        authority["instance_ref"],
+                        epoch,
+                        session_table(principal, epoch),
+                        authority["key_fingerprint"],
+                    ),
+                )
+                initial = _commit(cursor)
+            reader = _reader(tmp_path, fixture, initial, "operator")
+            reader.verified_state_at(cursor, initial)
+            for ddl in (session_ddl(principal, epoch), evidence_ddl(principal, epoch)):
+                cursor.execute(ddl[0])
+                if unsafe != "partial" or ddl[0].split()[2].endswith("_session"):
+                    cursor.execute(
+                        ddl[1].replace("UTC_TIMESTAMP(6)", "UTC_TIMESTAMP(3)")
+                        if unsafe == "noncanonical"
+                        else ddl[1]
+                    )
+                cursor.execute(ddl[2])
+            head = _commit(cursor)
+            reason = {
+                "registered": "already registered incarnation",
+                "reserved": "not an unauthorized next or first",
+                "archived": "not an unauthorized next or first",
+                "wrong_epoch": "not an unauthorized next or first",
+                "partial": "incomplete session/evidence trigger pair",
+                "noncanonical": "not a canonical session/evidence stamp-trigger pair",
+            }[unsafe]
+            with pytest.raises(SqlRuntimeError, match="amended authority") as refused:
+                reader.verified_state_at(cursor, head)
+            assert reason in str(refused.value)
+            assert "docs/HQ.md#restore-floor-recovery" in str(refused.value)
+            assert (
+                json.loads(Path(reader.settings["runtime_floor_path"]).read_text())["head"]
+                == initial
+            )
+        connection.close()

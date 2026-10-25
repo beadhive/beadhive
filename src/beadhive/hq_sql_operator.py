@@ -21,7 +21,11 @@ import time
 from . import hq_authority_enforce
 from . import hq_authority_guard as guard
 from .hq_hive_policy import project_hive_policies
-from .hq_sql_runtime import SqlRuntimeAuthority, SqlRuntimeCapabilityMissing
+from .hq_sql_runtime import (
+    SqlRuntimeAuthority,
+    SqlRuntimeCapabilityMissing,
+    SqlRuntimeFloorRefusal,
+)
 from .hq_sql_runtime_schema import (
     evidence_table,
     inbox_table,
@@ -110,6 +114,11 @@ class SqlRuntimeOperator:
             raise SqlOperatorError(
                 f"protected authority writer read unavailable: {error}"
             ) from None
+        except SqlRuntimeFloorRefusal as error:
+            # A restore-floor refusal is a finding, not an outage (bh-a0wem): its fixed text
+            # names heads, sequences and changed tables, never rows or secrets, and points at
+            # the native recovery procedure the operator needs.
+            raise SqlOperatorError(str(error)) from None
         except Exception:
             raise SqlOperatorError("protected authority writer read unavailable") from None
         finally:

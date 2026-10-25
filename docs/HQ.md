@@ -941,7 +941,11 @@ such a head only if every first-parent commit since its floor is reviewed provis
   commits the ignore rule, the policy and the first stamp triggers together.
 - **Stamp-trigger pairs.** After the liveness schema exists, a commit may only add canonical
   `frame_<principal>_<epoch>_session_stamp` / `_evidence_stamp` pairs for an unregistered,
-  unauthorized next epoch.
+  unauthorized incarnation. Its epoch is either an existing frame's next epoch or, for a new
+  frame's first incarnation, **epoch 0** (bh-a0wem). A frame has no authority entry until it
+  is first admitted, and its triggers are committed before that cutover. Epoch 0 is accepted
+  only for a principal that no current or archived authority record names. Before bh-a0wem
+  this commit fenced every reader, and the native operator read that republishing needs.
 - **Release catalog rows.** A commit whose only diff is rows added to `hq_release_catalog`, or
   the one-time creation of that empty table ([release catalog](#release-catalog)). An edited or
   deleted catalog row refuses like any other change.
