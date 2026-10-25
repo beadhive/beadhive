@@ -2708,6 +2708,225 @@ class HerdrConfig(_Section):
         return value
 
 
+# ---- plugins.tracker-github (tracker-adapter-plugin-adr.md section 3) -------------
+# Host-owned authority for the `tracker-github` plugin. Every switch is off and every boolean is
+# STRICT, so a hand-edited `"false"` is invalid rather than truthy. There is deliberately no
+# `repo` key: owner and repository come from the bound hive's identity triplet (ADR B2), and no
+# key can hold a credential, a command or an approval. Validation messages never repeat a value.
+
+TRACKER_GITHUB_CREDENTIAL_SOURCES: tuple[str, ...] = ("env", "gh")
+
+
+class _QuietSection(_Section):
+    """A section whose ValidationError never repeats an input value (validated standalone by
+    fragment composition and the composition root, where a caller may format ``str(exc)``)."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+
+class TrackerGithubFlag(_QuietSection):
+    """One strict, default-off operation switch."""
+
+    enabled: StrictBool = Field(False, description="Enable this operation (default off).")
+
+
+class TrackerGithubCredential(_QuietSection):
+    """Where the ambient credential is looked up; names and precedence only, never a value."""
+
+    sources: list[Literal["env", "gh"]] = Field(
+        default_factory=lambda: list(TRACKER_GITHUB_CREDENTIAL_SOURCES),
+        description="Credential source names in precedence order (`env`: GH_TOKEN/GITHUB_TOKEN; "
+        "`gh`: the gh CLI). Empty means anonymous reads only.",
+    )
+
+    @field_validator("sources")
+    @classmethod
+    def _unique_sources(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("credential sources must be unique members of: env, gh")
+        return value
+
+
+class TrackerGithubRead(_QuietSection):
+    """Read operations (`issues.read`, `comments.read`) and their scope."""
+
+    issues: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag, description="`issues.read` (default off)."
+    )
+    comments: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag, description="`comments.read` (default off)."
+    )
+    include_closed: StrictBool = Field(
+        True, description="Scope within a read: include closed issues. Not a feature switch."
+    )
+    page_size: int | None = Field(
+        None, strict=True, ge=1, le=100, description="Listing page size (1-100); unset = API."
+    )
+
+
+class TrackerGithubRetry(_QuietSection):
+    """The adapter's retry budget."""
+
+    max_retries: int = Field(3, strict=True, ge=0, description="Retries per request.")
+    max_single_wait_seconds: float = Field(
+        60, strict=True, gt=0, allow_inf_nan=False, description="Longest single wait."
+    )
+    max_total_wait_seconds: float = Field(
+        120,
+        strict=True,
+        gt=0,
+        allow_inf_nan=False,
+        description="Total wait budget; at least max_single_wait_seconds.",
+    )
+
+    @model_validator(mode="after")
+    def _single_within_total(self):
+        if self.max_single_wait_seconds > self.max_total_wait_seconds:
+            raise ValueError(
+                "retry.max_single_wait_seconds must not exceed retry.max_total_wait_seconds"
+            )
+        return self
+
+
+class TrackerGithubLabels(_QuietSection):
+    """`labels.change`: necessary, never sufficient (each write needs a single-use grant)."""
+
+    enabled: StrictBool = Field(False, description="Enable `labels.change` (default off).")
+    owned_prefixes: list[str] = Field(
+        default_factory=list,
+        description="Label prefixes Beadhive owns; empty means no label write is possible.",
+    )
+
+    @field_validator("owned_prefixes")
+    @classmethod
+    def _nonempty_prefixes(cls, value):
+        if any(not item or item != item.strip() for item in value):
+            raise ValueError("write.labels.owned_prefixes entries must be non-empty and trimmed")
+        return value
+
+
+class TrackerGithubWrite(_QuietSection):
+    """Write operations. Enabling one is necessary, never sufficient."""
+
+    comment: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag, description="`comment.create` (default off)."
+    )
+    labels: TrackerGithubLabels = Field(default_factory=TrackerGithubLabels)
+
+
+class TrackerGithubConfig(_QuietSection):
+    """``plugins.tracker-github`` — the GitHub tracker adapter plugin (host-owned).
+
+    Off unless configured: no owner, no port and no network while ``enabled`` is false. A store
+    binding (``managed_repos[].stores.public.adapter``) never enables anything here.
+    """
+
+    enabled: StrictBool = Field(False, description="The plugin's own gate (default off).")
+    base_url: str | None = Field(
+        None,
+        description="GitHub Enterprise Server API prefix (https, no userinfo, query or "
+        "fragment); unset = the public API.",
+    )
+    credential: TrackerGithubCredential = Field(default_factory=TrackerGithubCredential)
+    read: TrackerGithubRead = Field(default_factory=TrackerGithubRead)
+    http_cache: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag,
+        description="Conditional requests for the id-reconcile pass (default off).",
+    )
+    retry: TrackerGithubRetry = Field(default_factory=TrackerGithubRetry)
+    write: TrackerGithubWrite = Field(default_factory=TrackerGithubWrite)
+
+    @field_validator("base_url")
+    @classmethod
+    def _https_api_prefix(cls, value):
+        if value is None:
+            return value
+        # Never repeat the value: a URL can carry userinfo, i.e. a credential.
+        try:
+            parts = urlsplit(value)
+            valid_port = parts.port is None or parts.port > 0
+        except ValueError:
+            parts, valid_port = None, False
+        if (
+            parts is None
+            or not valid_port
+            or parts.scheme != "https"
+            or not parts.hostname
+            or "@" in parts.netloc
+            or "?" in value
+            or "#" in value
+        ):
+            raise ValueError("base_url must be an https URL without userinfo, query or fragment")
+        return value
+
+
+# ---- plugins / plugin_kernel (plugin-kernel-v1-adr.md section 6) -----------------
+
+_PLUGIN_ID_RE = re.compile(r"[a-z][a-z0-9-]*")
+_CAPABILITY_KEY_RE = re.compile(r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+@[1-9][0-9]*")
+
+
+class PluginsConfig(_QuietSection):
+    """``plugins.<plugin_id>`` — the canonical plugin-owned namespaces.
+
+    Built-in fragments are validated against their published models; an unknown plugin id is
+    retained as opaque, inactive data (the published schema's policy), never activated by being
+    present. Each field's persisted key is its plugin id (the alias); absent = today's behaviour.
+    """
+
+    model_config = ConfigDict(extra="allow", hide_input_in_errors=True)
+
+    herdr: HerdrConfig | None = Field(None, description="Canonical namespace of `herdr`.")
+    hitch: HitchConfig | None = Field(None, description="Canonical namespace of `hitch`.")
+    observaloop: ObservaloopConfig | None = Field(
+        None, description="Canonical namespace of `observaloop`."
+    )
+    orca: OrcaConfig | None = Field(None, description="Canonical namespace of `orca`.")
+    repowise: RepowiseConfig | None = Field(None, description="Canonical namespace of `repowise`.")
+    tracker_github: TrackerGithubConfig | None = Field(
+        None,
+        alias="tracker-github",
+        description="The GitHub tracker adapter plugin (host-owned; every switch off).",
+    )
+
+
+class PluginKernelSection(_QuietSection):
+    """``plugin_kernel`` — core-owned discovery policy, enablement and owner selection.
+
+    The shape :func:`beadhive.kernel.plugins.parse_kernel_config` accepts, checked here without
+    importing the kernel. Messages never repeat a key or value.
+    """
+
+    enabled: dict[str, StrictBool] = Field(
+        default_factory=dict,
+        description="Per-plugin enablement override (plugin id -> boolean); `false` always wins.",
+    )
+    capability_owners: dict[str, str] = Field(
+        default_factory=dict,
+        description="Selected owner per capability (`capability.id@MAJOR` -> plugin id).",
+    )
+    allow_external_entry_points: StrictBool = Field(
+        False, description="Discover third-party entry-point manifests (default off)."
+    )
+
+    @field_validator("enabled")
+    @classmethod
+    def _plugin_id_keys(cls, value):
+        if any(not _PLUGIN_ID_RE.fullmatch(key) for key in value):
+            raise ValueError("plugin_kernel.enabled keys must be plugin ids")
+        return value
+
+    @field_validator("capability_owners")
+    @classmethod
+    def _owner_rows(cls, value):
+        for key, owner in value.items():
+            if not _CAPABILITY_KEY_RE.fullmatch(key) or not _PLUGIN_ID_RE.fullmatch(owner):
+                raise ValueError(
+                    "plugin_kernel.capability_owners must map capability.id@MAJOR to a plugin id"
+                )
+        return value
+
+
 # ---- managed_repos -------------------------------------------------------------
 
 
@@ -2767,9 +2986,28 @@ _SYNC_FOR_AUTHORITY: dict[str, frozenset[str]] = {
     "remote": frozenset({"pull-only", "none"}),
 }
 
+#: The known-adapter table (tracker-adapter-plugin-adr.md section 4, B6): adapter plugin id ->
+#: the ``stores.<scope>.source`` it serves. A CLOSED static table, exactly as ``source`` is a
+#: closed ``Literal``: config load may not consult plugin discovery, so a new adapter id is a
+#: schema release. Drift-tested against the built-in manifests once the adapter package ships.
+KNOWN_TRACKER_ADAPTERS: Mapping[str, str] = types.MappingProxyType(
+    {"tracker-github": "github-issues"}
+)
+_ADAPTER_ID_RE = re.compile(r"[a-z][a-z0-9-]{0,63}")
+_ADAPTER_SHAPE_MESSAGE = (
+    "adapter must be a plugin id (lowercase letters, digits and hyphens, at most 64 characters)"
+)
+
+#: Store models never repeat an input value in a ValidationError: ``store_target`` embeds
+#: ``str(ValidationError)`` in ``StoreConfigInvalid``, and a pasted token must not be printed.
+#: The setting must be on the model that is VALIDATED (``ManagedRepoStores``), so both carry it.
+_STORE_MODEL_CONFIG = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
 
 class StoreDescriptor(_Section):
     """One bead store of a managed repository (``managed_repos[*].stores.<scope>``)."""
+
+    model_config = _STORE_MODEL_CONFIG
 
     prefix: str | None = Field(
         None,
@@ -2811,6 +3049,21 @@ class StoreDescriptor(_Section):
         description="Whether the store may issue operational work. Only `internal` may; a "
         "public store set to true is rejected.",
     )
+    adapter: str | None = Field(
+        None,
+        description="Plugin id of the tracker adapter serving this store (public only; requires "
+        "`source`). Fleet-owned intent: it never enables a plugin, a read or a write. Never a "
+        "URL, repository or credential. Absent = unbound (today's behaviour).",
+    )
+
+    @field_validator("adapter")
+    @classmethod
+    def _adapter_is_a_plugin_id(cls, value):
+        # R2. The value is deliberately NOT echoed: anything not shaped like a plugin id might
+        # be a pasted secret.
+        if value is not None and not _ADAPTER_ID_RE.fullmatch(value):
+            raise ValueError(_ADAPTER_SHAPE_MESSAGE)
+        return value
 
     @field_validator("prefix")
     @classmethod
@@ -2874,6 +3127,8 @@ class StoreDescriptor(_Section):
 
 class ManagedRepoStores(_Section):
     """``managed_repos[*].stores`` — the explicit internal/public store pair (bh-lniwf.2)."""
+
+    model_config = _STORE_MODEL_CONFIG
 
     internal: StoreDescriptor | None = Field(
         None, description="The private, operational store (required when `stores` is set)."
@@ -2955,12 +3210,50 @@ def store_pair_problems(stores: ManagedRepoStores) -> list[str]:
                 "stores.internal: remote cannot be 'git-origin' when a public store exists — that "
                 "would publish private beads on the code origin's refs/dolt/data"
             )
+    for scope, store in (("internal", internal), ("public", public)):
+        if store is not None:
+            problems += adapter_problems(scope, store.adapter, store.source)
     return problems
+
+
+def adapter_problems(
+    scope: str,
+    adapter: str | None,
+    source: str | None,
+    known: Mapping[str, str] = KNOWN_TRACKER_ADAPTERS,
+) -> list[str]:
+    """The document-only binding rules R1, R3, R4 and R5 for one store's ``adapter``
+    (tracker-adapter-plugin-adr.md section 4); empty when it is unset. R2, the shape, is the
+    field validator. Pure: no discovery, environment, network or plugin import. Only an id that
+    already passed the R2 shape is ever repeated."""
+    if adapter is None:
+        return []
+    if scope != "public":
+        return [f"stores.{scope}: adapter is only valid on a public store"]
+    if adapter not in known:
+        return [
+            f"stores.{scope}: unknown tracker adapter {adapter!r} — known adapters: "
+            f"{', '.join(sorted(known))}"
+        ]
+    if source is None:
+        return [
+            f"stores.{scope}: adapter {adapter!r} needs `source: {known[adapter]}` — a bound "
+            "store must name the tracker it mirrors"
+        ]
+    if source != known[adapter]:
+        return [
+            f"stores.{scope}: adapter {adapter!r} serves source {known[adapter]!r}, not {source!r}"
+        ]
+    return []
 
 
 class ManagedRepoEntry(_Section):
     """One entry in ``managed_repos`` — a hive `bh hive init` maintains, with optional
     per-hive overrides of the sections above."""
+
+    # Validated standalone (hq_hive_policy), so it is a validation ROOT for the stores block:
+    # without this its str(ValidationError) repeats a stores value (see _STORE_MODEL_CONFIG).
+    model_config = _STORE_MODEL_CONFIG
 
     provider: str = Field("", description="Repo-group path (auth/fetch mechanism label).")
     org: str = Field("", description="Org/account the repo belongs to.")
@@ -3148,6 +3441,10 @@ class BeadhiveConfig(BaseSettings):
         env_nested_delimiter="__",
         extra="forbid",
         nested_model_default_partial_update=True,
+        # The validation root of every daemon/bootstrap call site that formats the error
+        # (`str(exc)`), so no config value — a pasted token anywhere — is repeated. Structured
+        # renderers (`validate_config`, resolution) read `msg`/`loc` and are unaffected.
+        hide_input_in_errors=True,
     )
 
     schema_version: int = Field(
@@ -3192,6 +3489,16 @@ class BeadhiveConfig(BaseSettings):
     repowise: RepowiseConfig = Field(default_factory=RepowiseConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
     herdr: HerdrConfig = Field(default_factory=HerdrConfig)
+    plugins: PluginsConfig | None = Field(
+        None,
+        description="Canonical plugin-owned namespaces `plugins.<plugin_id>`. Built-in fragments "
+        "are validated; an unknown id is kept as opaque inactive data. Absent = today.",
+    )
+    plugin_kernel: PluginKernelSection | None = Field(
+        None,
+        description="Core-owned plugin discovery policy: enablement overrides, capability owner "
+        "selection, external entry points. Absent = the kernel defaults.",
+    )
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."
     )
@@ -3393,7 +3700,7 @@ def _field_info(dotted: str, model: type[BaseModel] = BeadhiveConfig):
     node_model = model
     info = None
     for i, part in enumerate(parts):
-        fields = getattr(node_model, "model_fields", None)
+        fields = _fields_by_key(node_model) if getattr(node_model, "model_fields", None) else None
         info = fields.get(part) if fields else None
         if info is None:
             return None
@@ -3439,13 +3746,26 @@ def field_default(dotted: str) -> Any:
     return info.default
 
 
+def _persisted_key(model: type[BaseModel], name: str, info: Any) -> str:
+    """The key a field is written under: its alias when the alias is the ONLY accepted
+    spelling (``plugins.tracker-github``), else the field name. A model that also populates by
+    name (``work.validate_overrides``) keeps reporting the field name, as it always has."""
+    if isinstance(info.alias, str) and not model.model_config.get("populate_by_name"):
+        return info.alias
+    return name
+
+
+def _fields_by_key(model: type[BaseModel]) -> dict[str, Any]:
+    return {_persisted_key(model, name, info): info for name, info in model.model_fields.items()}
+
+
 def iter_schema_fields(
     model: type[BaseModel] = BeadhiveConfig, prefix: str = ""
 ) -> list[SchemaField]:
     """Flatten *model*'s fields into dotted :class:`SchemaField` rows, recursing into nested
     sub-models (``otel.genai.model``, …) — the same key space `bh config get/set` operate on."""
     out: list[SchemaField] = []
-    for name, info in model.model_fields.items():
+    for name, info in _fields_by_key(model).items():
         path = f"{prefix}{name}"
         out.append(
             SchemaField(
@@ -3537,8 +3857,10 @@ __all__ = (
     "HostLeaseConfig",
     "HqConfig",
     "IdentityConfig",
+    "KNOWN_TRACKER_ADAPTERS",
     "LogConfig",
     "ManagedRepoEntry",
+    "ManagedRepoStores",
     "MetadataConfig",
     "ObservaloopConfig",
     "OrcaConfig",
@@ -3546,6 +3868,8 @@ __all__ = (
     "OrgEntry",
     "OtelConfig",
     "PassthroughConfig",
+    "PluginKernelSection",
+    "PluginsConfig",
     "ReleaseConfig",
     "RepowiseConfig",
     "RoutingConfig",
@@ -3553,10 +3877,13 @@ __all__ = (
     "SCHEMA_VERSION",
     "SUBSET_PLACEHOLDER",
     "SchemaField",
+    "StoreDescriptor",
+    "TrackerGithubConfig",
     "ValidationBrokerConfig",
     "WorkConfig",
     "WorktreeInitRule",
     "WorktreesConfig",
+    "adapter_problems",
     "field_default",
     "iter_schema_fields",
     "known_keys",

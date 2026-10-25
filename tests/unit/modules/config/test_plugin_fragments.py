@@ -59,6 +59,7 @@ def test_fragment_publication_and_composed_schema_are_deterministic():
         "observaloop",
         "orca",
         "repowise",
+        "tracker-github",
     ]
     assert all(
         payload == payload_again

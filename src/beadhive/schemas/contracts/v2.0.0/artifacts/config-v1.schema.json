@@ -2915,6 +2915,116 @@
       "title": "PassthroughConfig",
       "type": "object"
     },
+    "PluginKernelSection": {
+      "additionalProperties": false,
+      "description": "``plugin_kernel`` — core-owned discovery policy, enablement and owner selection.\n\nThe shape :func:`beadhive.kernel.plugins.parse_kernel_config` accepts, checked here without\nimporting the kernel. Messages never repeat a key or value.",
+      "properties": {
+        "allow_external_entry_points": {
+          "default": false,
+          "description": "Discover third-party entry-point manifests (default off).",
+          "title": "Allow External Entry Points",
+          "type": "boolean"
+        },
+        "capability_owners": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Selected owner per capability (`capability.id@MAJOR` -> plugin id).",
+          "title": "Capability Owners",
+          "type": "object"
+        },
+        "enabled": {
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Per-plugin enablement override (plugin id -> boolean); `false` always wins.",
+          "title": "Enabled",
+          "type": "object"
+        }
+      },
+      "title": "PluginKernelSection",
+      "type": "object"
+    },
+    "PluginsConfig": {
+      "additionalProperties": true,
+      "description": "``plugins.<plugin_id>`` — the canonical plugin-owned namespaces.\n\nBuilt-in fragments are validated against their published models; an unknown plugin id is\nretained as opaque, inactive data (the published schema's policy), never activated by being\npresent. Each field's persisted key is its plugin id (the alias); absent = today's behaviour.",
+      "properties": {
+        "herdr": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HerdrConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical namespace of `herdr`."
+        },
+        "hitch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HitchConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical namespace of `hitch`."
+        },
+        "observaloop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservaloopConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical namespace of `observaloop`."
+        },
+        "orca": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OrcaConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical namespace of `orca`."
+        },
+        "repowise": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepowiseConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical namespace of `repowise`."
+        },
+        "tracker-github": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrackerGithubConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The GitHub tracker adapter plugin (host-owned; every switch off)."
+        }
+      },
+      "title": "PluginsConfig",
+      "type": "object"
+    },
     "ReleaseConfig": {
       "additionalProperties": false,
       "description": "Release-order planning policy (``release``) — advisory: consulted by the\ndispatcher's start-verdict and the merger's merge-order, never obeyed blindly.\nUnset (all default) falls back to today's FCFS behavior.",
@@ -3042,6 +3152,19 @@
       "additionalProperties": false,
       "description": "One bead store of a managed repository (``managed_repos[*].stores.<scope>``).",
       "properties": {
+        "adapter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Plugin id of the tracker adapter serving this store (public only; requires `source`). Fleet-owned intent: it never enables a plugin, a read or a write. Never a URL, repository or credential. Absent = unbound (today's behaviour).",
+          "title": "Adapter"
+        },
         "authority": {
           "anyOf": [
             {
@@ -3157,6 +3280,186 @@
         }
       },
       "title": "StoreDescriptor",
+      "type": "object"
+    },
+    "TrackerGithubConfig": {
+      "additionalProperties": false,
+      "description": "``plugins.tracker-github`` — the GitHub tracker adapter plugin (host-owned).\n\nOff unless configured: no owner, no port and no network while ``enabled`` is false. A store\nbinding (``managed_repos[].stores.public.adapter``) never enables anything here.",
+      "properties": {
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "GitHub Enterprise Server API prefix (https, no userinfo, query or fragment); unset = the public API.",
+          "title": "Base Url"
+        },
+        "credential": {
+          "$ref": "#/$defs/TrackerGithubCredential"
+        },
+        "enabled": {
+          "default": false,
+          "description": "The plugin's own gate (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "http_cache": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "Conditional requests for the id-reconcile pass (default off)."
+        },
+        "read": {
+          "$ref": "#/$defs/TrackerGithubRead"
+        },
+        "retry": {
+          "$ref": "#/$defs/TrackerGithubRetry"
+        },
+        "write": {
+          "$ref": "#/$defs/TrackerGithubWrite"
+        }
+      },
+      "title": "TrackerGithubConfig",
+      "type": "object"
+    },
+    "TrackerGithubCredential": {
+      "additionalProperties": false,
+      "description": "Where the ambient credential is looked up; names and precedence only, never a value.",
+      "properties": {
+        "sources": {
+          "description": "Credential source names in precedence order (`env`: GH_TOKEN/GITHUB_TOKEN; `gh`: the gh CLI). Empty means anonymous reads only.",
+          "items": {
+            "enum": [
+              "env",
+              "gh"
+            ],
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "title": "TrackerGithubCredential",
+      "type": "object"
+    },
+    "TrackerGithubFlag": {
+      "additionalProperties": false,
+      "description": "One strict, default-off operation switch.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Enable this operation (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "TrackerGithubFlag",
+      "type": "object"
+    },
+    "TrackerGithubLabels": {
+      "additionalProperties": false,
+      "description": "`labels.change`: necessary, never sufficient (each write needs a single-use grant).",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Enable `labels.change` (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "owned_prefixes": {
+          "description": "Label prefixes Beadhive owns; empty means no label write is possible.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Owned Prefixes",
+          "type": "array"
+        }
+      },
+      "title": "TrackerGithubLabels",
+      "type": "object"
+    },
+    "TrackerGithubRead": {
+      "additionalProperties": false,
+      "description": "Read operations (`issues.read`, `comments.read`) and their scope.",
+      "properties": {
+        "comments": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`comments.read` (default off)."
+        },
+        "include_closed": {
+          "default": true,
+          "description": "Scope within a read: include closed issues. Not a feature switch.",
+          "title": "Include Closed",
+          "type": "boolean"
+        },
+        "issues": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`issues.read` (default off)."
+        },
+        "page_size": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Listing page size (1-100); unset = API.",
+          "title": "Page Size"
+        }
+      },
+      "title": "TrackerGithubRead",
+      "type": "object"
+    },
+    "TrackerGithubRetry": {
+      "additionalProperties": false,
+      "description": "The adapter's retry budget.",
+      "properties": {
+        "max_retries": {
+          "default": 3,
+          "description": "Retries per request.",
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_single_wait_seconds": {
+          "default": 60,
+          "description": "Longest single wait.",
+          "exclusiveMinimum": 0,
+          "title": "Max Single Wait Seconds",
+          "type": "number"
+        },
+        "max_total_wait_seconds": {
+          "default": 120,
+          "description": "Total wait budget; at least max_single_wait_seconds.",
+          "exclusiveMinimum": 0,
+          "title": "Max Total Wait Seconds",
+          "type": "number"
+        }
+      },
+      "title": "TrackerGithubRetry",
+      "type": "object"
+    },
+    "TrackerGithubWrite": {
+      "additionalProperties": false,
+      "description": "Write operations. Enabling one is necessary, never sufficient.",
+      "properties": {
+        "comment": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`comment.create` (default off)."
+        },
+        "labels": {
+          "$ref": "#/$defs/TrackerGithubLabels"
+        }
+      },
+      "title": "TrackerGithubWrite",
       "type": "object"
     },
     "ValidationBrokerBudgetConfig": {
@@ -3919,6 +4222,18 @@
     "passthrough": {
       "$ref": "#/$defs/PassthroughConfig"
     },
+    "plugin_kernel": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PluginKernelSection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Core-owned plugin discovery policy: enablement overrides, capability owner selection, external entry points. Absent = the kernel defaults."
+    },
     "plugins": {
       "additionalProperties": true,
       "description": "Plugin-owned configuration fragments retained independently of activation.",
@@ -4110,6 +4425,191 @@
             }
           },
           "title": "RepowiseConfig",
+          "type": "object",
+          "version": 1
+        },
+        "tracker-github": {
+          "$defs": {
+            "TrackerGithubCredential": {
+              "additionalProperties": false,
+              "description": "Where the ambient credential is looked up; names and precedence only, never a value.",
+              "properties": {
+                "sources": {
+                  "description": "Credential source names in precedence order (`env`: GH_TOKEN/GITHUB_TOKEN; `gh`: the gh CLI). Empty means anonymous reads only.",
+                  "items": {
+                    "enum": [
+                      "env",
+                      "gh"
+                    ],
+                    "type": "string"
+                  },
+                  "title": "Sources",
+                  "type": "array"
+                }
+              },
+              "title": "TrackerGithubCredential",
+              "type": "object"
+            },
+            "TrackerGithubFlag": {
+              "additionalProperties": false,
+              "description": "One strict, default-off operation switch.",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "description": "Enable this operation (default off).",
+                  "title": "Enabled",
+                  "type": "boolean"
+                }
+              },
+              "title": "TrackerGithubFlag",
+              "type": "object"
+            },
+            "TrackerGithubLabels": {
+              "additionalProperties": false,
+              "description": "`labels.change`: necessary, never sufficient (each write needs a single-use grant).",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "description": "Enable `labels.change` (default off).",
+                  "title": "Enabled",
+                  "type": "boolean"
+                },
+                "owned_prefixes": {
+                  "description": "Label prefixes Beadhive owns; empty means no label write is possible.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Owned Prefixes",
+                  "type": "array"
+                }
+              },
+              "title": "TrackerGithubLabels",
+              "type": "object"
+            },
+            "TrackerGithubRead": {
+              "additionalProperties": false,
+              "description": "Read operations (`issues.read`, `comments.read`) and their scope.",
+              "properties": {
+                "comments": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`comments.read` (default off)."
+                },
+                "include_closed": {
+                  "default": true,
+                  "description": "Scope within a read: include closed issues. Not a feature switch.",
+                  "title": "Include Closed",
+                  "type": "boolean"
+                },
+                "issues": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`issues.read` (default off)."
+                },
+                "page_size": {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Listing page size (1-100); unset = API.",
+                  "title": "Page Size"
+                }
+              },
+              "title": "TrackerGithubRead",
+              "type": "object"
+            },
+            "TrackerGithubRetry": {
+              "additionalProperties": false,
+              "description": "The adapter's retry budget.",
+              "properties": {
+                "max_retries": {
+                  "default": 3,
+                  "description": "Retries per request.",
+                  "minimum": 0,
+                  "title": "Max Retries",
+                  "type": "integer"
+                },
+                "max_single_wait_seconds": {
+                  "default": 60,
+                  "description": "Longest single wait.",
+                  "exclusiveMinimum": 0,
+                  "title": "Max Single Wait Seconds",
+                  "type": "number"
+                },
+                "max_total_wait_seconds": {
+                  "default": 120,
+                  "description": "Total wait budget; at least max_single_wait_seconds.",
+                  "exclusiveMinimum": 0,
+                  "title": "Max Total Wait Seconds",
+                  "type": "number"
+                }
+              },
+              "title": "TrackerGithubRetry",
+              "type": "object"
+            },
+            "TrackerGithubWrite": {
+              "additionalProperties": false,
+              "description": "Write operations. Enabling one is necessary, never sufficient.",
+              "properties": {
+                "comment": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`comment.create` (default off)."
+                },
+                "labels": {
+                  "$ref": "#/$defs/TrackerGithubLabels"
+                }
+              },
+              "title": "TrackerGithubWrite",
+              "type": "object"
+            }
+          },
+          "$id": "urn:beadhive:wire-schema:plugin-config:tracker-github:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "``plugins.tracker-github`` — the GitHub tracker adapter plugin (host-owned).\n\nOff unless configured: no owner, no port and no network while ``enabled`` is false. A store\nbinding (``managed_repos[].stores.public.adapter``) never enables anything here.",
+          "properties": {
+            "base_url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "GitHub Enterprise Server API prefix (https, no userinfo, query or fragment); unset = the public API.",
+              "title": "Base Url"
+            },
+            "credential": {
+              "$ref": "#/$defs/TrackerGithubCredential"
+            },
+            "enabled": {
+              "default": false,
+              "description": "The plugin's own gate (default off).",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "http_cache": {
+              "$ref": "#/$defs/TrackerGithubFlag",
+              "description": "Conditional requests for the id-reconcile pass (default off)."
+            },
+            "read": {
+              "$ref": "#/$defs/TrackerGithubRead"
+            },
+            "retry": {
+              "$ref": "#/$defs/TrackerGithubRetry"
+            },
+            "write": {
+              "$ref": "#/$defs/TrackerGithubWrite"
+            }
+          },
+          "title": "TrackerGithubConfig",
           "type": "object",
           "version": 1
         }

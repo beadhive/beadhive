@@ -102,7 +102,7 @@ def test_compatibility_report_accounts_for_every_published_and_candidate_artifac
     # Only supported (>= 1.5.0) releases are observed; deprecated history is never compared.
     assert "1.5.0" in {version for version, _row in published}
     assert all(tuple(map(int, version.split("."))) >= (1, 5, 0) for version, _row in published)
-    assert report["summary"]["candidate_artifacts"] == len(candidate) == 23
+    assert report["summary"]["candidate_artifacts"] == len(candidate) == 24
     assert len(report["historical_comparisons"]) == len(published)
     assert len(report["candidate_artifacts"]) == len(candidate)
     assert {
