@@ -4,6 +4,15 @@
 2026-10-05. This document proposes a workflow and skill boundaries; it does not add commands,
 state vocabulary, comment synchronization, or automation.
 
+**Decision (2026-10-25):** the implementation design for this workflow is recorded in
+[`external-intake-module-adr.md`](external-intake-module-adr.md) (accepted, verdict GO,
+`bh-sa91g`): the `beadhive.modules.intake` module and its `IntakePort`, the conversation model,
+the supervised outbox, and the `delivery`/`notified` report dimensions. It builds on
+[`tracker-adapter-port-adr.md`](tracker-adapter-port-adr.md) and
+[`tracker-adapter-plugin-adr.md`](tracker-adapter-plugin-adr.md). It amends section 1 here: a
+report bound to an external issue is never itself the implementation work item; it tracks a
+separate work bead. Where this document and the ADR differ, the ADR prevails.
+
 **Reader:** A contributor designing tracker-backed intake. After reading, they should be able
 to trace an external report from ingestion through triage, implementation milestones, and
 public replies, and identify which guards from the bead-groups design each step relies on.
