@@ -460,3 +460,91 @@ def test_an_absent_bd_is_narrated_so_none_cannot_read_as_no_such_bead(monkeypatc
     # ...and exactly once, not once per bead read.
     assert bd_mod.json(["show", "bh-2"], "/tmp") is None
     assert "not on PATH" not in capsys.readouterr().err
+
+
+# ---- the provenance-returning chain: ONE derivation, which source won, never the value ---
+
+
+def _no_gh(monkeypatch):
+    monkeypatch.setattr(
+        run_mod, "_derive_gh_auth_token", lambda: pytest.fail("the gh leg must not run")
+    )
+
+
+def test_the_chain_resolves_github_token_then_gh_token_then_gh_auth_token():
+    """The documented order, with provenance for each winner and a fake gh leg (no process)."""
+    gh = lambda: "gh-derived"  # noqa: E731
+    both = {"GITHUB_TOKEN": "from-github", "GH_TOKEN": "from-gh"}
+
+    first = run_mod.resolve_github_token(both, gh_auth_token=gh)
+    second = run_mod.resolve_github_token({"GH_TOKEN": "from-gh"}, gh_auth_token=gh)
+    third = run_mod.resolve_github_token({}, gh_auth_token=gh)
+
+    assert (first.value, first.source) == ("from-github", "env:GITHUB_TOKEN")
+    assert (second.value, second.source) == ("from-gh", "env:GH_TOKEN")
+    assert (third.value, third.source) == ("gh-derived", "gh-auth-token")
+
+
+def test_blank_counts_as_unset_at_every_leg():
+    env = {"GITHUB_TOKEN": "  ", "GH_TOKEN": ""}
+
+    assert run_mod.resolve_github_token(env, gh_auth_token=lambda: "  ") is None
+    assert run_mod.resolve_github_token(env, gh_auth_token=lambda: None) is None
+    won = run_mod.resolve_github_token(env, gh_auth_token=lambda: " tok ")
+    assert (won.value, won.source) == ("tok", "gh-auth-token")
+
+
+def test_the_gh_leg_is_not_consulted_when_the_environment_supplies_a_token(monkeypatch):
+    _no_gh(monkeypatch)
+
+    won = run_mod.resolve_github_token({"GH_TOKEN": "x"})
+
+    assert won.source == "env:GH_TOKEN"
+
+
+def test_source_names_pick_and_order_the_legs_and_reject_unknown_names():
+    env = {"GITHUB_TOKEN": "from-env"}
+    gh = lambda: "from-gh"  # noqa: E731
+
+    gh_first = run_mod.github_token_source(env, names=("gh", "env"), gh_auth_token=gh)()
+    env_only = run_mod.github_token_source({}, names=("env",), gh_auth_token=gh)()
+    anonymous = run_mod.github_token_source(env, names=(), gh_auth_token=gh)()
+
+    assert gh_first.source == "gh-auth-token"
+    assert env_only is None and anonymous is None
+    with pytest.raises(ValueError, match="unknown credential source"):
+        run_mod.github_token_source(env, names=("env", "command"))
+
+
+def test_the_source_reads_its_environment_fresh_and_caches_nothing():
+    env = {"GH_TOKEN": "first"}
+    source = run_mod.github_token_source(env, gh_auth_token=lambda: None)
+
+    assert source().value == "first"
+    env["GH_TOKEN"] = "rotated"
+
+    assert source().value == "rotated"
+
+
+def test_a_resolved_token_discloses_provenance_but_never_the_value(monkeypatch, capsys, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+    resolved = run_mod.resolve_github_token({"GH_TOKEN": PLANTED})
+
+    shown = [repr(resolved), str(resolved), f"{resolved}", f"{resolved!r}"]
+    assert all(PLANTED not in text for text in shown)
+    assert str(resolved) == "<token from env:GH_TOKEN>"
+    out = capsys.readouterr()
+    assert PLANTED not in out.out + out.err + caplog.text
+
+
+def test_fill_github_token_places_the_winner_without_overwriting(monkeypatch):
+    _no_gh(monkeypatch)
+    env = {"GITHUB_TOKEN": "operator", "GH_TOKEN": "other"}
+    run_mod._fill_github_token(env)
+    assert env["GITHUB_TOKEN"] == "operator"
+
+    mirrored = {"GH_TOKEN": "other"}
+    run_mod._fill_github_token(mirrored)
+    assert mirrored["GITHUB_TOKEN"] == "other"

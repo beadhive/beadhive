@@ -93,7 +93,9 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "beadhive-plugins": (
         "tests/test_build_verify_surfaces.py",
+        "tests/test_github_projection.py",
         "tests/test_plugins.py",
+        "tests/test_two_store_e2e_int.py",
     ),
     # Root tests that adapt today's host slots to the validation broker port (bh-uljpc), select
     # the broker engine (bh-qrixp), resolve per-key reservations (bh-9oc32), set up a run

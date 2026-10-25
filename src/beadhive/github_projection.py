@@ -31,6 +31,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from beadhive_plugins.credentials import ResolvedToken, TokenSource, scrub
+
 from . import bd_cli, guard, store_target
 from .store_target import SCOPE_PUBLIC, StoreTarget
 
@@ -45,10 +47,7 @@ _REPO_KEYS = ("github.owner", "github.repo", "github.repository")
 _PULLED = re.compile(r"Pulled (\d+) issues \((\d+) created, (\d+) updated\)")
 _WOULD_IMPORT = re.compile(r"\[dry-run\] Would import: (\d+) - ")
 _WOULD_UPDATE = re.compile(r"\[dry-run\] Would update local issue: (\d+) - ")
-_REDACTED = "***"
 
-#: ``(environ) -> token or None``. The default reads the ambient environment, then ``gh``.
-TokenSource = Callable[[Mapping[str, str]], "str | None"]
 #: ``(target, extra_env) -> CliRoutes``. Tests inject a recorded fake.
 RoutesFactory = Callable[[StoreTarget, Mapping[str, str]], Any]
 
@@ -121,17 +120,16 @@ def resolve_projection(entry: Mapping[str, Any]) -> Projection:
     return Projection(target=target, owner=owner, repo=repo)
 
 
-def ambient_token(environ: Mapping[str, str]) -> str | None:
-    """The ambient GitHub credential through bh's one child-env launcher (``run.child_env``):
-    ``GITHUB_TOKEN``, then ``GH_TOKEN`` mirrored, then a fresh ``gh auth token`` — never
-    persisted, never logged.
+def ambient_token(environ: Mapping[str, str]) -> ResolvedToken | None:
+    """The ambient GitHub credential, with provenance, from bh's one chain
+    (:func:`run.resolve_github_token`): ``GITHUB_TOKEN``, then ``GH_TOKEN``, then a fresh
+    ``gh auth token`` — never persisted, never logged.
 
     None when none is available — bd may still find a host-local ``github.token`` in the store's
     own config.yaml. The value is never stored or printed by bh."""
-    from .run import GITHUB_TOKEN_VAR
-    from .run import child_env as launcher_env  # lazy: keep import-light
+    from .run import resolve_github_token  # lazy: keep import-light
 
-    return launcher_env(environ, github_token=True).get(GITHUB_TOKEN_VAR) or None
+    return resolve_github_token(environ)
 
 
 def child_env(projection: Projection, token: str | None) -> dict[str, str]:
@@ -146,17 +144,10 @@ def _default_routes(target: StoreTarget, extra_env: Mapping[str, str]) -> Any:
     return store_target.routes(target, extra_env=extra_env)
 
 
-def _scrub(text: str, secrets: list[str]) -> str:
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, _REDACTED)
-    return text
-
-
 def _tail(res: Any, secrets: list[str]) -> str:
     """bd's last diagnostic line — stderr first, then stdout — with the credential scrubbed."""
     for name in ("stderr", "stdout"):
-        raw = _scrub(str(getattr(res, name, "") or ""), secrets)
+        raw = scrub(str(getattr(res, name, "") or ""), secrets)
         lines = [line.strip() for line in raw.splitlines() if line.strip()]
         if lines:
             return lines[-1]
@@ -227,7 +218,8 @@ def project(
     projection = resolve_projection(entry)
     target = projection.target.require_present()
     environ = dict(os.environ if environ is None else environ)
-    token = (token_source or ambient_token)(environ)
+    resolved = token_source() if token_source else ambient_token(environ)
+    token = resolved.value if resolved else None
     secrets = [token] if token else []
     routes = (routes_factory or _default_routes)(target, child_env(projection, token))
 
@@ -249,7 +241,7 @@ def project(
             f"{target.hive}: `bd github sync --pull-only` failed ({_tail(res, secrets)}); "
             "the internal store and routing were not touched"
         )
-    out = _scrub(str(getattr(res, "stdout", "") or ""), secrets)
+    out = scrub(str(getattr(res, "stdout", "") or ""), secrets)
     report = ProjectionReport(
         hive=target.hive,
         store=target.scope,
