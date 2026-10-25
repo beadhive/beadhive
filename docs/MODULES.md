@@ -466,6 +466,20 @@ Deleted in the beadhive-core cutover (bh-sy36q.6). Molecule filing and the depen
 verification, kickoff approval and repair are plain functions in `beadhive.plan`. The
 `module.planning` test closure is declared `absent`.
 
+### `modules/tracker`
+
+Owns the tracker-neutral **bead tracker adapter port** (`tracker-adapter-port-adr.md` section 3):
+`beadhive.modules.tracker.contracts` (records, the error taxonomy, the required `TrackerReader` +
+`TrackerIdentity` = `TrackerAdapter` Protocol and the optional `CommentWriter`, `LabelWriter` and
+`IssueResolver`; standard library only, API version 1) and `application` (`iterate`,
+`snapshot_ids`). It has no domain layer and no state. It is a **leaf**: the import checker forbids
+it any other module's `contracts` or `application` (G3), forbids `httpx` in any `contracts` layer
+(G1) and forbids tracker SDKs (`githubkit`, `gidgethub`, `github`) in every root layer (G2).
+Concrete adapters live in plugin packages. Consumers test against
+`beadhive.testing.tracker.MemoryTracker`, and every adapter must pass
+`beadhive.testing.tracker.TRACKER_CASES`. Module-internal tests are `tests/unit/modules/tracker`
+and `tests/unit/testing/test_tracker_conformance_kit.py`.
+
 ### `modules/worktrees`
 
 Owns workspace binding, branch/worktree identity, creation/removal policy, inventory, status,
