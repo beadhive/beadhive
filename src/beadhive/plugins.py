@@ -34,6 +34,8 @@ from .kernel.lifecycle import (
     WorktreeLifecycleContext,
 )
 from .kernel.plugins import (
+    BEADHIVE_COMPATIBILITY_VERSION,
+    PLUGIN_KERNEL_VERSION,
     DiscoveryResult,
     LifecycleSubscriptionDeclaration,
     PluginKernelConfig,
@@ -164,8 +166,8 @@ def _compose(
             discover_plugins(
                 [],
                 config=raw,
-                beadhive_version="0.15.1",
-                kernel_version="1.0.0",
+                beadhive_version=BEADHIVE_COMPATIBILITY_VERSION,
+                kernel_version=PLUGIN_KERNEL_VERSION,
                 host_executables=host_executables,
             ),
             (),
@@ -189,8 +191,8 @@ def _compose(
         discover_plugins(
             [builtin_manifest_source()],
             config=merged_policy,
-            beadhive_version="0.15.1",
-            kernel_version="1.0.0",
+            beadhive_version=BEADHIVE_COMPATIBILITY_VERSION,
+            kernel_version=PLUGIN_KERNEL_VERSION,
             host_executables=host_executables,
         ),
         declarations,

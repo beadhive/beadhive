@@ -14,11 +14,13 @@ from beadhive_plugins.contracts import (
     PluginKernelConfig,
 )
 
-from ..kernel.plugins import builtin_manifest_source, discover_plugins
+from ..kernel.plugins import (
+    BEADHIVE_COMPATIBILITY_VERSION,
+    PLUGIN_KERNEL_VERSION,
+    builtin_manifest_source,
+    discover_plugins,
+)
 from ..modules.config.contracts import AttestConfig
-
-_BEADHIVE_VERSION = "0.15.1"
-_KERNEL_VERSION = "1.0.0"
 
 
 @dataclass(frozen=True)
@@ -47,8 +49,8 @@ def collect_build_verify_diagnostics(
     discovery = discover_plugins(
         tuple(sources) if sources is not None else (builtin_manifest_source(),),
         config=plugin_kernel,
-        beadhive_version=_BEADHIVE_VERSION,
-        kernel_version=_KERNEL_VERSION,
+        beadhive_version=BEADHIVE_COMPATIBILITY_VERSION,
+        kernel_version=PLUGIN_KERNEL_VERSION,
     )
     owner = discovery.owner_of(BUILD_VERIFY)
     provider = next((item for item in providers if item.plugin_id == owner), None)
