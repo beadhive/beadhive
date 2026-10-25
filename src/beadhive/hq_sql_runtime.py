@@ -63,6 +63,13 @@ class SqlRuntimeCapabilityMissing(SqlRuntimeError):
     Fail-closed like every floor refusal; the message names the grant, never the account."""
 
 
+class SqlRuntimeFloorRefusal(SqlRuntimeError):
+    """A restore floor refused the head: rollback, fork or amended authority (bh-a0wem).
+
+    The message names heads, sequences, the reason and changed tables, never row contents or
+    credentials, and points at :data:`FLOOR_RECOVERY_DOC`, so callers may show it verbatim."""
+
+
 class _ProvisioningRefusal(SqlRuntimeError):
     """One same-sequence transition is not reviewed provisioning; ``str`` is the reason."""
 
@@ -402,14 +409,14 @@ class SqlRuntimeAuthority:
             else:
                 previous_sequence, previous_head = 1, settings["runtime_initial_revision"]
             if sequence < previous_sequence:
-                raise SqlRuntimeError(
+                raise SqlRuntimeFloorRefusal(
                     f"{AMENDED_REFUSAL}: authority sequence {sequence} at head {head[:12]} is "
                     f"below restore floor sequence {previous_sequence} at {previous_head[:12]}; "
                     f"see {FLOOR_RECOVERY_DOC}"
                 )
             if head != previous_head:
                 if runtime_statements(cursor).has_ancestor(head, previous_head) != 1:
-                    raise SqlRuntimeError(
+                    raise SqlRuntimeFloorRefusal(
                         f"HQ runtime history fork detected: head {head[:12]} does not descend "
                         f"from restore floor {previous_head[:12]}; see {FLOOR_RECOVERY_DOC}"
                     )
@@ -532,14 +539,14 @@ class SqlRuntimeAuthority:
         )
 
     @staticmethod
-    def _amended(sql, floor, head, reason) -> SqlRuntimeError:
+    def _amended(sql, floor, head, reason) -> SqlRuntimeFloorRefusal:
         """The refusal for a same-sequence descendant, with native recovery diagnostics."""
         try:
             changed = sorted({row[1] or row[0] for row in sql.diff_summary(floor, head)})
             since = ", ".join(changed) or "nothing"
         except Exception:  # noqa: BLE001 - the diagnostic is optional, the refusal is not
             since = "unavailable"
-        return SqlRuntimeError(
+        return SqlRuntimeFloorRefusal(
             f"{AMENDED_REFUSAL}: head {head[:12]} keeps the authority sequence of restore floor "
             f"{floor[:12]} and descends from it, but {reason}; tables changed since the floor: "
             f"{since}. Only reviewed session provisioning may share an authority sequence; "
