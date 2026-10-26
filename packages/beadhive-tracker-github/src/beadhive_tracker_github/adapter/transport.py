@@ -1,6 +1,6 @@
-"""The githubkit transport behind the adapter: one credential per operation, GET for reads and
-POST/DELETE for the gated writes, retried by the adapter's own decision on an injected sleep and
-clock.
+"""The githubkit transport behind the adapter: one credential per operation, reads by GET and the
+gated writes through one write seam, retried by the adapter's own decision on an injected sleep
+and clock.
 
 githubkit (MIT, about 250 ms to import) is imported **only inside functions here**, so importing
 this package never loads it (rule P1, tested). It is used as the HTTP layer: client construction,
@@ -14,6 +14,13 @@ Three of its defaults are overridden on purpose (port ADR section 1):
   default.
 * ``timeout`` is finite (githubkit's default is none at all): a hung connection is a transient
   failure, not a hang.
+
+Writes are the exception, not the rule: only an operation opened with ``write=True`` (by a
+writer, after its grant was checked) has :meth:`Session.send`, the ONE write seam every writer
+(``comment.create``, ``labels.change``) sends through. Its client neither caches nor follows a
+redirect (httpx re-sends a redirected ``POST`` as a ``GET``), and it is retried only on a
+rate-limit refusal; a server error, a timeout, a dropped connection after the send, a redirect or
+an unreadable success body is ``WriteOutcomeUnknown``, never retried.
 
 The mapping reads the decoded JSON rather than githubkit's generated models: the models are not
 verified against every live payload (port ADR, "Unverified"), so a model mismatch would turn one
@@ -90,11 +97,14 @@ class Session:
         token: ResolvedToken | None,
         client: Any,
         operation: Operation | None,
+        *,
+        write: bool = False,
     ) -> None:
         self._transport = transport
         self._token = token
         self._client = client
         self._operation = operation
+        self._write = write
 
     @property
     def source(self) -> str | None:
@@ -109,19 +119,24 @@ class Session:
         return (self._token.value,) if self._token is not None else ()
 
     def _attempt(
-        self, method: str, target: str, params: Mapping[str, str] | None, body: Any, *, write: bool
+        self,
+        target: str,
+        params: Mapping[str, str] | None,
+        *,
+        method: str = "GET",
+        payload: Mapping[str, Any] | None = None,
     ) -> Reply | Refusal:
         from githubkit.exception import RequestError, RequestFailed, RequestTimeout
 
         transport = self._transport
-        options: dict[str, Any] = {} if body is None else {"json": body}
+        write = method != "GET"
         try:
             response = self._client.request(
                 method,
                 target,
                 params=dict(params) if params else None,
+                json=dict(payload) if payload is not None else None,
                 headers={"X-GitHub-Api-Version": API_VERSION},
-                **options,
             )
         except RequestFailed as exc:
             raw = exc.response
@@ -139,31 +154,45 @@ class Session:
             return classify_transport_failure(write=write, timeout=True)
         except RequestError:
             return classify_transport_failure(write=write, timeout=False)
+        except Exception:  # noqa: BLE001 - after a send, anything else leaves a write ambiguous
+            if write:
+                return classify_transport_failure(write=True, timeout=False)
+            raise
+        if write and not 200 <= response.status_code < 300:
+            # Never followed (a write client does not follow redirects): GitHub did not confirm.
+            return Refusal(
+                WriteOutcomeUnknown(
+                    f"GitHub answered {response.status_code} to a write without confirming it"
+                ),
+                retryable=False,
+            )
         try:
             decoded = response.json()
         except (ValueError, json.JSONDecodeError):
-            if write:  # answered success, but what it did cannot be read back
+            if write:  # accepted, but the receipt is unreadable: the consumer reconciles
                 raise WriteOutcomeUnknown(
-                    "GitHub answered a write with a body that is not JSON; it may have applied"
+                    "GitHub accepted the write but its answer is not JSON; it may have applied"
                 ) from None
             raise TrackerError("GitHub answered with a body that is not JSON") from None
         return Reply(response.status_code, response.headers, decoded, str(response.url))
 
     def _run(
         self,
-        method: str,
         target: str,
         params: Mapping[str, str] | None,
-        body: Any,
         *,
-        write: bool,
+        method: str = "GET",
+        payload: Mapping[str, Any] | None = None,
     ) -> Reply:
+        """Send until a reply, or until the retry decision says stop (then raise its error)."""
         transport = self._transport
         waited, attempt = 0.0, 0
         while True:
-            outcome = self._attempt(method, target, params, body, write=write)
+            outcome = self._attempt(target, params, method=method, payload=payload)
             if isinstance(outcome, Reply):
                 return outcome
+            if isinstance(outcome.error, WriteOutcomeUnknown):
+                raise outcome.error from None  # never retried, whatever the budget says
             wait = next_wait(outcome, attempt=attempt, waited=waited, budget=transport.budget)
             if wait is None:
                 raise outcome.error from None
@@ -174,17 +203,22 @@ class Session:
     def get(self, target: str, params: Mapping[str, str] | None = None) -> Reply:
         """GET ``target`` (an API path, or a checked absolute ``next`` URL), retried within the
         budget; raise the port error of the last refusal otherwise."""
-        return self._run("GET", target, params, None, write=False)
+        return self._run(target, params)
 
-    def write(self, method: str, target: str, body: Any = None) -> Reply:
-        """Send one WRITE request (``POST`` or ``DELETE``) to an API path.
+    def send(self, method: str, target: str, payload: Mapping[str, Any] | None = None) -> Reply:
+        """One WRITE (``POST``, ``DELETE``) of ``payload`` to ``target``: the one write seam.
 
-        Only a rate-limit answer (proof that nothing was done) is retried, within the budget; a
-        ``5xx``, a timeout, a dropped connection or an unreadable success body raises
-        ``WriteOutcomeUnknown`` at once and is never retried."""
-        if method not in ("POST", "DELETE"):
-            raise ValueError("a write is a POST or a DELETE")
-        return self._run(method, target, None, body, write=True)
+        Retried only when GitHub refused it with a rate limit (proof that nothing was written),
+        within the budget, on the injected sleep. A server error, a timeout, a dropped
+        connection, an unconfirmed (non-2xx, e.g. a redirect, never followed) or unreadable
+        answer raises ``WriteOutcomeUnknown`` and is NEVER retried: the write may have applied
+        exactly once, and the consumer reconciles (by the own-message marker, or by reading the
+        issue's labels). Every other refusal raises its port error with the exact diagnostic."""
+        if method == "GET":
+            raise ValueError("send() is for writes; use get() to read")
+        if not self._write:
+            raise ValueError("a write needs an operation opened with write=True")
+        return self._run(target, None, method=method, payload=payload)
 
 
 @dataclass
@@ -211,11 +245,11 @@ class Transport:
             raise AuthenticationFailed("the credential source returned no ResolvedToken")
         return token
 
-    def _client(self, token: ResolvedToken | None) -> Any:
+    def _client(self, token: ResolvedToken | None, *, write: bool = False) -> Any:
         from githubkit import GitHub
 
         options: dict[str, Any] = {}
-        if self.http_cache:
+        if self.http_cache and not write:
             if self._cache_strategy is None:
                 from githubkit.cache import MemCacheStrategy
 
@@ -227,15 +261,19 @@ class Transport:
             user_agent=USER_AGENT,
             timeout=self.timeout_seconds,
             transport=self.transport,
-            http_cache=self.http_cache,
+            # A write never caches, and never follows a redirect (httpx would re-send a
+            # redirected POST as a GET, silently turning the write into a read).
+            http_cache=self.http_cache and not write,
+            follow_redirects=not write,
             auto_retry=False,
             **options,
         )
 
     @contextmanager
-    def operation(self, operation: Operation | None) -> Iterator[Session]:
-        """Resolve the credential once, open one client, and yield the operation's GET seam."""
+    def operation(self, operation: Operation | None, *, write: bool = False) -> Iterator[Session]:
+        """Resolve the credential once, open one client, and yield the operation's seam: GETs,
+        plus :meth:`Session.send` when ``write`` (a client that neither caches nor redirects)."""
         token = self._resolve()
-        client = self._client(token)
+        client = self._client(token, write=write)
         with client:
-            yield Session(self, token, client, operation)
+            yield Session(self, token, client, operation, write=write)

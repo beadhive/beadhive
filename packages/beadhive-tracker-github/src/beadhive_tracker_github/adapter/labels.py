@@ -1,9 +1,10 @@
 """The ``labels.change`` writer (W9): add and remove OWNED labels on one issue, under a grant.
 
-This is the optional ``LabelWriter`` of the port (port ADR section 3), kept in its own module and
-mixed into :class:`~.tracker.GitHubTrackerAdapter`. Every refusal below happens **before any
-request is sent** (and before the credential is resolved), and the tests assert it on the
-transport:
+This is the optional ``LabelWriter`` of the port (port ADR section 3), kept in its own module: a
+mixin of :class:`~.tracker.GitHubTrackerAdapter`, composed in only when ``labels.change`` is
+enabled (:mod:`.compose`), so a disabled write has no method at all. Every refusal below happens
+**before any request is sent** (and, but for the last, before the credential is resolved), and
+the tests assert it on the transport:
 
 1. ``labels.change`` is not in the resolved ``enabled`` set: ``OperationNotEnabled``;
 2. the grant is not a ``WriteGrant``, names another operation or another issue, or was already
@@ -14,10 +15,11 @@ transport:
 4. the issue key names another repository: ``NotVisible``;
 5. no credential resolved (an anonymous write cannot succeed): ``AuthenticationFailed``.
 
-Only then is the grant **spent** (an in-memory ledger, atomic under a lock; durable single use is
-the consumer's outbox) and the requests sent. A grant is spent by the first attempt and never
-refunded, whatever the answer: a write that might have applied must not be repeated under the
-same approval, and a fresh approval is the operator's gate to issue.
+Only then is the grant **spent** (the adapter's one :class:`~.grants.GrantLedger`, shared with
+every writer; durable single use is the consumer's outbox) and the requests sent, through the one
+write seam :meth:`~.transport.Session.send` (a client that never follows a redirect). A grant is
+spent by the first attempt and never refunded, whatever the answer: a write that might have applied
+must not be repeated under the same approval, and a fresh approval is the operator's gate to issue.
 
 Wire (GitHub REST, API version 2022-11-28): ``POST /issues/{n}/labels`` with
 ``{"labels": [...]}`` adds (idempotent; it creates a repository label that does not exist yet),
@@ -37,8 +39,7 @@ how it ended; the consumer reconciles by reading the issue's labels).
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -55,30 +56,14 @@ from beadhive.modules.tracker.contracts import (
     WriteReceipt,
 )
 
-from .transport import Session, Transport
-from .urls import GitHubLocation
+if TYPE_CHECKING:
+    from .grants import GrantLedger
+    from .transport import Session, Transport
+    from .urls import GitHubLocation
 
-__all__ = ["GrantLedger", "LabelWriting"]
+__all__ = ["LabelWriting"]
 
-
-class GrantLedger:
-    """The grants this adapter instance has spent. Atomic; never persisted, never printed."""
-
-    def __init__(self) -> None:
-        self._spent: set[str] = set()
-        self._lock = threading.Lock()
-
-    def refuse_if_spent(self, grant_id: str) -> None:
-        with self._lock:
-            spent = grant_id in self._spent
-        if spent:
-            raise OperationNotEnabled("the grant was already used; a write needs a fresh grant")
-
-    def spend(self, grant_id: str) -> None:
-        with self._lock:
-            if grant_id in self._spent:
-                raise OperationNotEnabled("the grant was already used; a write needs a fresh grant")
-            self._spent.add(grant_id)
+_OPERATION = Operation.LABELS_CHANGE
 
 
 def _label_names(body: Any) -> frozenset[str]:
@@ -100,27 +85,18 @@ def _as_labels(value: Iterable[str], what: str) -> frozenset[str]:
 
 
 class LabelWriting:
-    """``change_labels`` for the adapter; mixed into :class:`~.tracker.GitHubTrackerAdapter`.
+    """Mixin: ``change_labels`` over the host adapter's location, transport and grant ledger."""
 
-    The host class provides the members declared below (its constructor state and gates)."""
-
-    _enabled: frozenset[Operation]
+    # Provided by the host, ``GitHubTrackerAdapter``.
+    _grants: GrantLedger
     _location: GitHubLocation
     _transport: Transport
     #: When built from configuration: the ``write.labels.owned_prefixes`` every label must ALSO
     #: satisfy (the call's own ``LabelOwnership`` can only narrow, never widen, the operator's
     #: choice). ``None``: only the call's ownership applies.
     _label_prefixes: tuple[str, ...] | None
-
-    if TYPE_CHECKING:
-
-        def _require(self, operation: Operation) -> None: ...
-
-        def _issue_number(self, key: IssueKey) -> int: ...
-
-    def _grants(self, operation: Operation) -> GrantLedger:
-        ledgers: dict[Operation, GrantLedger] = self.__dict__.setdefault("_grant_ledgers", {})
-        return ledgers.setdefault(operation, GrantLedger())
+    _require: Callable[[Operation], None]
+    _issue_number: Callable[[IssueKey], int]
 
     def _authorise_labels(
         self,
@@ -129,16 +105,11 @@ class LabelWriting:
         remove: frozenset[str],
         ownership: LabelOwnership,
         grant: WriteGrant,
-    ) -> int:
-        """Every local refusal, in order; returns the issue number (sends and spends nothing)."""
-        self._require(Operation.LABELS_CHANGE)
-        if not isinstance(grant, WriteGrant):
-            raise OperationNotEnabled("labels.change needs an operator-approved WriteGrant")
-        if grant.operation is not Operation.LABELS_CHANGE:
-            raise OperationNotEnabled("the grant does not cover labels.change")
-        if grant.target != issue:
-            raise OperationNotEnabled("the grant does not cover this issue")
-        self._grants(Operation.LABELS_CHANGE).refuse_if_spent(grant.grant_id)
+    ) -> WriteGrant:
+        """Every local refusal, in order (sends and spends nothing); returns the checked grant."""
+        self._require(_OPERATION)
+        checked = self._grants.check(grant, _OPERATION, issue)
+        self._grants.refuse_if_spent(checked)
         if not isinstance(ownership, LabelOwnership):
             raise OperationNotEnabled("labels.change needs the LabelOwnership it is allowed")
         configured = None if self._label_prefixes is None else LabelOwnership(self._label_prefixes)
@@ -149,7 +120,7 @@ class LabelWriting:
         )
         if foreign:
             raise LabelNotOwned(f"labels outside the owned set: {', '.join(foreign)}")
-        return self._issue_number(issue)
+        return checked
 
     def change_labels(
         self,
@@ -167,26 +138,26 @@ class LabelWriting:
             raise ValueError("a label cannot be both added and removed")
         if not add and not remove:
             raise ValueError("nothing to change: add or remove at least one label")
-        number = self._authorise_labels(issue, add, remove, ownership, grant)
-        path = f"{self._location.repo_path}/issues/{number}"
-        with self._transport.operation(Operation.LABELS_CHANGE) as session:
+        checked = self._authorise_labels(issue, add, remove, ownership, grant)
+        path = f"{self._location.repo_path}/issues/{self._issue_number(issue)}"
+        with self._transport.operation(_OPERATION, write=True) as session:
             if session.anonymous:
                 raise AuthenticationFailed("labels.change needs a credential and none resolved")
-            self._grants(Operation.LABELS_CHANGE).spend(grant.grant_id)
-            after = self._send(session, path, add, remove)
-        return WriteReceipt(grant.grant_id, grant.operation, issue, labels_after=after)
+            self._grants.spend(checked)
+            after = self._send_changes(session, path, add, remove)
+        return WriteReceipt(checked.grant_id, checked.operation, issue, labels_after=after)
 
     @staticmethod
-    def _send(
+    def _send_changes(
         session: Session, path: str, add: frozenset[str], remove: frozenset[str]
     ) -> frozenset[str]:
         after: frozenset[str] | None = None
         if add:
-            reply = session.write("POST", f"{path}/labels", {"labels": sorted(add)})
+            reply = session.send("POST", f"{path}/labels", {"labels": sorted(add)})
             after = _label_names(reply.body)
         for name in sorted(remove):
             try:
-                reply = session.write("DELETE", f"{path}/labels/{quote(name, safe='')}")
+                reply = session.send("DELETE", f"{path}/labels/{quote(name, safe='')}")
             except NotVisible:
                 # Not on the issue (already the desired state) or the issue is invisible: a read
                 # of the issue says which (it raises NotVisible itself in the second case).

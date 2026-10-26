@@ -5,11 +5,13 @@ project, the resolved ``enabled`` set, a ``RetryBudget``, ``sleep``, the token s
 no configuration and imports no plugin kernel. Root's lazy factory row builds it
 (:mod:`beadhive_tracker_github.factory`).
 
-**Writers.** Each write lands in its own bead behind its own operator-approved gate and lives in
-its own module, mixed in here: ``labels.change`` is :class:`~.labels.LabelWriting` (W9). A writer
-method existing on this class is necessary, never sufficient: it refuses before any request unless
-its operation is in ``enabled`` and the call carries a fresh, matching ``WriteGrant``; and the
-composition root exposes it on the bound object only when the operation is enabled.
+**This class is the read path; writers are mixins.** It has no write method itself. Each write
+operation is its own module (``comment.create``: :mod:`.comments`; ``labels.change``:
+:mod:`.labels`), composed onto this class by :mod:`.compose` only when that operation is enabled,
+so the built object structurally lacks a disabled write's method. A present writer is necessary,
+never sufficient: it refuses before any request unless its operation is in ``enabled`` and the
+call carries a fresh, matching ``WriteGrant``. ``describe().supported`` names what the package
+implements; the one grant ledger every writer spends from lives here (one per adapter instance).
 
 Wire facts honoured (port ADR section 1):
 
@@ -78,8 +80,8 @@ from beadhive.modules.tracker.contracts import (
 from beadhive_plugins.credentials import TokenSource
 
 from . import mapping
+from .grants import GrantLedger
 from .identity import RepositoryFacts, probe_operation
-from .labels import LabelWriting
 from .transport import DEFAULT_TIMEOUT_SECONDS, Reply, Session, Transport
 from .urls import GitHubLocation
 
@@ -91,8 +93,8 @@ __all__ = ["CHECKPOINT_PREFIX", "SUPPORTED_OPERATIONS", "GitHubTrackerAdapter"]
 #: Every checkpoint token this adapter emits starts with this (and refuses any other).
 CHECKPOINT_PREFIX = "github:"
 
-#: What this adapter implements today: the read path and the writers that have landed.
-SUPPORTED_OPERATIONS = READ_OPERATIONS | {Operation.LABELS_CHANGE}
+#: What this adapter implements: the read path plus each landed writer (composed when enabled).
+SUPPORTED_OPERATIONS = READ_OPERATIONS | {Operation.COMMENT_CREATE, Operation.LABELS_CHANGE}
 
 _NEXT = re.compile(r'<([^<>]+)>\s*;\s*rel="next"')
 
@@ -123,9 +125,9 @@ def _rows(reply: Reply) -> list[Any]:
     return reply.body
 
 
-class GitHubTrackerAdapter(LabelWriting):
-    """Implements ``TrackerAdapter`` (reader plus identity), ``IssueResolver`` and the optional
-    ``LabelWriter`` for GitHub."""
+class GitHubTrackerAdapter:
+    """Implements ``TrackerAdapter`` (reader plus identity) and ``IssueResolver`` for GitHub; the
+    optional writers are composed onto it by :mod:`.compose`."""
 
     def __init__(
         self,
@@ -162,6 +164,8 @@ class GitHubTrackerAdapter(LabelWriting):
         )
         #: Write capability refuted by a probe: cached for this process only (never YES/UNKNOWN).
         self._refuted: dict[Operation, str] = {}
+        #: Single-use write grants already presented to this instance (every writer spends here).
+        self._grants = GrantLedger()
 
     def __repr__(self) -> str:
         return f"GitHubTrackerAdapter({self._location.locator!r})"
