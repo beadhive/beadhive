@@ -411,11 +411,12 @@ and `import beadhive` never needs or imports its `githubkit` dependency.
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
 
-The adapter ships the read path and the `labels.change` writer (owned prefixes only, one
-single-use grant per write); an enabled `comment.create` flag binds no writer until that bead
-lands. A read whose flag is off is refused before
-any request. `read.include_closed: false` narrows issue listings but never the full id snapshot
-used to detect deletions (a closed issue still exists). Retries wait on the adapter's own budget
+The adapter ships the read path and both writers, `comment.create` and `labels.change` (owned
+prefixes only). Each write flag binds its writer and nothing else, and each write still needs its
+own operator-approved single-use grant (no key can supply one). A read or write whose flag is off
+is refused before any request (a disabled writer has no method on the bound object).
+`read.include_closed: false` narrows issue listings but never the full id snapshot used to detect
+deletions (a closed issue still exists). Retries wait on the adapter's own budget
 above, never on githubkit's built-in retry.
 
 As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
