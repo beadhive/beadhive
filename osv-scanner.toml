@@ -56,6 +56,13 @@ effectiveUntil = 2027-02-01
 reason = "BSD-3-Clause specifically, not bare 'BSD'. Verified by reading colorama-0.4.6.dist-info/licenses/LICENSE.txt: all three clauses present including the endorsement clause ('Neither the name of the copyright holders, nor those of its contributors may be used to endorse...'), which is what distinguishes 3-Clause from 2-Clause."
 
 [[PackageOverrides]]
+name = "hishel"
+ecosystem = "PyPI"
+license.override = ["BSD-3-Clause"]
+effectiveUntil = 2027-02-01
+reason = "BSD-3-Clause specifically, not bare 'BSD'. Verified (bh-h8kab, re-verified 2026-10-26 against the version pinned in uv.lock, hishel 1.4.0): hishel-1.4.0.dist-info/licenses/LICENSE is the three-clause text including the endorsement clause ('Neither the name of the copyright holder nor the names of its contributors may be used to endorse...'); the metadata carries only the generic 'License :: OSI Approved :: BSD License' classifier, which deps.dev buckets as non-standard. Arrives transitively via githubkit, a dependency of the beadhive-tracker-github plugin package only (the beadhive[github] extra). RE-VERIFY AT EXPIRY (effectiveUntil 2027-02-01): re-read the LICENSE of the then-locked hishel, then renew this date with a new re-verification date, or delete the entry if upstream metadata gains an SPDX expression. Do not extend on reflex."
+
+[[PackageOverrides]]
 name = "pyperclip"
 ecosystem = "PyPI"
 license.override = ["BSD-3-Clause"]

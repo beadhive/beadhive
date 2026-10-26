@@ -822,8 +822,8 @@ pkg name *args:
 # keeps its existing dedicated leaf in the same key; Pants/root artifacts belong to
 # root-composition, and bd-cli remains fully isolated in its own leaf.
 packages-check:
-    uv run ruff check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants
-    uv run ruff format --check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants
+    uv run ruff check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants --exclude packages/beadhive-tracker-github
+    uv run ruff format --check packages --exclude packages/beadhive-bd-cli --exclude packages/beadhive-hq-storage --exclude packages/beadhive-hq-storage-dolt --exclude packages/beadhive-pants --exclude packages/beadhive-tracker-github
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
         --package beadhive-package-template --package beadhive-core \
         --package beadhive-plugins --package beadhive-worktrees \
@@ -866,13 +866,15 @@ hq-storage-check:
 # five library packages including bd-cli. Keeping those artifact operations on root-composition
 # makes the package and bd-cli keys independent while preserving one full-gate owner.
 root-workspace-check: root-composition-validate
-    uv run ruff check packages/beadhive-pants
-    uv run ruff format --check packages/beadhive-pants
-    ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups --package beadhive-pants
+    uv run ruff check packages/beadhive-pants packages/beadhive-tracker-github
+    uv run ruff format --check packages/beadhive-pants packages/beadhive-tracker-github
+    ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
+        --package beadhive-pants --package beadhive-tracker-github
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-auto} \
-        -m "not pants_profile" packages/beadhive-pants/tests
+        -m "not pants_profile" packages/beadhive-pants/tests packages/beadhive-tracker-github/tests
     ./scripts/hermetic.sh uv build --package beadhive-pants --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-tracker-github --no-build-isolation
     just release-smoke-check
 
 # Reproduces .github/workflows/release.yml's build + smoke test (bh-mxjoy). A plain `uv build`
