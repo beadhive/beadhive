@@ -1351,6 +1351,7 @@ _DOCTOR_SECTIONS = {
     "install",
     "observability",
     "build_verify",
+    "tracker_adapters",
     "writer_fence",
     "forward",
     "warnings",
@@ -3110,3 +3111,124 @@ def test_data_store_engine_reports_server_credentials_only_when_configured(
     block = doctor._data_store_engine(cfg)["server_credentials"]
     assert block["servers"][0]["state"] == "missing"
     assert any("restart" in line for line in block["lines"])
+
+
+# ---- tracker adapter rows (T2 of the tracker.adapter ADR) -----------------------------------
+
+_TRACKER_TOKEN = "ghp_" + "A1b2C3d4E5" * 4
+
+
+def _tracker_cfg(*, adapter="tracker-github", plugins=None, kind="") -> dict:
+    stores = {"public": {"source": "github-issues"}}
+    if adapter:
+        stores["public"]["adapter"] = adapter
+    entry = {
+        "provider": "github",
+        "org": "octo",
+        "repo": "widgets",
+        "prefix": "w",
+        "stores": stores,
+    }
+    if kind:
+        entry["kind"] = kind
+    cfg: dict = {"managed_repos": [entry]}
+    if plugins is not None:
+        cfg["plugins"] = plugins
+    return cfg
+
+
+def _with_test_manifest(monkeypatch, installed=True):
+    from beadhive.bootstrap import tracker as tracker_module
+    from beadhive.kernel.plugins import (
+        BuiltInManifestSource,
+        ManifestDocument,
+        ManifestProvenance,
+    )
+
+    doc = {
+        "capabilities": {"provides": [{"api_version": 1, "id": "tracker.adapter"}]},
+        "compatibility": {
+            "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+            "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"},
+        },
+        "configuration": {
+            "legacy_namespaces": [],
+            "namespace": "plugins.tracker-github",
+            "schema_artifact": None,
+        },
+        "lifecycle": {"subscriptions": []},
+        "manifest_version": 1,
+        "plugin_id": "tracker-github",
+        "plugin_version": "1.0.0",
+        "presentation": {"cli": []},
+        "security": {"credentials": [], "executables": [], "permissions": []},
+    }
+    docs = (ManifestDocument(ManifestProvenance("test-only", "t.json"), json.dumps(doc).encode()),)
+    source = BuiltInManifestSource(docs if installed else ())
+    monkeypatch.setattr(tracker_module, "builtin_manifest_source", lambda: source)
+
+
+def test_doctor_tracker_section_is_empty_and_silent_when_no_store_binds_an_adapter(
+    monkeypatch, capsys
+):
+    from beadhive.bootstrap import tracker as tracker_module
+
+    def forbidden(**_kwargs):
+        raise AssertionError("an unbound fleet must not build the tracker composition")
+
+    monkeypatch.setattr(tracker_module, "compose_tracker_category", forbidden)
+
+    rows = doctor._data_tracker_adapters(_tracker_cfg(adapter=None))
+    doctor._render_tracker_adapters(rows)
+
+    assert rows == []
+    assert capsys.readouterr().out == ""
+
+
+def test_doctor_tracker_row_for_a_disabled_plugin_is_information(monkeypatch, capsys):
+    _with_test_manifest(monkeypatch)
+
+    rows = doctor._data_tracker_adapters(_tracker_cfg())
+    doctor._render_tracker_adapters(rows)
+    out = capsys.readouterr().out
+
+    (row,) = rows
+    assert (row["hive"], row["scope"], row["state"], row["severity"], row["rule"]) == (
+        "github/octo/widgets",
+        "public",
+        "disabled",
+        "info",
+        "R6",
+    )
+    assert (
+        "# Tracker adapters" in out
+        and "github/octo/widgets [public] tracker-github: disabled" in out
+    )
+
+
+def test_doctor_tracker_row_for_a_ready_store_names_repository_and_operations(monkeypatch):
+    _with_test_manifest(monkeypatch)
+    plugins = {"tracker-github": {"enabled": True, "read": {"issues": {"enabled": True}}}}
+
+    (row,) = doctor._data_tracker_adapters(_tracker_cfg(plugins=plugins))
+
+    assert (row["state"], row["severity"], row["project"]) == ("ready", "info", "octo/widgets")
+    assert row["operations"] == ["issues.read"]
+
+
+def test_doctor_tracker_rows_skip_hq_and_never_leak_a_credential(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", _TRACKER_TOKEN)
+    monkeypatch.setenv("GITHUB_TOKEN", _TRACKER_TOKEN)
+    _with_test_manifest(monkeypatch)
+    plugins = {"tracker-github": {"enabled": True}}
+
+    assert doctor._data_tracker_adapters(_tracker_cfg(plugins=plugins, kind="hq")) == []
+    rows = doctor._data_tracker_adapters(_tracker_cfg(plugins=plugins))
+    assert rows and _TRACKER_TOKEN not in json.dumps(rows)
+
+
+def test_doctor_payload_tracker_section_is_always_present_and_empty_for_an_unbound_fleet(
+    hive,  # noqa: F811
+    fakebd,  # noqa: F811
+):
+    assert doctor.doctor_payload()["tracker_adapters"] == []

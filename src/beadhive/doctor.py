@@ -3371,6 +3371,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
+        "tracker_adapters": _timed(timings, "tracker_adapters", _data_tracker_adapters, cfg),
         "writer_fence": _timed(timings, "writer_fence", _data_writer_fence, cfg),
         "forward": _timed(timings, "forward", _data_forward, cfg),
         "warnings": _timed(
@@ -3389,6 +3390,32 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
     timings["total"] = round((time.monotonic() - t_start) * 1000, 3)
     data["timings"] = timings
     return data
+
+
+def _data_tracker_adapters(cfg) -> list[dict]:
+    """One informational row per store, across every hive, that binds a tracker adapter (T2 of
+    the tracker.adapter ADR). Empty, with the composition never built, when nothing binds one.
+    Offline: no network, no package import, no credential read."""
+    from .bootstrap.tracker_readiness import has_binding, tracker_store_rows
+
+    hives = registry.hives(cfg)
+    if not has_binding(hives):
+        return []
+    return [
+        row.as_dict()
+        for row in tracker_store_rows(
+            hives, plugins=cfg.get("plugins"), plugin_kernel=cfg.get("plugin_kernel")
+        )
+    ]
+
+
+def _render_tracker_adapters(rows: list[dict]) -> None:
+    if not rows:
+        return
+    typer.echo("\n# Tracker adapters")
+    for row in rows:
+        glyph = {"info": "✓", "warning": "!", "error": "✗"}.get(row["severity"], "•")
+        typer.echo(f"  {glyph} {row['hive']} [{row['scope']}] {row['detail']}")
 
 
 def _data_build_verify(cfg) -> list[dict]:
@@ -3429,8 +3456,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``prefix_mismatches``, ``hq_remotes``, ``node_id``, ``beads_role``, ``beads_routing``,
     ``stores``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
-    ``install``, ``observability``, ``build_verify``, ``writer_fence``, ``forward``,
-    ``warnings``), plus
+    ``install``, ``observability``, ``build_verify``, ``tracker_adapters``, ``writer_fence``,
+    ``forward``, ``warnings``), plus
     ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
@@ -3543,6 +3570,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_build_verify(data["build_verify"])
+    _render_tracker_adapters(data.get("tracker_adapters") or [])
     _render_writer_fence(data.get("writer_fence") or [])
     _render_forward(data.get("forward") or [])
     _render_warnings(data["warnings"])

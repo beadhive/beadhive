@@ -162,6 +162,26 @@ def _plugin_checks(cfg, entry) -> list[Check]:
     return checks
 
 
+def _tracker_adapter_checks(cfg, entry) -> list[Check]:
+    """One INFORMATIONAL line per store of this hive that binds a tracker adapter (T2 of the
+    tracker.adapter ADR, rules R6/R9/R12). Never required: a new required check would drop
+    frames out of conformance, so the line can only be ok / na / off / warn. A hive that binds
+    nothing gets no line at all, and the composition is not even built for it. Offline: no
+    network, no package import, no credential read."""
+    if entry is None:
+        return []
+    from .bootstrap.tracker_readiness import READY_LABEL, has_binding, tracker_store_rows
+
+    if not has_binding([entry]):
+        return []
+    rows = tracker_store_rows(
+        [entry], plugins=cfg.get("plugins"), plugin_kernel=cfg.get("plugin_kernel")
+    )
+    return [
+        Check(READY_LABEL, False, row.check_state(), f"{row.scope}: {row.detail}") for row in rows
+    ]
+
+
 def _build_verify_checks(cfg, entry, root: Path) -> list[Check]:
     """Project plugin diagnostics; errors fail readiness because impact would be unsound."""
     if not (root / "pants.toml").is_file():
@@ -609,6 +629,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.extend(_observaloop_checks(cfg, entry))
     checks.append(_git_workspace_check(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
+    checks.extend(_tracker_adapter_checks(cfg, entry))
     checks.extend(_build_verify_checks(cfg, entry, root))
     checks.append(_grant_check(cfg, root, provider, org, repo))
     checks.append(_codex_sandbox_check(cfg, root, provider, org, repo))

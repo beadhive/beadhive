@@ -159,6 +159,7 @@ def test_the_disabled_default_renders_these_exact_lines():
         "tracker-github  disabled",
         "  capability   tracker.adapter@1  (owner: none selected)",
         "  stores       1 bound",
+        "               github/octo/widgets [public] -> octo/widgets",
         "  credential   env:GH_TOKEN unset, env:GITHUB_TOKEN unset; gh not found",
         "  identity     not probed (bh plugin tracker-github doctor --probe)",
         "  operations   issues.read     disabled  probe=not-probed",
@@ -197,6 +198,7 @@ def test_an_enabled_probed_store_renders_identity_credential_and_the_tri_state()
         "tracker-github  ready",
         "  capability   tracker.adapter@1  (owner: tracker-github)",
         "  stores       1 bound",
+        "               github/octo/widgets [public] -> octo/widgets",
         "  credential   env:GH_TOKEN unset, env:GITHUB_TOKEN set; gh found",
         "               resolved via env:GITHUB_TOKEN",
         "  identity     id=human-maintainer kind=human display=maintainer",
@@ -397,3 +399,39 @@ def test_status_and_doctor_make_no_network_call_and_run_no_process(monkeypatch):
 def test_a_blank_variable_counts_as_unset(value):
     doc = status(environ={"GH_TOKEN": value})
     assert doc["credential"]["legs"][0] == {"source": "env:GH_TOKEN", "present": False}
+
+
+# ---- the per-store listing ---------------------------------------------------------------
+
+
+def test_status_lists_every_bound_store_with_its_derived_project_and_skips_unbound_ones():
+    other = {**BOUND, "org": "acme", "repo": "api"}
+    unbound = {"provider": "github", "org": "o", "repo": "r", "stores": {"public": {}}}
+    doc = status({"tracker-github": plugin()}, hives=(BOUND, unbound, other))
+    assert doc["bound_stores"] == 2
+    assert doc["stores"] == [
+        {
+            "hive": "github/octo/widgets",
+            "scope": "public",
+            "project": "octo/widgets",
+            "reason": None,
+        },
+        {"hive": "github/acme/api", "scope": "public", "project": "acme/api", "reason": None},
+    ]
+    lines = render_text(doc).splitlines()
+    assert "               github/octo/widgets [public] -> octo/widgets" in lines
+    assert "               github/acme/api [public] -> acme/api" in lines
+    assert json.loads(render_json(doc))["stores"] == doc["stores"]
+
+
+def test_status_reports_an_unresolvable_project_with_a_reason_instead_of_a_slug():
+    gitlab = {**BOUND, "provider": "gitlab"}
+    doc = status({"tracker-github": plugin()}, hives=(gitlab,))
+    (store,) = doc["stores"]
+    assert store["project"] is None and "not 'github'" in store["reason"]
+    assert "no project (" in render_text(doc)
+
+
+def test_an_unbound_hive_set_lists_nothing():
+    doc = status({"tracker-github": plugin()}, hives=())
+    assert doc["stores"] == [] and doc["bound_stores"] == 0
