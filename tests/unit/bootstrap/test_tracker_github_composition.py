@@ -1,11 +1,13 @@
-"""The ``tracker-github`` plugin skeleton through the real composition root (bh-h8kab).
+"""The ``tracker-github`` plugin through the real composition root (bh-h8kab, bh-51fdo).
 
 These tests use the REAL built-in manifest (``BUILTIN_PLUGIN_IDS`` lists ``tracker-github``) and
 the REAL ``BUILTIN_TRACKER_PROVIDERS`` row, and prove the off-by-default contract the plugin ADR
 makes: installing the package and shipping its manifest enables nothing, a binding enables
 nothing, enabling the plugin with no binding changes nothing, and nothing imports the package
-(or githubkit) before every rule has passed. The factory is a skeleton, so the last step is a
-typed refusal, never an adapter and never a request.
+(or githubkit) before every rule has passed. Once every rule passes, the factory builds the
+read-path adapter without resolving a credential, sending a request or importing githubkit, and
+the bound object has no writer even when a write flag is on (the writers are later beads).
+No test here touches the network: only offline port calls (``describe``, ``resolve``) are made.
 """
 
 from __future__ import annotations
@@ -24,8 +26,16 @@ from beadhive.bootstrap.tracker import (
 )
 from beadhive.kernel.plugins import BUILTIN_PLUGIN_IDS
 from beadhive.modules.config.contracts import TrackerGithubConfig
-from beadhive.modules.tracker.contracts import Operation
-from beadhive_tracker_github.factory import TrackerAdapterNotImplemented, build
+from beadhive.modules.tracker.contracts import (
+    CommentWriter,
+    IssueKey,
+    IssueResolver,
+    LabelWriter,
+    Operation,
+    ProjectRef,
+    TrackerAdapter,
+)
+from beadhive_tracker_github.factory import build
 
 HIVE = "github/acme/widget"
 READ = frozenset({Operation.ISSUES_READ})
@@ -130,21 +140,56 @@ def test_the_kernel_policy_still_wins_over_the_plugins_own_flag(loads):
     assert loads == []
 
 
-# ---- only after every rule passes does the skeleton factory run, and it refuses ----------------
+# ---- only after every rule passes does the factory build the read-path adapter ----------------
 
 
-def test_enabled_and_bound_reaches_the_skeleton_factory_which_refuses_without_the_transport(loads):
+def counting_root(plugins=None, kernel=None) -> tuple[TrackerAdapters, list[int]]:
+    calls: list[int] = []
+
+    def tokens():
+        calls.append(1)
+        return None
+
+    adapters = TrackerAdapters(
+        plugins=plugins, plugin_kernel=kernel, token_source=tokens, sleep=lambda _s: None
+    )
+    return adapters, calls
+
+
+def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
     githubkit_before = "githubkit" in sys.modules
-    error = refusal(root({"tracker-github": enabled_plugin()}), entry(), requested=READ)
+    adapters, token_calls = counting_root({"tracker-github": enabled_plugin()})
+    bound = adapters.for_store(entry(), requested=READ)
 
     assert loads == ["beadhive_tracker_github.factory"]  # imported lazily, after selection
-    assert error.rule is TrackerRule.NOT_CONFORMING
-    assert error.message == (
-        f"{HIVE}: tracker adapter 'tracker-github' could not be built "
-        "(TrackerAdapterNotImplemented)"
+    assert bound.enabled == READ
+    port = bound.port
+    assert isinstance(port, TrackerAdapter) and isinstance(port, IssueResolver)
+    assert port.describe().project == ProjectRef("github", "acme/widget")
+    assert port.describe().supported == {Operation.ISSUES_READ, Operation.COMMENTS_READ}
+    assert port.resolve("https://github.com/acme/widget/issues/3#top") == IssueKey(
+        "#3", "https://github.com/acme/widget/issues/3"
     )
-    assert "githubkit" not in error.message
-    assert ("githubkit" in sys.modules) is githubkit_before  # the skeleton never imports it
+    assert token_calls == []  # nothing resolved a credential, so nothing was sent
+    assert ("githubkit" in sys.modules) is githubkit_before  # building never imports it
+
+
+def test_a_write_flag_on_still_binds_no_writer_until_the_write_beads_land(loads):
+    plugins = {
+        "tracker-github": enabled_plugin(
+            write={
+                "comment": {"enabled": True},
+                "labels": {"enabled": True, "owned_prefixes": ["bh:"]},
+            }
+        )
+    }
+    bound = root(plugins).for_store(
+        entry(), requested=READ | {Operation.COMMENT_CREATE, Operation.LABELS_CHANGE}
+    )
+
+    assert Operation.COMMENT_CREATE in bound.enabled  # enabled is necessary, never sufficient
+    assert not isinstance(bound.port, CommentWriter)
+    assert not isinstance(bound.port, LabelWriter)
 
 
 def test_negative_control_the_loader_assertions_would_notice_an_eager_import(loads):
@@ -152,12 +197,19 @@ def test_negative_control_the_loader_assertions_would_notice_an_eager_import(loa
     unbound cases did not. If this stopped being true the assertions above would catch it."""
     refusal(root(), entry(), requested=READ)
     assert loads == []
-    refusal(root({"tracker-github": enabled_plugin()}), entry(), requested=READ)
+    root({"tracker-github": enabled_plugin()}).for_store(entry(), requested=READ)
     assert loads == ["beadhive_tracker_github.factory"]
 
 
-def test_the_factory_builds_nothing_and_names_no_configuration():
-    with pytest.raises(TrackerAdapterNotImplemented) as caught:
+def test_the_factory_refuses_a_malformed_call_and_names_no_configuration():
+    with pytest.raises(TypeError) as caught:
         build({"token": "must-not-appear"}, lambda: None, project=None, sleep=lambda _s: None)  # type: ignore[arg-type]
     assert "must-not-appear" not in str(caught.value)
-    assert isinstance(caught.value, NotImplementedError)
+    with pytest.raises(ValueError) as caught_value:
+        build(
+            {"base_url": "https://must-not-appear@ghe.example"},
+            lambda: None,
+            project=ProjectRef("github", "acme/widget"),
+            sleep=lambda _s: None,
+        )
+    assert "must-not-appear" not in str(caught_value.value)
