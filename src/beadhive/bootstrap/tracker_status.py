@@ -38,6 +38,8 @@ from .tracker import (
     TrackerBindingError,
     TrackerComposition,
     bound_adapter_id,
+    derive_project,
+    hive_label,
 )
 
 #: The ``--json`` envelope's schema id.
@@ -59,15 +61,25 @@ class TrackerState(StrEnum):
     READY = "ready"
 
 
-def _bound_stores(plugin_id: str, hives: Sequence[Mapping[str, Any]]) -> int:
-    count = 0
+def _bound_store_rows(plugin_id: str, hives: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One row per store that binds ``plugin_id``: the hive, its scope and the tracker project
+    derived from the hive identity (``None`` plus a ``reason`` when it does not resolve, R12).
+    Only the public store can bind an adapter."""
+    rows: list[dict[str, Any]] = []
     for entry in hives:
         try:
-            if bound_adapter_id(entry, "public") == plugin_id:
-                count += 1
+            if bound_adapter_id(entry, "public") != plugin_id:
+                continue
+            hive = hive_label(entry)
         except (TrackerBindingError, TypeError):
             continue
-    return count
+        row: dict[str, Any] = {"hive": hive, "scope": "public", "project": None, "reason": None}
+        try:
+            row["project"] = derive_project(entry, plugin_id).locator
+        except TrackerBindingError as exc:
+            row["reason"] = exc.message
+        rows.append(row)
+    return rows
 
 
 def _state(plugin_id: str, composition: TrackerComposition, bound: int) -> TrackerState:
@@ -124,7 +136,10 @@ def tracker_status(
     def clean(text: str | None) -> str | None:
         return None if text is None else scrub(text, secrets)
 
-    bound = _bound_stores(plugin_id, hives)
+    stores = _bound_store_rows(plugin_id, hives)
+    for store in stores:
+        store["reason"] = clean(store["reason"])
+    bound = len(stores)
     state = _state(plugin_id, composition, bound)
     enabled_ops = composition.enabled_operations(plugin_id)
     operations = []
@@ -162,6 +177,7 @@ def tracker_status(
         and composition.policy.enabled.get(plugin_id, True) is not False,
         "install": row.install_hint if row else None,
         "bound_stores": bound,
+        "stores": stores,
         "credential": {
             "legs": [{"source": f"env:{name}", "present": bool(present[name])} for name in names],
             "executables": [
@@ -188,6 +204,9 @@ def render_text(doc: Mapping[str, Any]) -> str:
     owner = doc["owner"] or "none selected"
     lines.append(f"  capability   {doc['capability']}  (owner: {owner})")
     lines.append(f"  stores       {doc['bound_stores']} bound")
+    for store in doc.get("stores", ()):
+        where = store["project"] or f"no project ({store['reason']})"
+        lines.append(f"               {store['hive']} [{store['scope']}] -> {where}")
     cred = doc["credential"]
     legs = [f"{leg['source']} {'set' if leg['present'] else 'unset'}" for leg in cred["legs"]]
     tools = [f"{x['name']} {'found' if x['found'] else 'not found'}" for x in cred["executables"]]
