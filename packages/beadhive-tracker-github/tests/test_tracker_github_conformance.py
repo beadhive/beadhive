@@ -4,11 +4,12 @@ Every case in :data:`~beadhive.testing.tracker.TRACKER_CASES` runs against a fre
 the offline ``httpx.MockTransport`` stand-in (``tracker_github_fake.FakeGitHub``), on the public
 host and on a GitHub Enterprise Server prefix. No case opens a socket, reads a clock or sleeps.
 
-**Writers land one bead at a time.** Cases that enable a write and then require its writer
-Protocol (``comment.create``: grants, round trip, both ambiguous outcomes) are expected to fail
-until that writer lands (W8 ``bh-03s4w``), STRICTLY: the day a writer lands, its cases pass and
-its marker must be removed. ``labels.change`` landed with W9 ``bh-t082i`` (``labels.only-owned``
-passes). Every other case, including ``write.refused-when-not-enabled``, must pass.
+**Writers land one bead at a time.** Both writers have landed, ``comment.create`` (W8
+``bh-03s4w``: grants, round trip, both ambiguous outcomes) and ``labels.change`` (W9
+``bh-t082i``: ``labels.only-owned``), so every case runs for real and none is expected to fail.
+Should a future writer land after its conformance case, the case is listed in
+:data:`WRITER_CASES` and fails STRICTLY until it lands. Every case, including
+``write.refused-when-not-enabled`` (an absent writer is the structural refusal), must pass.
 """
 
 from __future__ import annotations
@@ -25,12 +26,9 @@ from beadhive.testing.conformance import ConformanceFailure
 from beadhive.testing.tracker import TRACKER_CASES, run_tracker_case
 from tracker_github_fake import github_subject
 
-#: Cases that need a writer the read path does not have (removed as W8 / W9 land).
-WRITER_CASES = {
-    "write.grant-matches-and-single-use": "W8 bh-03s4w (comment.create)",
-    "write.comment-round-trip": "W8 bh-03s4w (comment.create)",
-    "write.ambiguous-not-retried": "W8 bh-03s4w (comment.create)",
-    "write.ambiguous-not-applied": "W8 bh-03s4w (comment.create)",
+#: Cases that need a writer that has not landed yet (removed as each writer lands).
+WRITER_CASES: dict[str, str] = {
+    # Empty: every writer the suite exercises has landed.
 }
 
 
@@ -64,25 +62,57 @@ def test_every_writer_case_is_named_and_exists():
     assert set(WRITER_CASES) <= ids
 
 
-@pytest.mark.parametrize(
-    "enabled",
-    [frozenset(), frozenset({Operation.COMMENT_CREATE, Operation.LABELS_CHANGE})],
-)
-def test_the_adapter_exposes_only_the_writers_that_have_landed(enabled):
-    subject = github_subject(enabled=enabled)
+def test_with_no_write_enabled_the_adapter_has_no_write_method():
+    subject = github_subject(enabled=frozenset())
     adapter = subject.adapter
 
     assert isinstance(adapter, TrackerAdapter)
     assert not isinstance(adapter, CommentWriter)
-    assert not hasattr(adapter, "post_comment")
-    # labels.change has landed (W9): the writer method exists but refuses unless enabled and granted
-    # (test_tracker_github_labels.py); the composition root narrows it away when disabled.
-    assert isinstance(adapter, LabelWriter)
-    supported = adapter.describe().supported
-    assert supported == {Operation.ISSUES_READ, Operation.COMMENTS_READ, Operation.LABELS_CHANGE}
+    assert not isinstance(adapter, LabelWriter)
+    assert not hasattr(adapter, "post_comment") and not hasattr(adapter, "change_labels")
+    supported = adapter.describe().supported  # what the package implements, enabled or not
+    assert supported == {
+        Operation.ISSUES_READ,
+        Operation.COMMENTS_READ,
+        Operation.COMMENT_CREATE,
+        Operation.LABELS_CHANGE,
+    }
     report = adapter.probe_capabilities()
-    assert not report.states[Operation.COMMENT_CREATE].supported
-    assert not report.states[Operation.COMMENT_CREATE].usable
     for op in (Operation.COMMENT_CREATE, Operation.LABELS_CHANGE):
-        assert report.states[op].enabled is (op in enabled)
+        assert report.states[op].supported  # implemented, but neither enabled nor usable
+        assert not report.states[op].enabled and not report.states[op].usable
+    assert subject.world.write_requests() == 0
+
+
+def test_the_comment_writer_exists_only_when_comment_create_is_enabled():
+    subject = github_subject(enabled=frozenset({Operation.COMMENT_CREATE}))
+    adapter = subject.adapter
+
+    assert isinstance(adapter, TrackerAdapter) and isinstance(adapter, CommentWriter)
+    assert Operation.COMMENT_CREATE in adapter.describe().supported
+    state = adapter.probe_capabilities().states[Operation.COMMENT_CREATE]
+    assert state.supported and state.enabled
+    assert subject.world.write_requests() == 0  # building and probing never write
+
+
+def test_the_label_writer_exists_only_when_labels_change_is_enabled():
+    subject = github_subject(enabled=frozenset({Operation.LABELS_CHANGE}))
+    adapter = subject.adapter
+
+    assert isinstance(adapter, TrackerAdapter) and isinstance(adapter, LabelWriter)
+    assert not isinstance(adapter, CommentWriter) and not hasattr(adapter, "post_comment")
+    state = adapter.probe_capabilities().states[Operation.LABELS_CHANGE]
+    assert state.supported and state.enabled
+    assert subject.world.write_requests() == 0
+
+
+def test_both_writers_compose_when_both_writes_are_enabled():
+    enabled = frozenset({Operation.COMMENT_CREATE, Operation.LABELS_CHANGE})
+    subject = github_subject(enabled=enabled)
+    adapter = subject.adapter
+
+    assert isinstance(adapter, CommentWriter) and isinstance(adapter, LabelWriter)
+    report = adapter.probe_capabilities()
+    for op in enabled:
+        assert report.states[op].supported and report.states[op].enabled
     assert subject.world.write_requests() == 0

@@ -17,17 +17,20 @@ behaviour it reproduces (API version 2022-11-28):
 * ``GET /user`` (``X-OAuth-Scopes`` on scoped tokens; ``401 Bad credentials``; ``403 Resource not
   accessible by integration`` for an installation token) and ``GET /repos/{o}/{r}`` (the
   ``permissions`` object only when a credential was sent);
-* a secondary rate limit (``403`` + ``Retry-After``) on demand, and any scripted answer.
-
-* label writes: ``POST /issues/{n}/labels`` adds (creating a missing repository label) and
-  ``DELETE /issues/{n}/labels/{name}`` removes (``404 Label does not exist`` when absent); both
-  answer the issue's complete label list; a human's concurrent label is never lost;
-* an ambiguous write (:meth:`FakeGitHub.fail_next_write_ambiguously`): a ``502`` after the write
-  was stored (``applied``) or before it was (not applied);
+* a secondary rate limit (``403`` + ``Retry-After``) on demand, and any scripted answer;
+* writes, both answering ``401 Requires authentication`` without a credential and ``404``/``410``
+  for a missing or deleted issue: ``POST /issues/{n}/comments`` (``comment.create``) answers
+  ``201`` with the new comment, authored by the credential's own user at the server's write time
+  (``422 Validation Failed`` for an empty body); ``POST /issues/{n}/labels`` adds (creating a
+  missing repository label) and ``DELETE /issues/{n}/labels/{name}`` removes (``404 Label does
+  not exist`` when absent), both answering the issue's complete label list, so a human's
+  concurrent label is never lost;
+* an ambiguous write (:meth:`FakeGitHub.fail_next_write_ambiguously`): the next write times out
+  (``httpx.ReadTimeout``) after it was stored (``applied``) or before (not applied);
 * any other write answers ``405``: its endpoint lands with its own bead.
 
-Requests are kept so a test can assert what was sent (the verbatim ``next`` URL, the API version
-header, the method of every write).
+Requests are kept so a test can assert what was sent (the method, the verbatim ``next`` URL, the
+API version header, the JSON body).
 """
 
 from __future__ import annotations
@@ -52,7 +55,7 @@ from beadhive.modules.tracker.contracts import (
 )
 from beadhive.testing.tracker import TrackerSubject
 from beadhive_plugins.credentials import ResolvedToken
-from beadhive_tracker_github.adapter import GitHubTrackerAdapter
+from beadhive_tracker_github.adapter import new_adapter
 
 #: A synthetic credential: token-shaped so the scrub pattern recognises it, never a real one.
 FAKE_TOKEN = "ghp_" + "F4keT0kenF0rTe5ts" * 2 + "XY"
@@ -138,7 +141,6 @@ class FakeGitHub:
     ambiguous_next_write: bool | None = None
     write_time: datetime | None = None
     _ids: int = 0
-    _snapshot: dict[str, Any] = field(default_factory=dict, repr=False)
 
     # -- plumbing ---------------------------------------------------------------------------
 
@@ -450,30 +452,57 @@ class FakeGitHub:
     # -- writes -------------------------------------------------------------------------------
 
     def _write(self, request: httpx.Request, auth: str | None, path: str) -> httpx.Response:
-        """Serve one write. An armed ambiguity answers ``502`` (after storing it, or without)."""
+        """Serve one write. An armed ambiguity cuts the exchange off with ``httpx.ReadTimeout``:
+        after the write was stored (``applied``), or before (whatever it did is undone)."""
         if auth is None:
             return httpx.Response(401, json={"message": "Requires authentication"})
-        applied = self.ambiguous_next_write
-        self.ambiguous_next_write = None
+        applied, self.ambiguous_next_write = self.ambiguous_next_write, None
+        before = self._copy_state() if applied is False else None
         response = self._serve_write(request, path)
         if applied is None:
             return response
-        if not applied:  # cut off before anything was stored: undo what the handler did
-            self._restore(self._snapshot)
-        return httpx.Response(502, json={"message": "Bad Gateway"})
+        if before is not None:  # cut off before GitHub stored anything (kit extension K1)
+            self._restore(before)
+            raise httpx.ReadTimeout("fake: the write was cut off", request=request)
+        raise httpx.ReadTimeout("fake: the answer was lost", request=request)
 
     def _serve_write(self, request: httpx.Request, path: str) -> httpx.Response:
-        self._snapshot = self._copy_state()
-        match = re.fullmatch(rf"{re.escape(self.root)}/issues/(\d+)/labels(?:/(.+))?", path)
-        if match is None:
-            return httpx.Response(405, json={"message": "fake: this write endpoint is not served"})
-        number, name = int(match.group(1)), match.group(2)
-        if self.repo_meta.get("archived"):
-            return httpx.Response(403, json={"message": "Repository was archived so is read-only."})
+        issue = rf"{re.escape(self.root)}/issues/(\d+)"
+        if request.method == "POST" and (match := re.fullmatch(rf"{issue}/comments", path)):
+            return self._post_comment(request, int(match.group(1)))
+        if match := re.fullmatch(rf"{issue}/labels(?:/(.+))?", path):
+            return self._change_labels(request, int(match.group(1)), match.group(2))
+        return httpx.Response(405, json={"message": "fake: this write endpoint is not served"})
+
+    def _missing(self, number: int) -> httpx.Response | None:
         if number in self.deleted:
             return httpx.Response(410, json={"message": "This issue was deleted"})
         if not any(i["number"] == number for i in self.issues):
             return httpx.Response(404, json={"message": "Not Found"})
+        return None
+
+    def _post_comment(self, request: httpx.Request, number: int) -> httpx.Response:
+        if (refused := self._missing(number)) is not None:
+            return refused
+        body = json.loads(request.content or b"{}").get("body")
+        if not isinstance(body, str) or not body.strip():
+            return httpx.Response(422, json={"message": "Validation Failed"})
+        if self.write_time is None:
+            raise AssertionError("a test must set the server's write time (set_write_time)")
+        row = self._comment_row(number, body, self.me(), self.write_time)
+        self.comments.append(row)
+        issue = self._row(number)
+        issue["comments"] += 1
+        issue["updated_at"] = iso(self.write_time)
+        return httpx.Response(201, json=row, headers={"location": row["url"]})
+
+    def _change_labels(
+        self, request: httpx.Request, number: int, name: str | None
+    ) -> httpx.Response:
+        if self.repo_meta.get("archived"):
+            return httpx.Response(403, json={"message": "Repository was archived so is read-only."})
+        if (refused := self._missing(number)) is not None:
+            return refused
         row = self._row(number)
         if request.method == "POST" and name is None:
             wanted = json.loads(request.content or b"{}").get("labels")
@@ -557,9 +586,10 @@ def adapter_for(
     label_prefixes=None,
     transport=None,
 ):
-    """A ``GitHubTrackerAdapter`` sending through ``world`` (both reads enabled by default)."""
+    """A ``GitHubTrackerAdapter`` sending through ``world`` (both reads enabled by default), with
+    the writer of each enabled write operation composed in, exactly as ``build_adapter`` does."""
     base_url = None if world.api == "https://api.github.com" else world.api
-    return GitHubTrackerAdapter(
+    return new_adapter(
         project=ProjectRef("github", f"{world.owner}/{world.repo}"),
         token_source=tokens if tokens is not None else token_source(world),
         sleep=world.sleep,

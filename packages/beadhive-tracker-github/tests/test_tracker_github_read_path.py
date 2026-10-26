@@ -246,7 +246,7 @@ def test_the_settings_become_explicit_adapter_arguments():
         clock=world.clock.now,
         transport=world.transport(),
     )
-    # labels.change needs an owned prefix; comment.create is "enabled" yet has no writer.
+    # labels.change needs an owned prefix, so only comment.create is enabled among the writes.
     assert adapter.enabled == {Operation.ISSUES_READ, Operation.COMMENT_CREATE}
     summary = adapter.settings_summary
     assert summary["include_closed"] is False and summary["page_size"] == 7

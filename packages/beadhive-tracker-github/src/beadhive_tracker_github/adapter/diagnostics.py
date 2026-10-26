@@ -26,8 +26,11 @@ GitHub answered                         Diagnostic (and port error)
                                         permitted (``PayloadRejected``)
 ======================================  ====================================================
 
-Only ``401`` and ``404`` were observed live (``bh-mqvdq`` Evidence 10); the other rows are the
-documented forms, to re-verify against recorded real responses on the first gated write (W8).
+Only ``401`` and ``404`` were observed live (``bh-mqvdq`` Evidence 10, on read-only GETs); the
+other rows are the documented forms. The ``comment.create`` write path is checked against a
+replay of every row (``tests/recorded/comment_create_refusals.json``, each exchange labelled with
+its evidence); re-verifying them against LIVE responses waits for the first operator-approved
+write, recorded on bead ``bh-03s4w``.
 
 Every line is one line, at most :data:`MESSAGE_LIMIT` characters of upstream text, and passes
 through :func:`beadhive_plugins.credentials.scrub` (the exact resolved token value, then every

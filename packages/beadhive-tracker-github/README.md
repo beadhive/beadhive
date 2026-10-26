@@ -4,18 +4,14 @@ The GitHub tracker adapter **plugin** (`tracker-github`, capability `tracker.ada
 Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin-adr.md) and
 [tracker-adapter-port-adr.md](../../docs/design/tracker-adapter-port-adr.md).
 
-> **Read path.** The adapter lists issues (closed included) and comments, takes full id
-> snapshots for deletion reconciliation, resolves issue URLs (`IssueResolver`), reports the actor
-> and a GET-only tri-state capability probe. Each write is its own bead behind its own
-> operator-approved gate; the bound object exposes a writer only when its operation is enabled.
->
-> **`labels.change`** (`adapter/labels.py`) adds and removes labels inside
-> `write.labels.owned_prefixes` only (`POST` / `DELETE .../issues/{n}/labels`), never rewriting the
-> issue's whole label list. It is refused before any request unless it is enabled (flag on AND a
-> non-empty prefix list, which config load enforces), the call's single-use `WriteGrant` names this
-> operation and issue and is unspent, and every label is owned. An ambiguous outcome (`5xx`,
-> timeout, dropped connection) is `WriteOutcomeUnknown` and is never retried. The first write
-> against a real repository is an operator-approved step that no test performs.
+> **Read path plus `comment.create` and `labels.change`.** The adapter lists issues (closed
+> included) and comments, takes full id snapshots for deletion reconciliation, resolves issue URLs
+> (`IssueResolver`), reports the actor and a GET-only tri-state capability probe. Its two landed
+> writers are `comment.create` (`CommentWriter.post_comment`, W8 `bh-03s4w`) and `labels.change`
+> (`LabelWriter.change_labels`, W9 `bh-t082i`). A writer method exists only when its write flag is
+> on, and even then every call needs a fresh, single-use, operator-approved `WriteGrant`. **No live
+> GitHub write has been made yet**: the first real write is an operator-approved step recorded on
+> the writer's bead, outside the tests.
 
 ## Shape
 
@@ -25,8 +21,12 @@ Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin
 | `src/beadhive_tracker_github/factory.py` | The one call root's lazy row makes: `build(settings, token_source, *, project, sleep)` |
 | `src/beadhive_tracker_github/adapter/` | The wiring-free port implementation. The **only** place `githubkit` may be imported, and only inside functions |
 
-Inside `adapter/`: `tracker` (the port implementation), `labels` (the `labels.change` writer), `transport` (githubkit: one credential per
-operation; GET for reads, POST/DELETE for the gated writes), `retry` (the adapter-owned retry decision on an injected sleep and clock),
+Inside `adapter/`: `tracker` (the port implementation), `compose` (the writers of the enabled
+write operations), `comments` (the `comment.create` writer), `labels` (the `labels.change`
+writer), `grants` (the one in-process single-use grant ledger every writer spends from),
+`transport` (githubkit: one credential per operation; writes only through `Session.send`, the one
+write seam of an operation opened for one), `retry` (the adapter-owned retry decision on an
+injected sleep and clock),
 `diagnostics` (the exact scrubbed refusal wording), `identity` (the tri-state probe), `mapping`
 (GitHub JSON to port records), `marker` (the `bh:v1` own-message codec), `urls` (the location and
 the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github` fragment).
@@ -43,6 +43,23 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
   (githubkit renders a `datetime` with `str()`). A page cursor's `next` URL is followed verbatim
   only on the API origin, so a tampered cursor cannot send the credential elsewhere.
 * The connect/read timeout is finite (30 s; githubkit's default is none).
+* **`comment.create`** posts the body plus the `bh:v1` marker line. Refused before any request
+  (and before the credential is resolved) when the operation is off, the grant is missing, names
+  another operation or issue, or was already presented; the grant is spent by the first call that
+  passes those checks, whatever happens next. A rate-limit refusal is retried within the budget;
+  a `5xx`, a timeout or dropped connection after the send, an unconfirmed redirect (a write
+  client never follows one) or an unreadable `201` raises `WriteOutcomeUnknown` and is **never
+  retried** (the consumer reconciles by the marker's outbox id). Every other refusal carries the
+  exact scrubbed one-line diagnostic.
+* **`labels.change`** adds and removes labels inside `write.labels.owned_prefixes` only (`POST` /
+  `DELETE .../issues/{n}/labels`), never rewriting the issue's whole label list. It is refused
+  before any request unless it is enabled (flag on AND a non-empty prefix list, which config load
+  enforces), the call's single-use `WriteGrant` names this operation and issue and is unspent, and
+  every label is owned; a missing credential is refused before the grant is spent. It sends
+  through the same write seam, so a redirect is never followed and an ambiguous outcome (`5xx`,
+  timeout, dropped connection, redirect, unreadable answer) is `WriteOutcomeUnknown`, never
+  retried. Adds go first, then removes; a `404` on a remove is told apart from an invisible issue
+  by reading the issue back.
 
 ## Install and enablement
 
@@ -59,8 +76,13 @@ needs it and never imports it.
   `beadhive_plugins.credentials`.
 * **Conformance**: the shared `beadhive.testing.tracker` suite runs over an offline
   `httpx.MockTransport` stand-in (`tests/tracker_github_fake.py`), on github.com and a GHES prefix;
-  the writer cases of a bead that has not landed are strict expected failures (`comment.create`
-  until W8; `labels.only-owned` passes since W9).
+  every case passes, the `comment.create` cases and `labels.only-owned` included (no expected
+  failure is left).
+* **Refusal diagnostics** are replayed from `tests/recorded/comment_create_refusals.json`, one
+  exchange per row of the `bh-mqvdq` table, each labelled with its evidence: only the `401` and
+  `404` status and message were observed live (on read-only GETs, `bh-mqvdq` Evidence 10); every
+  other row is the documented form. **Live re-verification is pending** the first
+  operator-approved write.
 * **Offline**: `tests/conftest.py` disables the real transport and outbound sockets for every
   test; recorded exchanges (`tests/recorded/`) are synthetic, never captured with a credential.
 
