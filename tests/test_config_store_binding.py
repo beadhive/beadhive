@@ -606,11 +606,37 @@ def test_the_full_documented_plugin_config_validates():
             "`plugins.tracker-github.write.labels.owned_prefixes`: Value error, "
             "write.labels.owned_prefixes entries must be non-empty and trimmed",
         ),
+        (
+            {"write": {"labels": {"enabled": True}}},
+            "`plugins.tracker-github.write.labels`: Value error, write.labels.enabled needs a "
+            "non-empty write.labels.owned_prefixes (an empty list means no label write is "
+            "possible)",
+        ),
+        (
+            {"write": {"labels": {"enabled": True, "owned_prefixes": []}}},
+            "`plugins.tracker-github.write.labels`: Value error, write.labels.enabled needs a "
+            "non-empty write.labels.owned_prefixes (an empty list means no label write is "
+            "possible)",
+        ),
     ],
 )
 def test_tracker_github_values_fail_closed(plugin, message):
     problems = validate_config(_doc(plugins={"tracker-github": plugin}))
     assert [p["message"] for p in problems] == [message]
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        {},  # the default: off, no prefixes
+        {"owned_prefixes": ["bh:"]},  # prefixes without the flag
+        {"enabled": False},
+        {"enabled": True, "owned_prefixes": ["bh:", "scope/"]},
+    ],
+)
+def test_labels_change_is_accepted_when_off_or_when_it_owns_a_prefix(labels):
+    problems = validate_config(_doc(plugins={"tracker-github": {"write": {"labels": labels}}}))
+    assert problems == []
 
 
 @pytest.mark.parametrize(

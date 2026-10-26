@@ -2804,6 +2804,16 @@ class TrackerGithubLabels(_QuietSection):
             raise ValueError("write.labels.owned_prefixes entries must be non-empty and trimmed")
         return value
 
+    @model_validator(mode="after")
+    def _enabled_needs_an_owned_prefix(self):
+        # Fail closed at load: an enabled write with nothing it may touch can only be a mistake.
+        if self.enabled and not self.owned_prefixes:
+            raise ValueError(
+                "write.labels.enabled needs a non-empty write.labels.owned_prefixes "
+                "(an empty list means no label write is possible)"
+            )
+        return self
+
 
 class TrackerGithubWrite(_QuietSection):
     """Write operations. Enabling one is necessary, never sufficient."""

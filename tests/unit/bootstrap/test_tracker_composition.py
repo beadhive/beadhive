@@ -373,11 +373,26 @@ def test_r7_a_write_requested_without_enablement_fails_before_any_approval():
     assert factory.requests == []
 
 
-def test_r7_labels_with_no_owned_prefixes_are_not_enabled():
-    adapters, _ = roots({"tracker-github": plugin(labels=True)})
-    error = refusal(adapters, requested=frozenset({Operation.LABELS_CHANGE}))
+def test_r7_labels_with_no_owned_prefixes_are_not_enabled_for_a_raw_fragment():
+    # A fragment the root has no config model for is read as raw data (the model-validated
+    # tracker-github one is refused at config load instead; see the next test).
+    adapters, _ = roots(
+        {"other-tracker": plugin(labels=True)},
+        sources=[source("other-tracker")],
+        ids=("other-tracker",),
+    )
+    error = refusal(
+        adapters, entry(adapter="other-tracker"), requested=frozenset({Operation.LABELS_CHANGE})
+    )
     assert error.rule_id == "R7"
-    assert "plugins.tracker-github.write.labels.owned_prefixes to a non-empty list" in error.message
+    assert "plugins.other-tracker.write.labels.owned_prefixes to a non-empty list" in error.message
+
+
+def test_labels_enabled_without_owned_prefixes_is_an_invalid_tracker_github_fragment():
+    adapters, factory = roots({"tracker-github": plugin(labels=True)})
+    error = refusal(adapters, requested=frozenset({Operation.LABELS_CHANGE}))
+    assert error.rule is TrackerRule.INVALID_CONFIG
+    assert factory.requests == []
 
 
 def test_enabling_a_write_enables_no_read():
