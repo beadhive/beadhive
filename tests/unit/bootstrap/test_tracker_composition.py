@@ -507,7 +507,10 @@ def test_the_builtin_row_imports_the_adapter_package_lazily_only():
     for name in ("tracker.py", "tracker_status.py"):
         imported = _imports(REPO / "src/beadhive/bootstrap" / name)
         assert not {m for m in imported if m.startswith("beadhive_tracker_github")}
-    assert "beadhive_tracker_github" not in sys.modules
+    # No `sys.modules` assertion: the package exists in this workspace now, and another test in
+    # the same process may legitimately have imported it. The static scan above is the proof;
+    # the runtime half (a fresh interpreter) lives in the package's own tests
+    # (packages/beadhive-tracker-github/tests/test_import_rules.py).
 
 
 def test_composition_roots_share_one_host_and_kernel_version_constant():
