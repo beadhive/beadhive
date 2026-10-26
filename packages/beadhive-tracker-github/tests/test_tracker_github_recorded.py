@@ -215,6 +215,8 @@ def test_per_issue_comments_withhold_the_checkpoint_until_the_last_page():
 def test_every_recorded_fixture_is_exercised_and_carries_no_credential():
     names = sorted(path.name for path in RECORDED.glob("*.json"))
     assert names == [
+        "comment_create_accepted.json",  # test_tracker_github_comment_write.py
+        "comment_create_refusals.json",  # test_tracker_github_comment_write.py
         "comment_deletions_reconcile.json",
         "comments_since_checkpoint.json",
         "issue_closes_between_pulls.json",
@@ -223,5 +225,6 @@ def test_every_recorded_fixture_is_exercised_and_carries_no_credential():
     ]
     for name in names:
         text = (RECORDED / name).read_text(encoding="utf-8")
-        assert "authorization" not in text.lower()
+        assert '"authorization":' not in text.lower()  # no recorded credential header
+        assert "bearer " not in text.lower() and '"token ' not in text.lower()
         assert "ghp_" not in text and "github_pat_" not in text

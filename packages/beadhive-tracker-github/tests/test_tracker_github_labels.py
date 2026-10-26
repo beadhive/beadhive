@@ -33,8 +33,9 @@ from beadhive.modules.tracker.contracts import (
     WriteOutcomeUnknown,
 )
 from beadhive_plugins.credentials import ResolvedToken
-from beadhive_tracker_github.adapter import build_adapter
-from beadhive_tracker_github.adapter.labels import GrantLedger
+from beadhive_tracker_github.adapter import adapter_class, build_adapter
+from beadhive_tracker_github.adapter.grants import GrantLedger
+from beadhive_tracker_github.adapter.labels import LabelWriting
 from beadhive_tracker_github.adapter.transport import API_VERSION
 from tracker_github_fake import EPOCH, FAKE_TOKEN, FakeGitHub, adapter_for
 
@@ -71,7 +72,15 @@ def change(adapter, issue, *, add=(), remove=(), ownership=OWNED, the_grant=_DEF
 # ---- refusals: no request, no credential -----------------------------------------------------
 
 
+def test_the_flag_off_composes_no_label_writer():
+    world = FakeGitHub()
+    adapter = adapter_for(world, enabled=READ_OPERATIONS)
+    assert not isinstance(adapter, LabelWriter) and not hasattr(adapter, "change_labels")
+    assert world.requests == []
+
+
 def test_the_flag_off_refuses_before_any_request_or_credential():
+    """Defence in depth: even a composed label writer re-checks its own enabled set."""
     world = FakeGitHub()
     issue = world.add_issue("thread", at=EPOCH, labels=("bh:triage",))
     resolved: list[int] = []
@@ -80,7 +89,15 @@ def test_the_flag_off_refuses_before_any_request_or_credential():
         resolved.append(1)
         return ResolvedToken(world.token, "env:GITHUB_TOKEN")
 
-    adapter = adapter_for(world, enabled=READ_OPERATIONS, tokens=tokens)
+    adapter = adapter_class({LABELS})(
+        project=ProjectRef("github", f"{world.owner}/{world.repo}"),
+        token_source=tokens,
+        sleep=world.sleep,
+        clock=world.clock.now,
+        enabled=READ_OPERATIONS,  # labels.change is NOT enabled
+        transport=world.transport(),
+    )
+    assert isinstance(adapter, LabelWriting)
 
     with pytest.raises(OperationNotEnabled, match="labels.change is not enabled"):
         change(adapter, issue, add=["bh:accepted"])
@@ -292,13 +309,14 @@ def test_removing_from_an_invisible_issue_is_not_mistaken_for_an_absent_label():
 
 def test_the_grant_ledger_is_atomic_across_threads():
     ledger = GrantLedger()
+    race = WriteGrant("g-race", LABELS, IssueKey("#1", "x"))
     barrier = threading.Barrier(8)
     won: list[int] = []
 
     def attempt(i: int) -> None:
         barrier.wait()
         try:
-            ledger.spend("g-race")
+            ledger.spend(race)
             won.append(i)
         except OperationNotEnabled:
             pass
@@ -376,6 +394,22 @@ def test_an_unreadable_success_answer_is_unknown(reply):
     with pytest.raises(WriteOutcomeUnknown):
         change(adapter, issue, add=["bh:x"])
     assert world.write_requests() == 1
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+@pytest.mark.parametrize("method", ["POST", "DELETE"])
+def test_a_redirected_label_write_is_never_followed_and_is_unknown(method, status):
+    """httpx would re-send a redirected POST as a GET: the write seam never follows one."""
+    world, issue, adapter = setup()
+    elsewhere = f"{world.api}/repos/someone/else/issues/1/labels"
+    world.scripted.append(httpx.Response(status, headers={"location": elsewhere}))
+    add, remove = (["bh:accepted"], []) if method == "POST" else ([], ["bh:triage"])
+
+    with pytest.raises(WriteOutcomeUnknown):
+        change(adapter, issue, add=add, remove=remove)
+
+    assert [r.method for r in world.requests] == [method] and world.sleeps == []
+    assert world.server_labels(issue) == {"bug", "bh:triage"}
 
 
 # ---- rate limits: nothing was done, so the request is retried on the injected sleep ----------
@@ -500,12 +534,10 @@ def test_the_configured_prefixes_bound_every_write_of_a_settings_built_adapter()
 )
 def test_labels_change_is_not_enabled_without_the_flag_and_a_prefix(labels):
     world = FakeGitHub()
-    issue = world.add_issue("thread", at=EPOCH)
     adapter = _from_settings(world, labels)
 
     assert LABELS not in adapter.enabled
-    with pytest.raises(OperationNotEnabled):
-        change(adapter, issue, add=["bh:x"])
+    assert not isinstance(adapter, LabelWriter) and not hasattr(adapter, "change_labels")
     assert world.requests == []
 
 

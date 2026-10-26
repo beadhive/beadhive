@@ -5,10 +5,10 @@ the REAL ``BUILTIN_TRACKER_PROVIDERS`` row, and prove the off-by-default contrac
 makes: installing the package and shipping its manifest enables nothing, a binding enables
 nothing, enabling the plugin with no binding changes nothing, and nothing imports the package
 (or githubkit) before every rule has passed. Once every rule passes, the factory builds the
-adapter without resolving a credential, sending a request or importing githubkit, and the bound
-object exposes a writer only when its operation is enabled (and the writer has landed: the
-``labels.change`` writer is W9, ``comment.create`` is a later bead).
-No test here touches the network: only offline port calls (``describe``, ``resolve``) are made.
+adapter without resolving a credential, sending a request or importing githubkit. The bound
+object carries a writer only for an enabled write (``comment.create``, W8; ``labels.change``,
+W9), and never for a disabled one. No test here touches the network: only offline port calls
+(``describe``, ``resolve``) are made, and no write is ever attempted.
 """
 
 from __future__ import annotations
@@ -170,8 +170,10 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
     assert port.describe().supported == {
         Operation.ISSUES_READ,
         Operation.COMMENTS_READ,
+        Operation.COMMENT_CREATE,
         Operation.LABELS_CHANGE,
     }
+    assert not isinstance(port, CommentWriter)  # comment.create was not enabled
     assert not isinstance(port, LabelWriter)  # labels.change is not enabled: no writer exposed
     assert port.resolve("https://github.com/acme/widget/issues/3#top") == IssueKey(
         "#3", "https://github.com/acme/widget/issues/3"
@@ -180,7 +182,34 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
     assert ("githubkit" in sys.modules) is githubkit_before  # building never imports it
 
 
-def test_a_write_flag_binds_only_the_writers_that_have_landed(loads):
+def test_the_comment_write_flag_binds_the_comment_writer_and_sends_nothing(loads):
+    plugins = {"tracker-github": enabled_plugin(write={"comment": {"enabled": True}})}
+    adapters, token_calls = counting_root(plugins)
+    bound = adapters.for_store(entry(), requested=READ | {Operation.COMMENT_CREATE})
+
+    assert Operation.COMMENT_CREATE in bound.enabled  # enabled is necessary, never sufficient
+    assert isinstance(bound.port, CommentWriter)
+    assert Operation.COMMENT_CREATE in bound.port.describe().supported
+    assert not isinstance(bound.port, LabelWriter)  # labels.change was not enabled
+    assert token_calls == []  # binding a writer resolves no credential and sends nothing
+
+
+def test_the_labels_write_flag_binds_the_label_writer_and_sends_nothing(loads):
+    plugins = {
+        "tracker-github": enabled_plugin(
+            write={"labels": {"enabled": True, "owned_prefixes": ["bh:"]}}
+        )
+    }
+    adapters, token_calls = counting_root(plugins)
+    bound = adapters.for_store(entry(), requested=READ | {Operation.LABELS_CHANGE})
+
+    assert Operation.LABELS_CHANGE in bound.enabled
+    assert isinstance(bound.port, LabelWriter)  # labels.change: enabled AND implemented
+    assert not isinstance(bound.port, CommentWriter)  # comment.create was not enabled
+    assert token_calls == []
+
+
+def test_both_write_flags_bind_both_writers(loads):
     plugins = {
         "tracker-github": enabled_plugin(
             write={
@@ -193,9 +222,8 @@ def test_a_write_flag_binds_only_the_writers_that_have_landed(loads):
         entry(), requested=READ | {Operation.COMMENT_CREATE, Operation.LABELS_CHANGE}
     )
 
-    assert Operation.COMMENT_CREATE in bound.enabled  # enabled is necessary, never sufficient
-    assert not isinstance(bound.port, CommentWriter)  # comment.create has no writer yet
-    assert isinstance(bound.port, LabelWriter)  # labels.change: enabled AND implemented
+    assert {Operation.COMMENT_CREATE, Operation.LABELS_CHANGE} <= bound.enabled
+    assert isinstance(bound.port, CommentWriter) and isinstance(bound.port, LabelWriter)
 
 
 def test_labels_enabled_with_owned_prefixes_off_binds_no_label_writer(loads):

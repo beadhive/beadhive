@@ -107,15 +107,15 @@ def test_the_probe_sends_only_get_and_never_writes():
     assert report.actor == Actor(ActorKey("42", ActorKind.HUMAN))
 
 
-def test_a_classic_token_with_repo_scope_is_yes_but_no_write_is_enabled_or_usable_by_default():
+def test_a_classic_token_with_repo_scope_is_yes_but_a_disabled_write_is_not_usable():
     report, probes = _probe(FakeGitHub(scopes="repo, read:org"))
     assert probes[COMMENT][0] is probes[LABELS][0] is Tri.YES
     assert "not proven" in probes[COMMENT][1]
+    assert report.states[COMMENT].supported  # the comment.create writer has landed (W8)
     for op in WRITE_OPERATIONS:
         state = report.states[op]
         assert not state.enabled and not state.usable
-    assert report.states[LABELS].supported  # W9; comment.create is unsupported until W8
-    assert not report.states[COMMENT].supported
+    assert report.states[LABELS].supported  # the labels.change writer has landed (W9)
     for op in READ_OPERATIONS:
         assert report.states[op].supported and report.states[op].usable
 
