@@ -411,6 +411,12 @@ and `import beadhive` never needs or imports its `githubkit` dependency.
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible |
 
+The adapter currently ships the **read path only**: an enabled write flag binds no writer until
+the `comment.create` and `labels.change` beads land. A read whose flag is off is refused before
+any request. `read.include_closed: false` narrows issue listings but never the full id snapshot
+used to detect deletions (a closed issue still exists). Retries wait on the adapter's own budget
+above, never on githubkit's built-in retry.
+
 As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
 to every host (`bh-uf986`).
 

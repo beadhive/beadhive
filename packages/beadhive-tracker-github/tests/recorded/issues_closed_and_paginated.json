@@ -1,0 +1,293 @@
+{
+  "description": "One state=all pull over two pages: an open issue, a pull request (dropped), and two closed issues (completed, not_planned). Page 2 is the server's Link next URL with an after= cursor.",
+  "provenance": "Synthetic, hand-assembled in the documented shape of GitHub REST API version 2022-11-28 responses (field set as returned by api.github.com for issues and issue comments). No test makes a live request; ids, users and bodies are invented.",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/issues?state=all&sort=updated&direction=asc&per_page=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org",
+          "link": "<https://api.github.com/repositories/9001/issues?state=all&sort=updated&direction=asc&per_page=2&after=Y3Vyc29yOnYyOpLPAAABnHC2jADOq3Z0bg%3D%3D>; rel=\"next\""
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/1",
+            "repository_url": "https://api.github.com/repos/acme/widgets",
+            "labels_url": "https://api.github.com/repos/acme/widgets/issues/1/labels{/name}",
+            "comments_url": "https://api.github.com/repos/acme/widgets/issues/1/comments",
+            "events_url": "https://api.github.com/repos/acme/widgets/issues/1/events",
+            "html_url": "https://github.com/acme/widgets/issues/1",
+            "id": 3000000001,
+            "node_id": "I_kwDOAAAB00001",
+            "number": 1,
+            "title": "Crash on start",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "labels": [
+              {
+                "id": 7003,
+                "node_id": "LA_bug",
+                "url": "https://api.github.com/repos/acme/widgets/labels/bug",
+                "name": "bug",
+                "color": "ededed",
+                "default": false,
+                "description": null
+              }
+            ],
+            "state": "open",
+            "locked": false,
+            "assignee": null,
+            "assignees": [],
+            "milestone": null,
+            "comments": 0,
+            "created_at": "2026-01-02T08:00:00Z",
+            "updated_at": "2026-01-02T08:00:00Z",
+            "closed_at": null,
+            "author_association": "NONE",
+            "type": null,
+            "active_lock_reason": null,
+            "sub_issues_summary": {
+              "total": 0,
+              "completed": 0,
+              "percent_completed": 0
+            },
+            "body": "Steps to reproduce #1.\r\n\r\n1. run it",
+            "closed_by": null,
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/1/reactions",
+              "total_count": 0,
+              "+1": 0,
+              "-1": 0
+            },
+            "timeline_url": "https://api.github.com/repos/acme/widgets/issues/1/timeline",
+            "performed_via_github_app": null,
+            "state_reason": null
+          },
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/2",
+            "repository_url": "https://api.github.com/repos/acme/widgets",
+            "labels_url": "https://api.github.com/repos/acme/widgets/issues/2/labels{/name}",
+            "comments_url": "https://api.github.com/repos/acme/widgets/issues/2/comments",
+            "events_url": "https://api.github.com/repos/acme/widgets/issues/2/events",
+            "html_url": "https://github.com/acme/widgets/pull/2",
+            "id": 3000000002,
+            "node_id": "I_kwDOAAAB00002",
+            "number": 2,
+            "title": "Fix the crash",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "labels": [],
+            "state": "open",
+            "locked": false,
+            "assignee": null,
+            "assignees": [],
+            "milestone": null,
+            "comments": 0,
+            "created_at": "2026-01-02T09:00:00Z",
+            "updated_at": "2026-01-03T00:00:00Z",
+            "closed_at": null,
+            "author_association": "NONE",
+            "type": null,
+            "active_lock_reason": null,
+            "sub_issues_summary": {
+              "total": 0,
+              "completed": 0,
+              "percent_completed": 0
+            },
+            "body": "Steps to reproduce #2.\r\n\r\n1. run it",
+            "closed_by": null,
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/2/reactions",
+              "total_count": 0,
+              "+1": 0,
+              "-1": 0
+            },
+            "timeline_url": "https://api.github.com/repos/acme/widgets/issues/2/timeline",
+            "performed_via_github_app": null,
+            "state_reason": null,
+            "draft": false,
+            "pull_request": {
+              "url": "https://api.github.com/repos/acme/widgets/pulls/2",
+              "html_url": "https://github.com/acme/widgets/pull/2",
+              "diff_url": "https://github.com/acme/widgets/pull/2.diff",
+              "patch_url": "https://github.com/acme/widgets/pull/2.patch",
+              "merged_at": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repositories/9001/issues?state=all&sort=updated&direction=asc&per_page=2&after=Y3Vyc29yOnYyOpLPAAABnHC2jADOq3Z0bg%3D%3D"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org"
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/3",
+            "repository_url": "https://api.github.com/repos/acme/widgets",
+            "labels_url": "https://api.github.com/repos/acme/widgets/issues/3/labels{/name}",
+            "comments_url": "https://api.github.com/repos/acme/widgets/issues/3/comments",
+            "events_url": "https://api.github.com/repos/acme/widgets/issues/3/events",
+            "html_url": "https://github.com/acme/widgets/issues/3",
+            "id": 3000000003,
+            "node_id": "I_kwDOAAAB00003",
+            "number": 3,
+            "title": "Old report",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "labels": [],
+            "state": "closed",
+            "locked": false,
+            "assignee": null,
+            "assignees": [],
+            "milestone": null,
+            "comments": 0,
+            "created_at": "2025-12-01T00:00:00Z",
+            "updated_at": "2026-01-04T00:00:00Z",
+            "closed_at": "2026-01-04T00:00:00Z",
+            "author_association": "NONE",
+            "type": null,
+            "active_lock_reason": null,
+            "sub_issues_summary": {
+              "total": 0,
+              "completed": 0,
+              "percent_completed": 0
+            },
+            "body": "Steps to reproduce #3.\r\n\r\n1. run it",
+            "closed_by": null,
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/3/reactions",
+              "total_count": 0,
+              "+1": 0,
+              "-1": 0
+            },
+            "timeline_url": "https://api.github.com/repos/acme/widgets/issues/3/timeline",
+            "performed_via_github_app": null,
+            "state_reason": "completed"
+          },
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/4",
+            "repository_url": "https://api.github.com/repos/acme/widgets",
+            "labels_url": "https://api.github.com/repos/acme/widgets/issues/4/labels{/name}",
+            "comments_url": "https://api.github.com/repos/acme/widgets/issues/4/comments",
+            "events_url": "https://api.github.com/repos/acme/widgets/issues/4/events",
+            "html_url": "https://github.com/acme/widgets/issues/4",
+            "id": 3000000004,
+            "node_id": "I_kwDOAAAB00004",
+            "number": 4,
+            "title": "Won't do",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "labels": [
+              {
+                "id": 7007,
+                "node_id": "LA_wontfix",
+                "url": "https://api.github.com/repos/acme/widgets/labels/wontfix",
+                "name": "wontfix",
+                "color": "ededed",
+                "default": false,
+                "description": null
+              }
+            ],
+            "state": "closed",
+            "locked": false,
+            "assignee": null,
+            "assignees": [],
+            "milestone": null,
+            "comments": 0,
+            "created_at": "2025-12-02T00:00:00Z",
+            "updated_at": "2026-01-05T12:30:00Z",
+            "closed_at": "2026-01-05T12:30:00Z",
+            "author_association": "NONE",
+            "type": null,
+            "active_lock_reason": null,
+            "sub_issues_summary": {
+              "total": 0,
+              "completed": 0,
+              "percent_completed": 0
+            },
+            "body": "Steps to reproduce #4.\r\n\r\n1. run it",
+            "closed_by": null,
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/4/reactions",
+              "total_count": 0,
+              "+1": 0,
+              "-1": 0
+            },
+            "timeline_url": "https://api.github.com/repos/acme/widgets/issues/4/timeline",
+            "performed_via_github_app": null,
+            "state_reason": "not_planned"
+          }
+        ]
+      }
+    }
+  ]
+}

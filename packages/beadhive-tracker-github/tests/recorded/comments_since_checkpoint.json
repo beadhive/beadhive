@@ -1,0 +1,276 @@
+{
+  "description": "Repository-wide comments: a full pull (a pull-request comment is dropped but still moves the checkpoint), then a since pull from its checkpoint that repeats the boundary comment, shows an edit as a newer revision, and decodes an own-message marker.",
+  "provenance": "Synthetic, hand-assembled in the documented shape of GitHub REST API version 2022-11-28 responses (field set as returned by api.github.com for issues and issue comments). No test makes a live request; ids, users and bodies are invented.",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/issues/comments?sort=updated&direction=asc"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org"
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/501",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-501",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 501,
+            "node_id": "IC_kwDOAAAB501",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-02-01T11:00:00Z",
+            "updated_at": "2026-02-01T11:00:00Z",
+            "author_association": "CONTRIBUTOR",
+            "body": "I see this too.",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/501/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": null
+          },
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/502",
+            "html_url": "https://github.com/acme/widgets/pull/8#issuecomment-502",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/8",
+            "id": 502,
+            "node_id": "IC_kwDOAAAB502",
+            "user": {
+              "login": "bob",
+              "id": 1002,
+              "node_id": "MDQ6VXNlcj1002",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1002?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/bob",
+              "html_url": "https://github.com/bob",
+              "followers_url": "https://api.github.com/users/bob/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-02-01T12:00:00Z",
+            "updated_at": "2026-02-01T12:00:00Z",
+            "author_association": "CONTRIBUTOR",
+            "body": "LGTM",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/502/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": null
+          },
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/503",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-503",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 503,
+            "node_id": "IC_kwDOAAAB503",
+            "user": {
+              "login": "ci-app[bot]",
+              "id": 9007,
+              "node_id": "MDQ6VXNlcj9007",
+              "avatar_url": "https://avatars.githubusercontent.com/u/9007?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/ci-app[bot]",
+              "html_url": "https://github.com/ci-app[bot]",
+              "followers_url": "https://api.github.com/users/ci-app[bot]/followers",
+              "type": "Bot",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-02-02T00:00:00Z",
+            "updated_at": "2026-02-02T00:00:00Z",
+            "author_association": "NONE",
+            "body": "Build failed on main.",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/503/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": {
+              "id": 77,
+              "slug": "ci-app",
+              "node_id": "MDM6QXBwNzc=",
+              "name": "CI app",
+              "owner": {
+                "login": "acme",
+                "id": 500,
+                "node_id": "MDQ6VXNlcj500",
+                "avatar_url": "https://avatars.githubusercontent.com/u/500?v=4",
+                "gravatar_id": "",
+                "url": "https://api.github.com/users/acme",
+                "html_url": "https://github.com/acme",
+                "followers_url": "https://api.github.com/users/acme/followers",
+                "type": "Organization",
+                "user_view_type": "public",
+                "site_admin": false
+              },
+              "description": "",
+              "external_url": "https://ci.example",
+              "html_url": "https://github.com/apps/ci-app",
+              "created_at": "2025-01-01T00:00:00Z",
+              "updated_at": "2025-01-01T00:00:00Z",
+              "permissions": {
+                "issues": "write"
+              },
+              "events": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/issues/comments?sort=updated&direction=asc&since=2026-02-02T00%3A00%3A00Z"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org"
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/503",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-503",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 503,
+            "node_id": "IC_kwDOAAAB503",
+            "user": {
+              "login": "ci-app[bot]",
+              "id": 9007,
+              "node_id": "MDQ6VXNlcj9007",
+              "avatar_url": "https://avatars.githubusercontent.com/u/9007?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/ci-app[bot]",
+              "html_url": "https://github.com/ci-app[bot]",
+              "followers_url": "https://api.github.com/users/ci-app[bot]/followers",
+              "type": "Bot",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-02-02T00:00:00Z",
+            "updated_at": "2026-02-02T00:00:00Z",
+            "author_association": "NONE",
+            "body": "Build failed on main.",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/503/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": {
+              "id": 77,
+              "slug": "ci-app",
+              "node_id": "MDM6QXBwNzc=",
+              "name": "CI app",
+              "owner": {
+                "login": "acme",
+                "id": 500,
+                "node_id": "MDQ6VXNlcj500",
+                "avatar_url": "https://avatars.githubusercontent.com/u/500?v=4",
+                "gravatar_id": "",
+                "url": "https://api.github.com/users/acme",
+                "html_url": "https://github.com/acme",
+                "followers_url": "https://api.github.com/users/acme/followers",
+                "type": "Organization",
+                "user_view_type": "public",
+                "site_admin": false
+              },
+              "description": "",
+              "external_url": "https://ci.example",
+              "html_url": "https://github.com/apps/ci-app",
+              "created_at": "2025-01-01T00:00:00Z",
+              "updated_at": "2025-01-01T00:00:00Z",
+              "permissions": {
+                "issues": "write"
+              },
+              "events": []
+            }
+          },
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/501",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-501",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 501,
+            "node_id": "IC_kwDOAAAB501",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-02-01T11:00:00Z",
+            "updated_at": "2026-02-05T08:00:00Z",
+            "author_association": "CONTRIBUTOR",
+            "body": "I see this too, on 2.3 as well.",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/501/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": null
+          },
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/504",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-504",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 504,
+            "node_id": "IC_kwDOAAAB504",
+            "user": {
+              "login": "maintainer",
+              "id": 42,
+              "node_id": "MDQ6VXNlcj42",
+              "avatar_url": "https://avatars.githubusercontent.com/u/42?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/maintainer",
+              "html_url": "https://github.com/maintainer",
+              "followers_url": "https://api.github.com/users/maintainer/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-02-05T09:00:00Z",
+            "updated_at": "2026-02-05T09:00:00Z",
+            "author_association": "CONTRIBUTOR",
+            "body": "We reproduced this.\r\n\r\n<!-- bh:v1 hive=acme/widgets install=6f1c2a7e-0b4d-4c5e-9a1b-2c3d4e5f6a7b outbox=ob-17 -->",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/504/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": null
+          }
+        ]
+      }
+    }
+  ]
+}
