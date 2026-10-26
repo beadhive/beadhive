@@ -1,4 +1,4 @@
-"""The package skeleton: packaged manifest, resources and the (not yet implemented) factory."""
+"""The package: packaged manifest, resources and the factory root's lazy row calls."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from importlib import resources
 import pytest
 
 import beadhive_tracker_github
-from beadhive.modules.tracker.contracts import ProjectRef
+from beadhive.modules.tracker.contracts import IssueResolver, ProjectRef, TrackerAdapter
 from beadhive_tracker_github import factory
 
 
@@ -36,15 +36,31 @@ def test_typed_marker_and_manifest_ship_as_resources() -> None:
     assert (package / "plugin.json").is_file()
 
 
-def test_the_skeleton_factory_refuses_to_build_and_echoes_no_input() -> None:
+def test_the_factory_builds_the_read_path_adapter_without_resolving_a_credential() -> None:
+    calls: list[str] = []
+
+    def tokens():
+        calls.append("token")
+        return None
+
+    adapter = factory.build(
+        {}, tokens, project=ProjectRef("github", "acme/widget"), sleep=lambda _seconds: None
+    )
+
+    assert isinstance(adapter, TrackerAdapter) and isinstance(adapter, IssueResolver)
+    assert adapter.describe().project == ProjectRef("github", "acme/widget")
+    assert calls == []  # building resolves nothing and sends nothing
+
+
+def test_a_refused_build_echoes_no_input() -> None:
     secret = "ghp_" + "A" * 36
 
-    with pytest.raises(factory.TrackerAdapterNotImplemented) as caught:
-        factory.build(
-            {"base_url": f"https://{secret}@example.test"},
-            lambda: None,
-            project=ProjectRef("github", "acme/widget"),
-            sleep=lambda _seconds: None,
-        )
-
-    assert secret not in str(caught.value)
+    for settings, project in (
+        ({"base_url": f"https://{secret}@example.test"}, ProjectRef("github", "acme/widget")),
+        ({"read": {"page_size": secret}}, ProjectRef("github", "acme/widget")),
+        ({}, ProjectRef("github", f"{secret}/x/y")),
+        ({}, ProjectRef("jira", secret)),
+    ):
+        with pytest.raises((ValueError, TypeError)) as caught:
+            factory.build(settings, lambda: None, project=project, sleep=lambda _seconds: None)
+        assert secret not in str(caught.value)

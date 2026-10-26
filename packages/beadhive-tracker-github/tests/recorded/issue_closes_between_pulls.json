@@ -1,0 +1,156 @@
+{
+  "description": "Issue #7 is open on the first pull and closed (completed) by the second, incremental pull from the first pull's checkpoint; since is sent in GitHub's ISO 8601 Z form.",
+  "provenance": "Synthetic, hand-assembled in the documented shape of GitHub REST API version 2022-11-28 responses (field set as returned by api.github.com for issues and issue comments). No test makes a live request; ids, users and bodies are invented.",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/issues?state=all&sort=updated&direction=asc"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org"
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "repository_url": "https://api.github.com/repos/acme/widgets",
+            "labels_url": "https://api.github.com/repos/acme/widgets/issues/7/labels{/name}",
+            "comments_url": "https://api.github.com/repos/acme/widgets/issues/7/comments",
+            "events_url": "https://api.github.com/repos/acme/widgets/issues/7/events",
+            "html_url": "https://github.com/acme/widgets/issues/7",
+            "id": 3000000007,
+            "node_id": "I_kwDOAAAB00007",
+            "number": 7,
+            "title": "Login fails",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "labels": [],
+            "state": "open",
+            "locked": false,
+            "assignee": null,
+            "assignees": [],
+            "milestone": null,
+            "comments": 0,
+            "created_at": "2026-02-01T09:00:00Z",
+            "updated_at": "2026-02-01T10:00:00Z",
+            "closed_at": null,
+            "author_association": "NONE",
+            "type": null,
+            "active_lock_reason": null,
+            "sub_issues_summary": {
+              "total": 0,
+              "completed": 0,
+              "percent_completed": 0
+            },
+            "body": "Steps to reproduce #7.\r\n\r\n1. run it",
+            "closed_by": null,
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/7/reactions",
+              "total_count": 0,
+              "+1": 0,
+              "-1": 0
+            },
+            "timeline_url": "https://api.github.com/repos/acme/widgets/issues/7/timeline",
+            "performed_via_github_app": null,
+            "state_reason": null
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/issues?state=all&sort=updated&direction=asc&since=2026-02-01T10%3A00%3A00Z"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org"
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "repository_url": "https://api.github.com/repos/acme/widgets",
+            "labels_url": "https://api.github.com/repos/acme/widgets/issues/7/labels{/name}",
+            "comments_url": "https://api.github.com/repos/acme/widgets/issues/7/comments",
+            "events_url": "https://api.github.com/repos/acme/widgets/issues/7/events",
+            "html_url": "https://github.com/acme/widgets/issues/7",
+            "id": 3000000007,
+            "node_id": "I_kwDOAAAB00007",
+            "number": 7,
+            "title": "Login fails",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "labels": [],
+            "state": "closed",
+            "locked": false,
+            "assignee": null,
+            "assignees": [],
+            "milestone": null,
+            "comments": 2,
+            "created_at": "2026-02-01T09:00:00Z",
+            "updated_at": "2026-02-03T09:30:00Z",
+            "closed_at": "2026-02-03T09:30:00Z",
+            "author_association": "NONE",
+            "type": null,
+            "active_lock_reason": null,
+            "sub_issues_summary": {
+              "total": 0,
+              "completed": 0,
+              "percent_completed": 0
+            },
+            "body": "Steps to reproduce #7.\r\n\r\n1. run it",
+            "closed_by": null,
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/7/reactions",
+              "total_count": 0,
+              "+1": 0,
+              "-1": 0
+            },
+            "timeline_url": "https://api.github.com/repos/acme/widgets/issues/7/timeline",
+            "performed_via_github_app": null,
+            "state_reason": "completed"
+          }
+        ]
+      }
+    }
+  ]
+}
