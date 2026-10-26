@@ -44,6 +44,8 @@ class AdapterSettings:
     page_size: int | None
     http_cache: bool
     budget: RetryBudget
+    #: ``write.labels.owned_prefixes`` (empty when unset): the labels a write may ever touch.
+    label_prefixes: tuple[str, ...] = ()
 
 
 def _lookup(settings: Mapping[str, Any], dotted: str) -> Any:
@@ -87,6 +89,9 @@ def parse_settings(settings: Mapping[str, Any]) -> AdapterSettings:
     prefixes = _lookup(settings, "write.labels.owned_prefixes")
     if not (isinstance(prefixes, list | tuple) and prefixes):
         enabled.discard(Operation.LABELS_CHANGE)  # no owned label: no label write is possible
+        prefixes = ()
+    elif not all(isinstance(p, str) and p and p == p.strip() for p in prefixes):
+        raise ValueError("plugins.tracker-github.write.labels.owned_prefixes has the wrong type")
     single = float(_value(settings, "retry.max_single_wait_seconds", 60, _is_seconds))
     total = float(_value(settings, "retry.max_total_wait_seconds", 120, _is_seconds))
     if single > total:
@@ -105,4 +110,5 @@ def parse_settings(settings: Mapping[str, Any]) -> AdapterSettings:
         page_size=_value(settings, "read.page_size", None, lambda v: _is_int(v) and 1 <= v <= 100),
         http_cache=_value(settings, "http_cache.enabled", False, _is_bool),
         budget=budget,
+        label_prefixes=tuple(prefixes),
     )

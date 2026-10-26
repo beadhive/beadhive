@@ -5,10 +5,11 @@ project, the resolved ``enabled`` set, a ``RetryBudget``, ``sleep``, the token s
 no configuration and imports no plugin kernel. Root's lazy factory row builds it
 (:mod:`beadhive_tracker_github.factory`).
 
-**Read path only.** The writers (``comment.create``, ``labels.change``) land in later beads,
-each behind its own operator-approved gate, so this class has NO ``post_comment`` and NO
-``change_labels``: the bound object structurally lacks them even when a write flag is on, and
-``describe().supported`` names the two reads only.
+**Writers.** Each write lands in its own bead behind its own operator-approved gate and lives in
+its own module, mixed in here: ``labels.change`` is :class:`~.labels.LabelWriting` (W9). A writer
+method existing on this class is necessary, never sufficient: it refuses before any request unless
+its operation is in ``enabled`` and the call carries a fresh, matching ``WriteGrant``; and the
+composition root exposes it on the bound object only when the operation is enabled.
 
 Wire facts honoured (port ADR section 1):
 
@@ -78,6 +79,7 @@ from beadhive_plugins.credentials import TokenSource
 
 from . import mapping
 from .identity import RepositoryFacts, probe_operation
+from .labels import LabelWriting
 from .transport import DEFAULT_TIMEOUT_SECONDS, Reply, Session, Transport
 from .urls import GitHubLocation
 
@@ -89,8 +91,8 @@ __all__ = ["CHECKPOINT_PREFIX", "SUPPORTED_OPERATIONS", "GitHubTrackerAdapter"]
 #: Every checkpoint token this adapter emits starts with this (and refuses any other).
 CHECKPOINT_PREFIX = "github:"
 
-#: What this adapter implements today: the read path. Writes land in later beads.
-SUPPORTED_OPERATIONS = READ_OPERATIONS
+#: What this adapter implements today: the read path and the writers that have landed.
+SUPPORTED_OPERATIONS = READ_OPERATIONS | {Operation.LABELS_CHANGE}
 
 _NEXT = re.compile(r'<([^<>]+)>\s*;\s*rel="next"')
 
@@ -121,8 +123,9 @@ def _rows(reply: Reply) -> list[Any]:
     return reply.body
 
 
-class GitHubTrackerAdapter:
-    """Implements ``TrackerAdapter`` (reader plus identity) and ``IssueResolver`` for GitHub."""
+class GitHubTrackerAdapter(LabelWriting):
+    """Implements ``TrackerAdapter`` (reader plus identity), ``IssueResolver`` and the optional
+    ``LabelWriter`` for GitHub."""
 
     def __init__(
         self,
@@ -136,6 +139,7 @@ class GitHubTrackerAdapter:
         include_closed: bool = True,
         base_url: str | None = None,
         http_cache: bool = False,
+        label_prefixes: tuple[str, ...] | None = None,
         clock: Callable[[], datetime] | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
@@ -144,6 +148,7 @@ class GitHubTrackerAdapter:
         self._location = GitHubLocation.from_project(project, base_url)
         self._enabled = frozenset(enabled)
         self._page_size = page_size
+        self._label_prefixes = None if label_prefixes is None else tuple(label_prefixes)
         self._include_closed = include_closed
         self._transport = Transport(
             token_source=token_source,

@@ -1,5 +1,6 @@
-"""The githubkit transport behind the adapter: one credential per operation, GET only, retried
-by the adapter's own decision on an injected sleep and clock.
+"""The githubkit transport behind the adapter: one credential per operation, GET for reads and
+POST/DELETE for the gated writes, retried by the adapter's own decision on an injected sleep and
+clock.
 
 githubkit (MIT, about 250 ms to import) is imported **only inside functions here**, so importing
 this package never loads it (rule P1, tested). It is used as the HTTP layer: client construction,
@@ -40,6 +41,7 @@ from beadhive.modules.tracker.contracts import (
     Operation,
     RetryBudget,
     TrackerError,
+    WriteOutcomeUnknown,
 )
 from beadhive_plugins.credentials import ResolvedToken, TokenSource
 
@@ -80,7 +82,7 @@ def _message(response: Any) -> str:
 
 
 class Session:
-    """One port operation: one resolved credential, one githubkit client, any number of GETs."""
+    """One port operation: one resolved credential, one githubkit client, any number of requests."""
 
     def __init__(
         self,
@@ -106,16 +108,20 @@ class Session:
     def secrets(self) -> tuple[str, ...]:
         return (self._token.value,) if self._token is not None else ()
 
-    def _attempt(self, target: str, params: Mapping[str, str] | None) -> Reply | Refusal:
+    def _attempt(
+        self, method: str, target: str, params: Mapping[str, str] | None, body: Any, *, write: bool
+    ) -> Reply | Refusal:
         from githubkit.exception import RequestError, RequestFailed, RequestTimeout
 
         transport = self._transport
+        options: dict[str, Any] = {} if body is None else {"json": body}
         try:
             response = self._client.request(
-                "GET",
+                method,
                 target,
                 params=dict(params) if params else None,
                 headers={"X-GitHub-Api-Version": API_VERSION},
+                **options,
             )
         except RequestFailed as exc:
             raw = exc.response
@@ -123,29 +129,39 @@ class Session:
                 raw.status_code,
                 raw.headers,
                 _message(raw),
-                write=False,
+                write=write,
                 now=transport.clock(),
                 source=self.source,
                 operation=self._operation,
                 secrets=self.secrets,
             )
         except RequestTimeout:
-            return classify_transport_failure(write=False, timeout=True)
+            return classify_transport_failure(write=write, timeout=True)
         except RequestError:
-            return classify_transport_failure(write=False, timeout=False)
+            return classify_transport_failure(write=write, timeout=False)
         try:
-            body = response.json()
+            decoded = response.json()
         except (ValueError, json.JSONDecodeError):
+            if write:  # answered success, but what it did cannot be read back
+                raise WriteOutcomeUnknown(
+                    "GitHub answered a write with a body that is not JSON; it may have applied"
+                ) from None
             raise TrackerError("GitHub answered with a body that is not JSON") from None
-        return Reply(response.status_code, response.headers, body, str(response.url))
+        return Reply(response.status_code, response.headers, decoded, str(response.url))
 
-    def get(self, target: str, params: Mapping[str, str] | None = None) -> Reply:
-        """GET ``target`` (an API path, or a checked absolute ``next`` URL), retried within the
-        budget; raise the port error of the last refusal otherwise."""
+    def _run(
+        self,
+        method: str,
+        target: str,
+        params: Mapping[str, str] | None,
+        body: Any,
+        *,
+        write: bool,
+    ) -> Reply:
         transport = self._transport
         waited, attempt = 0.0, 0
         while True:
-            outcome = self._attempt(target, params)
+            outcome = self._attempt(method, target, params, body, write=write)
             if isinstance(outcome, Reply):
                 return outcome
             wait = next_wait(outcome, attempt=attempt, waited=waited, budget=transport.budget)
@@ -154,6 +170,21 @@ class Session:
             if wait > 0:
                 transport.sleep(wait)
             waited, attempt = waited + wait, attempt + 1
+
+    def get(self, target: str, params: Mapping[str, str] | None = None) -> Reply:
+        """GET ``target`` (an API path, or a checked absolute ``next`` URL), retried within the
+        budget; raise the port error of the last refusal otherwise."""
+        return self._run("GET", target, params, None, write=False)
+
+    def write(self, method: str, target: str, body: Any = None) -> Reply:
+        """Send one WRITE request (``POST`` or ``DELETE``) to an API path.
+
+        Only a rate-limit answer (proof that nothing was done) is retried, within the budget; a
+        ``5xx``, a timeout, a dropped connection or an unreadable success body raises
+        ``WriteOutcomeUnknown`` at once and is never retried."""
+        if method not in ("POST", "DELETE"):
+            raise ValueError("a write is a POST or a DELETE")
+        return self._run(method, target, None, body, write=True)
 
 
 @dataclass

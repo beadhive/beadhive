@@ -19,12 +19,22 @@ behaviour it reproduces (API version 2022-11-28):
   ``permissions`` object only when a credential was sent);
 * a secondary rate limit (``403`` + ``Retry-After``) on demand, and any scripted answer.
 
-Every write answers ``405``: the write endpoints land with the write beads. Requests are kept so a
-test can assert what was sent (only ``GET``, the verbatim ``next`` URL, the API version header).
+* label writes: ``POST /issues/{n}/labels`` adds (creating a missing repository label) and
+  ``DELETE /issues/{n}/labels/{name}`` removes (``404 Label does not exist`` when absent); both
+  answer the issue's complete label list; a human's concurrent label is never lost;
+* an ambiguous write (:meth:`FakeGitHub.fail_next_write_ambiguously`): a ``502`` after the write
+  was stored (``applied``) or before it was (not applied);
+* any other write answers ``405``: its endpoint lands with its own bead.
+
+Requests are kept so a test can assert what was sent (the verbatim ``next`` URL, the API version
+header, the method of every write).
 """
 
 from __future__ import annotations
 
+import copy
+import json
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -128,6 +138,7 @@ class FakeGitHub:
     ambiguous_next_write: bool | None = None
     write_time: datetime | None = None
     _ids: int = 0
+    _snapshot: dict[str, Any] = field(default_factory=dict, repr=False)
 
     # -- plumbing ---------------------------------------------------------------------------
 
@@ -384,9 +395,9 @@ class FakeGitHub:
         auth = self._auth(request)
         if auth == "bad":
             return httpx.Response(401, json={"message": "Bad credentials"})
-        if request.method != "GET":
-            return httpx.Response(405, json={"message": "fake: writes land with the write beads"})
         path = unquote(request.url.path)
+        if request.method != "GET":
+            return self._write(request, auth, path)
         query = {k: v[-1] for k, v in parse_qs(request.url.query.decode()).items()}
         headers = self._scope_headers(auth)
         if path == f"{self.api_path}/user":
@@ -435,6 +446,55 @@ class FakeGitHub:
             fixed = {**query, "sort": "created", "direction": "asc"}
             return self._list(rest, rows, fixed, keep=query)
         return httpx.Response(404, json={"message": "Not Found"})
+
+    # -- writes -------------------------------------------------------------------------------
+
+    def _write(self, request: httpx.Request, auth: str | None, path: str) -> httpx.Response:
+        """Serve one write. An armed ambiguity answers ``502`` (after storing it, or without)."""
+        if auth is None:
+            return httpx.Response(401, json={"message": "Requires authentication"})
+        applied = self.ambiguous_next_write
+        self.ambiguous_next_write = None
+        response = self._serve_write(request, path)
+        if applied is None:
+            return response
+        if not applied:  # cut off before anything was stored: undo what the handler did
+            self._restore(self._snapshot)
+        return httpx.Response(502, json={"message": "Bad Gateway"})
+
+    def _serve_write(self, request: httpx.Request, path: str) -> httpx.Response:
+        self._snapshot = self._copy_state()
+        match = re.fullmatch(rf"{re.escape(self.root)}/issues/(\d+)/labels(?:/(.+))?", path)
+        if match is None:
+            return httpx.Response(405, json={"message": "fake: this write endpoint is not served"})
+        number, name = int(match.group(1)), match.group(2)
+        if self.repo_meta.get("archived"):
+            return httpx.Response(403, json={"message": "Repository was archived so is read-only."})
+        if number in self.deleted:
+            return httpx.Response(410, json={"message": "This issue was deleted"})
+        if not any(i["number"] == number for i in self.issues):
+            return httpx.Response(404, json={"message": "Not Found"})
+        row = self._row(number)
+        if request.method == "POST" and name is None:
+            wanted = json.loads(request.content or b"{}").get("labels")
+            if not isinstance(wanted, list) or not all(isinstance(n, str) for n in wanted):
+                return httpx.Response(422, json={"message": "Validation Failed"})
+            present = {label["name"] for label in row["labels"]}
+            row["labels"] += [self._label(n) for n in wanted if n not in present]
+        elif request.method == "DELETE" and name is not None:
+            if name not in {label["name"] for label in row["labels"]}:
+                return httpx.Response(404, json={"message": "Label does not exist"})
+            row["labels"] = [label for label in row["labels"] if label["name"] != name]
+        else:
+            return httpx.Response(405, json={"message": "fake: this write endpoint is not served"})
+        row["updated_at"] = iso(self.write_time or self.clock.now())
+        return httpx.Response(200, json=row["labels"])
+
+    def _copy_state(self) -> dict[str, Any]:
+        return copy.deepcopy({"issues": self.issues, "comments": self.comments})
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self.issues, self.comments = state["issues"], state["comments"]
 
     def _moved_or_missing(self, path: str) -> httpx.Response:
         for number, row in self.moved.items():
@@ -494,6 +554,8 @@ def adapter_for(
     include_closed: bool = True,
     http_cache: bool = False,
     tokens=None,
+    label_prefixes=None,
+    transport=None,
 ):
     """A ``GitHubTrackerAdapter`` sending through ``world`` (both reads enabled by default)."""
     base_url = None if world.api == "https://api.github.com" else world.api
@@ -508,7 +570,8 @@ def adapter_for(
         include_closed=include_closed,
         base_url=base_url,
         http_cache=http_cache,
-        transport=world.transport(),
+        label_prefixes=label_prefixes,
+        transport=transport if transport is not None else world.transport(),
     )
 
 

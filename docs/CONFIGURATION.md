@@ -409,10 +409,11 @@ and `import beadhive` never needs or imports its `githubkit` dependency.
 | `http_cache.enabled` | `false` | conditional requests for the id-reconcile pass |
 | `retry.max_retries` / `retry.max_single_wait_seconds` / `retry.max_total_wait_seconds` | `3` / `60` / `120` | the retry budget; single wait at most the total |
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
-| `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible |
+| `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
 
-The adapter currently ships the **read path only**: an enabled write flag binds no writer until
-the `comment.create` and `labels.change` beads land. A read whose flag is off is refused before
+The adapter ships the read path and the `labels.change` writer (owned prefixes only, one
+single-use grant per write); an enabled `comment.create` flag binds no writer until that bead
+lands. A read whose flag is off is refused before
 any request. `read.include_closed: false` narrows issue listings but never the full id snapshot
 used to detect deletions (a closed issue still exists). Retries wait on the adapter's own budget
 above, never on githubkit's built-in retry.
