@@ -8,7 +8,15 @@ from beadhive_plugins.contracts import ManifestDocument, ManifestProvenance
 
 from .discovery import BuiltInManifestSource
 
-BUILTIN_PLUGIN_IDS = ("herdr", "hitch", "observaloop", "orca", "pants", "repowise")
+BUILTIN_PLUGIN_IDS = (
+    "herdr",
+    "hitch",
+    "observaloop",
+    "orca",
+    "pants",
+    "repowise",
+    "tracker-github",
+)
 _PACKAGE = "beadhive.kernel.plugins.manifests"
 
 

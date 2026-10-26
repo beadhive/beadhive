@@ -89,6 +89,12 @@ release-verify = ["sigstore>=4,<5"]
 # Core code (bootstrap/impact.py, bootstrap/build_verify.py, plugins.py) tolerates its absence:
 # no import crash, an actionable "install beadhive[pants]" hint, degrade to native-full.
 pants = ["beadhive-pants"]
+# `beadhive[github]` — the GitHub tracker adapter plugin (bh-h8kab, tracker-adapter-plugin-adr.md
+# section 1). githubkit is the package's own dependency, never the root's, and is imported only
+# lazily under `beadhive_tracker_github/adapter/`, so the root wheel installs and `import beadhive`
+# works without it. Installing it enables nothing: `plugins.tracker-github.enabled` is false by
+# default and a store binding never turns it on.
+github = ["beadhive-tracker-github"]
 
 [project.scripts]
 bh = "beadhive.bootstrap.cli:main"
@@ -140,6 +146,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 beadhive-pants = { workspace = true }
+beadhive-tracker-github = { workspace = true }
 beadhive-core = { workspace = true }
 beadhive-bd-cli = { workspace = true }
 beadhive-hq-storage = { workspace = true }
@@ -153,7 +160,7 @@ beadhive-validation-broker = { workspace = true }
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
 # bead — only the PUBLISHED wheel's hard-dependency graph changed.
 [tool.uv]
-default-groups = ["dev", "pants", "core", "plugins", "worktrees", "hq-storage", "validation-broker"]
+default-groups = ["dev", "pants", "github", "core", "plugins", "worktrees", "hq-storage", "validation-broker"]
 
 [dependency-groups]
 # The workspace member, for dev/CI only (bh-mxjoy): kept OUT of [project.optional-dependencies]'s
@@ -161,6 +168,9 @@ default-groups = ["dev", "pants", "core", "plugins", "worktrees", "hq-storage", 
 # never hard-requires an unpublished package. `beadhive[pants]` (the extra, above) is the
 # separate public spelling for once `beadhive-pants` ships to PyPI (bh-9mfg8).
 pants = ["beadhive-pants"]
+# The GitHub tracker adapter plugin, for dev/CI only (bh-h8kab), exactly like `pants` above:
+# `beadhive[github]` is the public spelling and the published wheel never hard-requires it.
+github = ["beadhive-tracker-github"]
 # The API-first core and its Beads client, editable from the workspace for dev/CI (bh-bwnys.4,
 # bh-bwnys.1). The published wheel vendors their import packages instead (see the wheel packages).
 # beadhive-bd-cli holds the `bd` argv routes behind the core's ports (bh-o3xuf); root resolves it

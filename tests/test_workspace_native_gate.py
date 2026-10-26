@@ -97,6 +97,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         assert f"uv build --package {package}" in package_gate
     assert "uv build --package beadhive-bd-cli" not in package_gate
     assert "uv build --package beadhive-pants" not in package_gate
+    assert "uv build --package beadhive-tracker-github" not in package_gate
 
     # beadhive-bd-cli is carved out of the shared `packages-check` glob (excluded from the
     # `packages/*/tests` pytest collection above) into its own `bd-cli-check` leaf/key
@@ -125,6 +126,8 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
     assert "--all-packages" not in root_workspace_gate
     assert "packages/beadhive-pants/tests" in root_workspace_gate
     assert "uv build --package beadhive-pants" in root_workspace_gate
+    assert "packages/beadhive-tracker-github/tests" in root_workspace_gate
+    assert "uv build --package beadhive-tracker-github" in root_workspace_gate
     assert "just release-smoke-check" in root_workspace_gate
 
     beads_client_gate = "\n".join(_recipe_body(justfile, "beads-client-check"))
@@ -149,6 +152,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadhive-hq-storage-dolt",
         "beadhive-pants",
         "beadhive-plugins",
+        "beadhive-tracker-github",
         "beadhive-validation-broker",
         "beadhive-worktrees",
     ):

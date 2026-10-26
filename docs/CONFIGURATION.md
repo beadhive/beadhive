@@ -394,7 +394,9 @@ are **host-owned**: a fleet push cannot switch a plugin on. Both are absent by d
 `plugins.tracker-github` configures the GitHub tracker adapter. Every switch is off and every
 boolean is strict (`"false"` is invalid, not truthy). There is no `repo` key: owner and
 repository come from the bound hive's `provider`/`org`/`repo`. No key holds a credential, a
-command or an approval; credentials stay ambient.
+command or an approval; credentials stay ambient. The adapter ships as the optional
+`beadhive-tracker-github` package (install `beadhive[github]`); installing it enables nothing,
+and `import beadhive` never needs or imports its `githubkit` dependency.
 
 | Key (under `plugins.tracker-github`) | Default | Meaning |
 |---|---|---|

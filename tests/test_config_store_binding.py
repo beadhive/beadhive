@@ -311,7 +311,7 @@ def test_the_documented_binding_validates_and_enables_nothing():
     assert parsed.plugins is None  # the binding never creates or enables the plugin config
 
 
-# ---- the known-adapter table (w6 extends it with the manifest drift direction) ----------------
+# ---- the known-adapter table (and its drift against the built-in manifests, W6) -------------
 
 
 def _builtin_manifests() -> dict[str, dict]:
@@ -335,23 +335,62 @@ def test_the_known_adapter_table_is_closed_and_consistent_with_the_config_layer(
         assert partition.partition_of(f"plugins.{adapter_id}.enabled") == partition.HOST
 
 
-def test_the_known_adapter_table_matches_every_builtin_tracker_manifest():
-    """Every built-in manifest providing ``tracker.adapter`` is a row, with the namespace and
-    fragment URN of that row. W6 adds the ``tracker-github`` manifest and makes the reverse
-    direction (every row has a built-in manifest) mandatory."""
-    manifests = _builtin_manifests()
-    fragments = {fragment.plugin_id: fragment for fragment in builtin_plugin_fragments()}
+def _known_adapter_drift(manifests: dict[str, dict], table, fragments: dict) -> list[str]:
+    """Both directions between the closed known-adapter table and the built-in manifests:
+    every manifest providing ``tracker.adapter`` is a row, and every row has a built-in manifest
+    with its namespace and published fragment URN."""
+    problems: list[str] = []
     for plugin_id, manifest in manifests.items():
         provided = {cap["id"] for cap in manifest["capabilities"]["provides"]}
-        if "tracker.adapter" in provided:
-            assert plugin_id in KNOWN_TRACKER_ADAPTERS
-    for adapter_id in KNOWN_TRACKER_ADAPTERS:
+        if "tracker.adapter" in provided and plugin_id not in table:
+            problems.append(f"{plugin_id}: provides tracker.adapter but is not a table row")
+    for adapter_id in table:
         manifest = manifests.get(adapter_id)
         if manifest is None:
-            continue  # the package skeleton (W6) ships the manifest
-        assert [cap["id"] for cap in manifest["capabilities"]["provides"]] == ["tracker.adapter"]
-        assert manifest["configuration"]["namespace"] == f"plugins.{adapter_id}"
-        assert manifest["configuration"]["schema_artifact"] == fragments[adapter_id].artifact_id
+            problems.append(f"{adapter_id}: a table row with no built-in manifest")
+            continue
+        if [cap["id"] for cap in manifest["capabilities"]["provides"]] != ["tracker.adapter"]:
+            problems.append(f"{adapter_id}: does not provide exactly tracker.adapter")
+        if manifest["configuration"]["namespace"] != f"plugins.{adapter_id}":
+            problems.append(f"{adapter_id}: wrong namespace")
+        fragment = fragments.get(adapter_id)
+        if fragment is None or manifest["configuration"]["schema_artifact"] != fragment.artifact_id:
+            problems.append(f"{adapter_id}: schema_artifact is not its published fragment")
+    return problems
+
+
+def test_the_known_adapter_table_matches_every_builtin_tracker_manifest():
+    """The table and the built-in manifests agree both ways (W6 shipped the ``tracker-github``
+    manifest, so a row without a manifest is now drift, not a pending skeleton)."""
+    manifests = _builtin_manifests()
+    fragments = {fragment.plugin_id: fragment for fragment in builtin_plugin_fragments()}
+    assert "tracker-github" in manifests
+    assert _known_adapter_drift(manifests, KNOWN_TRACKER_ADAPTERS, fragments) == []
+
+
+def test_negative_control_known_adapter_drift_is_detected_in_both_directions():
+    manifests = _builtin_manifests()
+    fragments = {fragment.plugin_id: fragment for fragment in builtin_plugin_fragments()}
+    table = dict(KNOWN_TRACKER_ADAPTERS)
+
+    # a row with no manifest (the removed-manifest direction)
+    without = {k: v for k, v in manifests.items() if k != "tracker-github"}
+    assert any("no built-in manifest" in p for p in _known_adapter_drift(without, table, fragments))
+    # a manifest providing tracker.adapter that the table does not know
+    rogue = copy.deepcopy(manifests["tracker-github"])
+    rogue["plugin_id"] = "tracker-rogue"
+    rogue["configuration"]["namespace"] = "plugins.tracker-rogue"
+    extra = {**manifests, "tracker-rogue": rogue}
+    assert any("not a table row" in p for p in _known_adapter_drift(extra, table, fragments))
+    # a drifted namespace or fragment
+    moved = copy.deepcopy(manifests)
+    moved["tracker-github"]["configuration"]["namespace"] = "plugins.github"
+    assert any("wrong namespace" in p for p in _known_adapter_drift(moved, table, fragments))
+    unpublished = copy.deepcopy(manifests)
+    unpublished["tracker-github"]["configuration"]["schema_artifact"] = None
+    assert any(
+        "published fragment" in p for p in _known_adapter_drift(unpublished, table, fragments)
+    )
 
 
 # ---- no input echo (replan item (b), absorbs bh-gdx0c) ----------------------------------------
