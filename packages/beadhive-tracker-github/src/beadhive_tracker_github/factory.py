@@ -3,9 +3,10 @@
 :func:`build` receives the already-validated, already-folded ``plugins.tracker-github`` fragment
 (every operation flag equals the resolved enablement), the injected credential port, the
 ``ProjectRef("github", "owner/name")`` root derived from the hive identity, and the sleep seam.
-It returns the read-path :class:`~beadhive_tracker_github.adapter.GitHubTrackerAdapter`, which
-implements ``TrackerAdapter`` and the optional ``IssueResolver`` and, until the write beads land,
-no writer at all (so no write method exists on the bound object even when a write flag is on).
+It returns the :class:`~beadhive_tracker_github.adapter.GitHubTrackerAdapter`, which implements
+``TrackerAdapter``, the optional ``IssueResolver`` and the writers that have landed
+(``LabelWriter``). A writer is exposed on the bound object only when its operation is enabled, and
+each call still needs a single-use grant.
 
 Building sends no request, resolves no credential and imports no githubkit. Root maps any failure
 here to a typed ``not-conforming`` refusal naming the exception class and never its text, and

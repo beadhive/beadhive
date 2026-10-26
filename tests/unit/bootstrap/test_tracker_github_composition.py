@@ -5,8 +5,9 @@ the REAL ``BUILTIN_TRACKER_PROVIDERS`` row, and prove the off-by-default contrac
 makes: installing the package and shipping its manifest enables nothing, a binding enables
 nothing, enabling the plugin with no binding changes nothing, and nothing imports the package
 (or githubkit) before every rule has passed. Once every rule passes, the factory builds the
-read-path adapter without resolving a credential, sending a request or importing githubkit, and
-the bound object has no writer even when a write flag is on (the writers are later beads).
+adapter without resolving a credential, sending a request or importing githubkit, and the bound
+object exposes a writer only when its operation is enabled (and the writer has landed: the
+``labels.change`` writer is W9, ``comment.create`` is a later bead).
 No test here touches the network: only offline port calls (``describe``, ``resolve``) are made.
 """
 
@@ -166,7 +167,12 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
     port = bound.port
     assert isinstance(port, TrackerAdapter) and isinstance(port, IssueResolver)
     assert port.describe().project == ProjectRef("github", "acme/widget")
-    assert port.describe().supported == {Operation.ISSUES_READ, Operation.COMMENTS_READ}
+    assert port.describe().supported == {
+        Operation.ISSUES_READ,
+        Operation.COMMENTS_READ,
+        Operation.LABELS_CHANGE,
+    }
+    assert not isinstance(port, LabelWriter)  # labels.change is not enabled: no writer exposed
     assert port.resolve("https://github.com/acme/widget/issues/3#top") == IssueKey(
         "#3", "https://github.com/acme/widget/issues/3"
     )
@@ -174,7 +180,7 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
     assert ("githubkit" in sys.modules) is githubkit_before  # building never imports it
 
 
-def test_a_write_flag_on_still_binds_no_writer_until_the_write_beads_land(loads):
+def test_a_write_flag_binds_only_the_writers_that_have_landed(loads):
     plugins = {
         "tracker-github": enabled_plugin(
             write={
@@ -188,8 +194,15 @@ def test_a_write_flag_on_still_binds_no_writer_until_the_write_beads_land(loads)
     )
 
     assert Operation.COMMENT_CREATE in bound.enabled  # enabled is necessary, never sufficient
-    assert not isinstance(bound.port, CommentWriter)
+    assert not isinstance(bound.port, CommentWriter)  # comment.create has no writer yet
+    assert isinstance(bound.port, LabelWriter)  # labels.change: enabled AND implemented
+
+
+def test_labels_enabled_with_owned_prefixes_off_binds_no_label_writer(loads):
+    labels_off = {"tracker-github": enabled_plugin(write={"labels": {"owned_prefixes": ["bh:"]}})}
+    bound = root(labels_off).for_store(entry(), requested=READ)
     assert not isinstance(bound.port, LabelWriter)
+    assert not hasattr(bound.port, "change_labels")
 
 
 def test_negative_control_the_loader_assertions_would_notice_an_eager_import(loads):

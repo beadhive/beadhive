@@ -6,9 +6,16 @@ Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin
 
 > **Read path.** The adapter lists issues (closed included) and comments, takes full id
 > snapshots for deletion reconciliation, resolves issue URLs (`IssueResolver`), reports the actor
-> and a GET-only tri-state capability probe. It has **no writer**: `comment.create` and
-> `labels.change` are later beads, each behind its own operator-approved gate, so the bound object
-> has no write method even when a write flag is on.
+> and a GET-only tri-state capability probe. Each write is its own bead behind its own
+> operator-approved gate; the bound object exposes a writer only when its operation is enabled.
+>
+> **`labels.change`** (`adapter/labels.py`) adds and removes labels inside
+> `write.labels.owned_prefixes` only (`POST` / `DELETE .../issues/{n}/labels`), never rewriting the
+> issue's whole label list. It is refused before any request unless it is enabled (flag on AND a
+> non-empty prefix list, which config load enforces), the call's single-use `WriteGrant` names this
+> operation and issue and is unspent, and every label is owned. An ambiguous outcome (`5xx`,
+> timeout, dropped connection) is `WriteOutcomeUnknown` and is never retried. The first write
+> against a real repository is an operator-approved step that no test performs.
 
 ## Shape
 
@@ -18,8 +25,8 @@ Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin
 | `src/beadhive_tracker_github/factory.py` | The one call root's lazy row makes: `build(settings, token_source, *, project, sleep)` |
 | `src/beadhive_tracker_github/adapter/` | The wiring-free port implementation. The **only** place `githubkit` may be imported, and only inside functions |
 
-Inside `adapter/`: `tracker` (the port implementation), `transport` (githubkit: one credential per
-operation, GET only), `retry` (the adapter-owned retry decision on an injected sleep and clock),
+Inside `adapter/`: `tracker` (the port implementation), `labels` (the `labels.change` writer), `transport` (githubkit: one credential per
+operation; GET for reads, POST/DELETE for the gated writes), `retry` (the adapter-owned retry decision on an injected sleep and clock),
 `diagnostics` (the exact scrubbed refusal wording), `identity` (the tri-state probe), `mapping`
 (GitHub JSON to port records), `marker` (the `bh:v1` own-message codec), `urls` (the location and
 the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github` fragment).
@@ -52,7 +59,8 @@ needs it and never imports it.
   `beadhive_plugins.credentials`.
 * **Conformance**: the shared `beadhive.testing.tracker` suite runs over an offline
   `httpx.MockTransport` stand-in (`tests/tracker_github_fake.py`), on github.com and a GHES prefix;
-  the five writer cases are strict expected failures until the write beads land.
+  the writer cases of a bead that has not landed are strict expected failures (`comment.create`
+  until W8; `labels.only-owned` passes since W9).
 * **Offline**: `tests/conftest.py` disables the real transport and outbound sockets for every
   test; recorded exchanges (`tests/recorded/`) are synthetic, never captured with a credential.
 

@@ -8,7 +8,8 @@ kernel; from the plugin layer it imports only ``beadhive_plugins.credentials``.
 Module             Holds
 =================  ==========================================================================
 ``tracker``        :class:`GitHubTrackerAdapter` (reader, identity, ``IssueResolver``)
-``transport``      the githubkit seam: one credential per operation, GET only, adapter retry
+``labels``         the ``labels.change`` writer: owned labels only, single-use grant
+``transport``      the githubkit seam: one credential per operation, adapter retry
 ``retry``          the pure retry classification and budget decision (injected clock)
 ``diagnostics``    the exact scrubbed one-line refusal wording and its port errors
 ``identity``       the read-only tri-state capability probe (pure)
@@ -74,6 +75,7 @@ def build_adapter(
         include_closed=parsed.include_closed,
         base_url=parsed.base_url,
         http_cache=parsed.http_cache,
+        label_prefixes=parsed.label_prefixes,
         clock=clock,
         transport=transport,
     )
