@@ -130,6 +130,7 @@ def _unit_tests(area, owner, role):
 
 
 _unit_tests("", "root", "migration-debt")
+_unit_tests("bootstrap", "bootstrap", "bootstrap")
 _unit_tests("integrations", "integrations/herdr", "integration")
 _unit_tests("kernel/lifecycle", "kernel/lifecycle", "kernel")
 _unit_tests("kernel/operations", "kernel/operations", "kernel")
