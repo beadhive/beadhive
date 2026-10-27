@@ -701,6 +701,42 @@ re-verification of assumption A1 (read-after-write visibility on complete listin
 `tracker-github` refusal diagnostics against recorded real responses happens on that first gated
 write; it has not been performed.
 
+**As built in I9b (`bh-88vji`; `labels.change`, every case offline).** The same `OutboxService`
+sends and reconciles a label operation with the same receipts; nothing new is registered (no verb,
+no catalog entry, no config key). Interpretations:
+
+- A separate gate: `OutboxPolicy.labels_enabled` (default `False`) beside `enabled`. Without it
+  `approve`, `send` and the pure `begin_send` refuse a label operation with `LABELS_DISABLED`
+  (before any tracker request, the capability probe included) while the comment's gate is
+  untouched; with it, the adapter's own `labels.change` enable, `issues.read` and `comments.read`
+  must all be usable (O5), and the operator approves each operation separately: a label approval
+  mints its own `grant_id` and its own digest, and approving the comment never approves the labels.
+  A change the issue already has (empty effective add and remove) cannot be approved.
+- Only owned labels: the owned prefixes are the root's `LeakPolicy.owned_label_prefixes` (the
+  adapter's `write.labels.owned_prefixes`, passed to `outbox_service_for`; none means no label can
+  be written). A foreign label is refused at draft (`LABEL_NOT_OWNED`), held by the never
+  overridable `label_not_owned` finding, refused again at approve and at O9 BEFORE the write-ahead
+  from the stored diff itself (an edited store, a narrowed config), and the writer is handed exactly
+  those prefixes as its `LabelOwnership`, which it checks again before any request.
+- Reconciliation: labels carry no marker, so `reconcile` reads the issue's labels back (one
+  `IssueResolver.get`, else a paged `list_issues` matched on the issue), outside the lock and after
+  the attempt ended, and the unchanged machine applies it: labels that satisfy the diff are O14 (O19
+  late), a complete read that does not is one absence (O15), k absences `failed(absent)` (O16); a
+  read that fails or never finds the issue infers nothing. Only the reads an operation needs are
+  made (a label-only report makes no comment listing). An ambiguous label write therefore never
+  changes labels twice: a retry needs `failed(absent)`, an operator `retry` and a new approval.
+- `IntakePort.send` and `retry` gain `kind` (default `comment.create`), `discard` an optional one,
+  and `OutboxResult.kind` says which operation a result is about. `MemoryTracker.change_labels`
+  now honours `fail_next_write_ambiguously` like `post_comment` (kit extension K1).
+- Drafting a label diff stays the milestone trigger's job (I10, `labels.on_delivery`); the tests
+  draft through the pure `draft` rule.
+
+**Acceptance item 4 stays pending for `labels.change`:** no real tracker write has been made. The
+first real label change is an operator-approved step recorded on the bead, and the acceptance
+re-verification against recorded real responses (the label write's diagnostics and the
+read-after-write visibility of the labels read-back) happens on that first gated write; it has not
+been performed.
+
 ### 12. Milestone triggers and the release seam
 
 Adopted as `bh-6wj9y` R9: `on_work_merged(MergeFact(work, commit, actor))` from `work.merge` /
