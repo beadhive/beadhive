@@ -17,14 +17,27 @@ What is composed here:
 * the rendering of the module's structured refusals and store failures as the ``(code, error,
   ...)`` tuples the legacy callers have always returned, byte for byte;
 * ``reroute --to <hive>`` as an orchestration (re-file in the target hive, then close the source
-  as rerouted), which is what retired the ``triage -> report`` legacy cycle edge.
+  as rerouted), which is what retired the ``triage -> report`` legacy cycle edge;
+* the supervised outbox sender (I9a): the root :class:`FlockIntakeLock` (``guard_primary`` for
+  one host, an ``fcntl.flock`` on a per-binding file in the hive's private ``.bh/`` state for one
+  process, ``guard.live_epoch`` as the epoch; the store's ``seq`` re-check is the record half), a
+  random :class:`RandomIdSource`, the :class:`LeakPolicy` and store posture, and
+  :func:`outbox_service_for`. The tracker adapter and its marker codec are INJECTED: building
+  them from the plugin binding and credentials is not this root's yet (``bh-kzs0b``), and the
+  outbox is off unless the caller passes an enabled :class:`OutboxPolicy`.
 
 Nothing is cached, so every test and integration patch point stays live for each command.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import contextlib
+import fcntl
+import hashlib
+import os
+import socket
+from collections.abc import Callable, Iterator, Mapping
+from pathlib import Path
 from typing import Any
 
 from . import bd, bd_cli, registry, store_target, validate
@@ -41,11 +54,21 @@ from .modules.intake import (
     IntakeRefused,
     IntakeService,
     IntakeStoreError,
+    OwnIdentity,
     QueueQuery,
+    RefusalReason,
     ReportDraft,
+    StorePosture,
     StoreScope,
 )
-from .modules.intake.domain import dupes_touching  # the composition root may (gap G7)
+from .modules.intake.application import OutboxService  # the composition root may (gap G7)
+from .modules.intake.domain import (  # the composition root may (gap G7)
+    LeakPolicy,
+    OutboxPolicy,
+    dupes_touching,
+    mint_grant_id,
+    mint_outbox_id,
+)
 
 
 class ValidateLabelPolicy:
@@ -260,13 +283,208 @@ def reroute_to_hive(
     return 0, "", f"✓ rerouted {bead} → {to_hive} ({filed[0]})"
 
 
+# -- the supervised outbox (I9a) --------------------------------------------------------------
+
+
+class FlockIntakeLock:
+    """The root :class:`~beadhive.modules.intake.IntakeLock` (external-intake-module-adr.md
+    section 4, ``bh-6wj9y`` R6 item 4).
+
+    ``hold(binding_key)`` takes, in order: the host (``primary()``, ``guard.guard_primary`` in
+    production; a refusal is ``IntakeRefused(NOT_PRIMARY)``), the process (an exclusive,
+    never-waiting ``fcntl.flock`` on ``<lock_dir>/<sha256(binding_key)>.lock``; held elsewhere is
+    ``IntakeRefused(INTAKE_BUSY)``), and yields ``epoch()`` (``guard.live_epoch``). The record half
+    is the store's ``seq`` re-check. Nothing expires by time: the kernel drops a dead holder's
+    flock, and a moved epoch marks its attempts stale. The directory is created on first hold."""
+
+    def __init__(
+        self,
+        lock_dir: Path | Callable[[], Path],
+        *,
+        primary: Callable[[], None],
+        epoch: Callable[[], int],
+    ) -> None:
+        self._lock_dir = lock_dir
+        self._primary = primary
+        self._epoch = epoch
+
+    def _path(self, binding_key: str) -> Path:
+        directory = self._lock_dir() if callable(self._lock_dir) else self._lock_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        name = hashlib.sha256(binding_key.encode("utf-8")).hexdigest()
+        return directory / f"{name}.lock"
+
+    @contextlib.contextmanager
+    def hold(self, binding_key: str) -> Iterator[int]:
+        self._primary()
+        with self._path(binding_key).open("a+") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise IntakeRefused(
+                    RefusalReason.INTAKE_BUSY,
+                    f"{binding_key} is held by another intake operation; try again when it ends",
+                ) from None
+            try:
+                yield self._epoch()
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class RandomIdSource:
+    """The outbox's opaque ids from the OS's random bytes (never derived from a bead id)."""
+
+    def __init__(self, entropy: Callable[[int], bytes] = os.urandom) -> None:
+        self._entropy = entropy
+
+    def outbox_id(self) -> str:
+        return mint_outbox_id(self._entropy(16))
+
+    def grant_id(self) -> str:
+        return mint_grant_id(self._entropy(16))
+
+
+def _primary_guard(cfg: Mapping[str, Any], hive: str) -> Callable[[], None]:
+    def check() -> None:
+        import typer
+
+        from . import guard
+
+        try:
+            guard.guard_primary(hive, cfg=cfg, verb="work outbox")
+        except typer.Exit as exc:
+            raise IntakeRefused(
+                RefusalReason.NOT_PRIMARY,
+                "this host is not the hive's primary writer; run the outbox on the primary",
+            ) from exc
+
+    return check
+
+
+def _live_epoch(cfg: Mapping[str, Any], hive: str) -> Callable[[], int]:
+    def epoch() -> int:
+        from . import guard
+
+        return int(guard.live_epoch(hive, cfg=cfg))
+
+    return epoch
+
+
+def lock_dir(directory) -> Path:
+    """``<hive>/.bh/intake/locks``: the per-binding lock files, in the hive's private state."""
+    from . import private_paths
+
+    root = private_paths.ensure_repo_private_root(directory)
+    if root is None:
+        raise IntakeStoreError(
+            f"{directory} has no private .bh/ state for the intake lock", operation="lock"
+        )
+    return root / "intake" / "locks"
+
+
+def intake_lock(cfg: Mapping[str, Any], directory, *, hive: str = "") -> FlockIntakeLock:
+    """The production lock for the hive at ``directory`` (``hive`` is the CLI's selector)."""
+    return FlockIntakeLock(
+        lambda: lock_dir(directory),
+        primary=_primary_guard(cfg, hive),
+        epoch=_live_epoch(cfg, hive),
+    )
+
+
+def fleet_prefixes(cfg: Mapping[str, Any]) -> frozenset[str]:
+    """Every bead prefix in the fleet, operational and public (the leak check's ``bead_id``)."""
+    prefixes: set[str] = set(registry.public_store_prefixes(cfg))
+    for entry in registry.hives(cfg):
+        prefix = str((entry or {}).get("prefix") or "")
+        if prefix:
+            prefixes.add(prefix)
+    return frozenset(prefixes)
+
+
+def leak_policy(
+    cfg: Mapping[str, Any], *, owned_label_prefixes: tuple[str, ...] = ()
+) -> LeakPolicy:
+    """What counts as internal for this fleet: every prefix, every closed dimension, and the
+    private-state roots (``.bh/`` and home directories are always private)."""
+    return LeakPolicy(
+        bead_prefixes=fleet_prefixes(cfg),
+        private_dimensions=frozenset(registry.closed_dimensions(cfg)),
+        owned_label_prefixes=tuple(owned_label_prefixes),
+    )
+
+
+def store_posture(entry: Mapping[str, Any], *, acknowledged: bool = False) -> StorePosture:
+    """Whether ``entry``'s operational store would be published: a one-store (legacy) hive, or an
+    internal store whose remote is the code origin. Never resolves the public store."""
+    target = store_target.operational_store(entry)
+    published = (
+        target.scope == store_target.SCOPE_LEGACY
+        or target.transport == store_target.TRANSPORT_GIT_REF
+    )
+    return StorePosture(published=published, acknowledged=acknowledged)
+
+
+def outbox_service_for(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    *,
+    tracker,
+    identity: OwnIdentity,
+    marker_line: Callable[..., str],
+    policy: OutboxPolicy | None = None,
+    hive: str = "",
+    acknowledged: bool = False,
+    sanitizer=None,
+    lock=None,
+    ids=None,
+    owned_label_prefixes: tuple[str, ...] = (),
+) -> IntakeService:
+    """The intake service for ``entry`` with the supervised sender bound over the INJECTED
+    ``tracker`` (and its ``marker_line`` codec).
+
+    Off by default: with ``policy`` absent or disabled no sender is bound at all, so every outbox
+    operation refuses with ``OUTBOX_DISABLED`` before the tracker is touched. Enabling it here is
+    still never sufficient to post: the adapter's own per-operation enable and an operator
+    approval minting a single-use grant are both required. ``sanitizer`` defaults to the shared
+    :class:`~beadhive.adapters.intake.ScrubSanitizer`; the store is the OPERATIONAL one only."""
+    policy = policy or OutboxPolicy()
+    store = report_store(directory, lambda: store_scope(cfg, entry))
+    labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
+    if not policy.enabled:
+        return IntakeService(store, labels)
+    from .adapters.intake import ScrubSanitizer
+
+    sender = OutboxService(
+        store,
+        tracker,
+        lock if lock is not None else intake_lock(cfg, directory, hive=hive),
+        ids=ids if ids is not None else RandomIdSource(),
+        identity=identity,
+        marker_line=marker_line,
+        policy=policy,
+        leak_policy=leak_policy(cfg, owned_label_prefixes=owned_label_prefixes),
+        sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
+        posture=store_posture(entry, acknowledged=acknowledged),
+        holder=f"{socket.gethostname()}:{os.getpid()}",
+    )
+    return IntakeService(store, labels, outbox=sender)
+
+
 __all__ = [
+    "FlockIntakeLock",
+    "RandomIdSource",
     "ValidateLabelPolicy",
     "directory_store",
     "dispose",
     "duplicate_rows",
     "entry_dupes",
     "file_report",
+    "fleet_prefixes",
+    "intake_lock",
+    "leak_policy",
+    "lock_dir",
+    "outbox_service_for",
     "queue_rows",
     "report_store",
     "reroute_to_hive",
@@ -274,5 +492,6 @@ __all__ = [
     "service_for",
     "service_for_directory",
     "store_error_message",
+    "store_posture",
     "store_scope",
 ]

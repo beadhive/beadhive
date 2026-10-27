@@ -5,8 +5,9 @@ One flat top-level metadata key, ``intake.source`` (the dot is part of the key, 
 path), holds the binding facts and the last issue snapshot of a bound report; import and discovery
 are its sole writer (external-intake-module-adr.md section 4). The issue URL is not repeated here:
 it is the bead's native ``external_ref``. The document is schema-versioned and rewritten whole.
-``intake.thread`` (the conversation) is a separate key with its own writer; its codec is the
-module's (``thread_to_document`` / ``thread_from_document``), so every store shares one format.
+``intake.thread`` (the conversation) and ``intake.outbox`` (the communication records) are
+separate keys with their own writers; their codecs are the module's, so every store shares one
+format.
 :func:`bead_view` never decodes it: a queue row carries it, but nothing on that path reads it.
 Pure functions over plain mappings; no I/O.
 """
@@ -18,6 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from beadhive.modules.intake.contracts import (
+    OUTBOX_KEY,
     THREAD_KEY,
     BeadView,
     IssueBinding,
@@ -66,6 +68,11 @@ def _documents(row: Mapping[str, Any]) -> Mapping[str, Any]:
 def stored_thread(row: Mapping[str, Any]) -> Any | None:
     """The row's raw ``intake.thread`` value (None when the bead has none). Not decoded here."""
     return _documents(row).get(THREAD_KEY)
+
+
+def stored_outbox(row: Mapping[str, Any]) -> Any | None:
+    """The row's raw ``intake.outbox`` value (None when the bead has none). Not decoded here."""
+    return _documents(row).get(OUTBOX_KEY)
 
 
 def current_source(row: Mapping[str, Any]) -> dict:
@@ -133,11 +140,13 @@ def bead_view(row: Mapping[str, Any]) -> BeadView:
 
 
 __all__ = [
+    "OUTBOX_KEY",
     "SCHEMA",
     "SOURCE_KEY",
     "THREAD_KEY",
     "bead_view",
     "current_source",
     "source_document",
+    "stored_outbox",
     "stored_thread",
 ]

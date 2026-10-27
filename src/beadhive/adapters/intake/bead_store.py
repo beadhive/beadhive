@@ -10,8 +10,9 @@ result the legacy callers always got (None / no rows).
 rewritten whole; see :mod:`beadhive.adapters.intake.documents`. ``intake.thread`` (the
 conversation) is another such key: :meth:`BdReportStore.write_thread` re-reads the stored ``seq``
 (bd has no compare-and-swap) and then rewrites the whole document in ONE ``bd update --metadata``,
-so the records and the thread checkpoint always commit together. Only :meth:`read_thread` and
-:meth:`write_thread` decode it; the queue and lookup reads never do.
+so the records and the thread checkpoint always commit together. ``intake.outbox`` (the
+communication records) is a third such key, written the same way by :meth:`write_outbox`. Only
+the document's own read and write decode it; the queue and lookup reads never do.
 """
 
 from __future__ import annotations
@@ -23,12 +24,15 @@ from typing import Any, Protocol
 from beadhive.modules.intake.contracts import (
     INTAKE_HOLD_GATE_TYPE,
     INTAKE_HOLD_REASON,
+    OUTBOX_KEY,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
     HoldGate,
     IntakeRefused,
     IntakeStoreError,
+    OutboxDocument,
+    OutboxDocumentError,
     RefusalReason,
     ReportDraft,
     SourceSnapshot,
@@ -37,11 +41,20 @@ from beadhive.modules.intake.contracts import (
     ThreadDocumentError,
     blockers_of,
     is_hold_gate,
+    outbox_from_document,
+    outbox_to_document,
     thread_from_document,
     thread_to_document,
 )
 
-from .documents import SOURCE_KEY, bead_view, current_source, source_document, stored_thread
+from .documents import (
+    SOURCE_KEY,
+    bead_view,
+    current_source,
+    source_document,
+    stored_outbox,
+    stored_thread,
+)
 
 
 class ReportRoutes(Protocol):
@@ -213,6 +226,15 @@ class BdReportStore:
         row = self._show(bead)
         return self._thread(bead, row) if row is not None else None
 
+    def read_outbox(self, bead: str) -> OutboxDocument | None:
+        """The bead's ``intake.outbox`` (one ``bd show``); None for no bead or no document."""
+        row = self._show(bead)
+        return self._outbox(bead, row) if row is not None else None
+
+    def reports_with_outbox(self) -> tuple[BeadView, ...]:
+        rows = self._routes.issue_list(has_metadata_key=OUTBOX_KEY, all_=True, limit=0)
+        return self._views(rows)
+
     # -- writes ------------------------------------------------------------------------------
 
     def create(self, draft: ReportDraft) -> str:
@@ -359,6 +381,36 @@ class BdReportStore:
         )
         self._check(result, "write_thread", bead)
 
+    def write_outbox(
+        self, bead: str, document: OutboxDocument, *, expect_seq: int, actor: str
+    ) -> None:
+        """Re-read the stored ``seq``, then rewrite ``intake.outbox`` whole in one ``bd update``
+        (the record half of the ``IntakeLock``, exactly as :meth:`write_thread`)."""
+        row = self._show(bead)
+        if row is None:
+            raise IntakeStoreError(f"{bead} not found", bead=bead, operation="write_outbox")
+        stored = self._outbox(bead, row)
+        current = stored.seq if stored is not None else 0
+        if current != expect_seq:
+            raise IntakeRefused(
+                RefusalReason.OUTBOX_MOVED,
+                f"{bead}'s outbox is at seq {current}, not {expect_seq}; re-read and retry",
+            )
+        if document.seq <= expect_seq:
+            raise IntakeStoreError(
+                f"an outbox write must advance seq past {expect_seq}",
+                bead=bead,
+                operation="write_outbox",
+            )
+        if not str(row.get("external_ref") or ""):
+            raise IntakeStoreError(
+                f"{bead} is not bound to an external issue", bead=bead, operation="write_outbox"
+            )
+        result = self._routes.issue_set_metadata_document(
+            bead, OUTBOX_KEY, outbox_to_document(document), actor=actor, capture=True
+        )
+        self._check(result, "write_outbox", bead)
+
     # -- helpers -----------------------------------------------------------------------------
 
     def _show(self, bead: str) -> dict | None:
@@ -376,6 +428,16 @@ class BdReportStore:
             return thread_from_document(document)
         except ThreadDocumentError as exc:  # never read as empty: the next write would replace it
             raise IntakeStoreError(str(exc), bead=bead, operation="read_thread") from exc
+
+    @staticmethod
+    def _outbox(bead: str, row: dict) -> OutboxDocument | None:
+        document = stored_outbox(row)
+        if document is None:
+            return None
+        try:
+            return outbox_from_document(document)
+        except OutboxDocumentError as exc:  # never read as empty: the records may name sent posts
+            raise IntakeStoreError(str(exc), bead=bead, operation="read_outbox") from exc
 
     def _check(self, result: Any, operation: str, bead: str, *, prefix: str = "") -> None:
         if result.returncode:

@@ -62,6 +62,14 @@ def test_port_names_match_the_adr() -> None:
         "thread_of",
         "mark_considered",
         "sweep_holds",
+        "draft_reply",
+        "outbox",
+        "render",
+        "approve",
+        "send",
+        "reconcile",
+        "discard",
+        "retry",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",
@@ -85,6 +93,9 @@ def test_port_names_match_the_adr() -> None:
         "bound_reports",
         "open_hold",
         "resolve_hold",
+        "read_outbox",
+        "write_outbox",
+        "reports_with_outbox",
     }
     assert {m for m in vars(contracts.CheckpointStore) if not m.startswith("_")} == {"get", "put"}
     assert {m for m in vars(contracts.LabelPolicy) if not m.startswith("_")} == {"violations"}

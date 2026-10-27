@@ -64,6 +64,9 @@ class RefusalReason(StrEnum):
     GRANT_REUSED = "grant_reused"  # a grant id the document already holds
     GRANT_UNUSABLE = "grant_unusable"  # the approval's grant was consumed or voided
     UNKNOWN_OUTCOME = "unknown_outcome"  # discarding an unknown needs accept_unknown
+    # the supervised sender (I9a): the store's seq re-check and the host half of IntakeLock
+    OUTBOX_MOVED = "outbox_moved"  # the stored intake.outbox seq moved since it was read
+    NOT_PRIMARY = "not_primary"  # this host is not the hive's primary writer
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
 
@@ -82,10 +85,9 @@ class IntakeStoreError(Exception):
 
     ``operation`` names the failed step in the module's own vocabulary (``create``, ``set_state``,
     ``update_fields``, ``close``, ``assign``, ``track``, ``record_snapshot``, ``read_thread``,
-    ``write_thread``, ``open_hold``, ``resolve_hold``, plus the service's ``stamp:<dimension>``
-    and ``clear_intake`` re-tags) so a transport can word its message; ``returncode`` is the
-    store's own exit status (1 when it
-    has none)."""
+    ``write_thread``, ``open_hold``, ``resolve_hold``, ``read_outbox``, ``write_outbox``, plus
+    the service's ``stamp:<dimension>`` and ``clear_intake`` re-tags) so a transport can word its
+    message; ``returncode`` is the store's own exit status (1 when it has none)."""
 
     def __init__(
         self,

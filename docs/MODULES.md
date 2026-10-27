@@ -532,12 +532,29 @@ text) and the per-operation machine O1 to O19, `domain/leaks.py` the leak check,
 `domain/delivery.py` the `delivery`/`notified` rules and `domain/outbox_document.py` the
 `intake.outbox` codec.
 `application/outbox.py` only translates to and from the tracker port (`WriteGrant`, receipts,
-capabilities, which errors prove nothing was written); no sender, store write, port operation or
-config key exists yet, and `OutboxPolicy()` is off. The `Sanitizer` and `IdSource` ports are in the
+capabilities, which errors prove nothing was written); the sender is `application/sender.py`
+(below), and `OutboxPolicy()` is off. The `Sanitizer` and `IdSource` ports are in the
 contracts; `beadhive.adapters.intake.ScrubSanitizer` implements the first over the shared
 `scrub()` until `bh-o2mjz`, and with no sanitizer every operation is held. Tests:
 `tests/unit/modules/intake/test_intake_outbox_*.py` (the `bh-6wj9y` R14 cases at the domain level,
 X9 on `MemoryTracker` with kit extension K1).
+
+The supervised `comment.create` sender (I9a, `bh-czes8`) is `application/sender.py`:
+`OutboxService` runs the machine against `ReportStore.read_outbox` / `write_outbox` (one whole
+`intake.outbox` rewrite per step, refused with `OUTBOX_MOVED` when the stored `seq` moved) under the
+binding's `IntakeLock`, recovering a dead sender's `sending` to `unknown` (O13) on every lock
+acquisition. `IntakePort` gains `draft_reply`, `outbox`, `render` (the dry run: no tracker request,
+no store write), `approve` (O5, minting one single-use grant checked by the typed digest),
+`send` (O9 persisted before exactly one `post_comment`), `reconcile` (one complete comment listing
+per call; two without the marker after the attempt ended make it `failed(absent)`), `discard` and
+`retry`. `IntakeService` delegates them to an optional `OutboxService` and refuses with
+`OUTBOX_DISABLED` without one. `StoreOutboxView` is the store-backed `OutboxView` (with `issued()`)
+thread recognition reads. The root (`intake_services`) adds `FlockIntakeLock` (`guard_primary`, an
+`fcntl.flock` under `.bh/intake/locks`, `guard.live_epoch`), `RandomIdSource`, `leak_policy`,
+`store_posture` and `outbox_service_for`, which binds no sender unless an enabled `OutboxPolicy` is
+passed and takes the tracker adapter and its marker codec injected. No `bh work outbox` verb or
+config key exists yet. Tests: `tests/unit/modules/intake/test_intake_outbox_sender.py` and
+`tests/test_intake_outbox_root.py`.
 
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
 (`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so

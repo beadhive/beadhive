@@ -9,6 +9,7 @@ rewritten whole, guarded by the ``seq`` re-check, and never disturbing another k
 report is born with an ``intake-hold:`` gate that keeps it out of :meth:`ready_ids`, :meth:`close`
 closes it first and resolves the hold after (the order is kept in :meth:`events`, so a test can
 prove there is no ready window), and :meth:`plain_close` refuses a held bead as ``bd close`` does.
+The ``intake.outbox`` document is another such key, with the same ``seq`` re-check.
 """
 
 from __future__ import annotations
@@ -21,18 +22,23 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from beadhive.modules.intake.contracts import (
+    OUTBOX_KEY,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
     HoldGate,
     IntakeRefused,
     IntakeStoreError,
+    OutboxDocument,
+    OutboxDocumentError,
     RefusalReason,
     ReportDraft,
     SourceSnapshot,
     StoreScope,
     Thread,
     ThreadDocumentError,
+    outbox_from_document,
+    outbox_to_document,
     thread_from_document,
     thread_to_document,
 )
@@ -73,6 +79,9 @@ class MemoryReportStore:
         #: ``(bead, seq)`` of every durable ``intake.thread`` write, in order.
         self.thread_writes: list[tuple[str, int]] = []
         self._fail_thread_write: Exception | None = None
+        #: ``(bead, seq)`` of every durable ``intake.outbox`` write, in order.
+        self.outbox_writes: list[tuple[str, int]] = []
+        self._fail_outbox_write: Exception | None = None
 
     # -- reads -------------------------------------------------------------------------------
 
@@ -118,6 +127,18 @@ class MemoryReportStore:
             return thread_from_document(row.metadata[THREAD_KEY])
         except ThreadDocumentError as exc:
             raise IntakeStoreError(str(exc), bead=bead, operation="read_thread") from exc
+
+    def read_outbox(self, bead: str) -> OutboxDocument | None:
+        row = self._rows.get(bead)
+        if row is None or OUTBOX_KEY not in row.metadata:
+            return None
+        try:
+            return outbox_from_document(row.metadata[OUTBOX_KEY])
+        except OutboxDocumentError as exc:
+            raise IntakeStoreError(str(exc), bead=bead, operation="read_outbox") from exc
+
+    def reports_with_outbox(self) -> tuple[BeadView, ...]:
+        return tuple(r.view for r in self._rows.values() if OUTBOX_KEY in r.metadata)
 
     # -- writes ------------------------------------------------------------------------------
 
@@ -269,7 +290,41 @@ class MemoryReportStore:
         row.metadata[THREAD_KEY] = json.loads(json.dumps(thread_to_document(thread)))
         self.thread_writes.append((bead, thread.seq))
 
+    def write_outbox(
+        self, bead: str, document: OutboxDocument, *, expect_seq: int, actor: str
+    ) -> None:
+        row = self._row(bead)
+        if self._fail_outbox_write is not None:
+            failure, self._fail_outbox_write = self._fail_outbox_write, None
+            raise failure
+        stored = self.read_outbox(bead)
+        current = stored.seq if stored is not None else 0
+        if current != expect_seq:
+            raise IntakeRefused(
+                RefusalReason.OUTBOX_MOVED,
+                f"{bead}'s outbox is at seq {current}, not {expect_seq}; re-read and retry",
+            )
+        if document.seq <= expect_seq:
+            raise IntakeStoreError(
+                f"an outbox write must advance seq past {expect_seq}",
+                bead=bead,
+                operation="write_outbox",
+            )
+        if not row.view.external_ref:
+            raise IntakeStoreError(
+                f"{bead} is not bound to an external issue", bead=bead, operation="write_outbox"
+            )
+        self.writes += 1
+        row.metadata[OUTBOX_KEY] = json.loads(json.dumps(outbox_to_document(document)))
+        self.outbox_writes.append((bead, document.seq))
+
     # -- test controls (not part of the port) ------------------------------------------------
+
+    def fail_next_outbox_write(self, error: Exception | None = None) -> None:
+        """Make the next :meth:`write_outbox` raise (default: a store failure) and write nothing."""
+        self._fail_outbox_write = error or IntakeStoreError(
+            "injected store failure", operation="write_outbox"
+        )
 
     def put_metadata(self, bead: str, key: str, value: Any) -> None:
         """Set one top-level metadata key as another writer would (not a counted write)."""
