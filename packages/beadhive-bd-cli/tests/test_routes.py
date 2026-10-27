@@ -368,3 +368,48 @@ def test_hive_config_and_captured_label_routes_own_their_argv() -> None:
         ["config", "unset", "bh.pairing.enabled"],
         ["label", "remove", "bh-1", "claim-frame:f1"],
     ]
+
+
+def test_intake_report_routes_own_their_argv_and_carry_documents_on_stdin() -> None:
+    """The routes the intake report store needs (external-intake-module-adr.md section 1): the
+    URL filter, the metadata-key filter, the held close, the whole-document metadata write and a
+    report created with its binding. Documents travel on stdin, never argv."""
+    bd = RecordingBd()
+    routes = CliRoutes(bd, "/hive")
+
+    routes.issue_list(external_ref="https://t.example/i/7", all_=True, limit=0)
+    routes.issue_list(has_metadata_key="intake.outbox", all_=True, limit=0)
+    routes.issue_list(label="intake:untriaged", status="open", label_first=True)
+    routes.issue_close_held("bh-1", reason="rejected", actor="dev/a", capture=True)
+    routes.issue_set_metadata_document("bh-1", "intake.thread", {"seq": 2, "t": "é"}, actor="x/a")
+    routes.create_report("T", "bug", "org:o", external_ref="https://t.example/i/7")
+    routes.create_report("T", "bug", "org:o", metadata={"intake.source": {"schema": 1}})
+    routes.dependency_add("bh-1", "bh-2", "tracks", actor="dev/a")
+    routes.dependency_remove("bh-1", "bh-2", actor="dev/a")
+
+    assert [call[1] for call in bd.calls] == [
+        ["list", "--all", "--limit", "0", "--external-ref", "https://t.example/i/7"],
+        ["list", "--all", "--limit", "0", "--has-metadata-key", "intake.outbox"],
+        ["list", "--label", "intake:untriaged", "--status", "open"],
+        ["close", "bh-1", "--reason", "rejected", "--force"],
+        ["update", "bh-1", "--metadata", "@/dev/stdin"],
+        [
+            "--json",
+            "create",
+            "T",
+            "--type",
+            "bug",
+            "-l",
+            "org:o",
+            "--external-ref",
+            "https://t.example/i/7",
+        ],
+        ["--json", "create", "T", "--type", "bug", "-l", "org:o", "--metadata", "@/dev/stdin"],
+        ["dep", "add", "bh-1", "bh-2", "-t", "tracks"],
+        ["dep", "remove", "bh-1", "bh-2"],
+    ]
+    document_write = bd.calls[4]
+    assert document_write[3:] == ("x/a", True, '{"intake.thread": {"seq": 2, "t": "\\u00e9"}}')
+    created_with_metadata = bd.calls[6]
+    assert created_with_metadata[5] == '{"intake.source": {"schema": 1}}'
+    assert bd.calls[7][3] == "dev/a" and bd.calls[8][3] == "dev/a"

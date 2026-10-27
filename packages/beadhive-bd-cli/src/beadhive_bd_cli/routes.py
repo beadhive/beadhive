@@ -7,13 +7,18 @@ testable and preventing new inline command builders from accumulating in ``src/b
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import json
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 from .transport import BdTransport
 
 __all__ = ["CliRoutes", "github_pull_only_argv", "public_snapshot_argv"]
+
+#: bd reads a ``--metadata`` JSON document from a file; the process stdin is the one that needs no
+#: temporary file and survives a forwarded invocation (the transport carries ``text_input``).
+_STDIN_JSON = "@/dev/stdin"
 
 
 def public_snapshot_argv(output: Path) -> list[str]:
@@ -49,6 +54,8 @@ class CliRoutes:
         limit: int | None = None,
         strict: bool = False,
         label_first: bool = False,
+        external_ref: str = "",
+        has_metadata_key: str = "",
     ) -> Any:
         args = ["list"]
         if all_:
@@ -64,6 +71,10 @@ class CliRoutes:
             filters += ["--status", status]
         if not label_first and label:
             filters += ["--label", label]
+        if external_ref:
+            filters += ["--external-ref", external_ref]
+        if has_metadata_key:
+            filters += ["--has-metadata-key", has_metadata_key]
         args += filters
         if strict:
             return self._bd.json(args, self._cwd, strict=True)
@@ -192,6 +203,14 @@ class CliRoutes:
             args.append("--force")
         return self._bd.run(args, self._cwd, actor=actor, capture=capture)
 
+    def issue_close_held(
+        self, bead: str, *, reason: str, actor: str = "", capture: bool = False
+    ) -> Any:
+        """The held close: ``bd close --force`` for ONE bead, overriding only bd's refusal to close
+        a bead that still has a live blocker (its own ``intake-hold:`` gate). Callers other than the
+        intake report store's ``close`` use :meth:`issue_close`."""
+        return self.issue_close(bead, reason=reason, actor=actor, force=True, capture=capture)
+
     def issue_reopen(self, bead: str) -> Any:
         return self._bd.run(["reopen", bead], self._cwd)
 
@@ -252,11 +271,34 @@ class CliRoutes:
     def issue_update_metadata(self, bead: str, payload: str, *, capture: bool = False) -> Any:
         return self._bd.run(["update", bead, "--metadata", payload], self._cwd, capture=capture)
 
-    def dependency_add(self, source: str, target: str, type_: str) -> Any:
-        return self._bd.run(["dep", "add", source, target, "-t", type_], self._cwd)
+    def issue_set_metadata_document(
+        self,
+        bead: str,
+        key: str,
+        document: Mapping[str, Any],
+        *,
+        actor: str = "",
+        capture: bool = True,
+    ) -> Any:
+        """Rewrite ONE top-level metadata key of ``bead`` with ``document``, whole.
 
-    def dependency_remove(self, source: str, target: str) -> Any:
-        return self._bd.run(["dep", "remove", source, target], self._cwd)
+        ``bd update --metadata`` merges top-level keys and replaces a key's value wholesale, so
+        every other key survives. The JSON travels on stdin (``@/dev/stdin``), never argv: a
+        document may be megabytes and one argv string is capped near 128 KiB. ``key`` is one flat
+        top-level key whose dot, if any, is part of the key and not a JSON path."""
+        return self._bd.run(
+            ["update", bead, "--metadata", _STDIN_JSON],
+            self._cwd,
+            actor=actor,
+            capture=capture,
+            text_input=json.dumps({key: document}, sort_keys=True),
+        )
+
+    def dependency_add(self, source: str, target: str, type_: str, *, actor: str = "") -> Any:
+        return self._bd.run(["dep", "add", source, target, "-t", type_], self._cwd, actor=actor)
+
+    def dependency_remove(self, source: str, target: str, *, actor: str = "") -> Any:
+        return self._bd.run(["dep", "remove", source, target], self._cwd, actor=actor)
 
     def dependency_list(self, bead: str, *, direction: str, type_: str) -> Any:
         return self._bd.json(
@@ -301,10 +343,28 @@ class CliRoutes:
         *,
         description: str = "",
         actor: str = "",
+        external_ref: str = "",
+        metadata: Mapping[str, Any] | None = None,
     ) -> Any:
+        """``bd create`` for one report bead.
+
+        ``external_ref`` binds the bead to an external issue URL atomically with its birth;
+        ``metadata`` (top-level key -> document) is written in the same create, through stdin like
+        :meth:`issue_set_metadata_document`. Both are omitted for a born-native report."""
         args = ["--json", "create", title, "--type", issue_type, "-l", labels]
         if description:
             args += ["-d", description]
+        if external_ref:
+            args += ["--external-ref", external_ref]
+        if metadata:
+            args += ["--metadata", _STDIN_JSON]
+            return self._bd.run(
+                args,
+                self._cwd,
+                actor=actor,
+                capture=True,
+                text_input=json.dumps(dict(metadata), sort_keys=True),
+            )
         return self._bd.run(args, self._cwd, actor=actor, capture=True)
 
     def find_duplicates(self, *, threshold: float, method: str) -> Any:
