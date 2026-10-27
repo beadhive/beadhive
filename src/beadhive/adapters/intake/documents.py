@@ -1,9 +1,13 @@
-"""The ``intake.source`` metadata document and the bead rows it rides on.
+"""The ``intake.source`` metadata document, the ``intake.thread`` slot, and the bead rows they
+ride on.
 
 One flat top-level metadata key, ``intake.source`` (the dot is part of the key, never a JSON
 path), holds the binding facts and the last issue snapshot of a bound report; import and discovery
 are its sole writer (external-intake-module-adr.md section 4). The issue URL is not repeated here:
 it is the bead's native ``external_ref``. The document is schema-versioned and rewritten whole.
+``intake.thread`` (the conversation) is a separate key with its own writer; its codec is the
+module's (``thread_to_document`` / ``thread_from_document``), so every store shares one format.
+:func:`bead_view` never decodes it: a queue row carries it, but nothing on that path reads it.
 Pure functions over plain mappings; no I/O.
 """
 
@@ -14,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from beadhive.modules.intake.contracts import (
+    THREAD_KEY,
     BeadView,
     IssueBinding,
     IssueStatus,
@@ -56,6 +61,11 @@ def _documents(row: Mapping[str, Any]) -> Mapping[str, Any]:
         except ValueError:
             return {}
     return metadata if isinstance(metadata, Mapping) else {}
+
+
+def stored_thread(row: Mapping[str, Any]) -> Any | None:
+    """The row's raw ``intake.thread`` value (None when the bead has none). Not decoded here."""
+    return _documents(row).get(THREAD_KEY)
 
 
 def current_source(row: Mapping[str, Any]) -> dict:
@@ -122,4 +132,12 @@ def bead_view(row: Mapping[str, Any]) -> BeadView:
     )
 
 
-__all__ = ["SCHEMA", "SOURCE_KEY", "bead_view", "current_source", "source_document"]
+__all__ = [
+    "SCHEMA",
+    "SOURCE_KEY",
+    "THREAD_KEY",
+    "bead_view",
+    "current_source",
+    "source_document",
+    "stored_thread",
+]

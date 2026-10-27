@@ -6,6 +6,8 @@
   substitutes for a real one. No bd, no filesystem, no clock.
 - :data:`REPORT_STORE_CASES` (``cases``): the reusable contract cases every ``ReportStore`` must
   pass, with :func:`run_report_store_case` / :func:`assert_report_store_conforms`.
+- :class:`InProcessIntakeLock` and :class:`MemoryOutboxView` (``lock``): a never-waiting
+  in-process ``IntakeLock`` with a settable epoch, and an outbox read view over plain sets.
 
 It imports the intake module's contracts, so it is imported explicitly, never from
 :mod:`beadhive.testing`.
@@ -21,13 +23,17 @@ from .cases import (
     draft,
     memory_store,
     run_report_store_case,
+    thread,
 )
+from .lock import InProcessIntakeLock, MemoryOutboxView
 from .memory_store import MemoryReportStore
 
 __all__ = [
     "REPORT_STORE_CASES",
     "SCOPE",
     "URL",
+    "InProcessIntakeLock",
+    "MemoryOutboxView",
     "MemoryReportStore",
     "ReportStoreCase",
     "ReportStoreFactory",
@@ -35,4 +41,5 @@ __all__ = [
     "draft",
     "memory_store",
     "run_report_store_case",
+    "thread",
 ]

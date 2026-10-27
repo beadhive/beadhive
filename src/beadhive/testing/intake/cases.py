@@ -15,17 +15,30 @@ No case reads a clock, sleeps or opens a socket.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 
 from beadhive.modules.intake.contracts import (
+    CheckpointScope,
+    CommentRecord,
+    CommentRevision,
+    Evidence,
     HiveTriplet,
+    IntakeRefused,
     IntakeStoreError,
     IssueBinding,
     IssueStatus,
+    RefusalReason,
     ReportDraft,
     ReportStore,
+    Role,
     SourceSnapshot,
     StoreScope,
+    Thread,
+    ThreadActor,
+    ThreadCheckpoint,
+    ThreadIssue,
 )
 
 from ..conformance import PortCase, assert_port_conforms
@@ -56,6 +69,38 @@ def draft(title: str = "login is broken", *, bound: bool = False, kind: str = "b
         description="steps",
         binding=binding,
         snapshot=snapshot,
+    )
+
+
+def thread(seq: int = 3, *, comments: Sequence[str] = ("c1", "c2"), url: str = URL) -> Thread:
+    """A small ``intake.thread`` value for store cases: ``comments`` live records and a stored
+    issue-scope checkpoint, at ``seq``. Explicit timestamps; never the clock."""
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    records = {
+        cid: CommentRecord(
+            id=cid,
+            global_id=f"g-{cid}",
+            author=ThreadActor("human-alice", "human", "alice"),
+            via=None,
+            marker=None,
+            role=Role.EXTERNAL,
+            evidence=Evidence.NONE,
+            created_at=when,
+            body=f"body of {cid}",
+            revisions=(CommentRevision(1, when, f"sha256:{cid}", n + 1),),
+            first_seen_seq=n + 1,
+            last_seen_seq=n + 1,
+        )
+        for n, cid in enumerate(comments)
+    }
+    checkpoint = ThreadCheckpoint(CheckpointScope.ISSUE, url, "token-1", seq)
+    return Thread(
+        "memory",
+        "acme/widgets",
+        ThreadIssue("#7", url),
+        seq=seq,
+        checkpoint=checkpoint,
+        records=records,
     )
 
 
@@ -197,6 +242,94 @@ def _unknown_bead_is_a_store_error(factory: ReportStoreFactory) -> None:
     )
 
 
+def _expect_thread_moved(call: Callable[[], object]) -> None:
+    try:
+        call()
+    except IntakeRefused as exc:
+        assert exc.reason is RefusalReason.THREAD_MOVED, exc.reason
+        return
+    raise AssertionError("expected IntakeRefused(THREAD_MOVED) for a stale expect_seq")
+
+
+def _thread_absent_reads_none(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    assert store.read_thread(bead) is None
+    assert store.read_thread("acme-ghost") is None
+
+
+def _thread_round_trips_whole(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    first = thread(3)
+    store.write_thread(bead, first, expect_seq=0, actor="dev/test")
+    assert store.read_thread(bead) == first
+    second = thread(5, comments=("c2",))  # the whole document is replaced, never merged
+    store.write_thread(bead, second, expect_seq=3, actor="dev/test")
+    assert store.read_thread(bead) == second
+
+
+def _thread_write_rechecks_seq(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    store.write_thread(bead, thread(3), expect_seq=0, actor="dev/test")
+    _expect_thread_moved(
+        lambda: store.write_thread(bead, thread(9), expect_seq=0, actor="dev/other")
+    )
+    _expect_thread_moved(
+        lambda: store.write_thread(bead, thread(9), expect_seq=4, actor="dev/other")
+    )
+    stored = store.read_thread(bead)
+    assert stored is not None and stored.seq == 3  # a refused write wrote nothing
+    try:
+        store.write_thread(bead, thread(3), expect_seq=3, actor="dev/test")
+    except IntakeStoreError:
+        pass
+    else:
+        raise AssertionError("a thread write that does not advance seq must be refused")
+
+
+def _thread_keeps_other_documents(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    before = store.get(bead)
+    assert before is not None
+    store.write_thread(bead, thread(3), expect_seq=0, actor="dev/test")
+    after = store.get(bead)
+    assert after is not None
+    assert (after.snapshot, after.binding, after.external_ref) == (
+        before.snapshot,
+        before.binding,
+        before.external_ref,
+    )
+    newer = SourceSnapshot("t2", "b2", IssueStatus.CLOSED, "r2")
+    store.record_snapshot(bead, newer, actor="dev/test")  # the other writer leaves the thread
+    assert store.read_thread(bead) == thread(3)
+    view = store.get(bead)
+    assert view is not None and view.snapshot == newer
+
+
+def _thread_on_a_closed_report(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    store.close(bead, reason="done", actor="dev/test")
+    store.write_thread(bead, thread(3), expect_seq=0, actor="dev/test")  # closed issues in scope
+    assert store.read_thread(bead) == thread(3)
+
+
+def _thread_write_needs_its_bound_report(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    native = store.create(draft("born native"))
+    _expect_store_error(
+        lambda: store.write_thread("acme-ghost", thread(3), expect_seq=0, actor="dev/test")
+    )
+    other = dataclasses.replace(thread(3), issue=ThreadIssue("#8", URL[:-1] + "8"))
+    _expect_store_error(lambda: store.write_thread(bead, other, expect_seq=0, actor="dev/test"))
+    _expect_store_error(lambda: store.write_thread(native, thread(3), expect_seq=0, actor="a"))
+    assert store.read_thread(bead) is None and store.read_thread(native) is None
+
+
 REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.scope-is-stable", _scope_is_stable),
     ReportStoreCase("store.create-reads-back", _create_reads_back),
@@ -214,6 +347,14 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.duplicate-pairs", _duplicate_pairs),
     ReportStoreCase("store.tracks-many-reports-to-one-work", _tracks_many_reports_to_one_work),
     ReportStoreCase("store.unknown-bead-is-a-store-error", _unknown_bead_is_a_store_error),
+    ReportStoreCase("store.thread-absent-reads-none", _thread_absent_reads_none),
+    ReportStoreCase("store.thread-round-trips-whole", _thread_round_trips_whole),
+    ReportStoreCase("store.thread-write-rechecks-seq", _thread_write_rechecks_seq),
+    ReportStoreCase("store.thread-keeps-other-documents", _thread_keeps_other_documents),
+    ReportStoreCase("store.thread-on-a-closed-report", _thread_on_a_closed_report),
+    ReportStoreCase(
+        "store.thread-write-needs-its-bound-report", _thread_write_needs_its_bound_report
+    ),
 )
 
 
@@ -249,4 +390,5 @@ __all__ = [
     "draft",
     "memory_store",
     "run_report_store_case",
+    "thread",
 ]

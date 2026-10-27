@@ -466,6 +466,45 @@ Adopted as `bh-fptob` R1 to R8, stored in `intake.thread`:
 - **Triage watermark** `considered_rev` derives "new evidence"; it never changes the `intake`
   dimension (wake-on-reply waits for `bh-elkv`, D3).
 
+**How triage marks `considered_rev` (decided in I7, `bh-rkmq1`; was open).** Through an explicit
+module operation, `IntakePort.mark_considered(ConsiderRequest(report, actor, through_seq))`, and
+**never** as a side effect of a disposition. Triage reads `IntakePort.thread_of(report)` (the
+document plus the derived `new_evidence` and `flagged` reads) and passes back that view's `seq`;
+each record's `considered_rev` becomes its highest `rev` seen at or before that seq, and the
+thread's `considered_seq` covers tombstones up to it, so a comment that arrived after the read stays
+new evidence. Marking is idempotent, takes the `IntakeLock`, writes only `intake.thread` (one
+write with the `seq` re-check) and never the `intake` dimension. Why not a disposition side
+effect: a disposition can be made without reading the thread (a spam reject from the title alone)
+and would then hide unread evidence; an accepted report keeps receiving comments with no further
+disposition to mark them; and a disposition writes the `intake` dimension through `set_state`,
+which cannot commit atomically with an `intake.thread` write. The CLI spelling (a `bh work intake`
+sub-verb or a flag on the thread read, never `promote`) is the CLI bead's to ratify; a disposition
+verb may later offer an explicit opt-in flag that calls the same operation.
+
+**As built in I7 (`bh-rkmq1`).** The pure rules are `domain/thread.py` over intake-owned records
+(`Observation`, `CommentRecord`, `Thread`); the schema-versioned codec is
+`domain/thread_document.py` (re-exported from `contracts`, so every `ReportStore` shares one
+format; a malformed or newer-schema document is a store error and is never read as empty, so it is
+never overwritten). `application/threads.py` (`ThreadService`) is the only tracker-typed code of
+the model. `IntakePort` gains `ingest_thread`, `reconcile_thread`, `reconcile_presence`,
+`thread_of` and `mark_considered`; `IntakeService` delegates them to an optional `ThreadService`
+and refuses with `INTAKE_DISABLED` without one (comment ingestion off, the default), as does
+`NullIntake`. `ReportStore` gains `read_thread` and `write_thread(bead, thread, expect_seq=,
+actor=)`: the store re-reads the stored `seq` and refuses with `THREAD_MOVED`, writing nothing,
+unless it still equals `expect_seq`; `BdReportStore` then rewrites the whole key in one `bd update
+--metadata @/dev/stdin`. `IntakeLock.hold(binding_key)` and the read-only `OutboxView`
+(`receipt_ids`, `pending`, `issued`, `known_actors`) are new contracts; the kit ships a
+never-waiting `InProcessIntakeLock` (refuses `INTAKE_BUSY`) and `MemoryOutboxView`. The root's
+lock implementation (guard, flock, epoch) stays with I9. Every operation refuses before any tracker
+read on a published operational store without acknowledgement (`PUBLISHED_STORE`; the posture is
+injected, and the root computes it when it composes ingestion), on a born-native report
+(`NOT_BOUND`), on a report bound to another project (`OTHER_PROJECT`) and on a stored token of
+another scope (`CHECKPOINT_SCOPE`). A reconcile pass collects its snapshot outside the lock and
+applies it under the lock with the `seq` it read before the snapshot began, so a record ingested
+meanwhile is never a candidate. Recognition uses the evidence of a record's first sighting and
+never demotes an own record, so editing a marker into or out of a comment never changes its role.
+The project-wide sweep and its `CheckpointStore` home are not built here (discovery, I6).
+
 **Layering (an unrecorded divergence, resolved here).** `bh-fptob` R10 and `bh-6wj9y` R16 each
 describe a "domain bead" that "depends only on the tracker contracts", and `bh-6wj9y`'s domain
 records embed tracker types (`Receipt.comment` as `CommentKey`). The checker forbids
@@ -814,8 +853,12 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
 
 ## What remains open
 
-- Whether triage marks `considered_rev` through a module verb (not `promote`) or as a side
-  effect of a disposition (`bh-fptob` R10 item 4); decide in I7.
+- ~~Whether triage marks `considered_rev` through a module verb or as a side effect of a
+  disposition~~: decided in I7, a module operation (section 9).
+- The untriaged-queue read still carries every report's `intake.thread` (bd 1.3.0's `bd list
+  --json` has no metadata-free projection, section 4). The queue path never decodes it; trimming
+  the transfer needs a route change (a metadata-free list, or a template `--format` list) that
+  also changes the raw rows `bh work intake --json` emits, so it is its own decision.
 - Clearing a dimension value on unlink (acceptance item 3).
 - The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).
 - Started, blocked and deprioritised milestones; revert detection.

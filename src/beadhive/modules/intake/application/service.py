@@ -2,9 +2,11 @@
 
 The service implements what only needs the :class:`ReportStore`: filing a report, the queue, the
 dispositions, bindings and the work lookup (``bh report``, ``bh escalate`` and the triage verbs
-run through it). Import, link and discovery are operations of the port that later beads own;
-until then they refuse with ``NOT_AVAILABLE``. Presentation, hive resolution, clone-on-demand and
-push stay with the legacy callers.
+run through it). The conversation operations delegate to an optional
+:class:`~.threads.ThreadService`; without one (comment ingestion off, the default) they refuse
+with ``INTAKE_DISABLED`` and ``thread_of`` reads nothing. Import, link and discovery are
+operations of the port that later beads own; until then they refuse with ``NOT_AVAILABLE``.
+Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from ..domain import (
     INTAKE_UNTRIAGED,
     REPORT_TYPES,
     BeadView,
+    ConsiderRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     Disposition,
@@ -30,16 +33,22 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    PresenceOutcome,
+    PresenceRequest,
     QueueItem,
     QueueQuery,
     QueueView,
     RefusalReason,
     ReportDraft,
+    ThreadOutcome,
+    ThreadRequest,
+    ThreadView,
     channel_of,
     disposition_state,
     dupes_touching,
     may_disposition,
 )
+from .threads import ThreadService
 
 
 def _state_value(label: str) -> tuple[str, str]:
@@ -62,12 +71,21 @@ class IntakeService:
     """Implements :class:`IntakePort` over one :class:`ReportStore` and a :class:`LabelPolicy`.
 
     ``binary`` is the CLI alias used in the event reason of a filed report (``filed via bh
-    report``), so the recorded history reads as it does today."""
+    report``), so the recorded history reads as it does today. ``threads`` is bound only when
+    comment ingestion is enabled (``intake.external.comments.enabled``, off by default)."""
 
-    def __init__(self, store: ReportStore, labels: LabelPolicy, *, binary: str = "bh") -> None:
+    def __init__(
+        self,
+        store: ReportStore,
+        labels: LabelPolicy,
+        *,
+        binary: str = "bh",
+        threads: ThreadService | None = None,
+    ) -> None:
         self._store = store
         self._labels = labels
         self._binary = binary
+        self._threads = threads
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -220,6 +238,28 @@ class IntakeService:
                 bindings.append(binding)
         return tuple(bindings)
 
+    # -- the conversation model -------------------------------------------------------------
+
+    def _thread_service(self) -> ThreadService:
+        if self._threads is None:
+            raise _comments_off()
+        return self._threads
+
+    def ingest_thread(self, request: ThreadRequest) -> ThreadOutcome:
+        return self._thread_service().ingest_thread(request)
+
+    def reconcile_thread(self, request: ThreadRequest) -> ThreadOutcome:
+        return self._thread_service().reconcile_thread(request)
+
+    def reconcile_presence(self, request: PresenceRequest) -> PresenceOutcome:
+        return self._thread_service().reconcile_presence(request)
+
+    def thread_of(self, report: str) -> ThreadView | None:
+        return None if self._threads is None else self._threads.thread_of(report)
+
+    def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome:
+        return self._thread_service().mark_considered(request)
+
     # -- owned by later beads ----------------------------------------------------------------
 
     def import_issue(self, request: ImportRequest) -> ImportOutcome:
@@ -233,6 +273,13 @@ class IntakeService:
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
         raise _not_available("discover")
+
+
+def _comments_off() -> IntakeRefused:
+    return IntakeRefused(
+        RefusalReason.INTAKE_DISABLED,
+        "comment ingestion is off for this hive (intake.external.comments.enabled; opt-in)",
+    )
 
 
 def _not_available(operation: str) -> IntakeRefused:
@@ -270,6 +317,21 @@ class NullIntake:
         return ()
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
+        raise _disabled()
+
+    def ingest_thread(self, request: ThreadRequest) -> ThreadOutcome:
+        raise _disabled()
+
+    def reconcile_thread(self, request: ThreadRequest) -> ThreadOutcome:
+        raise _disabled()
+
+    def reconcile_presence(self, request: PresenceRequest) -> PresenceOutcome:
+        raise _disabled()
+
+    def thread_of(self, report: str) -> ThreadView | None:
+        return None
+
+    def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome:
         raise _disabled()
 
 

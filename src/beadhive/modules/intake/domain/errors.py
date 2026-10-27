@@ -38,6 +38,12 @@ class RefusalReason(StrEnum):
     NOT_UNTRIAGED = "not_untriaged"
     REASON_REQUIRED = "reason_required"
     UNKNOWN_DISPOSITION = "unknown_disposition"
+    # thread ingestion refusals (the conversation model, bh-fptob)
+    NOT_BOUND = "not_bound"  # the report is not bound to an external issue: it has no thread
+    PUBLISHED_STORE = "published_store"  # the operational store would be published
+    CHECKPOINT_SCOPE = "checkpoint_scope"  # a stored token offered to a query of another scope
+    INTAKE_BUSY = "intake_busy"  # another intake operation holds the binding's lock
+    THREAD_MOVED = "thread_moved"  # the stored document's seq moved since it was read
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
 
@@ -55,9 +61,10 @@ class IntakeStoreError(Exception):
     """The report store could not complete a read or write; ``detail`` is already scrubbed.
 
     ``operation`` names the failed step in the module's own vocabulary (``create``, ``set_state``,
-    ``update_fields``, ``close``, ``assign``, ``track``, ``record_snapshot``, plus the service's
-    ``stamp:<dimension>`` and ``clear_intake`` re-tags) so a transport can word its message;
-    ``returncode`` is the store's own exit status (1 when it has none)."""
+    ``update_fields``, ``close``, ``assign``, ``track``, ``record_snapshot``, ``read_thread``,
+    ``write_thread``, plus the service's ``stamp:<dimension>`` and ``clear_intake`` re-tags) so a
+    transport can word its message; ``returncode`` is the store's own exit status (1 when it has
+    none)."""
 
     def __init__(
         self,

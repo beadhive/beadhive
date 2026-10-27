@@ -509,8 +509,22 @@ module's refusals as the legacy `(exit, error, message)` tuples. `report.py` kee
 clone-on-demand and the push; `triage.py` is a thin facade; reroute to another hive is an
 orchestration in the root (`IntakeService.reroute_elsewhere` over the source store plus the
 caller's filing into the target). `report` no longer imports `triage`, which retired the owned
-legacy cycle `cycle-edge-036`. The import, link and discovery operations, the conversation model
-and the outbox, and the `intake.external` config keys arrive in later beads, all off by default.
+legacy cycle `cycle-edge-036`. The import, link and discovery operations, the outbox and the
+`intake.external` config keys arrive in later beads, all off by default.
+
+The conversation model (`bh-fptob`) is `domain/thread.py` (pure rules over intake-owned records:
+`(id, revision, digest)` upserts, a local `seq`, tombstones only from complete id snapshots,
+layered own-message recognition, the `considered_rev` triage watermark) and
+`application/threads.py` (`ThreadService`, the only tracker-typed code of the model). A bound
+report's thread lives in the flat metadata key `intake.thread`, rewritten whole in one store write
+together with its per-issue checkpoint, under the per-binding `IntakeLock` and the store's `seq`
+re-check (`ReportStore.read_thread` / `write_thread`; `THREAD_MOVED` when the document moved).
+`IntakeService` delegates the thread operations to an optional `ThreadService` and refuses them
+with `INTAKE_DISABLED` without one, so comment ingestion is off by default. Purging a tombstoned
+body removes it from the current document only; under the archive rule earlier versions remain in
+store history, so purging is not erasure. Its tests run on `MemoryTracker` with explicit `at=`
+(`tests/unit/modules/intake/test_intake_threads.py` is the `bh-fptob` plan T1 to T19,
+`test_intake_thread_rules.py` drives the rules directly).
 
 Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
 pass `beadhive.testing.intake.REPORT_STORE_CASES`: `BdReportStore` passes them on an in-process

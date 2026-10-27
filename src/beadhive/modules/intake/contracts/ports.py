@@ -2,18 +2,22 @@
 
 :class:`IntakePort` is the one consumer-facing port. The outbound ports are intake's own narrow
 ones: :class:`ReportStore` (the bead store holding report beads), :class:`CheckpointStore` (opaque
-resume tokens) and :class:`LabelPolicy` (the closed label vocabulary). No bd argv, label string or
-store path crosses :class:`IntakePort`. Standard library plus this module's domain records.
+resume tokens), :class:`LabelPolicy` (the closed label vocabulary), :class:`IntakeLock` (the one
+per-binding lock) and :class:`OutboxView` (what own-message recognition reads of the outbox).
+No bd argv, label string or store path crosses :class:`IntakePort`. Standard library plus this
+module's domain records.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from ..domain import (
     BeadView,
     Checkpoint,
+    ConsiderRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     DispositionOutcome,
@@ -24,11 +28,18 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    PresenceOutcome,
+    PresenceRequest,
     QueueQuery,
     QueueView,
     ReportDraft,
     SourceSnapshot,
     StoreScope,
+    Thread,
+    ThreadActor,
+    ThreadOutcome,
+    ThreadRequest,
+    ThreadView,
 )
 
 
@@ -55,6 +66,18 @@ class IntakePort(Protocol):
     def reports_for_work(self, work: str) -> tuple[IssueBinding, ...]: ...  # merge/release hooks
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome: ...  # scheduled discovery
+
+    # the conversation model (bh-fptob): one thread per bound report, in ``intake.thread``
+
+    def ingest_thread(self, request: ThreadRequest) -> ThreadOutcome: ...  # incremental refresh
+
+    def reconcile_thread(self, request: ThreadRequest) -> ThreadOutcome: ...  # deletions
+
+    def reconcile_presence(self, request: PresenceRequest) -> PresenceOutcome: ...
+
+    def thread_of(self, report: str) -> ThreadView | None: ...  # triage's read
+
+    def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome: ...  # triage watermark
 
 
 @runtime_checkable
@@ -95,6 +118,43 @@ class ReportStore(Protocol):
 
     def trackers_of(self, work: str) -> tuple[str, ...]: ...
 
+    def read_thread(self, bead: str) -> Thread | None: ...  # None: no ``intake.thread`` yet
+
+    def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
+        """Rewrite ``bead``'s whole ``intake.thread`` document with ``thread``, leaving every
+        other document on the bead untouched, in ONE store write.
+
+        bd has no compare-and-swap, so the store re-reads the stored ``seq`` first and refuses
+        with ``IntakeRefused(THREAD_MOVED)`` (writing nothing) unless it still equals
+        ``expect_seq`` (0 for a bead without a thread). ``thread.seq`` must exceed it."""
+        ...
+
+
+@runtime_checkable
+class IntakeLock(Protocol):
+    """The one per-binding lock every mutating intake operation holds (ADR section 4).
+
+    ``hold`` yields the holder's live epoch, or raises ``IntakeRefused(INTAKE_BUSY)`` when the
+    binding is held elsewhere. No hold expires by time: a dead holder is detected by its released
+    lock or a moved epoch. The root's implementation is host + process + record (``guard``, an
+    ``fcntl.flock`` in ``.bh/``, the store's ``seq`` re-check); tests use an in-process lock."""
+
+    def hold(self, binding_key: str) -> AbstractContextManager[int]: ...
+
+
+@runtime_checkable
+class OutboxView(Protocol):
+    """The read-only view of the outbox own-message recognition needs (``bh-fptob`` R7, with
+    ``bh-6wj9y``'s ``issued``). The outbox owns the records; the thread only reads them."""
+
+    def receipt_ids(self) -> frozenset[str]: ...  # remote comment ids a WriteReceipt returned
+
+    def pending(self, outbox_id: str) -> bool: ...  # an operation ``sending`` or ``unknown``
+
+    def issued(self, outbox_id: str) -> bool: ...  # an operation that ever had an attempt
+
+    def known_actors(self) -> frozenset[ThreadActor]: ...  # every actor on an outbox receipt
+
 
 @runtime_checkable
 class CheckpointStore(Protocol):
@@ -112,4 +172,11 @@ class LabelPolicy(Protocol):
     def violations(self, labels: Sequence[str]) -> tuple[str, ...]: ...
 
 
-__all__ = ["CheckpointStore", "IntakePort", "LabelPolicy", "ReportStore"]
+__all__ = [
+    "CheckpointStore",
+    "IntakeLock",
+    "IntakePort",
+    "LabelPolicy",
+    "OutboxView",
+    "ReportStore",
+]

@@ -108,10 +108,32 @@ def test_intake_module_and_kit_run_without_higher_layers_or_effects(monkeypatch)
         )
         assert [item.id for item in service.queue(intake.QueueQuery()).items] == [report]
         assert isinstance(intake.bind_intake(False, lambda: service), intake.NullIntake)
+        _ingest_one_thread(intake, kit)
         loaded = {name for name in sys.modules if name.startswith(_FORBIDDEN_IMPORTS)}
         assert not loaded, sorted(loaded)
     finally:
         sys.meta_path.remove(finder)
+
+
+def _ingest_one_thread(intake, kit) -> None:
+    """A comment-ingestion pass on the memory tracker, under the same sentinel."""
+    tracker_kit = importlib.import_module("beadhive.testing.tracker")
+    world = tracker_kit.MemoryWorld()
+    issue = world.add_issue("a bound issue", at=tracker_kit.at(1))
+    world.add_comment(issue, "a comment", at=tracker_kit.at(2))
+    store = kit.memory_store()
+    binding = intake.IssueBinding("", "memory", world.locator, issue.url, issue.identifier)
+    report = store.create(
+        intake.ReportDraft("bound", "bug", intake.ORIGIN_GITHUB, "dev/test", binding=binding)
+    )
+    threads = intake.ThreadService(
+        store,
+        tracker_kit.MemoryTracker(world),
+        kit.InProcessIntakeLock(),
+        posture=intake.StorePosture(published=False),
+    )
+    assert threads.ingest_thread(intake.ThreadRequest(report, "dev/test")).written
+    assert world.write_requests() == 0
 
 
 # -- gap G7: legacy importers of intake internals ----------------------------------------------
