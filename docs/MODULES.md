@@ -480,6 +480,30 @@ Concrete adapters live in plugin packages. Consumers test against
 `beadhive.testing.tracker.TRACKER_CASES`. Module-internal tests are `tests/unit/modules/tracker`
 and `tests/unit/testing/test_tracker_conformance_kit.py`.
 
+### `modules/intake`
+
+Owns **external intake**: the one shared intake queue, the intake and origin vocabulary and, in
+later beads, import, link, the conversation model and the outbox (`external-intake-module-adr.md`).
+The consumer port is `beadhive.modules.intake.contracts.IntakePort`; `IntakeService` is its one
+implementation and `NullIntake` is bound when intake is off (`bind_intake`). Intake's own outbound
+ports are `ReportStore` (the bead store holding report beads), `CheckpointStore` and `LabelPolicy`.
+`domain` is standard library only and holds the records, `RefusalReason` / `IntakeRefused`, the
+vocabulary (`INTAKE_DIMENSIONS`, moved out of `beadhive.state`, which stays a facade that builds
+`STATE_DIMENSIONS` from it) and pure rules; `application` also owns intake's own pager over the
+tracker port's contracts, because intake may not import `tracker.application` (G5).
+
+The import checker enforces the direction: intake may import only the tracker port's contracts
+(`modules.tracker.contracts`), never `modules.work.*` or `modules.planning.*` (G6, the
+consumer-exclusion table), never a legacy module, adapter or transport. Gap G7 is a module-local
+AST test: no legacy file except the composition root `intake_services.py` imports
+`modules.intake.domain` or `.application`. The skeleton changes no behaviour: `report`, `triage`
+and `escalate` still run on their current code, and the bead-store adapter, the composition root
+and the `intake.external` config keys arrive in later beads, all off by default.
+Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
+pass `beadhive.testing.intake.REPORT_STORE_CASES`. Module-internal tests are
+`tests/unit/modules/intake`, `tests/unit/testing/test_intake_report_store_kit.py` and, for G5 and
+G6, `tests/test_intake_import_boundaries.py`.
+
 ### `modules/worktrees`
 
 Owns workspace binding, branch/worktree identity, creation/removal policy, inventory, status,
