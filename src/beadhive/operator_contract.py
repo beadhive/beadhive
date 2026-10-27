@@ -41,7 +41,12 @@ DEVELOPMENT_MAX_ID_LENGTH = 256
 DEVELOPMENT_MAX_TITLE_LENGTH = 4_096
 _DEVELOPMENT_WORK_STATUSES = frozenset({"open", "in_progress", "blocked"})
 _INTERNAL_WORK_ITEM_TYPES = frozenset({"event", "gate"})
-_NON_BLOCKING_DEPENDENCIES = frozenset({"parent-child", "related", "discovered-from"})
+# Only these edge types make a dependency a blocker (bd's `AffectsReadyWork` set without
+# `parent-child`, which bh treats as non-blocking). An allow-list of BLOCKING types, never of
+# non-blocking ones: a `tracks` edge or any type bd adds later must not be miscounted as a blocker
+# (external-intake-module-adr.md section 8, divergence D-f). Mirrored in `operator_contract.py` /
+# `operator_work_items.py`; `tests/test_operator_work_items.py` pins that the two agree.
+_BLOCKING_DEPENDENCIES = frozenset({"blocks", "conditional-blocks", "waits-for"})
 _LIVE_AGENT_STATES = frozenset({"starting", "active", "waiting"})
 _MISSING_WORK_ITEM_DETAIL = (
     "The state stream does not expose description, molecule type, or lifecycle timestamps."
@@ -392,7 +397,7 @@ def _summary_counts(
         if (
             dependency.hive != hive_id
             or dependency.issue_id not in retained_issue_ids
-            or dependency.type in _NON_BLOCKING_DEPENDENCIES
+            or dependency.type not in _BLOCKING_DEPENDENCIES
             or status_by_id.get(dependency.depends_on_id) == "closed"
         ):
             continue

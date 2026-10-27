@@ -36,7 +36,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 18
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 19
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -44,6 +44,17 @@ class _AppendsState(MemoryReportStore):
     def set_state(self, bead, dimension, value, *, reason, actor):
         row = self._row(bead)
         row.view = dataclasses.replace(row.view, labels=(*row.view.labels, f"{dimension}:{value}"))
+
+
+class _ClearsOnEmpty(MemoryReportStore):
+    """Honours an empty value by clearing the dimension, which bd cannot do."""
+
+    def set_state(self, bead, dimension, value, *, reason, actor):
+        if value:
+            return super().set_state(bead, dimension, value, reason=reason, actor=actor)
+        row = self._row(bead)
+        kept = tuple(label for label in row.view.labels if not label.startswith(f"{dimension}:"))
+        row.view = dataclasses.replace(row.view, labels=kept)
 
 
 class _QueueIncludesClosed(MemoryReportStore):
@@ -180,6 +191,7 @@ class _ThreadForEveryBead(MemoryReportStore):
 
 _BROKEN = [
     (_AppendsState, "store.set-state-replaces-its-dimension"),
+    (_ClearsOnEmpty, "store.set-state-replaces-but-never-clears"),
     (_QueueIncludesClosed, "store.queue-key-is-open-labeled"),
     (_ClosedFindableNoMore, "store.closed-stays-readable-and-findable"),
     (_ClosedVanishes, "store.closed-stays-readable-and-findable"),

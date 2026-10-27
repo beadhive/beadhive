@@ -86,11 +86,13 @@ from .thread_document import (
     thread_to_document,
 )
 from .vocabulary import (
+    DELIVERY_DIM,
     DISPOSITION_STATE,
     INTAKE_DIM,
     INTAKE_DIMENSIONS,
     INTAKE_PROMOTED,
     INTAKE_UNTRIAGED,
+    NOTIFIED_DIM,
     ORIGIN_BACKFILL,
     ORIGIN_DIM,
     ORIGIN_ESCALATION,
@@ -99,7 +101,9 @@ from .vocabulary import (
     ORIGIN_IMPORT,
     ORIGIN_REPORT,
     TRACKS_EDGE,
+    DeliveryAfterUnlink,
     channel_of,
+    delivery_after_unlink,
     disposition_state,
     is_escalation_origin,
     is_promoted,
@@ -110,11 +114,13 @@ from .vocabulary import (
 )
 
 __all__ = [
+    "DELIVERY_DIM",
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
+    "NOTIFIED_DIM",
     "ORIGIN_BACKFILL",
     "ORIGIN_DIM",
     "ORIGIN_ESCALATION",
@@ -137,6 +143,7 @@ __all__ = [
     "ConsiderRequest",
     "DiscoveryOutcome",
     "DiscoveryRequest",
+    "DeliveryAfterUnlink",
     "Disposition",
     "DispositionOutcome",
     "DispositionRequest",
@@ -189,6 +196,7 @@ __all__ = [
     "checkpoint_for",
     "classify",
     "classify_reference",
+    "delivery_after_unlink",
     "digest",
     "disposition_state",
     "dupes_touching",

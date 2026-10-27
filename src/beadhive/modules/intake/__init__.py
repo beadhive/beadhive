@@ -65,11 +65,13 @@ from .contracts import (
     ThreadView,
 )
 from .domain import (
+    DELIVERY_DIM,
     DISPOSITION_STATE,
     INTAKE_DIM,
     INTAKE_DIMENSIONS,
     INTAKE_PROMOTED,
     INTAKE_UNTRIAGED,
+    NOTIFIED_DIM,
     ORIGIN_BACKFILL,
     ORIGIN_DIM,
     ORIGIN_ESCALATION,
@@ -79,7 +81,9 @@ from .domain import (
     ORIGIN_REPORT,
     REPORT_TYPES,
     TRACKS_EDGE,
+    DeliveryAfterUnlink,
     channel_of,
+    delivery_after_unlink,
     disposition_state,
     is_escalation_origin,
     is_promoted,
@@ -90,11 +94,13 @@ from .domain import (
 )
 
 __all__ = [
+    "DELIVERY_DIM",
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
+    "NOTIFIED_DIM",
     "ORIGIN_BACKFILL",
     "ORIGIN_DIM",
     "ORIGIN_ESCALATION",
@@ -109,6 +115,7 @@ __all__ = [
     "Checkpoint",
     "CheckpointStore",
     "ConsiderRequest",
+    "DeliveryAfterUnlink",
     "DiscoveryOutcome",
     "DiscoveryRequest",
     "Disposition",
@@ -153,6 +160,7 @@ __all__ = [
     "ThreadView",
     "bind_intake",
     "channel_of",
+    "delivery_after_unlink",
     "disposition_state",
     "is_escalation_origin",
     "is_promoted",

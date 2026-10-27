@@ -22,14 +22,17 @@ Provenance has three orthogonal facets: the native ``source_system`` + ``externa
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 #: Dimension names, the single spelling every consumer derives from.
 INTAKE_DIM = "intake"
 ORIGIN_DIM = "origin"
+DELIVERY_DIM = "delivery"
+NOTIFIED_DIM = "notified"
 
 #: Built-in CLOSED dimensions owned by intake: ``{dimension: {allowed values}}``. ``state.py``
 #: splices these into ``STATE_DIMENSIONS``, so ``registry.closed_dimensions`` validates them
-#: fleet-wide. Later beads register the ``delivery`` and ``notified`` dimensions here.
+#: fleet-wide (``bh label validate`` accepts these values and refuses any other).
 INTAKE_DIMENSIONS: Mapping[str, frozenset[str]] = {
     INTAKE_DIM: frozenset({"untriaged", "accepted", "rejected", "rerouted", "promoted"}),
     # `escalation` is the fire-and-forget HQ channel; `factory-seed` is the synthetic-identity
@@ -37,6 +40,14 @@ INTAKE_DIMENSIONS: Mapping[str, frozenset[str]] = {
     # The companion `source:<kind>` facet stays intentionally OPEN: closed dimensions are reserved
     # for values code actually branches on.
     ORIGIN_DIM: frozenset({"report", "github", "import", "escalation", "factory-seed", "backfill"}),
+    # Where the work a report tracks has got to (external-intake-module-adr.md section 7). Written
+    # only by the intake module: link (`pending`), the merge trigger (`merged`), the release
+    # trigger (`released`) and the operator correction verb (`reverted`). Never `outbound` or
+    # `publish` (the contributor's, single-valued per bead) and never `release` (code-owned).
+    DELIVERY_DIM: frozenset({"pending", "merged", "released", "reverted"}),
+    # Which milestone the reporter was last told about. Written only by the outbox sender, after a
+    # comment operation reaches `sent`. Per-operation outbox states are NOT dimensions.
+    NOTIFIED_DIM: frozenset({"replied", "merged", "released", "corrected"}),
 }
 
 #: The link type from a report to the work it tracks (reserved here; used by a later bead).
@@ -51,6 +62,14 @@ ORIGIN_IMPORT = "origin:import"
 ORIGIN_ESCALATION = "origin:escalation"
 ORIGIN_FACTORY_SEED = "origin:factory-seed"  # HQ factory synthetic-identity seed (akyd)
 ORIGIN_BACKFILL = "origin:backfill"  # backfill skill historical reconstruction (bh-vfx9)
+DELIVERY_PENDING = "delivery:pending"  # linked to work that has not merged yet
+DELIVERY_MERGED = "delivery:merged"
+DELIVERY_RELEASED = "delivery:released"
+DELIVERY_REVERTED = "delivery:reverted"
+NOTIFIED_REPLIED = "notified:replied"
+NOTIFIED_MERGED = "notified:merged"
+NOTIFIED_RELEASED = "notified:released"
+NOTIFIED_CORRECTED = "notified:corrected"
 
 # Triage disposition -> the terminal `intake` value it transitions to. Setting any of these via
 # `bd set-state` clears `untriaged` (leaving the triage queue) while recording the outcome as an
@@ -61,6 +80,38 @@ DISPOSITION_STATE: dict[str, str] = {
     "reroute": "rerouted",
     "promote": "promoted",
 }
+
+
+@dataclass(frozen=True)
+class DeliveryAfterUnlink:
+    """What unlinking a report from its work leaves on the ``delivery`` dimension.
+
+    ``bd set-state`` has no way to clear a dimension (it refuses an empty value and there is no
+    unset flag; measured on bd 1.3.0, recorded in the "I2 measurement" section of
+    ``docs/design/external-intake-module-adr.md``), and clearing the cache label with
+    ``bd label remove`` would leave the event-sourced history saying otherwise. So the value is
+    never cleared: it stays, and ``unlinked`` records that the work it described is no longer
+    tracked."""
+
+    value: str | None
+    unlinked: bool = True
+
+
+def delivery_of(labels: Iterable[str] | None) -> str | None:
+    """The ``delivery`` value on a bead's ``delivery:<value>`` label cache, or ``None`` when no
+    registered value is present."""
+    for label in labels or []:
+        if label.startswith(f"{DELIVERY_DIM}:"):
+            value = label.split(":", 1)[1]
+            if value in INTAKE_DIMENSIONS[DELIVERY_DIM]:
+                return value
+    return None
+
+
+def delivery_after_unlink(labels: Iterable[str] | None) -> DeliveryAfterUnlink:
+    """The pure rule for unlinking: keep the current ``delivery`` value (``pending`` stays
+    ``pending``) and add the ``unlinked`` fact. Never a clear, because none is expressible."""
+    return DeliveryAfterUnlink(value=delivery_of(labels))
 
 
 def is_untriaged_intake(labels) -> bool:
@@ -126,11 +177,21 @@ def channel_of(labels, source_system=None):
 
 
 __all__ = [
+    "DELIVERY_DIM",
+    "DELIVERY_MERGED",
+    "DELIVERY_PENDING",
+    "DELIVERY_RELEASED",
+    "DELIVERY_REVERTED",
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
+    "NOTIFIED_CORRECTED",
+    "NOTIFIED_DIM",
+    "NOTIFIED_MERGED",
+    "NOTIFIED_RELEASED",
+    "NOTIFIED_REPLIED",
     "ORIGIN_BACKFILL",
     "ORIGIN_DIM",
     "ORIGIN_ESCALATION",
@@ -139,7 +200,10 @@ __all__ = [
     "ORIGIN_IMPORT",
     "ORIGIN_REPORT",
     "TRACKS_EDGE",
+    "DeliveryAfterUnlink",
     "channel_of",
+    "delivery_after_unlink",
+    "delivery_of",
     "disposition_state",
     "is_escalation_origin",
     "is_promoted",

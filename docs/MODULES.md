@@ -526,6 +526,15 @@ store history, so purging is not erasure. Its tests run on `MemoryTracker` with 
 (`tests/unit/modules/intake/test_intake_threads.py` is the `bh-fptob` plan T1 to T19,
 `test_intake_thread_rules.py` drives the rules directly).
 
+The closed `delivery` (`pending|merged|released|reverted`) and `notified`
+(`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so
+`bh label validate` accepts those values and refuses any other; nothing writes them yet. An
+`intake-hold:` gate (`guard.INTAKE_HOLD_GATE_MARKER`) classifies as gate kind `intake-hold`, and
+no seat resolves it through `bh work approve`. The operator views count only `blocks`,
+`conditional-blocks` and `waits-for` edges as blockers, so a `tracks` edge or any unknown edge type
+never blocks. `bd set-state` cannot clear a dimension, so unlinking keeps the `delivery` value
+(`delivery_after_unlink`).
+
 Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
 pass `beadhive.testing.intake.REPORT_STORE_CASES`: `BdReportStore` passes them on an in-process
 fake bd (`tests/test_intake_bead_store.py`) and on a real bd store
