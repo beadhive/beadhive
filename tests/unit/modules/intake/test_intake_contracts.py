@@ -56,6 +56,11 @@ def test_port_names_match_the_adr() -> None:
         "binding_of",
         "reports_for_work",
         "discover",
+        "ingest_thread",
+        "reconcile_thread",
+        "reconcile_presence",
+        "thread_of",
+        "mark_considered",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",
@@ -73,9 +78,18 @@ def test_port_names_match_the_adr() -> None:
         "track",
         "untrack",
         "trackers_of",
+        "read_thread",
+        "write_thread",
     }
     assert {m for m in vars(contracts.CheckpointStore) if not m.startswith("_")} == {"get", "put"}
     assert {m for m in vars(contracts.LabelPolicy) if not m.startswith("_")} == {"violations"}
+    assert {m for m in vars(contracts.IntakeLock) if not m.startswith("_")} == {"hold"}
+    assert {m for m in vars(contracts.OutboxView) if not m.startswith("_")} == {
+        "receipt_ids",
+        "pending",
+        "issued",
+        "known_actors",
+    }
 
 
 def test_refusal_carries_a_reason_and_a_one_line_detail() -> None:

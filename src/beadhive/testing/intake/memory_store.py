@@ -3,22 +3,34 @@
 No bd, no filesystem, no clock: ids come from a deterministic counter, and duplicate detection is
 a token-overlap on titles (bd's mechanical ``find-duplicates`` is the real store's business). It
 models only what the port promises: a state write replaces its dimension's label, a closed bead
-stays readable and findable, and a link survives the report's closure.
+stays readable and findable, a link survives the report's closure, and the ``intake.thread``
+document is one top-level metadata key, stored encoded (so it is proven JSON-serialisable),
+rewritten whole, guarded by the ``seq`` re-check, and never disturbing another key.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import json
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from beadhive.modules.intake.contracts import (
+    THREAD_KEY,
     BeadView,
     DuplicatePair,
+    IntakeRefused,
     IntakeStoreError,
+    RefusalReason,
     ReportDraft,
     SourceSnapshot,
     StoreScope,
+    Thread,
+    ThreadDocumentError,
+    thread_from_document,
+    thread_to_document,
 )
 
 
@@ -26,6 +38,7 @@ from beadhive.modules.intake.contracts import (
 class _Row:
     view: BeadView
     history: list[tuple[str, str, str]] = field(default_factory=list)  # (dimension, value, reason)
+    metadata: dict[str, Any] = field(default_factory=dict)  # top-level key -> JSON value
 
 
 def _tokens(title: str) -> frozenset[str]:
@@ -42,6 +55,9 @@ class MemoryReportStore:
         self._tracks: dict[str, str] = {}
         self._next = 0
         self.writes = 0
+        #: ``(bead, seq)`` of every durable ``intake.thread`` write, in order.
+        self.thread_writes: list[tuple[str, int]] = []
+        self._fail_thread_write: Exception | None = None
 
     # -- reads -------------------------------------------------------------------------------
 
@@ -78,6 +94,15 @@ class MemoryReportStore:
 
     def trackers_of(self, work: str) -> tuple[str, ...]:
         return tuple(sorted(r for r, w in self._tracks.items() if w == work))
+
+    def read_thread(self, bead: str) -> Thread | None:
+        row = self._rows.get(bead)
+        if row is None or THREAD_KEY not in row.metadata:
+            return None
+        try:
+            return thread_from_document(row.metadata[THREAD_KEY])
+        except ThreadDocumentError as exc:
+            raise IntakeStoreError(str(exc), bead=bead, operation="read_thread") from exc
 
     # -- writes ------------------------------------------------------------------------------
 
@@ -142,7 +167,47 @@ class MemoryReportStore:
         if self._tracks.get(report) == work:
             del self._tracks[report]
 
+    def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
+        row = self._row(bead)
+        if self._fail_thread_write is not None:
+            failure, self._fail_thread_write = self._fail_thread_write, None
+            raise failure
+        stored = self.read_thread(bead)
+        current = stored.seq if stored is not None else 0
+        if current != expect_seq:
+            raise IntakeRefused(
+                RefusalReason.THREAD_MOVED,
+                f"{bead}'s thread is at seq {current}, not {expect_seq}; re-read and retry",
+            )
+        if thread.seq <= expect_seq:
+            raise IntakeStoreError(
+                f"a thread write must advance seq past {expect_seq}",
+                bead=bead,
+                operation="write_thread",
+            )
+        if thread.issue.url != row.view.external_ref:
+            raise IntakeStoreError(
+                f"{bead} is not bound to {thread.issue.url}", bead=bead, operation="write_thread"
+            )
+        self.writes += 1
+        row.metadata[THREAD_KEY] = json.loads(json.dumps(thread_to_document(thread)))
+        self.thread_writes.append((bead, thread.seq))
+
     # -- test controls (not part of the port) ------------------------------------------------
+
+    def put_metadata(self, bead: str, key: str, value: Any) -> None:
+        """Set one top-level metadata key as another writer would (not a counted write)."""
+        self._row(bead).metadata[key] = copy.deepcopy(value)
+
+    def metadata(self, bead: str) -> dict[str, Any]:
+        """A deep copy of the bead's metadata documents."""
+        return copy.deepcopy(self._row(bead).metadata)
+
+    def fail_next_thread_write(self, error: Exception | None = None) -> None:
+        """Make the next :meth:`write_thread` raise (default: a store failure) and write nothing."""
+        self._fail_thread_write = error or IntakeStoreError(
+            "injected store failure", operation="write_thread"
+        )
 
     def history(self, bead: str) -> tuple[tuple[str, str, str], ...]:
         """Every state write and the close, in order, as ``(dimension, value, reason)``."""

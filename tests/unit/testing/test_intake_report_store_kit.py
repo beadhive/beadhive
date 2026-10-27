@@ -10,7 +10,13 @@ import dataclasses
 
 import pytest
 
-from beadhive.modules.intake.contracts import BeadView, DuplicatePair, ReportStore
+from beadhive.modules.intake.contracts import (
+    THREAD_KEY,
+    BeadView,
+    DuplicatePair,
+    ReportStore,
+    thread_to_document,
+)
 from beadhive.testing import ConformanceFailure
 from beadhive.testing.intake import (
     REPORT_STORE_CASES,
@@ -18,6 +24,7 @@ from beadhive.testing.intake import (
     assert_report_store_conforms,
     memory_store,
     run_report_store_case,
+    thread,
 )
 
 _CASES = {case.case_id: case for case in REPORT_STORE_CASES}
@@ -29,7 +36,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 12
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 18
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -127,6 +134,50 @@ class _ScopeDrifts(MemoryReportStore):
         return dataclasses.replace(self._scope, operational_prefix="a" if self._flip else "b")
 
 
+class _ThreadSeqUnchecked(MemoryReportStore):
+    def write_thread(self, bead, thread, *, expect_seq, actor):
+        stored = self.read_thread(bead)
+        super().write_thread(bead, thread, expect_seq=stored.seq if stored else 0, actor=actor)
+
+
+class _ThreadNeverStored(MemoryReportStore):
+    def read_thread(self, bead):
+        return None
+
+
+class _ThreadMerged(MemoryReportStore):
+    def write_thread(self, bead, thread, *, expect_seq, actor):
+        stored = self.read_thread(bead)
+        if stored is not None:
+            thread = dataclasses.replace(thread, records={**stored.records, **thread.records})
+        super().write_thread(bead, thread, expect_seq=expect_seq, actor=actor)
+
+
+class _SnapshotClobbersThread(MemoryReportStore):
+    def record_snapshot(self, bead, snapshot, *, actor):
+        super().record_snapshot(bead, snapshot, actor=actor)
+        self._row(bead).metadata.pop(THREAD_KEY, None)
+
+
+class _ThreadRefusedWhenClosed(MemoryReportStore):
+    def write_thread(self, bead, thread, *, expect_seq, actor):
+        view = self.get(bead)
+        if view is not None and view.status == "closed":
+            return
+        super().write_thread(bead, thread, expect_seq=expect_seq, actor=actor)
+
+
+class _ThreadAnyBead(MemoryReportStore):
+    def write_thread(self, bead, thread, *, expect_seq, actor):
+        if bead in self._rows:
+            self._row(bead).metadata[THREAD_KEY] = thread_to_document(thread)
+
+
+class _ThreadForEveryBead(MemoryReportStore):
+    def read_thread(self, bead):
+        return super().read_thread(bead) or thread(0)
+
+
 _BROKEN = [
     (_AppendsState, "store.set-state-replaces-its-dimension"),
     (_QueueIncludesClosed, "store.queue-key-is-open-labeled"),
@@ -143,6 +194,13 @@ _BROKEN = [
     (_AssignDropped, "store.assign"),
     (_IdsRepeat, "store.create-reads-back"),
     (_ScopeDrifts, "store.scope-is-stable"),
+    (_ThreadSeqUnchecked, "store.thread-write-rechecks-seq"),
+    (_ThreadNeverStored, "store.thread-round-trips-whole"),
+    (_ThreadMerged, "store.thread-round-trips-whole"),
+    (_SnapshotClobbersThread, "store.thread-keeps-other-documents"),
+    (_ThreadRefusedWhenClosed, "store.thread-on-a-closed-report"),
+    (_ThreadAnyBead, "store.thread-write-needs-its-bound-report"),
+    (_ThreadForEveryBead, "store.thread-absent-reads-none"),
 ]
 
 
