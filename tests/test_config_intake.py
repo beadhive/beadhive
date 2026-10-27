@@ -21,6 +21,9 @@ def test_intake_is_absent_by_default_and_every_switch_is_off() -> None:
     external = IntakeConfig().external
     assert external == IntakeExternalConfig()
     assert external.enabled is False and external.default_type == "bug"
+    assert external.completion_policy == "close-on-merge"
+    assert external.outbox.enabled is False and external.outbox.mode == "supervised"
+    assert not any(vars(external.milestones).values())  # no milestone drafts unless asked
 
 
 def test_a_full_documented_section_validates() -> None:
@@ -46,7 +49,10 @@ def test_enabled_is_a_strict_boolean(value) -> None:
     [
         {"external": {"default_type": "epic"}},
         {"external": {"token": "x"}},  # unknown keys fail closed (extra=forbid)
-        {"external": {"outbox": {"enabled": True}}},  # a later bead's key is not accepted early
+        {"external": {"outbox": {"mode": "auto"}}},  # supervised is the only mode (D2)
+        {"external": {"outbox": {"labels": {"on_delivery": "x"}}}},  # a later bead's key
+        {"external": {"completion_policy": "close-never"}},
+        {"external": {"milestones": {"draft_on_start": True}}},
         {"other": {}},
     ],
 )
@@ -84,6 +90,13 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "discovery",
         "interval_seconds",
         "full_reconcile_every",
+        "completion_policy",
+        "milestones",
+        "draft_on_merge",
+        "draft_on_release",
+        "append_release_to_closed",
+        "outbox",
+        "mode",
     }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
 
@@ -149,3 +162,34 @@ def test_discovery_is_host_owned_so_a_fleet_push_cannot_start_the_timer() -> Non
         "intake.external.discovery.full_reconcile_every",
     } <= set(paths)
     assert {partition.partition_of(path) for path in paths} == {partition.HOST}
+
+
+def test_the_milestone_and_outbox_switches_validate_strictly_and_stay_off_by_default() -> None:
+    config = BeadhiveConfig.model_validate(
+        {
+            "intake": {
+                "external": {
+                    "enabled": True,
+                    "completion_policy": "close-on-release",
+                    "milestones": {"draft_on_merge": True, "draft_on_release": True},
+                    "outbox": {"enabled": True, "mode": "supervised"},
+                }
+            }
+        }
+    )
+
+    assert config.intake is not None
+    external = config.intake.external
+    assert external.completion_policy == "close-on-release"
+    assert (external.milestones.draft_on_merge, external.milestones.draft_on_release) == (
+        True,
+        True,
+    )
+    assert external.milestones.append_release_to_closed is False
+    assert external.outbox.enabled is True
+    for section in (
+        {"milestones": {"draft_on_merge": "yes"}},
+        {"outbox": {"enabled": 1}},
+    ):
+        with pytest.raises(ValidationError):
+            IntakeExternalConfig.model_validate(section)
