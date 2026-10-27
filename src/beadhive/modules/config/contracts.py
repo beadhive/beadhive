@@ -2870,6 +2870,31 @@ class TrackerGithubConfig(_QuietSection):
         return value
 
 
+# ---- intake.external (external-intake-module-adr.md section 15) -------------------
+
+
+class IntakeExternalConfig(_QuietSection):
+    """``intake.external`` — external issue intake (host-owned; everything off).
+
+    Off unless configured: with ``enabled`` false `bh work import` refuses and the intake port is
+    the null one. Nothing here binds a tracker, holds a credential, a grant or an approval, and no
+    key can enable or pre-approve a tracker write: a write is only ever the operator's, per record.
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Enable external issue intake: `bh work import` (default off)."
+    )
+    default_type: Literal["bug", "feature", "chore"] = Field(
+        "bug", description="The issue type of an imported report."
+    )
+
+
+class IntakeConfig(_QuietSection):
+    """``intake`` — the intake module's host-owned settings."""
+
+    external: IntakeExternalConfig = Field(default_factory=IntakeExternalConfig)
+
+
 # ---- plugins / plugin_kernel (plugin-kernel-v1-adr.md section 6) -----------------
 
 _PLUGIN_ID_RE = re.compile(r"[a-z][a-z0-9-]*")
@@ -3499,6 +3524,10 @@ class BeadhiveConfig(BaseSettings):
     repowise: RepowiseConfig = Field(default_factory=RepowiseConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
     herdr: HerdrConfig = Field(default_factory=HerdrConfig)
+    intake: IntakeConfig | None = Field(
+        None,
+        description="External issue intake (host-owned, every switch off). Absent = intake off.",
+    )
     plugins: PluginsConfig | None = Field(
         None,
         description="Canonical plugin-owned namespaces `plugins.<plugin_id>`. Built-in fragments "
@@ -3867,6 +3896,8 @@ __all__ = (
     "HostLeaseConfig",
     "HqConfig",
     "IdentityConfig",
+    "IntakeConfig",
+    "IntakeExternalConfig",
     "KNOWN_TRACKER_ADAPTERS",
     "LogConfig",
     "ManagedRepoEntry",
