@@ -52,11 +52,25 @@ class IntakeRefused(Exception):
 
 
 class IntakeStoreError(Exception):
-    """The report store could not complete a read or write; ``detail`` is already scrubbed."""
+    """The report store could not complete a read or write; ``detail`` is already scrubbed.
 
-    def __init__(self, detail: str, *, bead: str = "") -> None:
+    ``operation`` names the failed step in the module's own vocabulary (``create``, ``set_state``,
+    ``update_fields``, ``close``, ``assign``, ``track``, ``record_snapshot``, plus the service's
+    ``stamp:<dimension>`` and ``clear_intake`` re-tags) so a transport can word its message;
+    ``returncode`` is the store's own exit status (1 when it has none)."""
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        bead: str = "",
+        operation: str = "",
+        returncode: int = 1,
+    ) -> None:
         self.detail = detail
         self.bead = bead
+        self.operation = operation
+        self.returncode = returncode
         super().__init__(detail)
 
 

@@ -8,8 +8,10 @@ The domain holds intake's own records, never the tracker port's types (the check
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 
 class IssueStatus(StrEnum):
@@ -102,6 +104,9 @@ class BeadView:
     assignee: str = ""
     binding: IssueBinding | None = None
     snapshot: SourceSnapshot | None = None
+    #: The store's own row for this bead, passed through untouched for a facade that must keep
+    #: emitting the store's native shape (``bh work intake --json``). Never compared or decided on.
+    raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,8 @@ class DuplicatePair:
     first: str
     second: str
     similarity: float
+    #: The store's own pair record, passed through untouched (see :attr:`BeadView.raw`).
+    raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
 # -- requests and outcomes -------------------------------------------------------------------
@@ -178,6 +185,8 @@ class QueueItem:
     channel: str
     labels: tuple[str, ...] = ()
     binding: IssueBinding | None = None
+    #: The store's own row, passed through untouched (see :attr:`BeadView.raw`).
+    raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

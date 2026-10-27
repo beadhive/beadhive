@@ -71,6 +71,7 @@ target(
         "./adapters:package",
         "./adapters:telemetry",
         "./adapters/cli",
+        "./adapters/intake",
         "./bootstrap",
         "./integrations",
         "./integrations/herdr",
