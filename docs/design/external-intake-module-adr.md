@@ -859,7 +859,8 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
   --json` has no metadata-free projection, section 4). The queue path never decodes it; trimming
   the transfer needs a route change (a metadata-free list, or a template `--format` list) that
   also changes the raw rows `bh work intake --json` emits, so it is its own decision.
-- Clearing a dimension value on unlink (acceptance item 3).
+- ~~Clearing a dimension value on unlink (acceptance item 3).~~ Resolved by I2 (`bh-cokbi`), see
+  "I2 measurement" below.
 - The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).
 - Started, blocked and deprioritised milestones; revert detection.
 - A closing-keyword lint on merge commits.
@@ -882,3 +883,37 @@ This ADR does **not** file the implementation molecule, does not run `/bh:replan
    it.
 4. A1 and K1 go to the tracker implementation molecule as additive items; the G5 withdrawal of
    "`(+ application)`" is recorded here for that molecule's checker work.
+
+## I2 measurement: `bd set-state` cannot clear a `delivery` value
+
+Acceptance item 3, measured by I2 (`bh-cokbi`) on bd 1.3.0 against a throwaway embedded store
+(no real hive touched; `tests/test_intake_bead_store_int.py::test_set_state_cannot_clear_a_delivery_value_so_unlinking_keeps_it`
+re-runs it):
+
+| Attempt | Result |
+|---|---|
+| `bd set-state <id> delivery=` | refused, exit 1: `invalid state format "delivery=", expected <dimension>=<value>`; the label stays |
+| `bd set-state <id> =pending` | refused the same way, exit 1 |
+| `bd set-state <id> delivery` (no `=`) | refused, `expected <dimension>=<value>` |
+| `bd set-state --help` | no unset or clear flag |
+| `bd set-state <id> delivery=merged` after `pending` | replaces: the label cache becomes `delivery:merged`, an event bead records `Previous: pending` |
+| `bd label remove <id> delivery:pending` | drops the label cache only. No event bead is written, so the history still reads `delivery -> pending` while the label says nothing |
+
+**Chosen behaviour.** Unlink never clears `delivery`. The value stays (`pending` stays
+`pending`) and an `unlinked` fact is recorded beside it, because a raw label removal would leave
+the event-sourced history and the label cache disagreeing. The pure rule is
+`delivery_after_unlink(labels)` in the intake domain (`DeliveryAfterUnlink(value, unlinked=True)`);
+the ReportStore contract case `store.set-state-replaces-but-never-clears` pins that a store
+replaces a dimension but refuses an empty value, on `MemoryReportStore`, on `BdReportStore`
+over the fake bd and over a real bd store. Where the `unlinked` fact is stored is the link bead's
+(I5) decision; I2 only fixes that the dimension is not the place.
+
+## I2 scope note: the `report` lane
+
+The `report` lane in `_readiness` (a bead whose only open gates are `intake-hold:` gates) is
+**not** part of I2's delivered change. Both operator views emit `readiness` on published wire
+types (`WorkItemReadiness`, `SnapshotWorkItemSummary` and `RemoteSnapshotWorkItemSummary` in
+`daemon_contract.py`, and the OpenAPI document they generate), so a new lane value widens a
+published contract that older clients validate strictly. Until it is decided and rotated, a held
+report reads `blocked: 1 open gate`, which is accurate. An `intake-hold:` gate already reaches
+the wire gate list as kind `other`.

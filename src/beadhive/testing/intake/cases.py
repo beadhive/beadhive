@@ -109,7 +109,7 @@ def _expect_store_error(call: Callable[[], object]) -> None:
         call()
     except IntakeStoreError:
         return
-    raise AssertionError("expected IntakeStoreError for an unknown bead")
+    raise AssertionError("expected IntakeStoreError")
 
 
 def _scope_is_stable(factory: ReportStoreFactory) -> None:
@@ -141,6 +141,28 @@ def _set_state_replaces_its_dimension(factory: ReportStoreFactory) -> None:
     assert view is not None
     assert "intake:accepted" in view.labels and "intake:untriaged" not in view.labels
     assert "origin:report" in view.labels  # another dimension is untouched
+
+
+def _set_state_replaces_but_never_clears(factory: ReportStoreFactory) -> None:
+    """``bd set-state`` can replace a dimension's value but not clear it (measured on bd 1.3.0):
+    an empty value is refused and the previous value stays. Unlinking a report therefore keeps its
+    ``delivery`` value and records an ``unlinked`` fact elsewhere (external-intake-module-adr.md,
+    acceptance item 3)."""
+    store = factory()
+    bead = store.create(draft(bound=True))
+    store.set_state(bead, "delivery", "pending", reason="linked", actor="dev/test")
+    for dimension, value in (("delivery", ""), ("", "pending")):
+        _expect_store_error(
+            lambda dimension=dimension, value=value: store.set_state(
+                bead, dimension, value, reason="clear", actor="dev/test"
+            )
+        )
+    view = store.get(bead)
+    assert view is not None and "delivery:pending" in view.labels
+    store.set_state(bead, "delivery", "merged", reason="merged", actor="dev/test")
+    view = store.get(bead)
+    assert view is not None
+    assert "delivery:merged" in view.labels and "delivery:pending" not in view.labels
 
 
 def _queue_key_is_open_labeled(factory: ReportStoreFactory) -> None:
@@ -334,6 +356,9 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.scope-is-stable", _scope_is_stable),
     ReportStoreCase("store.create-reads-back", _create_reads_back),
     ReportStoreCase("store.set-state-replaces-its-dimension", _set_state_replaces_its_dimension),
+    ReportStoreCase(
+        "store.set-state-replaces-but-never-clears", _set_state_replaces_but_never_clears
+    ),
     ReportStoreCase("store.queue-key-is-open-labeled", _queue_key_is_open_labeled),
     ReportStoreCase(
         "store.closed-stays-readable-and-findable", _closed_stays_readable_and_findable

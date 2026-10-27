@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from beadhive.adapters.intake import SOURCE_KEY, BdReportStore
-from beadhive.modules.intake import IntakeStoreError
+from beadhive.modules.intake import IntakeStoreError, delivery_after_unlink
 from beadhive.testing.intake import (
     REPORT_STORE_CASES,
     SCOPE,
@@ -106,6 +106,39 @@ def test_metadata_is_writable_on_a_closed_bead_and_a_big_document_travels_on_std
     assert [r["id"] for r in routes.issue_list(has_metadata_key="intake.thread", all_=True)] == [
         bead
     ]
+
+
+def test_set_state_cannot_clear_a_delivery_value_so_unlinking_keeps_it(fresh) -> None:
+    """Acceptance item 3 (external-intake-module-adr.md), measured on a scratch store: ``bd
+    set-state`` replaces a dimension but cannot clear it. An empty value is refused (the label
+    stays), there is no unset flag, and ``bd label remove`` drops only the label cache, leaving
+    the event-sourced history saying ``pending``. So unlink keeps ``delivery:pending`` and records
+    an ``unlinked`` fact instead (``delivery_after_unlink``)."""
+    store = fresh()
+    routes = store._routes
+    bead = store.create(draft(bound=True))
+    store.set_state(bead, "delivery", "pending", reason="linked", actor="dev/test")
+
+    for state in ("delivery=", "=pending"):
+        refused = routes.issue_set_state(bead, state, reason="unlink", capture=True)
+        assert refused.returncode != 0 and "invalid state format" in refused.stderr
+    view = store.get(bead)
+    assert view is not None and "delivery:pending" in view.labels
+
+    kept = delivery_after_unlink(view.labels)
+    assert (kept.value, kept.unlinked) == ("pending", True)
+
+    # the only way to drop the label is a raw label removal: it bypasses the event history, which
+    # still records the transition, so it is not an acceptable "clear".
+    assert routes.issue_remove_label(bead, "delivery:pending", capture=True).returncode == 0
+    view = store.get(bead)
+    assert view is not None and not [x for x in view.labels if x.startswith("delivery:")]
+    history = routes._bd.run(["children", bead], routes._cwd, capture=True).stdout
+    assert "State change: delivery" in history and "pending" in history
+
+    store.set_state(bead, "delivery", "merged", reason="merged", actor="dev/test")
+    view = store.get(bead)
+    assert view is not None and "delivery:merged" in view.labels
 
 
 def test_unknown_metadata_target_is_a_store_failure(fresh) -> None:

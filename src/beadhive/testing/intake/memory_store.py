@@ -126,6 +126,14 @@ class MemoryReportStore:
 
     def set_state(self, bead: str, dimension: str, value: str, *, reason: str, actor: str) -> None:
         row = self._row(bead)
+        if not dimension or not value:
+            # bd's `set-state <id> <dimension>=<value>` refuses an empty side and has no unset
+            # flag, so a dimension can be replaced but never cleared (bh-cokbi measurement).
+            raise IntakeStoreError(
+                f'invalid state format "{dimension}={value}", expected <dimension>=<value>',
+                bead=bead,
+                operation="set_state",
+            )
         self.writes += 1
         kept = tuple(label for label in row.view.labels if not label.startswith(f"{dimension}:"))
         row.view = dataclasses.replace(row.view, labels=(*kept, f"{dimension}:{value}"))

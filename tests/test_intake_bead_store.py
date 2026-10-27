@@ -69,6 +69,8 @@ class FakeBd:
             out = self._dispatch(list(args), text_input)
         except _Missing as exc:
             return subprocess.CompletedProcess(args, 1, "", f"Error: no issue found: {exc}")
+        except _BadState as exc:
+            return subprocess.CompletedProcess(args, 1, "", f"Error: {exc}")
         return subprocess.CompletedProcess(args, 0, out, "")
 
     def json(self, args, cwd, *, strict=False):
@@ -147,6 +149,8 @@ class FakeBd:
     def _set_state(self, rest, stdin):
         row = self._row(rest[0])
         dimension, _, value = rest[1].partition("=")
+        if not dimension or not value:  # real bd 1.3.0: no way to clear a dimension (bh-cokbi)
+            raise _BadState(f'invalid state format "{rest[1]}", expected <dimension>=<value>')
         row["labels"] = sorted(
             [x for x in row["labels"] if not x.startswith(f"{dimension}:")]
             + [f"{dimension}:{value}"]
@@ -211,6 +215,10 @@ class FakeBd:
                         }
                     )
         return json.dumps({"count": len(pairs), "method": flags["--method"], "pairs": pairs})
+
+
+class _BadState(Exception):
+    """``bd set-state`` refuses an empty dimension or value."""
 
 
 class _Missing(Exception):

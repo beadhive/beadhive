@@ -24,7 +24,9 @@ def test_intake_dimensions_are_the_closed_sets() -> None:
         "factory-seed",
         "backfill",
     }
-    assert set(vocab.INTAKE_DIMENSIONS) == {"intake", "origin"}
+    assert vocab.INTAKE_DIMENSIONS["delivery"] == {"pending", "merged", "released", "reverted"}
+    assert vocab.INTAKE_DIMENSIONS["notified"] == {"replied", "merged", "released", "corrected"}
+    assert set(vocab.INTAKE_DIMENSIONS) == {"intake", "origin", "delivery", "notified"}
 
 
 def test_label_constants_agree_with_the_dimensions() -> None:
@@ -37,10 +39,38 @@ def test_label_constants_agree_with_the_dimensions() -> None:
         vocab.ORIGIN_ESCALATION,
         vocab.ORIGIN_FACTORY_SEED,
         vocab.ORIGIN_BACKFILL,
+        vocab.DELIVERY_PENDING,
+        vocab.DELIVERY_MERGED,
+        vocab.DELIVERY_RELEASED,
+        vocab.DELIVERY_REVERTED,
+        vocab.NOTIFIED_REPLIED,
+        vocab.NOTIFIED_MERGED,
+        vocab.NOTIFIED_RELEASED,
+        vocab.NOTIFIED_CORRECTED,
     ):
         dimension, _, value = label.partition(":")
         assert value in vocab.INTAKE_DIMENSIONS[dimension], label
     assert vocab.ORIGIN_DIM == "origin" and vocab.INTAKE_DIM == "intake"
+    assert vocab.DELIVERY_DIM == "delivery" and vocab.NOTIFIED_DIM == "notified"
+
+
+def test_every_delivery_and_notified_value_has_a_label_constant() -> None:
+    labels = {
+        f"{dimension}:{value}"
+        for dimension in ("delivery", "notified")
+        for value in vocab.INTAKE_DIMENSIONS[dimension]
+    }
+    constants = {
+        value
+        for name, value in vars(vocab).items()
+        if name.startswith(("DELIVERY_", "NOTIFIED_")) and ":" in str(value)
+    }
+    assert constants == labels
+
+
+def test_the_new_dimensions_do_not_reuse_the_contributor_or_release_names() -> None:
+    assert not {"outbound", "publish", "release"} & set(vocab.INTAKE_DIMENSIONS)
+    assert vocab.DELIVERY_DIM != vocab.NOTIFIED_DIM
 
 
 def test_every_disposition_maps_to_a_registered_terminal_value() -> None:
@@ -90,3 +120,34 @@ def test_channel_of_prefers_the_label_then_the_source_system() -> None:
 
 def test_tracks_edge_is_the_reserved_link_type() -> None:
     assert vocab.TRACKS_EDGE == "tracks"
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        (["delivery:pending"], "pending"),
+        (["x", "delivery:released", "notified:merged"], "released"),
+        (["delivery:bogus"], None),  # unregistered values are never read back
+        (["notified:replied"], None),  # another dimension is not delivery
+        ([], None),
+        (None, None),
+    ],
+)
+def test_delivery_of_reads_only_registered_values(labels, expected) -> None:
+    assert vocab.delivery_of(labels) == expected
+
+
+@pytest.mark.parametrize("value", sorted(vocab.INTAKE_DIMENSIONS["delivery"]))
+def test_unlinking_keeps_the_delivery_value_and_records_the_unlinked_fact(value) -> None:
+    """``bd set-state`` cannot clear a dimension (acceptance item 3), so unlink never tries: the
+    value is kept and ``unlinked`` is the fact that the work is no longer tracked."""
+    outcome = vocab.delivery_after_unlink([f"delivery:{value}", "origin:github"])
+
+    assert outcome == vocab.DeliveryAfterUnlink(value=value, unlinked=True)
+
+
+def test_unlinking_a_report_with_no_delivery_value_records_only_the_fact() -> None:
+    outcome = vocab.delivery_after_unlink(["origin:github"])
+
+    assert (outcome.value, outcome.unlinked) == (None, True)
+    assert intake.delivery_after_unlink is vocab.delivery_after_unlink

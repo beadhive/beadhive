@@ -25,6 +25,10 @@ States
 - ``origin:report|github|import`` — the intake CHANNEL a bead entered through. A CLOSED
   provenance dimension (queryable, validates clean), orthogonal to the intake *queue* state:
   ``intake`` is queue membership (cleared on triage); ``origin`` is a durable source tag.
+- ``delivery:pending|merged|released|reverted`` and ``notified:replied|merged|released|corrected``
+  — where a report's tracked work has got to, and which milestone the reporter was last told
+  about. CLOSED dimensions written only by the intake module (never ``outbound:`` / ``publish:``
+  / ``release:``); values owned by ``beadhive.modules.intake``.
 
 Provenance — THREE orthogonal facets (operator-approved, epic)
 --------------------------------------------------------------------------------
@@ -136,6 +140,10 @@ STATE_DIMENSIONS: dict[str, frozenset[str]] = {
     # intake CHANNEL — the closed provenance dimension a report/import rides instead of
     # overloading the sync-coupled native `source_system`; values owned by the intake module.
     "origin": INTAKE_DIMENSIONS["origin"],
+    # report delivery and reporter-notification dimensions, written only by the intake module
+    # (external-intake-module-adr.md section 7); values owned by the intake module.
+    "delivery": INTAKE_DIMENSIONS["delivery"],
+    "notified": INTAKE_DIMENSIONS["notified"],
     # the unattended dispatch loop's open/closed escalation flag (bh-bh2h.2.1's vocabulary) —
     # see the module docstring's "Dispatcher failure dimensions" section.
     "escalation": frozenset({"raised", "resolved"}),
