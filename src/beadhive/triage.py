@@ -26,6 +26,11 @@ module is the triage/dispose side of the funnel `ws report` (bead) fills:
 
 All writes go through sanctioned beads-native primitives (`bd -C … update|close|set-state`, and
 `ws report` for reroute) with `--actor` provenance — never the guarded `bd github push/sync`.
+
+The queue, the duplicate reads and the dispositions are `IntakeService` operations over a
+`BdReportStore` (`beadhive.modules.intake`, composed in `intake_services`); the functions here are
+the stable legacy facade that renders their results as the `(exit, error, message)` tuples and raw
+bd rows the CLI and MCP callers have always consumed.
 """
 
 from __future__ import annotations
@@ -34,15 +39,9 @@ import json
 
 import typer
 
-from . import bd, bd_cli
-from .state import (
-    INTAKE_UNTRIAGED,
-    ORIGIN_DIM,
-    STATE_DIMENSIONS,
-    channel_of,
-    disposition_state,
-    is_untriaged_intake,
-)
+from . import bd, intake_services  # noqa: F401 - `triage.bd` is the bd seam tests patch
+from .modules.intake import Disposition, DispositionRequest
+from .state import ORIGIN_DIM, STATE_DIMENSIONS, channel_of
 
 # The intake CHANNEL values that share the ONE intake queue — the funnel key that makes the surface
 # source-agnostic. This is the closed `origin` dimension, NOT raw
@@ -67,14 +66,7 @@ def list_intake(cwd, source: str = ""):
     any channel — report|github|import — shares one queue). `source` narrows to one resolved
     `origin` channel client-side (bd has no channel list filter). Returns a list of bead rows (empty
     on read failure)."""
-    rows = (
-        bd_cli.routes(cwd).issue_list(label=INTAKE_UNTRIAGED, status="open", label_first=True) or []
-    )
-    if not isinstance(rows, list):
-        return []
-    if source:
-        rows = [r for r in rows if _channel_of(r) == source]
-    return rows
+    return intake_services.queue_rows(cwd, source)
 
 
 # ---- dedup (reuse bd find-duplicates; never reimplement) ---------------------
@@ -84,11 +76,7 @@ def find_dupes(cwd, threshold: float = 0.5, method: str = "mechanical"):
     """Likely-duplicate pairs across a hive's open issues via the beads-native `bd find-duplicates`
     (mechanical by default — no API key; `ai` for semantic). Returns the list of pair dicts
     (`issue_a_id`, `issue_b_id`, `similarity`, …), empty on read failure."""
-    data = bd_cli.routes(cwd).find_duplicates(threshold=threshold, method=method)
-    if not isinstance(data, dict):
-        return []
-    pairs = data.get("pairs")
-    return pairs if isinstance(pairs, list) else []
+    return intake_services.duplicate_rows(cwd, threshold, method)
 
 
 def dupes_touching(pairs, ids):
@@ -112,67 +100,30 @@ def intake_payload(cwd, source: str = "", threshold: float = 0.5) -> dict:
 # ---- dispositions (type-aware) ----------------------------------------------
 
 
-def _require_untriaged(bead, cwd):
-    """(data, error): the bead's JSON, plus an error message if it isn't an untriaged intake bead
-    (so a disposition never re-triages an already-fielded or non-intake bead)."""
-    data = bd.show(bead, cwd)
-    if data is None:
-        return None, f"{bead} not found"
-    if not is_untriaged_intake(data.get("labels")):
-        return data, f"{bead} is not an untriaged intake bead — nothing to triage"
-    return data, ""
-
-
-def _clear_intake(bead, cwd, actor, disposition, reason):
-    """Event-sourced clear: transition the intake dimension to the disposition's terminal value
-    (`bd set-state`, consistent with). Returns (exit, error)."""
-    value = disposition_state(disposition)
-    res = bd_cli.routes(cwd).issue_set_state(
-        bead, f"intake={value}", reason=reason, actor=actor, capture=True
-    )
-    if res.returncode:
-        return res.returncode, f"could not clear intake state: {bd.err_line(res)}"
-    return 0, ""
-
-
 def accept(cwd, bead, actor, issue_type: str = "", priority: str = ""):
     """Accept a report into backlog: set type/priority (type-aware — both optional), then clear the
     intake state. The bead stays open as normal backlog. Returns (exit, error, message)."""
-    _data, err = _require_untriaged(bead, cwd)
-    if err:
-        return 1, err, ""
-    update = []
-    if issue_type:
-        update += ["--type", issue_type]
-    if priority:
-        update += ["--priority", priority]
-    if update:
-        res = bd_cli.routes(cwd).issue_update_fields(
-            bead, issue_type=issue_type, priority=priority, actor=actor, capture=True
-        )
-        if res.returncode:
-            return res.returncode, f"bd update failed: {bd.err_line(res)}", ""
-    code, err = _clear_intake(bead, cwd, actor, "accept", "accepted into backlog")
+    code, err, _outcome = intake_services.dispose(
+        cwd,
+        DispositionRequest(
+            bead, Disposition.ACCEPT, actor, issue_type=issue_type, priority=priority
+        ),
+    )
     if err:
         return code, err, ""
-    detail = f" ({', '.join(update[i] for i in range(1, len(update), 2))})" if update else ""
+    changed = [value for value in (issue_type, priority) if value]
+    detail = f" ({', '.join(changed)})" if changed else ""
     return 0, "", f"✓ accepted {bead} → backlog{detail}"
 
 
 def reject(cwd, bead, actor, reason: str):
     """Reject a report: clear intake, then close it with a reporter-visible reason. Returns
     (exit, error, message)."""
-    if not reason:
-        return 1, "reject requires a --reason (reporter-visible)", ""
-    _data, err = _require_untriaged(bead, cwd)
-    if err:
-        return 1, err, ""
-    code, err = _clear_intake(bead, cwd, actor, "reject", f"rejected: {reason}")
+    code, err, _outcome = intake_services.dispose(
+        cwd, DispositionRequest(bead, Disposition.REJECT, actor, reason=reason)
+    )
     if err:
         return code, err, ""
-    res = bd_cli.routes(cwd).issue_close(bead, reason=reason, actor=actor, capture=True)
-    if res.returncode:
-        return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
     return 0, "", f"✓ rejected {bead}: {reason}"
 
 
@@ -187,42 +138,29 @@ def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=N
     Returns (exit, error, message)."""
     if bool(to_hive) == bool(superintendent):
         return 1, "reroute needs exactly one of --to <hive> or --super <seat>", ""
-    data, err = _require_untriaged(bead, cwd)
-    if err:
-        return 1, err, ""
 
     if superintendent:
-        res = bd_cli.routes(cwd).issue_assign(bead, superintendent, actor=actor, capture=True)
-        if res.returncode:
-            return res.returncode, f"bounce to superintendent failed: {bd.err_line(res)}", ""
+        code, err, _outcome = intake_services.dispose(
+            cwd, DispositionRequest(bead, Disposition.REROUTE, actor, seat=superintendent)
+        )
+        if err:
+            return code, err, ""
         return 0, "", f"✓ bounced {bead} → {superintendent} (stays in the fleet-wide inbox)"
 
-    from . import report
+    from . import report  # the target hive's filing; report no longer imports triage
 
-    title = str(data.get("title") or "")
-    rtype = str(data.get("issue_type") or "bug")
-    rtype = rtype if rtype in report.REPORT_TYPES else "bug"  # type-aware, bd-valid fallback
-    code, err, new_id = report.file_report(to_hive, title, rtype, actor, cfg=cfg)
-    if err:
-        return code, f"reroute re-file failed: {err}", ""
-    reason = f"rerouted to {to_hive} as {new_id}"
-    code, cerr = _clear_intake(bead, cwd, actor, "reroute", reason)
-    if cerr:
-        return code, cerr, ""
-    res = bd_cli.routes(cwd).issue_close(bead, reason=reason, actor=actor, capture=True)
-    if res.returncode:
-        return res.returncode, f"bd close failed: {bd.err_line(res)}", ""
-    return 0, "", f"✓ rerouted {bead} → {to_hive} ({new_id})"
+    return intake_services.reroute_to_hive(
+        cwd, bead, actor, to_hive, file_report=report.file_report, cfg=cfg
+    )
 
 
 def promote(cwd, bead, actor):
     """Hand a report to the planner: transition intake to `promoted` — the queue the planner's
     adopt path reads. This is a clean HAND-OFF only; adopting the report into a
     gated epic molecule is jf5k's job, NOT done here. Returns (exit, error, message)."""
-    _data, err = _require_untriaged(bead, cwd)
-    if err:
-        return 1, err, ""
-    code, err = _clear_intake(bead, cwd, actor, "promote", "handed to the planner for adoption")
+    code, err, _outcome = intake_services.dispose(
+        cwd, DispositionRequest(bead, Disposition.PROMOTE, actor)
+    )
     if err:
         return code, err, ""
     return 0, "", f"✓ promoted {bead} → planner"

@@ -1,13 +1,15 @@
 """``IntakeService``, the one implementation of :class:`IntakePort`, and ``NullIntake``.
 
-The skeleton implements what only needs the :class:`ReportStore`: filing a report, the queue,
-the dispositions, bindings and the work lookup. Import, link and discovery are operations of the
-port that later beads own; until then they refuse with ``NOT_AVAILABLE``. Presentation, hive
-resolution, clone-on-demand and push stay with the legacy callers.
+The service implements what only needs the :class:`ReportStore`: filing a report, the queue, the
+dispositions, bindings and the work lookup (``bh report``, ``bh escalate`` and the triage verbs
+run through it). Import, link and discovery are operations of the port that later beads own;
+until then they refuse with ``NOT_AVAILABLE``. Presentation, hive resolution, clone-on-demand and
+push stay with the legacy callers.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 
 from ..contracts import IntakePort, LabelPolicy, ReportStore
@@ -24,6 +26,7 @@ from ..domain import (
     ImportOutcome,
     ImportRequest,
     IntakeRefused,
+    IntakeStoreError,
     IssueBinding,
     LinkOutcome,
     LinkRequest,
@@ -44,6 +47,11 @@ def _state_value(label: str) -> tuple[str, str]:
     the vocabulary stays single-owned in the domain."""
     dimension, _, value = label.partition(":")
     return dimension, value
+
+
+def _retag(exc: IntakeStoreError, operation: str, bead: str) -> IntakeStoreError:
+    """The same store failure, re-labelled with the service step that hit it."""
+    return IntakeStoreError(exc.detail, bead=bead, operation=operation, returncode=exc.returncode)
 
 
 def _channel(view: BeadView) -> str:
@@ -83,7 +91,11 @@ class IntakeService:
         reason = f"filed via {self._binary} report"
         for label in (draft.origin, INTAKE_UNTRIAGED):
             dimension, value = _state_value(label)
-            self._store.set_state(report, dimension, value, reason=reason, actor=draft.actor)
+            try:
+                self._store.set_state(report, dimension, value, reason=reason, actor=draft.actor)
+            except IntakeStoreError as exc:
+                # The bead exists: carry its id so the caller can report a half-filed report.
+                raise _retag(exc, f"stamp:{dimension}", report) from exc
         return report
 
     # -- queue -------------------------------------------------------------------------------
@@ -95,7 +107,8 @@ class IntakeService:
         if query.channel:
             views = tuple(v for v in views if _channel(v) == query.channel)
         items = tuple(
-            QueueItem(v.id, v.title, v.issue_type, _channel(v), v.labels, v.binding) for v in views
+            QueueItem(v.id, v.title, v.issue_type, _channel(v), v.labels, v.binding, v.raw)
+            for v in views
         )
         if not query.include_duplicates or not items:
             return QueueView(items)
@@ -109,14 +122,7 @@ class IntakeService:
             raise IntakeRefused(
                 RefusalReason.REASON_REQUIRED, "reject requires a --reason (reporter-visible)"
             )
-        view = self._store.get(request.report)
-        if view is None:
-            raise IntakeRefused(RefusalReason.NOT_FOUND, f"{request.report} not found")
-        if not may_disposition(view.labels):
-            raise IntakeRefused(
-                RefusalReason.NOT_UNTRIAGED,
-                f"{request.report} is not an untriaged intake bead — nothing to triage",
-            )
+        self._require_untriaged(request.report)
         handler = {
             Disposition.ACCEPT: self._accept,
             Disposition.REJECT: self._reject,
@@ -127,9 +133,43 @@ class IntakeService:
             raise IntakeRefused(RefusalReason.UNKNOWN_DISPOSITION, str(request.disposition))
         return handler(request)
 
+    def reroute_elsewhere(
+        self, request: DispositionRequest, refile: Callable[[BeadView], str]
+    ) -> DispositionOutcome:
+        """Reroute an untriaged report that belongs in ANOTHER store.
+
+        A service is bound to one store and never reaches into another, so the re-filing is the
+        caller's: ``refile`` receives the checked source bead (read once, before anything is
+        written anywhere), files it where it belongs and returns the reason to record (it raises
+        to abort, leaving the source untouched). This store then clears the source's intake state
+        and closes it with that reason. Not an operation of :class:`IntakePort`: only the
+        composition root, which can reach both stores, orchestrates it."""
+        view = self._require_untriaged(request.report)
+        reason = refile(view)
+        return self._reroute(
+            dataclasses.replace(request, disposition=Disposition.REROUTE, reason=reason, seat="")
+        )
+
+    def _require_untriaged(self, report: str) -> BeadView:
+        """The bead, if it is an untriaged intake bead (a disposition never re-triages)."""
+        view = self._store.get(report)
+        if view is None:
+            raise IntakeRefused(RefusalReason.NOT_FOUND, f"{report} not found")
+        if not may_disposition(view.labels):
+            raise IntakeRefused(
+                RefusalReason.NOT_UNTRIAGED,
+                f"{report} is not an untriaged intake bead — nothing to triage",
+            )
+        return view
+
     def _clear_intake(self, request: DispositionRequest, reason: str) -> str:
         value = disposition_state(request.disposition.value) or ""
-        self._store.set_state(request.report, INTAKE_DIM, value, reason=reason, actor=request.actor)
+        try:
+            self._store.set_state(
+                request.report, INTAKE_DIM, value, reason=reason, actor=request.actor
+            )
+        except IntakeStoreError as exc:
+            raise _retag(exc, "clear_intake", request.report) from exc
         return value
 
     def _accept(self, request: DispositionRequest) -> DispositionOutcome:

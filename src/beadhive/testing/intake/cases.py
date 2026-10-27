@@ -166,7 +166,8 @@ def _duplicate_pairs(factory: ReportStoreFactory) -> None:
     one, two = store.create(draft("login page crashes")), store.create(draft("login page crashes"))
     store.create(draft("add dark mode"))
     pairs = store.duplicate_pairs(threshold=0.9)
-    assert [(p.first, p.second) for p in pairs] == [(one, two)]
+    # a pair is unordered: a store may name either side first (bd orders by its own ids)
+    assert [frozenset((p.first, p.second)) for p in pairs] == [frozenset((one, two))]
     assert pairs[0].similarity >= 0.9
     assert store.duplicate_pairs(threshold=1.1) == ()
 

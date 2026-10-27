@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from beadhive.modules.intake import (
@@ -12,6 +14,7 @@ from beadhive.modules.intake import (
     IntakePort,
     IntakeRefused,
     IntakeService,
+    IntakeStoreError,
     IssueBinding,
     LabelPolicy,
     LinkRequest,
@@ -376,3 +379,69 @@ def test_bind_intake_is_null_when_off_and_never_builds_the_store() -> None:
 
     assert isinstance(bind_intake(False, build), NullIntake) and built == []
     assert isinstance(bind_intake(True, build), IntakeService) and built == [1]
+
+
+# -- structured store failures and the raw-row passthrough ----------------------------------
+
+
+class _FailsOn(MemoryReportStore):
+    """A store whose ``set_state`` of ``dimension`` fails with a non-default exit status."""
+
+    def __init__(self, scope, dimension: str) -> None:
+        super().__init__(scope)
+        self._dimension = dimension
+
+    def set_state(self, bead, dimension, value, *, reason, actor):
+        if dimension == self._dimension:
+            raise IntakeStoreError("boom", bead=bead, operation="set_state", returncode=7)
+        super().set_state(bead, dimension, value, reason=reason, actor=actor)
+
+
+@pytest.mark.parametrize("dimension", ["origin", "intake"])
+def test_a_failed_stamp_names_the_half_filed_bead_and_the_step(dimension) -> None:
+    """The bead exists once ``create`` returns: a failed stamp must say which bead, which step and
+    keep the store's exit status, so a transport can word "filed X but could not set ..."."""
+    store = _FailsOn(memory_store().scope(), dimension)
+    service = IntakeService(store, _Labels())
+
+    with pytest.raises(IntakeStoreError) as raised:
+        _filed(service)
+
+    error = raised.value
+    assert (error.operation, error.returncode, error.detail) == (f"stamp:{dimension}", 7, "boom")
+    assert error.bead and store.get(error.bead) is not None
+
+
+def test_a_failed_disposition_stamp_is_tagged_clear_intake() -> None:
+    store = _FailsOn(memory_store().scope(), "intake")
+    service = IntakeService(store, _Labels())
+    bead = store.create(draft())
+    # seed the queue label directly, bypassing the failing write
+    MemoryReportStore.set_state(store, bead, "intake", "untriaged", reason="seed", actor="a")
+
+    with pytest.raises(IntakeStoreError) as raised:
+        service.dispose(DispositionRequest(bead, Disposition.PROMOTE, "disp/a"))
+
+    assert (raised.value.operation, raised.value.bead) == ("clear_intake", bead)
+
+
+def test_queue_items_and_duplicate_pairs_carry_the_stores_own_rows_untouched() -> None:
+    """``raw`` is opaque store payload: a facade can re-emit the native shape byte for byte, and
+    the module never decides on it (it is excluded from equality)."""
+
+    class Rows(MemoryReportStore):
+        def list_open_labeled(self, label):
+            return tuple(
+                dataclasses.replace(v, raw={"id": v.id, "extra": {"nested": [1, 2]}})
+                for v in super().list_open_labeled(label)
+            )
+
+    store = Rows(memory_store().scope())
+    service = IntakeService(store, _Labels())
+    bead = _filed(service)
+
+    view = service.queue(QueueQuery(include_duplicates=False))
+
+    assert view.items[0].raw == {"id": bead, "extra": {"nested": [1, 2]}}
+    plain = dataclasses.replace(view.items[0], raw={})
+    assert plain == view.items[0]  # raw never takes part in equality

@@ -32,21 +32,18 @@ gated.
 
 from __future__ import annotations
 
-import json
+from . import (
+    bd,
+    config,
+    engine,
+    hub,
+    intake_services,
+    registry,
+    validate,  # noqa: F401 - `report.validate` is the label-check seam tests patch
+)
+from .modules.intake import ORIGIN_REPORT, REPORT_TYPES
 
-from . import bd, bd_cli, config, engine, hub, registry, validate
-from .state import INTAKE_UNTRIAGED, ORIGIN_REPORT
-
-# `--type` accepts the intake-relevant issue types; bd owns the full type vocabulary, we gate the
-# user-facing surface to the ones a cross-hive report should be filed as.
-REPORT_TYPES = frozenset({"bug", "feature", "chore"})
-
-
-def _state_arg(label) -> str:
-    """A `<dim>:<value>` label-cache constant → the `<dim>=<value>` arg `bd set-state` takes.
-
-    Keeps the state vocabulary single-owned in `ws/state.py` rather than re-spelling dims here."""
-    return label.replace(":", "=", 1)
+__all__ = ["REPORT_TYPES", "entry_dupes", "file_report"]
 
 
 def _target(cfg, entry):
@@ -61,36 +58,6 @@ def _target(cfg, entry):
     return (cache, True) if cache is not None else (None, False)
 
 
-def _create_bead(title, report_type, ident, target, actor, description="") -> tuple[int, str, str]:
-    """Create a born-native bead via plain `bd -C <target> --json create` — the target triplet +
-    requested type, and NO `source_system` overload (retires the import workaround). Provenance
-    (the intake channel + reporter) is stamped separately: `origin` via `set-state`, reporter via
-    `--actor`. `description` (bh-u0qd) is passed through to `bd create -d` only when non-empty.
-    Returns `(exit, error, new_id)` — `id` read from the `--json` create payload."""
-    provider, org, repo = ident
-    triplet = f"provider:{provider},org:{org},repo:{repo}"
-    res = bd_cli.routes(target).create_report(
-        title, report_type, triplet, description=description, actor=actor
-    )
-    if res.returncode:
-        return res.returncode, f"bd create failed: {bd.err_line(res)}", ""
-    try:
-        new_id = (json.loads(res.stdout or "{}") or {}).get("id") or ""
-    except json.JSONDecodeError:
-        new_id = ""
-    if not new_id:
-        return 1, "bd create reported no new bead id", ""
-    return 0, "", new_id
-
-
-def _set_state(label, new_id, target, actor):
-    """`bd set-state <id> <dim>=<value>` for a `ws/state.py` label-cache constant."""
-    reason = f"filed via {config.BINARY_ALIAS} report"
-    return bd_cli.routes(target).issue_set_state(
-        new_id, _state_arg(label), reason=reason, actor=actor, capture=True
-    )
-
-
 def file_report(
     hive, title, report_type, actor, cfg=None, description: str = "", *, origin=ORIGIN_REPORT
 ) -> tuple[int, str, str]:
@@ -98,6 +65,10 @@ def file_report(
     `error`. The bead lands born-native with the target triplet, the requested type, the closed
     `origin` intake channel + reporter (`bd --actor`) provenance, and `intake=untriaged`
     queue state — NO `source_system` overload.
+
+    The filing policy (type gate, label check, create, stamp) is `IntakeService.file_report` over
+    a `BdReportStore`, composed in `intake_services`; this function keeps hive resolution,
+    clone-on-demand and the push.
 
     `description` (bh-u0qd) is the report body; defaults to "" so existing callers are unchanged.
 
@@ -114,34 +85,23 @@ def file_report(
     if target is None:
         return 1, f"hive {hive!r} is not cloned and has no remote beads data to file into", ""
 
-    ident = (entry["provider"], entry["org"], entry["repo"])
     # Validate ONLY the new bead's own labels (target triplet + closed origin/intake channel) —
     # NOT the target hive's whole DB. A cross-hive reporter has no authority over the target's
-    # pre-existing label debt and must not be deadlocked by it. The record we
-    # write carries only registry-valid labels, which is what we assert here before the create.
-    provider, org, repo = ident
-    new_labels = [
-        f"provider:{provider}",
-        f"org:{org}",
-        f"repo:{repo}",
-        origin,
-        INTAKE_UNTRIAGED,
-    ]
-    bad = validate.bead_violations(cfg, f"{entry['prefix']}-intake", new_labels)
-    if bad:
-        return 1, "report bead would carry invalid labels: " + "; ".join(bad), ""
-
-    code, error, new_id = _create_bead(title, report_type, ident, target, actor, description)
+    # pre-existing label debt and must not be deadlocked by it. The service asserts this before
+    # the create.
+    code, error, new_id = intake_services.file_report(
+        cfg,
+        entry,
+        target,
+        title,
+        report_type,
+        actor,
+        description=description,
+        origin=origin,
+        binary=config.BINARY_ALIAS,
+    )
     if error:
-        return code, error, ""
-
-    # Provenance = closed `origin` channel; queue membership = `intake` — two orthogonal dims,
-    # both event-sourced via set-state from the shared ws/state.py vocabulary (not ad-hoc labels).
-    for label, what in ((origin, "origin"), (INTAKE_UNTRIAGED, "intake state")):
-        state = _set_state(label, new_id, target, actor)
-        if state.returncode:
-            msg = f"filed {new_id} but could not set {what}: {bd.err_line(state)}"
-            return state.returncode, msg, new_id
+        return code, error, new_id
 
     if pushed:
         push = engine.get_engine(cfg).push_state(target, actor=actor, message=f"report: {title}")
@@ -158,8 +118,6 @@ def entry_dupes(hive, new_id, cfg=None, threshold: float = 0.5):
     `file_report`, so it reads the very DB the report landed in (cloned or clone-on-demand cache),
     and returns [] rather than raising if the hive can't be resolved/read. Feature requests
     especially collide with existing backlog, so surfacing dupes here keeps the queue clean."""
-    from . import triage
-
     cfg = cfg if cfg is not None else config.load()
     try:
         entry = registry.resolve_hive(cfg, hive)
@@ -168,4 +126,4 @@ def entry_dupes(hive, new_id, cfg=None, threshold: float = 0.5):
     target, _pushed = _target(cfg, entry)
     if target is None:
         return []
-    return triage.dupes_touching(triage.find_dupes(target, threshold=threshold), [new_id])
+    return intake_services.entry_dupes(target, new_id, threshold)
