@@ -1,0 +1,134 @@
+"""External intake: the one shared intake queue, behind the consumer port ``IntakePort``.
+
+``domain`` holds intake-owned records, refusals, the intake and origin vocabulary and pure rules
+(standard library only). ``contracts`` holds the consumer port and intake's own outbound ports
+(``ReportStore``, ``CheckpointStore``, ``LabelPolicy``). ``application`` holds ``IntakeService``,
+its ``NullIntake`` stand-in (bound when intake is off) and the module's own pager over the tracker
+port's contracts. Concrete bead-store adapters live outside the module; the in-memory substitute
+and the contract cases live in :mod:`beadhive.testing.intake`.
+
+Dependency direction (enforced by ``scripts/check_import_boundaries.py`` and
+``tests/unit/modules/intake/test_intake_independence.py``): the module imports only the tracker
+port's contracts, never ``modules.work`` / ``modules.planning``, a legacy module, an adapter or
+``tracker.application``; legacy code reaches it through this package, ``contracts`` or the
+composition root, never ``domain`` or ``application``. Decision:
+``docs/design/external-intake-module-adr.md``.
+"""
+
+from __future__ import annotations
+
+from .application import IntakeService, NullIntake, bind_intake
+from .contracts import (
+    BeadView,
+    Checkpoint,
+    CheckpointStore,
+    DiscoveryOutcome,
+    DiscoveryRequest,
+    Disposition,
+    DispositionOutcome,
+    DispositionRequest,
+    DuplicatePair,
+    HiveTriplet,
+    ImportKind,
+    ImportOutcome,
+    ImportRequest,
+    IntakePort,
+    IntakeRefused,
+    IntakeStoreError,
+    IssueBinding,
+    IssueStatus,
+    LabelPolicy,
+    LinkKind,
+    LinkOutcome,
+    LinkRequest,
+    QueueItem,
+    QueueQuery,
+    QueueView,
+    RefusalReason,
+    ReportDraft,
+    ReportStore,
+    SourceSnapshot,
+    StoreScope,
+)
+from .domain import (
+    DISPOSITION_STATE,
+    INTAKE_DIM,
+    INTAKE_DIMENSIONS,
+    INTAKE_PROMOTED,
+    INTAKE_UNTRIAGED,
+    ORIGIN_BACKFILL,
+    ORIGIN_DIM,
+    ORIGIN_ESCALATION,
+    ORIGIN_FACTORY_SEED,
+    ORIGIN_GITHUB,
+    ORIGIN_IMPORT,
+    ORIGIN_REPORT,
+    REPORT_TYPES,
+    TRACKS_EDGE,
+    channel_of,
+    disposition_state,
+    is_escalation_origin,
+    is_promoted,
+    is_report_origin,
+    is_untriaged_intake,
+    origin_from_source_system,
+    origin_of,
+)
+
+__all__ = [
+    "DISPOSITION_STATE",
+    "INTAKE_DIM",
+    "INTAKE_DIMENSIONS",
+    "INTAKE_PROMOTED",
+    "INTAKE_UNTRIAGED",
+    "ORIGIN_BACKFILL",
+    "ORIGIN_DIM",
+    "ORIGIN_ESCALATION",
+    "ORIGIN_FACTORY_SEED",
+    "ORIGIN_GITHUB",
+    "ORIGIN_IMPORT",
+    "ORIGIN_REPORT",
+    "REPORT_TYPES",
+    "TRACKS_EDGE",
+    "BeadView",
+    "Checkpoint",
+    "CheckpointStore",
+    "DiscoveryOutcome",
+    "DiscoveryRequest",
+    "Disposition",
+    "DispositionOutcome",
+    "DispositionRequest",
+    "DuplicatePair",
+    "HiveTriplet",
+    "ImportKind",
+    "ImportOutcome",
+    "ImportRequest",
+    "IntakePort",
+    "IntakeRefused",
+    "IntakeService",
+    "IntakeStoreError",
+    "IssueBinding",
+    "IssueStatus",
+    "LabelPolicy",
+    "LinkKind",
+    "LinkOutcome",
+    "LinkRequest",
+    "NullIntake",
+    "QueueItem",
+    "QueueQuery",
+    "QueueView",
+    "RefusalReason",
+    "ReportDraft",
+    "ReportStore",
+    "SourceSnapshot",
+    "StoreScope",
+    "bind_intake",
+    "channel_of",
+    "disposition_state",
+    "is_escalation_origin",
+    "is_promoted",
+    "is_report_origin",
+    "is_untriaged_intake",
+    "origin_from_source_system",
+    "origin_of",
+]

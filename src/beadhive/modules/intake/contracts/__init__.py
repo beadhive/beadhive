@@ -1,0 +1,68 @@
+"""The intake module's public contracts: the consumer port, the outbound ports and the domain
+records and refusals they speak (re-exported, as the ``modules/hives`` shape).
+"""
+
+from __future__ import annotations
+
+from ..domain import (
+    BeadView,
+    Checkpoint,
+    DiscoveryOutcome,
+    DiscoveryRequest,
+    Disposition,
+    DispositionOutcome,
+    DispositionRequest,
+    DuplicatePair,
+    HiveTriplet,
+    ImportKind,
+    ImportOutcome,
+    ImportRequest,
+    IntakeRefused,
+    IntakeStoreError,
+    IssueBinding,
+    IssueStatus,
+    LinkKind,
+    LinkOutcome,
+    LinkRequest,
+    QueueItem,
+    QueueQuery,
+    QueueView,
+    RefusalReason,
+    ReportDraft,
+    SourceSnapshot,
+    StoreScope,
+)
+from .ports import CheckpointStore, IntakePort, LabelPolicy, ReportStore
+
+__all__ = [
+    "BeadView",
+    "Checkpoint",
+    "CheckpointStore",
+    "DiscoveryOutcome",
+    "DiscoveryRequest",
+    "Disposition",
+    "DispositionOutcome",
+    "DispositionRequest",
+    "DuplicatePair",
+    "HiveTriplet",
+    "ImportKind",
+    "ImportOutcome",
+    "ImportRequest",
+    "IntakePort",
+    "IntakeRefused",
+    "IntakeStoreError",
+    "IssueBinding",
+    "IssueStatus",
+    "LabelPolicy",
+    "LinkKind",
+    "LinkOutcome",
+    "LinkRequest",
+    "QueueItem",
+    "QueueQuery",
+    "QueueView",
+    "RefusalReason",
+    "ReportDraft",
+    "ReportStore",
+    "SourceSnapshot",
+    "StoreScope",
+]

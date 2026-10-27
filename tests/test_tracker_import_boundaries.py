@@ -183,10 +183,13 @@ def test_g3_tracker_importing_another_modules_contracts_or_application_fails(
 
 
 def test_g3_is_scoped_to_leaf_modules(scratch: Path) -> None:
-    """A non-leaf module's contracts may still import another module's public contracts."""
+    """A non-leaf module's contracts may still import another module's public contracts.
+
+    The stand-in is a module with no consumer-exclusion entry: ``intake`` itself may not import
+    ``work`` (gap G6, ``tests/test_intake_import_boundaries.py``)."""
     errors = _check_with(
         scratch,
-        "beadhive/modules/intake/contracts/__init__.py",
+        "beadhive/modules/orders/contracts/__init__.py",
         "from beadhive.modules.tracker.contracts import TrackerReader\n"
         "from beadhive.modules.work.contracts.impact import AttestKey",
     )
