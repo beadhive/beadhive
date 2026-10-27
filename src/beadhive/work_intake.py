@@ -31,11 +31,17 @@ def accept(
     priority: str = "",
     as_: str = "",
     hive: str = "",
+    work: str = "",
+    new_work: bool = False,
 ):
+    """Accept an intake report. With ``work`` / ``new_work`` it also makes the report track work
+    (``accept_to_work``); without them it is the plain accept it always was."""
     otel.set_bead(bead)
     cfg = config.load()
-    cwd = registry.hive_dir_for(cfg, hive)
     actor = identity.resolve_actor(as_)
+    if work or new_work:
+        return accept_to_work(cfg, bead, actor, work, new_work, issue_type, priority, hive)
+    cwd = registry.hive_dir_for(cfg, hive)
     render_disposition(*triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority))
 
 
@@ -114,6 +120,118 @@ def render_import(result, url: str, dry_run: bool, as_json: bool) -> None:
     typer.echo(f"✓ {verbs[0] if dry_run else verbs[1]} {outcome.binding.url}{extra}")
     if not dry_run and outcome.kind.value == "created":
         typer.echo(f"  → {report} (intake:untriaged, held: it is not work until triaged)")
+
+
+def render_link(result, report: str, as_json: bool) -> None:
+    """Print one link, unlink or linking accept (human or ``--json``); non-zero exit on refusal."""
+    outcome, disposition = result.outcome, result.disposition
+    if as_json:
+        payload = {
+            "ok": result.code == 0,
+            "reason": result.reason,
+            "error": result.error,
+            "report": report,
+            "kind": outcome.kind.value if outcome else "",
+            "work": (disposition.work if disposition else outcome.work if outcome else ""),
+            "previous": outcome.previous if outcome else "",
+            "delivery": outcome.delivery if outcome else "",
+            "created_work": bool(disposition and disposition.created_work),
+            "accepted": disposition is not None,
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if result.code:
+            raise typer.Exit(result.code)
+        return
+    if result.code:
+        code = f" ({result.reason})" if result.reason else ""
+        typer.echo(f"✗ link refused{code}: {result.error}", err=True)
+        raise typer.Exit(result.code)
+    if disposition is not None:
+        made = "created and tracks" if disposition.created_work else "tracks"
+        typer.echo(f"✓ accepted {report}: it {made} {disposition.work} (delivery:pending)")
+        typer.echo(
+            f"  → {report} stays held (it is a report, not work); {disposition.work} is work"
+        )
+        return
+    assert outcome is not None
+    kind = outcome.kind.value
+    if kind == "unlinked":
+        if not outcome.work:
+            typer.echo(f"{report} tracks no work; nothing to unlink")
+            return
+        typer.echo(f"✓ unlinked {report} from {outcome.work}")
+        if outcome.delivery:
+            typer.echo(
+                f"  → delivery:{outcome.delivery} is kept (it cannot be cleared) and an `unlinked` "
+                "fact is recorded beside it"
+            )
+        return
+    verbs = {
+        "linked": f"{report} now tracks {outcome.work}",
+        "already_linked": f"{report} already tracks {outcome.work}",
+        "relinked": f"{report} now tracks {outcome.work} (was {outcome.previous})",
+    }
+    typer.echo(f"✓ {verbs[kind]} (delivery:{outcome.delivery})")
+
+
+def link(
+    bead: str,
+    to: str = "",
+    remove: bool = False,
+    replace: bool = False,
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Make a report track a work bead (``--to``), or stop (``--remove``); off unless
+    ``intake.external.enabled``. Several reports may track one work bead."""
+    otel.set_bead(bead)
+    cfg = config.load()
+    if remove == bool(to):
+        typer.echo("✗ pass exactly one of --to <work> or --remove", err=True)
+        raise typer.Exit(2)
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    result = intake_services.link_report(
+        cfg,
+        entry,
+        Path(registry.hive_dir(entry)),
+        bead,
+        to,
+        actor,
+        replace=replace,
+        remove=remove,
+        hive=hive,
+    )
+    render_link(result, bead, as_json)
+
+
+def accept_to_work(
+    cfg,
+    bead: str,
+    actor: str,
+    work: str,
+    new_work: bool,
+    issue_type: str = "",
+    priority: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """``accept --work <id>`` / ``--new-work``: accept the report and make it track work."""
+    entry = _import_entry(cfg, hive)
+    result = intake_services.accept_to_work(
+        cfg,
+        entry,
+        Path(registry.hive_dir(entry)),
+        bead,
+        actor,
+        work=work,
+        new_work=new_work,
+        issue_type=issue_type,
+        priority=priority,
+        hive=hive,
+    )
+    render_link(result, bead, as_json)
 
 
 def import_issue(

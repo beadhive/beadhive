@@ -32,6 +32,16 @@ class ImportKind(StrEnum):
     UNCHANGED = "unchanged"
 
 
+class WorkProgress(StrEnum):
+    """Where the work a report tracks has got to. Derived on read, never stored."""
+
+    UNLINKED = "unlinked"
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    IN_REVIEW = "in_review"
+    CLOSED = "closed"
+
+
 class LinkKind(StrEnum):
     LINKED = "linked"
     ALREADY_LINKED = "already_linked"
@@ -170,9 +180,28 @@ class LinkRequest:
 
 @dataclass(frozen=True)
 class LinkOutcome:
+    """What a link (or unlink) did. ``work`` is the work now tracked (for an unlink, the work no
+    longer tracked); ``previous`` the work a ``--replace`` left; ``delivery`` the report's
+    ``delivery`` value afterwards (an unlink keeps it: ``bd set-state`` cannot clear one)."""
+
     kind: LinkKind
     report: str
     work: str = ""
+    previous: str = ""
+    delivery: str = ""
+
+
+@dataclass(frozen=True)
+class WorkDraft:
+    """A work bead triage creates for ``accept --new-work``: born internal, with no
+    ``external_ref``, no ``origin`` and no ``intake`` state, and a description triage writes (it is
+    never copied from the issue body)."""
+
+    title: str
+    issue_type: str
+    actor: str
+    description: str = ""
+    priority: str = ""
 
 
 @dataclass(frozen=True)
@@ -215,6 +244,9 @@ class DispositionRequest:
     priority: str = ""
     reason: str = ""
     seat: str = ""
+    #: ``accept`` only: track an existing work bead (``work``) or create one (``new_work``).
+    work: str = ""
+    new_work: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,6 +257,8 @@ class DispositionOutcome:
     issue_type: str = ""
     priority: str = ""
     seat: str = ""
+    work: str = ""  # the work an accept now tracks
+    created_work: bool = False  # ... and whether that accept created it
 
 
 @dataclass(frozen=True)
@@ -274,4 +308,6 @@ __all__ = [
     "ReportDraft",
     "SourceSnapshot",
     "StoreScope",
+    "WorkDraft",
+    "WorkProgress",
 ]

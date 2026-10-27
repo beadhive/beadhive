@@ -401,7 +401,12 @@ def accept_cmd(
     as_: str = _AS,
     hive: str = _HIVE,
 ):
-    """Accept an intake report into backlog and clear its intake state."""
+    """Accept an intake report into backlog and clear its intake state.
+
+    `work_intake.accept` also takes `work` / `new_work` (`accept --work <id>` / `--new-work`,
+    bh-v2rr6): those options are NOT on this verb yet, because adding them changes the published
+    catalog and so needs a wire release (see the I5 registration recipe in the external-intake
+    ADR)."""
     return work_intake.accept(bead, issue_type, priority, as_, hive)
 
 
@@ -446,6 +451,25 @@ def import_cmd(
 
     Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-2ef4g)."""
     return work_intake.import_issue(url, hive, dry_run, as_json, as_)
+
+
+def link_cmd(
+    bead: str = _BEAD,
+    to: str = typer.Option("", "--to", help="the work bead (of this hive) the report tracks"),
+    remove: bool = typer.Option(False, "--remove", help="stop tracking (the other reports stay)"),
+    replace: bool = typer.Option(
+        False, "--replace", help="move a report that tracks other work to --to"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Make an imported report track a work bead, many reports to one (`delivery:pending`); the
+    report stays held and is never work. `--remove` unlinks it (the delivery value is kept and an
+    `unlinked` fact recorded). Off unless `intake.external.enabled`; never touches a tracker.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-v2rr6)."""
+    return work_intake.link(bead, to, remove, replace, as_, hive, as_json)
 
 
 def _refuse_public(verb: str, *values) -> None:

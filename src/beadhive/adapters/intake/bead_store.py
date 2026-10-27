@@ -39,6 +39,7 @@ from beadhive.modules.intake.contracts import (
     StoreScope,
     Thread,
     ThreadDocumentError,
+    WorkDraft,
     blockers_of,
     is_hold_gate,
     outbox_from_document,
@@ -272,6 +273,35 @@ class BdReportStore:
             # with the create (bd has no transaction across the two); a failure here leaves the
             # report open and unheld, carries its id, and the `bh doctor` hold sweep finds it.
             self.open_hold(str(created), actor=draft.actor)
+        return str(created)
+
+    def create_work(self, draft: WorkDraft) -> str:
+        """One ``bd create`` of a plain work bead: the hive triplet labels, the type and the
+        description (no ``external_ref``, no metadata, no hold, no ``origin`` or ``intake``
+        state), then the priority when one is given. Born internal and dispatchable."""
+        result = self._routes.create_report(
+            draft.title,
+            draft.issue_type,
+            ",".join(self.scope().hive.labels()),
+            description=draft.description,
+            actor=draft.actor,
+        )
+        if result.returncode:
+            raise IntakeStoreError(
+                f"bd create failed: {self._error_line(result)}",
+                operation="create_work",
+                returncode=result.returncode,
+            )
+        try:
+            created = (json.loads(result.stdout or "{}") or {}).get("id") or ""
+        except (json.JSONDecodeError, AttributeError):
+            created = ""
+        if not created:
+            raise IntakeStoreError("bd create reported no new bead id", operation="create_work")
+        if draft.priority:
+            self.update_fields(
+                str(created), issue_type="", priority=draft.priority, actor=draft.actor
+            )
         return str(created)
 
     def set_state(self, bead: str, dimension: str, value: str, *, reason: str, actor: str) -> None:

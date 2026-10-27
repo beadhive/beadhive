@@ -55,6 +55,7 @@ def test_port_names_match_the_adr() -> None:
         "dispose",
         "binding_of",
         "reports_for_work",
+        "work_progress",
         "discover",
         "ingest_thread",
         "reconcile_thread",

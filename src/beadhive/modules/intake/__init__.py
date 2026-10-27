@@ -63,6 +63,8 @@ from .contracts import (
     ThreadPolicy,
     ThreadRequest,
     ThreadView,
+    WorkDraft,
+    WorkProgress,
 )
 from .domain import (
     DELIVERY_DIM,
@@ -183,6 +185,8 @@ __all__ = [
     "ThreadRequest",
     "ThreadService",
     "ThreadView",
+    "WorkDraft",
+    "WorkProgress",
     "bind_intake",
     "channel_of",
     "delivery_after_unlink",

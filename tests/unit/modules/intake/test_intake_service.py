@@ -23,6 +23,7 @@ from beadhive.modules.intake import (
     RefusalReason,
     ReportDraft,
     ReportStore,
+    WorkProgress,
     bind_intake,
 )
 from beadhive.testing.intake import URL, MemoryReportStore, draft, memory_store
@@ -326,18 +327,12 @@ def test_binding_of_and_reports_for_work() -> None:
 # -- owned by later beads -------------------------------------------------------------------
 
 
-def test_operations_no_bead_has_implemented_yet_refuse_without_writing() -> None:
+def test_discovery_no_bead_has_implemented_yet_refuses_without_writing() -> None:
     service, store, _ = _service()
 
-    calls = (
-        lambda: service.link(LinkRequest("a", "b", "dev/test")),
-        lambda: service.unlink("a", actor="dev/test"),
-        lambda: service.discover(DiscoveryRequest("dev/test")),
-    )
-    for call in calls:
-        with pytest.raises(IntakeRefused) as refused:
-            call()
-        assert refused.value.reason is RefusalReason.NOT_AVAILABLE
+    with pytest.raises(IntakeRefused) as refused:
+        service.discover(DiscoveryRequest("dev/test"))
+    assert refused.value.reason is RefusalReason.NOT_AVAILABLE
     assert store.writes == 0
 
 
@@ -360,6 +355,7 @@ def test_null_intake_reads_are_empty_and_free() -> None:
     assert null.queue(QueueQuery()).items == () and null.queue(QueueQuery()).duplicates == ()
     assert null.reports_for_work("any-work") == ()
     assert null.binding_of("any-bead") is None
+    assert null.work_progress("any-bead") is WorkProgress.UNLINKED
 
 
 def test_null_intake_refuses_every_write_as_disabled() -> None:

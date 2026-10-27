@@ -336,3 +336,33 @@ def test_session_molecule_filer_maps_a_refused_batch_to_molecule_filing_failed()
         commands = PlanningCommands(SessionMoleculeFiler(session), gates)
         with pytest.raises(MoleculeFilingFailed):
             commands.file(_spec(), actor="dev/alice", dimension_fields=DIMENSIONS)
+
+
+def test_compile_molecule_links_a_tracked_report_tracks_never_child_of() -> None:
+    compiled = compile_molecule(
+        _spec(),
+        dimension_fields=DIMENSIONS,
+        epic_id="bh-9",
+        adopted_reports=["bh-native"],
+        tracked_reports=["bh-bound-1", "bh-bound-2"],
+    )
+    edges = [item.dep_add for item in compiled.items if item.kind.value == "dep_add"]
+    by_type = {
+        type_: {(e.source.id or e.source.key, e.target.id) for e in edges if e.type_ == type_}
+        for type_ in {e.type_ for e in edges}
+    }
+
+    # the report is the SOURCE and the epic the target: the epic never depends on a report
+    assert by_type["tracks"] == {("bh-bound-1", "bh-9"), ("bh-bound-2", "bh-9")}
+    assert ("bh-native", "bh-9") in by_type["parent-child"]
+    assert not {"bh-bound-1", "bh-bound-2"} & {s for s, _ in by_type["parent-child"]}
+    assert "blocks" not in by_type or all(s != "bh-9" for s, _ in by_type["blocks"])
+
+
+def test_compile_molecule_without_tracked_reports_is_unchanged() -> None:
+    plain = compile_molecule(_spec(), dimension_fields=DIMENSIONS, epic_id="bh-9")
+    with_none = compile_molecule(
+        _spec(), dimension_fields=DIMENSIONS, epic_id="bh-9", tracked_reports=()
+    )
+    assert plain.request(actor="a").to_dict() == with_none.request(actor="a").to_dict()
+    assert not [i for i in plain.items if i.kind.value == "dep_add" and i.dep_add.type_ == "tracks"]

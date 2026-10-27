@@ -18,6 +18,9 @@ What is composed here:
   ...)`` tuples the legacy callers have always returned, byte for byte;
 * ``reroute --to <hive>`` as an orchestration (re-file in the target hive, then close the source
   as rerouted), which is what retired the ``triage -> report`` legacy cycle edge;
+* link (I5): ``bh work link`` and ``accept --work`` / ``--new-work`` as :func:`link_report` and
+  :func:`accept_to_work`, over the same operational store and the root lock, off unless
+  ``intake.external.enabled`` and with no tracker (a link reads and writes no tracker);
 * the supervised outbox sender (I9a): the root :class:`FlockIntakeLock` (``guard_primary`` for
   one host, an ``fcntl.flock`` on a per-binding file in the hive's private ``.bh/`` state for one
   process, ``guard.live_epoch`` as the epoch; the store's ``seq`` re-check is the record half), a
@@ -60,6 +63,8 @@ from .modules.intake import (
     IntakeService,
     IntakeStoreError,
     IssueImporter,
+    LinkOutcome,
+    LinkRequest,
     OwnIdentity,
     QueueQuery,
     RefusalReason,
@@ -355,6 +360,135 @@ def import_issue(
     return ImportResult(0, outcome=outcome)
 
 
+# -- link (bh work link, accept --work / --new-work) --------------------------------------------
+
+
+@dataclass(frozen=True)
+class LinkResult:
+    """The rendering input of one link, unlink or linking accept: ``code`` is the exit status,
+    ``reason`` the stable refusal code (empty on success, ``store_error`` for a store failure),
+    ``error`` the one-line message naming the fix. ``outcome`` is set for a link or unlink and
+    ``disposition`` for a linking accept (whose ``outcome`` is the link it made)."""
+
+    code: int
+    error: str = ""
+    reason: str = ""
+    outcome: LinkOutcome | None = None
+    disposition: DispositionOutcome | None = None
+    #: A bead a failed call had already written (the new work, for a half-finished accept).
+    bead: str = ""
+
+
+def link_message(exc: IntakeStoreError) -> str:
+    """The one-line message for a store failure during a link, unlink or linking accept."""
+    operation, detail = exc.operation, exc.detail
+    if operation == "create_work":
+        return f"nothing was linked: could not create the work bead: {detail}"
+    if operation in {"track", "untrack"}:
+        return f"could not {operation} {exc.bead}: {detail} (repeat the command; it is idempotent)"
+    if operation == "stamp:delivery":
+        return (
+            f"{exc.bead} is linked but delivery could not be set: {detail} "
+            "(repeat the link; it repairs the missing value)"
+        )
+    if operation in {"read_outbox", "write_outbox"}:
+        return f"could not record the link on {exc.bead}: {detail}"
+    return store_error_message(exc)
+
+
+def _linking_port(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    lock: IntakeLock | None,
+    hive: str,
+    verb: str,
+):
+    """The port a link runs on: the service over the OPERATIONAL store and the root lock when
+    ``intake.external.enabled``, else :class:`NullIntake` (every write refuses ``intake_disabled``
+    and no store is built). No tracker is composed: a link neither reads nor writes one."""
+    enabled, _default_type = external_intake_settings(cfg)
+
+    def build():
+        store = report_store(directory, lambda: store_scope(cfg, entry))
+        labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
+        held = lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb)
+        return IntakeService(store, labels, lock=held)
+
+    return bind_intake(enabled, build)
+
+
+def link_report(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    report: str,
+    work: str,
+    actor: str,
+    *,
+    replace: bool = False,
+    remove: bool = False,
+    lock: IntakeLock | None = None,
+    hive: str = "",
+) -> LinkResult:
+    """``bh work link <report> --to <work> [--replace]`` or ``--remove``.
+
+    A bound report ``tracks`` a work bead of the hive's OPERATIONAL store (the public store is
+    never resolved, and no edge crosses stores); several reports may track one work bead and an
+    unlink leaves the others intact. Off unless ``intake.external.enabled``."""
+    try:
+        port = _linking_port(cfg, entry, directory, lock, hive, "work link")
+        outcome = (
+            port.unlink(report, actor=actor)
+            if remove
+            else port.link(LinkRequest(report, work, actor, replace=replace))
+        )
+    except IntakeRefused as exc:
+        return LinkResult(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return LinkResult(exc.returncode, link_message(exc), "store_error", bead=exc.bead)
+    except store_target.StoreResolutionError as exc:
+        return LinkResult(1, str(exc), "store_unresolved")
+    return LinkResult(0, outcome=outcome)
+
+
+def accept_to_work(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    report: str,
+    actor: str,
+    *,
+    work: str = "",
+    new_work: bool = False,
+    issue_type: str = "",
+    priority: str = "",
+    lock: IntakeLock | None = None,
+    hive: str = "",
+) -> LinkResult:
+    """``bh work accept <report> --work <id>`` or ``--new-work``: accept the report AND make it
+    track work (an existing bead, or one triage creates now). Every refusal is decided before the
+    first write. Off unless ``intake.external.enabled``."""
+    request = DispositionRequest(
+        report,
+        Disposition.ACCEPT,
+        actor,
+        issue_type=issue_type,
+        priority=priority,
+        work=work,
+        new_work=new_work,
+    )
+    try:
+        outcome = _linking_port(cfg, entry, directory, lock, hive, "work accept").dispose(request)
+    except IntakeRefused as exc:
+        return LinkResult(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return LinkResult(exc.returncode, link_message(exc), "store_error", bead=exc.bead)
+    except store_target.StoreResolutionError as exc:
+        return LinkResult(1, str(exc), "store_unresolved")
+    return LinkResult(0, disposition=outcome)
+
+
 # -- dispositions ----------------------------------------------------------------------------
 
 
@@ -611,6 +745,7 @@ def outbox_service_for(
 __all__ = [
     "FlockIntakeLock",
     "ImportResult",
+    "LinkResult",
     "RandomIdSource",
     "ValidateLabelPolicy",
     "directory_store",
@@ -622,8 +757,11 @@ __all__ = [
     "fleet_prefixes",
     "import_issue",
     "import_message",
+    "accept_to_work",
     "intake_lock",
     "leak_policy",
+    "link_message",
+    "link_report",
     "lock_dir",
     "outbox_service_for",
     "process_adapters",

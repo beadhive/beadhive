@@ -37,6 +37,7 @@ from beadhive.modules.intake.contracts import (
     StoreScope,
     Thread,
     ThreadDocumentError,
+    WorkDraft,
     outbox_from_document,
     outbox_to_document,
     thread_from_document,
@@ -160,6 +161,21 @@ class MemoryReportStore:
         self._rows[bead] = _Row(view)
         if binding is not None:
             self.open_hold(bead, actor=draft.actor)
+        return bead
+
+    def create_work(self, draft: WorkDraft) -> str:
+        self.writes += 1
+        self._next += 1
+        bead = f"{self._scope.operational_prefix}-{self._next:04d}"
+        self._rows[bead] = _Row(
+            BeadView(
+                id=bead,
+                title=draft.title,
+                issue_type=draft.issue_type,
+                priority=draft.priority,
+                labels=tuple(self._scope.hive.labels()),
+            )
+        )
         return bead
 
     def set_state(self, bead: str, dimension: str, value: str, *, reason: str, actor: str) -> None:
@@ -324,6 +340,16 @@ class MemoryReportStore:
         """Make the next :meth:`write_outbox` raise (default: a store failure) and write nothing."""
         self._fail_outbox_write = error or IntakeStoreError(
             "injected store failure", operation="write_outbox"
+        )
+
+    def mark(self, bead: str, *, status: str = "", labels: tuple[str, ...] = ()) -> None:
+        """Set ``bead``'s status and add labels as the work layer would (a claim, a submit). Not
+        part of the port and not a counted write: intake only reads a work bead."""
+        row = self._row(bead)
+        row.view = dataclasses.replace(
+            row.view,
+            status=status or row.view.status,
+            labels=(*row.view.labels, *labels),
         )
 
     def put_metadata(self, bead: str, key: str, value: Any) -> None:

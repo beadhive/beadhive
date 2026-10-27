@@ -355,11 +355,21 @@ class ReleasedFact:
 
 
 @dataclass(frozen=True)
+class UnlinkedFact:
+    """The report was unlinked from ``work``. ``bd set-state`` cannot clear a ``delivery`` value, so
+    an unlink keeps it and records this beside it (I5): the value describes work the report no
+    longer tracks. Linking again clears the fact; re-linking the same ``work`` keeps the value."""
+
+    work: str
+
+
+@dataclass(frozen=True)
 class DeliveryFacts:
     """What the milestone triggers established, kept beside the records."""
 
     merged: MergedFact | None = None
     released: ReleasedFact | None = None
+    unlinked: UnlinkedFact | None = None
 
 
 @dataclass(frozen=True)
@@ -1600,6 +1610,7 @@ __all__ = [
     "Rendered",
     "SendPlan",
     "Step",
+    "UnlinkedFact",
     "approve",
     "begin_send",
     "close_rule",

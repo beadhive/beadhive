@@ -421,6 +421,87 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   later import and discovery of that issue; a held report as a `parent-child` molecule step would
   also be offered to `work_next`.
 
+**As built (I5, `bh-v2rr6`).**
+
+- **Where.** `domain/link.py` holds the pure rules (`check_link`, `delivery_at_link`,
+  `work_progress_of`); `application/linker.py` is `LinkService`, behind the `IntakePort` operations
+  `link`, `unlink` and the new `work_progress`, and behind `dispose(accept)` when the request
+  carries `work` or `new_work`. `ReportStore` gains `create_work` (a plain `bd create`: the hive
+  triplet labels, type, description and priority, and no `external_ref`, `origin`, `intake` state
+  or hold), run on `MemoryReportStore`, on `BdReportStore` over the fake bd and over a real bd store
+  as the `store.create-work-is-plain-work` contract case. `intake_services.link_report` and
+  `accept_to_work` compose them over the operational store and the root `FlockIntakeLock`, behind
+  `intake.external.enabled` (off: `NullIntake`, every write refuses `intake_disabled`, no store is
+  built). A link composes no tracker. The command bodies are `work_intake.link` and
+  `work_intake.accept(..., work=, new_work=)`; `work.link_cmd` is the Typer function.
+- **Rules, in order, each a refusal before any write.** A public-store id on either side
+  (`PUBLIC_STORE_ID`), `SELF_LINK`, an unknown report (`NOT_FOUND`), a report with no binding
+  (`NOT_A_REPORT`), a closed report (`REPORT_CLOSED`, new), a work id outside the operational prefix
+  or not found there (`CROSS_STORE_LINK`; a foreign id is never looked up), a target that is itself
+  bound (`TARGET_IS_REPORT`, D-a, which also covers chains), an untriaged target
+  (`TARGET_UNTRIAGED`), then `already_linked` (no edge write), `ALREADY_LINKED_ELSEWHERE` unless
+  `--replace` (untrack the old edge, then track the new, `relinked`). An accepted born-native report
+  is ordinary backlog and may be a target. `--work` with `--new-work` is `INVALID_REQUEST` (new).
+- **`delivery:pending` at link.** A new edge writes `pending` when the report has no value, keeps
+  `pending`, and sets `pending` again when the value was a milestone of other work (`merged`,
+  `released`, `reverted`); an existing edge only repairs a missing value. The exception is a re-link
+  to the very work the report was unlinked from, whose milestone value still describes it.
+- **Where the `unlinked` fact lives (decided here).** In the report's `intake.outbox` document,
+  `facts.unlinked = {"work": <id>}` (`UnlinkedFact` beside `MergedFact` and `ReleasedFact` in
+  `DeliveryFacts`), as `bh-6wj9y` R2 proposed. It is encoded only when set, so a document without
+  one is byte-identical to before; the document write is the usual whole-document rewrite with the
+  `seq` re-check, under the `IntakeLock`, and a link that follows clears it. Unlink writes the fact
+  first, then removes the edge, so a crash between them leaves a fact and an edge that the next
+  unlink or link tidies, never a delivery value no fact explains. The value stays (`pending` stays
+  `pending`); `work_progress` reports `unlinked` because the edge is gone.
+- **Accept with work.** `accept <report> --work <id>` links (idempotently) then clears `intake`;
+  repeating it finishes an accept that was interrupted after the link. `--new-work` first checks,
+  with nothing written, that the report is bound, open and tracks nothing, creates the work bead
+  (title: the report's title; description: triage's own sentence naming the report, never the issue
+  body; type: `--type` or the report's; priority: `--priority`), links it, and closes that bead if
+  the link then fails. With `--new-work` the `--type` and `--priority` go to the new bead; with
+  `--work` they go to the report, as a plain accept's do. A born-native report is refused
+  `NOT_A_REPORT` (a plain accept already leaves it as backlog).
+- **Work progress** is `IntakePort.work_progress(report)`, derived on read from the tracked bead:
+  `closed` if its status is closed, `in_review` if it carries `review:pending`, `in_progress` for
+  `in_progress` or `hooked`, else `open`; `unlinked` when the report tracks nothing. Nothing is
+  stored. It has no verb yet (I10's templates read it).
+- **Adopt (D-c).** `adopt.frame_from_beads` treats a report that carries the `intake.source`
+  document as bound: it goes under the frame's `tracks` (not `adopts`), contributes no
+  `source_system` or `external_ref` to the epic, and seeds the epic text with its id and title only
+  (the issue body is untrusted public text and is read on the report). `plan_filing.file` passes
+  `tracked_reports` to `beadhive_core.compile_molecule`, which lowers each to `bd dep add <report>
+  <epic> -t tracks` (report to epic, non-blocking, the report stays open and held) instead of
+  `parent-child`. Born-native adopted reports are unchanged. `plan show` does not list tracked
+  reports yet.
+- **Tests.** `tests/unit/modules/intake/test_intake_link.py` (rules, service, accept, progress,
+  delivery table, the fact's codec), `tests/test_intake_link_composition.py` (the root: off by
+  default, the public-store fixture byte-identical and `SCOPE_PUBLIC` never resolved after every
+  case, no tracker write, rendering, the command bodies), `tests/test_intake_link_int.py` (a real
+  bd store: two reports to one work, unlink one, nothing held becomes ready, the work is ready
+  throughout, `accept --new-work`, a `tracks` edge to an epic), plus the adopt, plan and core
+  planning cases.
+- **Not done here.** `bh work link` and the `--work` / `--new-work` options of `accept` are
+  **intentionally not registered**: each changes the published operation catalog and so needs
+  `just wire-publish`, a release step reserved for the operator (as for `import`, I4).
+  `work_intake.link` and `work.link_cmd` are implemented and tested but unreachable from the CLI;
+  `work_intake.accept` already takes `work` and `new_work` but `accept_cmd` does not pass them.
+  **Registration recipe**, in order:
+  1. `src/beadhive/kernel/operations/__init__.py`: add the row
+     `work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o`
+     to `_CLI_ROWS` (keep the rows sorted), and extend the `work accept` row to
+     `work accept|bead:string:r,type_:string:o,priority:string:o,as_:string:o,hive:string:o,work:string:o,new_work:boolean:o`.
+  2. `src/beadhive/work.py`: add `"work.link": link_cmd` to `CLI_HANDLERS` and
+     `link_cmd = _CLI_CALLBACKS["work.link"]` to the callback assignments; drop the "Not yet in
+     `CLI_HANDLERS`" sentence from the `link_cmd` docstring.
+  3. `src/beadhive/work.py`: give `accept_cmd` the two options
+     (`work: str = typer.Option("", "--work", help="track this existing work bead")` and
+     `new_work: bool = typer.Option(False, "--new-work", help="create a work bead and track it")`)
+     and pass them on: `return work_intake.accept(bead, issue_type, priority, as_, hive, work,
+     new_work)`; update its docstring.
+  4. Run `just wire-publish` (operator, release step), then the catalog-drift tests and `bh work
+     check`.
+
 ### 7. Report dimensions, the hold gate and field ownership
 
 A report has four dimensions, each with one writer (`bh-6wj9y` R2):
@@ -1120,8 +1201,9 @@ the event-sourced history and the label cache disagreeing. The pure rule is
 `delivery_after_unlink(labels)` in the intake domain (`DeliveryAfterUnlink(value, unlinked=True)`);
 the ReportStore contract case `store.set-state-replaces-but-never-clears` pins that a store
 replaces a dimension but refuses an empty value, on `MemoryReportStore`, on `BdReportStore`
-over the fake bd and over a real bd store. Where the `unlinked` fact is stored is the link bead's
-(I5) decision; I2 only fixes that the dimension is not the place.
+over the fake bd and over a real bd store. Where the `unlinked` fact is stored was the link bead's
+(I5) decision: the report's `intake.outbox` document, `facts.unlinked` (see "As built (I5)" in
+section 6); I2 only fixed that the dimension is not the place.
 
 ## I2 scope note: the `report` lane
 

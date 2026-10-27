@@ -536,6 +536,16 @@ tracker and never writes it. `intake_services.import_issue` composes it; the swi
 the verb refuses with `intake_disabled`. Its lock is the root's `FlockIntakeLock` (below), shared
 with the outbox sender: a mutating import takes `guard_primary` and the per-binding `flock`.
 
+Link (`bh-v2rr6`, I5) is `application/linker.py` (`LinkService`, behind `IntakeService.link`,
+`unlink`, `work_progress` and `dispose(accept)` with `work` / `new_work`): a bound report `tracks`
+a work bead of the same operational store (several reports to one work), decided by the pure rules
+in `domain/link.py` before any write; a bound report is never a target (D-a) and no edge crosses
+stores. A link writes `delivery:pending`; an unlink keeps the value (`bd set-state` cannot clear
+one) and records an `unlinked` fact in the report's `intake.outbox` document. Work progress is
+derived on read from the tracked bead. `intake_services.link_report` / `accept_to_work` compose it
+under the root lock, off unless `intake.external.enabled` and without a tracker; the verbs are not
+registered in the operation catalog yet (the ADR's I5 block has the recipe).
+
 The outbox (`bh-6wj9y`) is pure so far: `domain/outbox.py` holds the communication records (keyed
 by an opaque `ob1_` id and a stable `DraftKey`, rendering only their `PublicFacts` and message
 text) and the per-operation machine O1 to O19, `domain/leaks.py` the leak check,

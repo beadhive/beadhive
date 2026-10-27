@@ -380,6 +380,9 @@ def _render_from_spec(data: dict, path) -> None:
     adopts = adopt.adopts_of(epic)
     if adopts:
         typer.echo(f"  adopts: {', '.join(adopts)}")
+    tracked = adopt.tracks_of(epic)
+    if tracked:
+        typer.echo(f"  tracks: {', '.join(tracked)}")
     typer.echo()
 
     root_handles = {r["handle"] for r in _roots(issues)}

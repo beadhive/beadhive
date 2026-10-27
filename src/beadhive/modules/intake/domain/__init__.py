@@ -21,6 +21,7 @@ from .hold import (
     hold_findings,
     is_hold_gate,
 )
+from .link import check_link, delivery_at_link, in_operational_store, work_progress_of
 from .models import (
     BeadView,
     Checkpoint,
@@ -45,6 +46,8 @@ from .models import (
     ReportDraft,
     SourceSnapshot,
     StoreScope,
+    WorkDraft,
+    WorkProgress,
 )
 from .references import ReferenceShape, classify_reference
 from .rules import REPORT_TYPES, dupes_touching, may_disposition, revision_is_newer
@@ -119,6 +122,7 @@ from .vocabulary import (
     DeliveryAfterUnlink,
     channel_of,
     delivery_after_unlink,
+    delivery_of,
     disposition_state,
     is_escalation_origin,
     is_promoted,
@@ -207,6 +211,12 @@ __all__ = [
     "SourceSnapshot",
     "StorePosture",
     "StoreScope",
+    "WorkDraft",
+    "WorkProgress",
+    "check_link",
+    "delivery_at_link",
+    "in_operational_store",
+    "work_progress_of",
     "Thread",
     "ThreadActor",
     "ThreadCheckpoint",
@@ -225,6 +235,7 @@ __all__ = [
     "classify",
     "classify_reference",
     "delivery_after_unlink",
+    "delivery_of",
     "digest",
     "disposition_state",
     "dupes_touching",
@@ -309,6 +320,7 @@ from .outbox import (  # noqa: E402
     Rendered,
     SendPlan,
     Step,
+    UnlinkedFact,
     is_grant_id,
     is_operator_seat,
     is_outbox_id,
@@ -372,6 +384,7 @@ __all__ += [
     "SanitizerFinding",
     "SendPlan",
     "Step",
+    "UnlinkedFact",
     "Verdict",
     "completion_event",
     "delivery_after_merge",
