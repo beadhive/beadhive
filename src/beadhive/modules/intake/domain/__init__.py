@@ -387,3 +387,25 @@ __all__ += [
     "outbox_view",
     "reply_revision",
 ]
+
+# -- the supervised sender's port records (I9a) -----------------------------------------------
+
+from .sending import (  # noqa: E402
+    OutboxApprove,
+    OutboxEntry,
+    OutboxListing,
+    OutboxQuery,
+    OutboxResult,
+    RenderedRecord,
+    ReplyDraft,
+)
+
+__all__ += [
+    "OutboxApprove",
+    "OutboxEntry",
+    "OutboxListing",
+    "OutboxQuery",
+    "OutboxResult",
+    "RenderedRecord",
+    "ReplyDraft",
+]

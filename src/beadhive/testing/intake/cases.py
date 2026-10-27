@@ -29,6 +29,7 @@ from beadhive.modules.intake.contracts import (
     IntakeStoreError,
     IssueBinding,
     IssueStatus,
+    OutboxDocument,
     RefusalReason,
     ReportDraft,
     ReportStore,
@@ -39,6 +40,8 @@ from beadhive.modules.intake.contracts import (
     ThreadActor,
     ThreadCheckpoint,
     ThreadIssue,
+    mint_outbox_id,
+    outbox_from_document,
 )
 
 from ..conformance import PortCase, assert_port_conforms
@@ -101,6 +104,57 @@ def thread(seq: int = 3, *, comments: Sequence[str] = ("c1", "c2"), url: str = U
         seq=seq,
         checkpoint=checkpoint,
         records=records,
+    )
+
+
+def outbox(seq: int = 2, *, texts: Sequence[str] = ("thanks",), url: str = URL) -> OutboxDocument:
+    """A small ``intake.outbox`` value for store cases: one drafted reply per text, at ``seq``.
+    Decoded through the module's own codec, so a store round-trips the real format."""
+    records = {}
+    for n, text in enumerate(texts, start=1):
+        oid = mint_outbox_id(n.to_bytes(16, "big"))
+        step = {"seq": n, "rule": "O1", "event": "draft", "from": None, "to": "drafted"}
+        records[oid] = {
+            "draft_key": {"binding_url": url, "event": "reply", "source_revision": f"r{n}"},
+            "binding": {
+                "report": "",
+                "tracker": "memory",
+                "project": "acme/widgets",
+                "url": url,
+                "identifier": "#7",
+            },
+            "event": "reply",
+            "group": f"reply:{n}",
+            "facts": {"tag": "", "version": "", "commit_url": "", "progress": ""},
+            "message": {"template": "reply", "text": text},
+            "operations": [
+                {
+                    "kind": "comment.create",
+                    "state": "drafted",
+                    "labels": None,
+                    "findings": [],
+                    "overrides": [],
+                    "approvals": [],
+                    "attempts": [],
+                    "receipt": None,
+                    "fail_reason": "",
+                    "absent_confirmations": 0,
+                    "last_absent_seq": 0,
+                    "outcome_unknown": False,
+                    "duplicates": [],
+                    "history": [{**step, "actor": "dev/test", "detail": ""}],
+                }
+            ],
+            "created_seq": n,
+            "supersedes": None,
+        }
+    return outbox_from_document(
+        {
+            "schema": 1,
+            "seq": seq,
+            "facts": {"merged": None, "released": None},
+            "records": records,
+        }
     )
 
 
@@ -352,6 +406,84 @@ def _thread_write_needs_its_bound_report(factory: ReportStoreFactory) -> None:
     assert store.read_thread(bead) is None and store.read_thread(native) is None
 
 
+def _expect_outbox_moved(call: Callable[[], object]) -> None:
+    try:
+        call()
+    except IntakeRefused as exc:
+        assert exc.reason is RefusalReason.OUTBOX_MOVED, exc.reason
+        return
+    raise AssertionError("expected IntakeRefused(OUTBOX_MOVED) for a stale expect_seq")
+
+
+def _outbox_absent_reads_none(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    assert store.read_outbox(bead) is None
+    assert store.read_outbox("acme-ghost") is None
+    assert store.reports_with_outbox() == ()
+
+
+def _outbox_round_trips_whole(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    first = outbox(2, texts=("one", "two"))
+    store.write_outbox(bead, first, expect_seq=0, actor="dev/test")
+    assert store.read_outbox(bead) == first
+    second = outbox(5, texts=("three",))  # the whole document is replaced, never merged
+    store.write_outbox(bead, second, expect_seq=2, actor="dev/test")
+    assert store.read_outbox(bead) == second
+
+
+def _outbox_write_rechecks_seq(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    store.write_outbox(bead, outbox(2), expect_seq=0, actor="dev/test")
+    _expect_outbox_moved(lambda: store.write_outbox(bead, outbox(9), expect_seq=0, actor="a"))
+    _expect_outbox_moved(lambda: store.write_outbox(bead, outbox(9), expect_seq=3, actor="a"))
+    stored = store.read_outbox(bead)
+    assert stored is not None and stored.seq == 2  # a refused write wrote nothing
+    try:
+        store.write_outbox(bead, outbox(2), expect_seq=2, actor="dev/test")
+    except IntakeStoreError:
+        pass
+    else:
+        raise AssertionError("an outbox write that does not advance seq must be refused")
+
+
+def _outbox_keeps_other_documents(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    before = store.get(bead)
+    assert before is not None
+    store.write_thread(bead, thread(3), expect_seq=0, actor="dev/test")
+    store.write_outbox(bead, outbox(2), expect_seq=0, actor="dev/test")
+    after = store.get(bead)
+    assert after is not None
+    assert (after.snapshot, after.binding, after.external_ref) == (
+        before.snapshot,
+        before.binding,
+        before.external_ref,
+    )
+    assert store.read_thread(bead) == thread(3)  # each writer rewrites only its own key
+    store.write_thread(bead, thread(4), expect_seq=3, actor="dev/test")
+    assert store.read_outbox(bead) == outbox(2)
+
+
+def _outbox_on_every_status_and_bound_only(factory: ReportStoreFactory) -> None:
+    store = factory()
+    open_report = store.create(draft(bound=True))
+    closed = store.create(draft("another", bound=True))
+    native = store.create(draft("born native"))
+    store.write_outbox(open_report, outbox(2), expect_seq=0, actor="dev/test")
+    store.close(closed, reason="done", actor="dev/test")
+    store.write_outbox(closed, outbox(2), expect_seq=0, actor="dev/test")  # closed in scope
+    _expect_store_error(lambda: store.write_outbox(native, outbox(2), expect_seq=0, actor="a"))
+    ghost = "acme-ghost"
+    _expect_store_error(lambda: store.write_outbox(ghost, outbox(2), expect_seq=0, actor="a"))
+    assert sorted(v.id for v in store.reports_with_outbox()) == sorted([open_report, closed])
+    assert store.read_outbox(native) is None
+
+
 def _bound_create_opens_a_hold_and_a_native_one_does_not(factory: ReportStoreFactory) -> None:
     store = factory()
     native = store.create(draft("born native"))
@@ -422,6 +554,13 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
         "store.bound-create-opens-a-hold", _bound_create_opens_a_hold_and_a_native_one_does_not
     ),
     ReportStoreCase("store.close-is-the-held-close", _close_is_the_held_close),
+    ReportStoreCase("store.outbox-absent-reads-none", _outbox_absent_reads_none),
+    ReportStoreCase("store.outbox-round-trips-whole", _outbox_round_trips_whole),
+    ReportStoreCase("store.outbox-write-rechecks-seq", _outbox_write_rechecks_seq),
+    ReportStoreCase("store.outbox-keeps-other-documents", _outbox_keeps_other_documents),
+    ReportStoreCase(
+        "store.outbox-on-every-status-and-bound-only", _outbox_on_every_status_and_bound_only
+    ),
     ReportStoreCase(
         "store.holds-open-and-resolve-one-at-a-time", _holds_open_and_resolve_one_at_a_time
     ),
@@ -459,6 +598,7 @@ __all__ = [
     "assert_report_store_conforms",
     "draft",
     "memory_store",
+    "outbox",
     "run_report_store_case",
     "thread",
 ]

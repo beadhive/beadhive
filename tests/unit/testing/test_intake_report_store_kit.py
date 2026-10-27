@@ -11,10 +11,12 @@ import dataclasses
 import pytest
 
 from beadhive.modules.intake.contracts import (
+    OUTBOX_KEY,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
     ReportStore,
+    outbox_to_document,
     thread_to_document,
 )
 from beadhive.testing import ConformanceFailure
@@ -23,6 +25,7 @@ from beadhive.testing.intake import (
     MemoryReportStore,
     assert_report_store_conforms,
     memory_store,
+    outbox,
     run_report_store_case,
     thread,
 )
@@ -36,7 +39,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 22
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 27
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -234,6 +237,37 @@ class _OpenHoldIgnored(MemoryReportStore):
         self._row(report)
 
 
+class _OutboxSeqUnchecked(MemoryReportStore):
+    def write_outbox(self, bead, document, *, expect_seq, actor):
+        stored = self.read_outbox(bead)
+        super().write_outbox(bead, document, expect_seq=stored.seq if stored else 0, actor=actor)
+
+
+class _OutboxMerged(MemoryReportStore):
+    def write_outbox(self, bead, document, *, expect_seq, actor):
+        stored = self.read_outbox(bead)
+        if stored is not None:
+            document = dataclasses.replace(document, records={**stored.records, **document.records})
+        super().write_outbox(bead, document, expect_seq=expect_seq, actor=actor)
+
+
+class _ThreadClobbersOutbox(MemoryReportStore):
+    def write_thread(self, bead, thread, *, expect_seq, actor):
+        super().write_thread(bead, thread, expect_seq=expect_seq, actor=actor)
+        self._row(bead).metadata.pop(OUTBOX_KEY, None)
+
+
+class _OutboxAnyBead(MemoryReportStore):
+    def write_outbox(self, bead, document, *, expect_seq, actor):
+        if bead in self._rows:
+            self._row(bead).metadata[OUTBOX_KEY] = outbox_to_document(document)
+
+
+class _OutboxForEveryBead(MemoryReportStore):
+    def read_outbox(self, bead):
+        return super().read_outbox(bead) or outbox(0, texts=())
+
+
 _BROKEN = [
     (_AppendsState, "store.set-state-replaces-its-dimension"),
     (_ClearsOnEmpty, "store.set-state-replaces-but-never-clears"),
@@ -264,6 +298,11 @@ _BROKEN = [
     (_CloseRefusedWhileHeld, "store.close-is-the-held-close"),
     (_ResolveClosesEveryHold, "store.holds-open-and-resolve-one-at-a-time"),
     (_OpenHoldIgnored, "store.holds-open-and-resolve-one-at-a-time"),
+    (_OutboxSeqUnchecked, "store.outbox-write-rechecks-seq"),
+    (_OutboxMerged, "store.outbox-round-trips-whole"),
+    (_ThreadClobbersOutbox, "store.outbox-keeps-other-documents"),
+    (_OutboxAnyBead, "store.outbox-on-every-status-and-bound-only"),
+    (_OutboxForEveryBead, "store.outbox-absent-reads-none"),
 ]
 
 

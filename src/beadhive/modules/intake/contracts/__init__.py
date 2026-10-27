@@ -198,3 +198,25 @@ __all__ += [
     "outbox_from_document",
     "outbox_to_document",
 ]
+
+# -- the supervised sender's port records (I9a) -----------------------------------------------
+
+from ..domain import (  # noqa: E402
+    OutboxApprove,
+    OutboxEntry,
+    OutboxListing,
+    OutboxQuery,
+    OutboxResult,
+    RenderedRecord,
+    ReplyDraft,
+)
+
+__all__ += [
+    "OutboxApprove",
+    "OutboxEntry",
+    "OutboxListing",
+    "OutboxQuery",
+    "OutboxResult",
+    "RenderedRecord",
+    "ReplyDraft",
+]

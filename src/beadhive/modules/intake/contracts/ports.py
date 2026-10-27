@@ -32,10 +32,17 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    OutboxApprove,
+    OutboxDocument,
+    OutboxListing,
+    OutboxQuery,
+    OutboxResult,
     PresenceOutcome,
     PresenceRequest,
     QueueQuery,
     QueueView,
+    RenderedRecord,
+    ReplyDraft,
     ReportDraft,
     SanitizerFinding,
     SourceSnapshot,
@@ -87,6 +94,29 @@ class IntakePort(Protocol):
     # the lifetime intake-hold on a bound report (invariant H, external-intake-module-adr.md 7)
 
     def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep: ...  # bh doctor, hive repair
+
+    # the supervised outbox (bh-6wj9y R6, R11; D2): comment.create in this build. Nothing here
+    # runs from a timer: every write needs an operator approval minting a single-use grant.
+
+    def draft_reply(self, request: ReplyDraft) -> OutboxResult: ...  # O1 for a reply
+
+    def outbox(self, query: OutboxQuery) -> OutboxListing: ...  # list; read-only
+
+    def render(self, outbox_id: str) -> RenderedRecord: ...  # the dry run; read-only
+
+    def approve(self, request: OutboxApprove) -> OutboxResult: ...  # O5 (and O4 publishes)
+
+    def send(self, outbox_id: str, *, actor: str) -> OutboxResult: ...  # O9 to O13
+
+    def reconcile(
+        self, outbox_id: str | None = None, *, actor: str
+    ) -> tuple[OutboxResult, ...]: ...  # O13 to O16, O19
+
+    def discard(
+        self, outbox_id: str, *, reason: str, actor: str, accept_unknown: bool = False
+    ) -> OutboxResult: ...  # O8, O18
+
+    def retry(self, outbox_id: str, *, actor: str) -> OutboxResult: ...  # O17
 
 
 @runtime_checkable
@@ -168,6 +198,24 @@ class ReportStore(Protocol):
         bd has no compare-and-swap, so the store re-reads the stored ``seq`` first and refuses
         with ``IntakeRefused(THREAD_MOVED)`` (writing nothing) unless it still equals
         ``expect_seq`` (0 for a bead without a thread). ``thread.seq`` must exceed it."""
+        ...
+
+    def read_outbox(self, bead: str) -> OutboxDocument | None: ...  # None: no ``intake.outbox``
+
+    def write_outbox(
+        self, bead: str, document: OutboxDocument, *, expect_seq: int, actor: str
+    ) -> None:
+        """Rewrite ``bead``'s whole ``intake.outbox`` document, leaving every other document on
+        the bead untouched, in ONE store write.
+
+        As :meth:`write_thread`: the store re-reads the stored ``seq`` and refuses with
+        ``IntakeRefused(OUTBOX_MOVED)`` (writing nothing) unless it still equals ``expect_seq``
+        (0 for a bead without an outbox); ``document.seq`` must exceed it. Only a bound report
+        carries an outbox."""
+        ...
+
+    def reports_with_outbox(self) -> tuple[BeadView, ...]:
+        """Every report carrying an ``intake.outbox`` document, of every status."""
         ...
 
 
