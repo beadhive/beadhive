@@ -551,6 +551,43 @@ promise exactly-once remote writes". The marker carries `hive=<owner/repo>`, an 
 an opaque `outbox_id` (`ob1_` plus 26 base32 characters, never derived from a bead id), so it can
 never match a `<prefix>-<id>` bead shape.
 
+**As built in I8 (`bh-g62yn`; pure domain, nothing sends).** The records and the machine are
+`domain/outbox.py`, the leak check `domain/leaks.py`, the `delivery`/`notified` rules and the close
+rule's inputs `domain/delivery.py`, and the schema-versioned `intake.outbox` codec
+`domain/outbox_document.py` (re-exported from `contracts`; a malformed or newer document is an
+error, never an empty outbox). `application/outbox.py` only translates (`WriteGrant` from an
+approval, `CapabilityReport` to the usable set, `WriteReceipt` to a receipt, a listing to marked
+comments, and which port errors prove nothing was written); the sender, `read_outbox` /
+`write_outbox`, the `IntakePort` operations, the verbs and the config keys stay with I9 and I10, and
+`OutboxPolicy()` is off. The contracts gain `Sanitizer` and `IdSource`;
+`beadhive.adapters.intake.ScrubSanitizer` implements `Sanitizer` over the shared `scrub()` and
+`TOKEN_PATTERN` (binding it is the root's, with I9); the kit adds `SequentialIdSource` and
+`RecordingSanitizer`. Interpretations the table left open:
+
+- One applied rule is one document write: `seq` is bumped once and every history step of that
+  call carries it (O1 with its O3 and O6, O15 with O16).
+- `Attempt.end_seq` is the last `seq` at which the request could still have been in flight (the
+  `seq` before the O10 to O13 write), so O15's guard is literally `start_seq > end_seq`; a read
+  counts as an absence once (its `start_seq` must exceed the last counted one). An unsatisfied
+  complete label read counts the same way for a label operation.
+- The operator types the full digest or at least its 12-hex prefix. A label render keeps the
+  drafted `base_revision` while the owned labels are unchanged (another revision bump does not
+  void an approval); once a human changed an owned label the digest moves, O9 refuses
+  `STALE_DIGEST`, and O7 rebases the diff onto the current labels.
+- "No sanitizer bound" is a `no_sanitizer` finding, never overridable like `secret` and
+  `label_not_owned`. A publish (O4) names a finding id and is matched by kind and text, so an edit
+  that changes the text needs a new one. A secret's finding is stored redacted.
+- An operator seat is any named actor outside `OutboxPolicy.agent_seat_prefixes` (`dev/`, `disp/`
+  and their legacy spellings); O4, O5, O8, O9, O17 and O18 require one.
+- A second marked comment on a `sent` operation sets `duplicates` (`duplicate_observed`) without a
+  transition. A record whose operations all retired unsent is `retired`. A draft carrying a
+  public commit URL while `commit_links` is off is refused, not silently stripped. With the outbox
+  on and no completion record yet, the close rule waits.
+
+R14 coverage: `tests/unit/modules/intake/test_intake_outbox_*.py` run X2, X4 to X13 and X16 on the
+pure rules (X8 to X10 also on `MemoryTracker`, X9 with K1), and X1, X3 and X18 at the domain level
+(the triggers are I10's). X14 and X15 are the hold bead's (I3) and X17's store half is I9's.
+
 ### 11. Writes and gates
 
 There are exactly two tracker writes, and nothing else can be written because the port has no

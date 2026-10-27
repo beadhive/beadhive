@@ -526,6 +526,19 @@ store history, so purging is not erasure. Its tests run on `MemoryTracker` with 
 (`tests/unit/modules/intake/test_intake_threads.py` is the `bh-fptob` plan T1 to T19,
 `test_intake_thread_rules.py` drives the rules directly).
 
+The outbox (`bh-6wj9y`) is pure so far: `domain/outbox.py` holds the communication records (keyed
+by an opaque `ob1_` id and a stable `DraftKey`, rendering only their `PublicFacts` and message
+text) and the per-operation machine O1 to O19, `domain/leaks.py` the leak check,
+`domain/delivery.py` the `delivery`/`notified` rules and `domain/outbox_document.py` the
+`intake.outbox` codec.
+`application/outbox.py` only translates to and from the tracker port (`WriteGrant`, receipts,
+capabilities, which errors prove nothing was written); no sender, store write, port operation or
+config key exists yet, and `OutboxPolicy()` is off. The `Sanitizer` and `IdSource` ports are in the
+contracts; `beadhive.adapters.intake.ScrubSanitizer` implements the first over the shared
+`scrub()` until `bh-o2mjz`, and with no sanitizer every operation is held. Tests:
+`tests/unit/modules/intake/test_intake_outbox_*.py` (the `bh-6wj9y` R14 cases at the domain level,
+X9 on `MemoryTracker` with kit extension K1).
+
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
 (`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so
 `bh label validate` accepts those values and refuses any other; nothing writes them yet. An

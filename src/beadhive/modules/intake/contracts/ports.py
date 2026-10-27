@@ -3,7 +3,8 @@
 :class:`IntakePort` is the one consumer-facing port. The outbound ports are intake's own narrow
 ones: :class:`ReportStore` (the bead store holding report beads), :class:`CheckpointStore` (opaque
 resume tokens), :class:`LabelPolicy` (the closed label vocabulary), :class:`IntakeLock` (the one
-per-binding lock) and :class:`OutboxView` (what own-message recognition reads of the outbox).
+per-binding lock), :class:`OutboxView` (what own-message recognition reads of the outbox),
+:class:`Sanitizer` (the egress secret scan) and :class:`IdSource` (the outbox's opaque ids).
 No bd argv, label string or store path crosses :class:`IntakePort`. Standard library plus this
 module's domain records.
 """
@@ -33,6 +34,7 @@ from ..domain import (
     QueueQuery,
     QueueView,
     ReportDraft,
+    SanitizerFinding,
     SourceSnapshot,
     StoreScope,
     Thread,
@@ -157,6 +159,31 @@ class OutboxView(Protocol):
 
 
 @runtime_checkable
+class Sanitizer(Protocol):
+    """The egress sanitizer seam (``bh-o2mjz``; external-intake-module-adr.md section 13).
+
+    ``scan`` reports where secrets are in ``text`` (spans and kinds, never the secret); the leak
+    check turns each hit into a never-overridable ``secret`` finding. ``scrub`` redacts them,
+    for content fed to inference or logs, never to make a held payload sendable. Until
+    ``bh-o2mjz`` lands the root binds the shared ``scrub()`` of ``beadhive_plugins.credentials``
+    plus its token-shape pattern; with no sanitizer bound every outbox operation is held."""
+
+    def scan(self, text: str) -> Sequence[SanitizerFinding]: ...
+
+    def scrub(self, text: str) -> str: ...
+
+
+@runtime_checkable
+class IdSource(Protocol):
+    """Mints the outbox's opaque ids (``ob1_``/``gr1_`` plus 26 base32 characters of random
+    bytes, never derived from a bead id). Tests inject a deterministic one."""
+
+    def outbox_id(self) -> str: ...
+
+    def grant_id(self) -> str: ...
+
+
+@runtime_checkable
 class CheckpointStore(Protocol):
     """Opaque, local, non-secret resume tokens keyed per binding (not configuration)."""
 
@@ -174,9 +201,11 @@ class LabelPolicy(Protocol):
 
 __all__ = [
     "CheckpointStore",
+    "IdSource",
     "IntakeLock",
     "IntakePort",
     "LabelPolicy",
     "OutboxView",
     "ReportStore",
+    "Sanitizer",
 ]
