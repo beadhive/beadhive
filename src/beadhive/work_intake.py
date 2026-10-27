@@ -294,3 +294,146 @@ def discover(hive: str = "", full: bool = False, as_json: bool = False, as_: str
     actor = identity.resolve_actor(as_)
     result = intake_services.discover(cfg, entry, directory, actor, full=full, hive=hive)
     render_discover(result, as_json)
+
+
+# -- the merge and release milestones (I10): they draft, they never send ------------------------
+
+
+def _milestone_lines(outcome) -> list[str]:
+    """One human line per report a milestone looked at: what changed, is pending or failed."""
+    lines: list[str] = []
+    for item in outcome.items:
+        parts = []
+        if item.delivery:
+            parts.append(f"delivery:{item.delivery}")
+        if item.drafted:
+            parts.append(f"drafted record {item.drafted} (nothing is sent)")
+        if item.closed:
+            parts.append("complete: closed")
+        if item.note:
+            parts.append(item.note)
+        if item.error:
+            parts.append(f"FAILED: {item.error}")
+        lines.append(f"  {'⚠' if item.error else '→'} {item.report}: {'; '.join(parts)}")
+    return lines
+
+
+def on_work_merged(
+    cfg,
+    entry,
+    main,
+    base: str,
+    beads,
+    hive: str = "",
+    members=None,
+) -> None:
+    """The merge trigger, called by ``work.merge`` / ``finish`` after the bead closes.
+
+    **Never fails the merge.** It is a no-op, with no bd call and no git call, unless
+    ``intake.external.enabled``; otherwise it records ``delivery:merged`` on every report that
+    tracks one of ``beads`` (and, for a molecule, ``members()``: its closed children), drafts a
+    record when the hive turned that on, and applies the completion policy. Any failure, an
+    unexpected exception included, becomes a warning on stderr and the merge carries on. It
+    sends nothing and writes no tracker.
+    """
+    if not intake_services.external_intake_settings(cfg)[0]:
+        return
+    try:
+        from . import worktree
+
+        works = list(beads)
+        if members is not None:
+            try:  # a molecule's children; failing to list them still triggers the epic itself
+                works = list(dict.fromkeys([*works, *members()]))
+            except Exception as exc:  # noqa: BLE001 - never fails the merge
+                typer.echo(
+                    f"⚠ intake milestones could not list the molecule's children: {exc}", err=True
+                )
+        commit = worktree._ref_sha(main, base)
+        if not commit:
+            typer.echo(
+                f"⚠ intake milestones skipped: could not read the tip of {base} (the merge is "
+                "unaffected)",
+                err=True,
+            )
+            return
+        result = intake_services.work_merged(
+            cfg,
+            entry,
+            Path(main),
+            works,
+            commit,
+            identity.resolve_actor(""),
+            hive=hive,
+        )
+    except Exception as exc:  # noqa: BLE001 - a milestone must never fail a merge
+        typer.echo(f"⚠ intake milestones did not run (the merge is unaffected): {exc}", err=True)
+        return
+    if result.code:
+        why = f" ({result.reason})" if result.reason else ""
+        typer.echo(
+            f"⚠ intake milestones did not complete{why}: {result.error} (the merge is unaffected)",
+            err=True,
+        )
+        return
+    outcome = result.outcome
+    if outcome is None or not outcome.items:
+        return
+    for line in _milestone_lines(outcome):
+        typer.echo(line, err=line.lstrip().startswith("⚠"))
+
+
+def render_delivery_release(result, tag: str, as_json: bool) -> None:
+    """Print one ``bh work delivery release`` (human or ``--json``); non-zero on any failure."""
+    outcome = result.outcome
+    items = outcome.items if outcome is not None else ()
+    failed = bool(result.code) or any(item.error for item in items)
+    if as_json:
+        payload = {
+            "ok": not failed,
+            "reason": result.reason,
+            "error": result.error,
+            "tag": result.tag or tag,
+            "commit": result.commit,
+            "reports": [
+                {
+                    "report": item.report,
+                    "delivery": item.delivery,
+                    "drafted": item.drafted,
+                    "verdict": item.verdict.value if item.verdict else "",
+                    "closed": item.closed,
+                    "note": item.note,
+                    "error": item.error,
+                }
+                for item in items
+            ],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if failed:
+            raise typer.Exit(result.code or 1)
+        return
+    if result.code:
+        code = f" ({result.reason})" if result.reason else ""
+        typer.echo(f"✗ release not recorded{code}: {result.error}", err=True)
+        raise typer.Exit(result.code)
+    typer.echo(f"✓ verified {result.tag} → {result.commit[:12]}")
+    if not items:
+        typer.echo("  no report is waiting on a merge to release")
+    for line in _milestone_lines(outcome):
+        typer.echo(line, err=line.lstrip().startswith("⚠"))
+    if failed:
+        raise typer.Exit(1)
+
+
+def delivery_release(tag: str, as_: str = "", hive: str = "", as_json: bool = False):
+    """``bh work delivery release <tag>``: verify the tag exists (read-only against git), move the
+    reports whose merge it contains to ``delivery:released`` and draft a record when the hive
+    turned that on. A merge the release cannot be shown to contain stays ``merged``. Nothing is
+    sent; off unless ``intake.external.enabled``."""
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    result = intake_services.delivery_release(
+        cfg, entry, Path(registry.hive_dir(entry)), tag, actor, hive=hive
+    )
+    render_delivery_release(result, tag, as_json)

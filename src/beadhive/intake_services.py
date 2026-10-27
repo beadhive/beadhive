@@ -39,7 +39,7 @@ import fcntl
 import hashlib
 import os
 import socket
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -76,10 +76,18 @@ from .modules.intake import (
     StoreScope,
     bind_intake,
 )
-from .modules.intake.application import OutboxService  # the composition root may (gap G7)
+from .modules.intake.application import (  # the composition root may (gap G7)
+    MilestoneService,
+    OutboxService,
+)
 from .modules.intake.domain import (  # the composition root may (gap G7)
+    CompletionPolicy,
     LeakPolicy,
+    MergeFact,
+    MilestoneOutcome,
+    MilestonePolicy,
     OutboxPolicy,
+    ReleaseFact,
     dupes_touching,
     mint_grant_id,
     mint_outbox_id,
@@ -858,20 +866,208 @@ def outbox_service_for(
         return IntakeService(store, labels)
     from .adapters.intake import ScrubSanitizer
 
+    held = lock if lock is not None else intake_lock(cfg, directory, hive=hive)
+    source = ids if ids is not None else RandomIdSource()
+    scrubber = sanitizer if sanitizer is not None else ScrubSanitizer()
+    leaks = leak_policy(cfg, owned_label_prefixes=owned_label_prefixes)
+    posture = store_posture(entry, acknowledged=acknowledged)
+    # the completion policy (I10): a settled milestone record closes the report it completes
+    milestones = MilestoneService(
+        store,
+        held,
+        ids=source,
+        leak_policy=leaks,
+        sanitizer=scrubber,
+        posture=posture,
+        outbox=policy,
+        milestones=milestone_settings(cfg)[1],
+    )
     sender = OutboxService(
         store,
         tracker,
-        lock if lock is not None else intake_lock(cfg, directory, hive=hive),
-        ids=ids if ids is not None else RandomIdSource(),
+        held,
+        ids=source,
         identity=identity,
         marker_line=marker_line,
         policy=policy,
-        leak_policy=leak_policy(cfg, owned_label_prefixes=owned_label_prefixes),
-        sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
-        posture=store_posture(entry, acknowledged=acknowledged),
+        leak_policy=leaks,
+        sanitizer=scrubber,
+        posture=posture,
         holder=f"{socket.gethostname()}:{os.getpid()}",
+        completion=milestones.complete,
     )
-    return IntakeService(store, labels, outbox=sender)
+    return IntakeService(store, labels, outbox=sender, milestones=milestones)
+
+
+# -- the merge and release milestones (I10): they draft, they never send ---------------------
+
+
+def milestone_settings(cfg: Mapping[str, Any]) -> tuple[OutboxPolicy, MilestonePolicy]:
+    """The outbox policy and the milestone switches from ``intake.external``: every draft off,
+    ``close-on-merge``, and the outbox off, by default. Host-owned like the rest of the section;
+    only a literal ``true`` switches anything on, and an unrecognised completion policy takes
+    the conservative ``close-on-release`` (the report stays open) rather than closing early."""
+    section = ((cfg.get("intake") or {}).get("external")) or {}
+    milestones = section.get("milestones") or {}
+    outbox = section.get("outbox") or {}
+    try:
+        completion = CompletionPolicy(section.get("completion_policy") or "close-on-merge")
+    except ValueError:
+        completion = CompletionPolicy.CLOSE_ON_RELEASE
+    return (
+        OutboxPolicy(enabled=outbox.get("enabled") is True),
+        MilestonePolicy(
+            draft_on_merge=milestones.get("draft_on_merge") is True,
+            draft_on_release=milestones.get("draft_on_release") is True,
+            append_release_to_closed=milestones.get("append_release_to_closed") is True,
+            completion=completion,
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class MilestoneResult:
+    """The rendering input of one milestone trigger: ``code`` is the exit status, ``reason`` the
+    stable refusal code (empty on success, ``store_error`` for a store failure), ``error`` the
+    one-line message, ``outcome`` what the trigger did per report. ``tag`` and ``commit`` are the
+    verified release (the release verb only)."""
+
+    code: int
+    error: str = ""
+    reason: str = ""
+    outcome: MilestoneOutcome | None = None
+    tag: str = ""
+    commit: str = ""
+
+
+def _milestone_port(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    lock: IntakeLock | None,
+    hive: str,
+    verb: str,
+    verifier: Any,
+    ids: Any = None,
+    sanitizer: Any = None,
+):
+    """The port a milestone runs on: the service over the OPERATIONAL store and the root lock when
+    ``intake.external.enabled``, else :class:`NullIntake` (free: nothing is built or read). No
+    tracker is composed and no sender is bound: a milestone can only draft."""
+    enabled, _default_type = external_intake_settings(cfg)
+
+    def build():
+        from .adapters.intake import ScrubSanitizer
+
+        store = report_store(directory, lambda: store_scope(cfg, entry))
+        labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
+        outbox, milestones = milestone_settings(cfg)
+        service = MilestoneService(
+            store,
+            lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb),
+            ids=ids if ids is not None else RandomIdSource(),
+            leak_policy=leak_policy(cfg),
+            sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
+            posture=store_posture(entry),
+            outbox=outbox,
+            milestones=milestones,
+            verifier=verifier,
+        )
+        return IntakeService(store, labels, milestones=service)
+
+    return bind_intake(enabled, build)
+
+
+def milestone_message(exc: IntakeStoreError) -> str:
+    """The one-line message for a store failure during a milestone."""
+    return f"milestone could not finish {exc.bead or 'a report'} ({exc.operation}): {exc.detail}"
+
+
+def work_merged(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    works: Sequence[str],
+    commit: str,
+    actor: str,
+    *,
+    lock: IntakeLock | None = None,
+    hive: str = "",
+    ids: Any = None,
+    sanitizer: Any = None,
+) -> MilestoneResult:
+    """The merge trigger for each of ``works`` (a bead, or a molecule's epic and children) landed
+    as ``commit``: ``delivery:merged`` on every report that tracks one, a record drafted when the
+    hive turned that on, the completion policy. Nothing is sent. Off unless
+    ``intake.external.enabled``; the caller wraps this so a failure never fails the merge."""
+    try:
+        port = _milestone_port(
+            cfg, entry, directory, lock, hive, "work merge", None, ids, sanitizer
+        )
+        outcome = MilestoneOutcome()
+        for work in works:
+            outcome = outcome.merged_with(port.on_work_merged(MergeFact(work, commit, actor)))
+    except IntakeRefused as exc:
+        return MilestoneResult(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return MilestoneResult(exc.returncode, milestone_message(exc), "store_error")
+    except store_target.StoreResolutionError as exc:
+        return MilestoneResult(1, str(exc), "store_unresolved")
+    return MilestoneResult(0, outcome=outcome, commit=commit)
+
+
+def delivery_release(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    tag: str,
+    actor: str,
+    *,
+    verifier: Any = None,
+    lock: IntakeLock | None = None,
+    hive: str = "",
+    ids: Any = None,
+    sanitizer: Any = None,
+) -> MilestoneResult:
+    """``bh work delivery release <tag>``: verify the tag exists (read-only against git), then
+    move every report whose merge the release contains to ``delivery:released`` and draft a
+    record when the hive turned that on. A merge the verifier cannot show in the release stays
+    ``merged`` and is reported as not verified. Nothing is sent. Off unless
+    ``intake.external.enabled``."""
+    enabled, _default_type = external_intake_settings(cfg)
+    if not enabled:
+        return MilestoneResult(
+            1,
+            "external intake is off for this hive (intake.external.enabled; it is opt-in)",
+            RefusalReason.INTAKE_DISABLED.value,
+        )
+    if verifier is None:
+        from .adapters.intake import GitReleaseVerifier
+
+        verifier = GitReleaseVerifier(directory)
+    commit = verifier.resolve(tag)
+    if commit is None:
+        return MilestoneResult(
+            1,
+            f"no tag {tag!r} in this hive's repository; nothing was verified or recorded "
+            "(fetch tags, or check the name)",
+            RefusalReason.UNKNOWN_TAG.value,
+            tag=tag,
+        )
+    try:
+        port = _milestone_port(
+            cfg, entry, directory, lock, hive, "work delivery release", verifier, ids, sanitizer
+        )
+        outcome = port.on_release(ReleaseFact(tag, commit, actor))
+    except IntakeRefused as exc:
+        return MilestoneResult(1, exc.detail, exc.reason.value, tag=tag, commit=commit)
+    except IntakeStoreError as exc:
+        return MilestoneResult(
+            exc.returncode, milestone_message(exc), "store_error", tag=tag, commit=commit
+        )
+    except store_target.StoreResolutionError as exc:
+        return MilestoneResult(1, str(exc), "store_unresolved", tag=tag, commit=commit)
+    return MilestoneResult(0, outcome=outcome, tag=tag, commit=commit)
 
 
 __all__ = [
@@ -895,6 +1091,10 @@ __all__ = [
     "link_message",
     "link_report",
     "lock_dir",
+    "MilestoneResult",
+    "delivery_release",
+    "milestone_message",
+    "milestone_settings",
     "outbox_service_for",
     "process_adapters",
     "queue_rows",
@@ -906,4 +1106,5 @@ __all__ = [
     "store_error_message",
     "store_posture",
     "store_scope",
+    "work_merged",
 ]
