@@ -17,7 +17,7 @@ composition root, never ``domain`` or ``application``. Decision:
 
 from __future__ import annotations
 
-from .application import IntakeService, NullIntake, ThreadService, bind_intake
+from .application import IntakeService, IssueImporter, NullIntake, ThreadService, bind_intake
 from .contracts import (
     THREAD_KEY,
     BeadView,
@@ -156,6 +156,7 @@ __all__ = [
     "IntakeService",
     "IntakeStoreError",
     "IssueBinding",
+    "IssueImporter",
     "IssueStatus",
     "LabelPolicy",
     "LinkKind",

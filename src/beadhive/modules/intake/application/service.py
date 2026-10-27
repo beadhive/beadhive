@@ -6,9 +6,10 @@ run through it). The conversation operations delegate to an optional
 :class:`~.threads.ThreadService`; without one (comment ingestion off, the default) they refuse
 with ``INTAKE_DISABLED`` and ``thread_of`` reads nothing. The outbox operations delegate to an
 optional :class:`~.sender.OutboxService`; without one (the outbox off, the default) every one of
-them refuses with ``OUTBOX_DISABLED``, so nothing can be drafted, approved or sent. Import, link
-and discovery are operations of the port that later beads own; until then they refuse with
-``NOT_AVAILABLE``.
+them refuses with ``OUTBOX_DISABLED``, so nothing can be drafted, approved or sent. Import delegates
+to an optional :class:`~.importer.IssueImporter`; without one (no tracker bound) it refuses with
+``INTAKE_DISABLED``. Link and discovery are operations of the port that later beads own; until then
+they refuse with ``NOT_AVAILABLE``.
 Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
@@ -62,6 +63,7 @@ from ..domain import (
     hold_findings,
     may_disposition,
 )
+from .importer import IssueImporter
 from .sender import OutboxService
 from .threads import ThreadService
 
@@ -87,8 +89,9 @@ class IntakeService:
 
     ``binary`` is the CLI alias used in the event reason of a filed report (``filed via bh
     report``), so the recorded history reads as it does today. ``threads`` is bound only when
-    comment ingestion is enabled (``intake.external.comments.enabled``, off by default) and
-    ``outbox`` only when the outbox is (``intake.external.outbox.enabled``, off by default)."""
+    comment ingestion is enabled (``intake.external.comments.enabled``, off by default),
+    ``outbox`` only when the outbox is (``intake.external.outbox.enabled``, off by default) and
+    ``importer`` only when a tracker is (``bh work import`` refuses without it)."""
 
     def __init__(
         self,
@@ -98,12 +101,14 @@ class IntakeService:
         binary: str = "bh",
         threads: ThreadService | None = None,
         outbox: OutboxService | None = None,
+        importer: IssueImporter | None = None,
     ) -> None:
         self._store = store
         self._labels = labels
         self._binary = binary
         self._threads = threads
         self._outbox = outbox
+        self._importer = importer
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -344,9 +349,6 @@ class IntakeService:
 
     # -- owned by later beads ----------------------------------------------------------------
 
-    def import_issue(self, request: ImportRequest) -> ImportOutcome:
-        raise _not_available("import")
-
     def link(self, request: LinkRequest) -> LinkOutcome:
         raise _not_available("link")
 
@@ -355,6 +357,18 @@ class IntakeService:
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
         raise _not_available("discover")
+
+    # -- import (I4) -------------------------------------------------------------------------
+
+    def import_issue(self, request: ImportRequest) -> ImportOutcome:
+        """Import one external issue as an untriaged, held report; see :class:`IssueImporter`."""
+        if self._importer is None:
+            raise IntakeRefused(
+                RefusalReason.INTAKE_DISABLED,
+                "import needs a bound tracker with issues.read enabled "
+                "(external intake is opt-in, and so is the tracker)",
+            )
+        return self._importer.import_issue(request)
 
 
 def _comments_off() -> IntakeRefused:

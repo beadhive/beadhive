@@ -148,9 +148,16 @@ class ImportRequest:
 
 @dataclass(frozen=True)
 class ImportOutcome:
+    """What an import did, or with ``dry_run`` would do (``created`` reads as "would create",
+    ``updated`` as "would update"). ``binding.report`` is the report's id (empty for a dry run
+    that would create it); ``repaired`` names each piece a re-import completed on an interrupted
+    earlier create (``hold``, ``origin``, ``intake``, ``source``), never overwriting a
+    disposition."""
+
     kind: ImportKind
     binding: IssueBinding
     dry_run: bool = False
+    repaired: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

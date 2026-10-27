@@ -47,7 +47,7 @@ from .models import (
     StoreScope,
 )
 from .references import ReferenceShape, classify_reference
-from .rules import REPORT_TYPES, dupes_touching, may_disposition
+from .rules import REPORT_TYPES, dupes_touching, may_disposition, revision_is_newer
 from .thread import (
     DEFAULT_POLICY,
     THREAD_SCHEMA,
@@ -244,6 +244,7 @@ __all__ = [
     "reconcile_comments",
     "reconcile_presence",
     "require_private_store",
+    "revision_is_newer",
     "thread_from_document",
     "thread_to_document",
 ]

@@ -164,6 +164,7 @@ class MemoryTracker:
             r
             for r in self.world.issues.values()
             if not r.change_request
+            and not r.transferred
             and (include_closed or r.state is IssueState.OPEN)
             and (since is None or r.updated >= since)
         ]
@@ -243,7 +244,7 @@ class MemoryTracker:
             raise NotVisible(f"{key.identifier} is not visible")
         if row.change_request:
             raise ChangeRequestUrl(f"{key.identifier} is a change request, not an issue")
-        if row.key != key:
+        if row.key != key and not row.transferred:
             raise NotVisible(f"{key.identifier} is not visible")
         return self._issue(row)
 

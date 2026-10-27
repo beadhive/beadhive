@@ -113,6 +113,9 @@ class _Issue:
     created: datetime
     updated: datetime
     change_request: bool = False
+    #: Moved to another project: no longer listed here, but still answers its old key with its new
+    #: canonical one (what a tracker's redirect for a transferred issue does).
+    transferred: bool = False
 
 
 @dataclass
@@ -190,6 +193,19 @@ class MemoryWorld:
 
     def add_change_request(self, title: str, *, at: datetime) -> IssueKey:
         return self.add_issue(title, at=at, change_request=True)
+
+    def transfer_issue(self, key: IssueKey, *, to: str, at: datetime) -> IssueKey:
+        """Move ``key``'s issue to another project (``to`` is that project's locator).
+
+        Not part of :class:`TrackerWorld`: a transfer is a tracker feature a conformance subject
+        need not model. The issue leaves every listing of this project, but the old key still
+        reads (as the tracker's redirect does) and answers with the NEW canonical key, whose URL
+        names the other project. Returns that new key."""
+        row = self.issues[key.identifier]
+        number = key.identifier.removeprefix("#")
+        moved = IssueKey(key.identifier, f"memory://{to}/issues/{number}", internal_id=number)
+        row.key, row.transferred, row.updated = moved, True, at
+        return moved
 
     def add_comment(
         self,
