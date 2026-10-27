@@ -4,8 +4,11 @@ The service implements what only needs the :class:`ReportStore`: filing a report
 dispositions, bindings and the work lookup (``bh report``, ``bh escalate`` and the triage verbs
 run through it). The conversation operations delegate to an optional
 :class:`~.threads.ThreadService`; without one (comment ingestion off, the default) they refuse
-with ``INTAKE_DISABLED`` and ``thread_of`` reads nothing. Import, link and discovery are
-operations of the port that later beads own; until then they refuse with ``NOT_AVAILABLE``.
+with ``INTAKE_DISABLED`` and ``thread_of`` reads nothing. The outbox operations delegate to an
+optional :class:`~.sender.OutboxService`; without one (the outbox off, the default) every one of
+them refuses with ``OUTBOX_DISABLED``, so nothing can be drafted, approved or sent. Import, link
+and discovery are operations of the port that later beads own; until then they refuse with
+``NOT_AVAILABLE``.
 Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
@@ -37,12 +40,18 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    OutboxApprove,
+    OutboxListing,
+    OutboxQuery,
+    OutboxResult,
     PresenceOutcome,
     PresenceRequest,
     QueueItem,
     QueueQuery,
     QueueView,
     RefusalReason,
+    RenderedRecord,
+    ReplyDraft,
     ReportDraft,
     ThreadOutcome,
     ThreadRequest,
@@ -53,6 +62,7 @@ from ..domain import (
     hold_findings,
     may_disposition,
 )
+from .sender import OutboxService
 from .threads import ThreadService
 
 
@@ -77,7 +87,8 @@ class IntakeService:
 
     ``binary`` is the CLI alias used in the event reason of a filed report (``filed via bh
     report``), so the recorded history reads as it does today. ``threads`` is bound only when
-    comment ingestion is enabled (``intake.external.comments.enabled``, off by default)."""
+    comment ingestion is enabled (``intake.external.comments.enabled``, off by default) and
+    ``outbox`` only when the outbox is (``intake.external.outbox.enabled``, off by default)."""
 
     def __init__(
         self,
@@ -86,11 +97,13 @@ class IntakeService:
         *,
         binary: str = "bh",
         threads: ThreadService | None = None,
+        outbox: OutboxService | None = None,
     ) -> None:
         self._store = store
         self._labels = labels
         self._binary = binary
         self._threads = threads
+        self._outbox = outbox
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -294,6 +307,41 @@ class IntakeService:
                 repaired.append(finding)
         return HoldSweep(findings, tuple(repaired), tuple(failed))
 
+    # -- the supervised outbox ---------------------------------------------------------------
+
+    def _outbox_service(self) -> OutboxService:
+        if self._outbox is None:
+            raise _outbox_off()
+        return self._outbox
+
+    def draft_reply(self, request: ReplyDraft) -> OutboxResult:
+        return self._outbox_service().draft_reply(request)
+
+    def outbox(self, query: OutboxQuery) -> OutboxListing:
+        return self._outbox_service().outbox(query)
+
+    def render(self, outbox_id: str) -> RenderedRecord:
+        return self._outbox_service().render(outbox_id)
+
+    def approve(self, request: OutboxApprove) -> OutboxResult:
+        return self._outbox_service().approve(request)
+
+    def send(self, outbox_id: str, *, actor: str) -> OutboxResult:
+        return self._outbox_service().send(outbox_id, actor=actor)
+
+    def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:
+        return self._outbox_service().reconcile(outbox_id, actor=actor)
+
+    def discard(
+        self, outbox_id: str, *, reason: str, actor: str, accept_unknown: bool = False
+    ) -> OutboxResult:
+        return self._outbox_service().discard(
+            outbox_id, reason=reason, actor=actor, accept_unknown=accept_unknown
+        )
+
+    def retry(self, outbox_id: str, *, actor: str) -> OutboxResult:
+        return self._outbox_service().retry(outbox_id, actor=actor)
+
     # -- owned by later beads ----------------------------------------------------------------
 
     def import_issue(self, request: ImportRequest) -> ImportOutcome:
@@ -313,6 +361,13 @@ def _comments_off() -> IntakeRefused:
     return IntakeRefused(
         RefusalReason.INTAKE_DISABLED,
         "comment ingestion is off for this hive (intake.external.comments.enabled; opt-in)",
+    )
+
+
+def _outbox_off() -> IntakeRefused:
+    return IntakeRefused(
+        RefusalReason.OUTBOX_DISABLED,
+        "the outbox is off for this hive (intake.external.outbox.enabled; opt-in)",
     )
 
 
@@ -370,6 +425,32 @@ class NullIntake:
 
     def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep:
         return HoldSweep()
+
+    def draft_reply(self, request: ReplyDraft) -> OutboxResult:
+        raise _disabled()
+
+    def outbox(self, query: OutboxQuery) -> OutboxListing:
+        return OutboxListing()
+
+    def render(self, outbox_id: str) -> RenderedRecord:
+        raise _disabled()
+
+    def approve(self, request: OutboxApprove) -> OutboxResult:
+        raise _disabled()
+
+    def send(self, outbox_id: str, *, actor: str) -> OutboxResult:
+        raise _disabled()
+
+    def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:
+        raise _disabled()
+
+    def discard(
+        self, outbox_id: str, *, reason: str, actor: str, accept_unknown: bool = False
+    ) -> OutboxResult:
+        raise _disabled()
+
+    def retry(self, outbox_id: str, *, actor: str) -> OutboxResult:
+        raise _disabled()
 
 
 def _disabled() -> IntakeRefused:
