@@ -239,6 +239,35 @@ as they did for the undotted keys probed in `bh-fptob` E11 and `bh-6wj9y` E4; if
 the dot, the fallback spelling is `intake_source`, `intake_thread`, `intake_outbox`, chosen once
 for all three before any lands.
 
+**Verified (I1, `bh-j3ayl`, bd 1.3.0; settles the dotted-key question and acceptance item 2).**
+`tests/test_intake_bead_store_int.py` pins, against a real bd store, that a dotted key is one flat
+top-level key: `bd update --metadata` merges top-level keys and replaces a key's value whole (the
+nested keys of the old value are gone), another dotted key survives a rewrite, `bd list
+--has-metadata-key intake.thread` matches exactly that key and never its `intake` prefix or a
+`intake.thread.seq` path, and metadata stays writable and listable on a closed bead. The fallback
+spelling (`intake_source` and the like) is **not** needed. Documents travel on stdin
+(`--metadata @/dev/stdin`), not argv: a multi-megabyte thread would exceed one argv string.
+
+Growth was re-measured on an isolated scratch Dolt sql-server store (server mode, the engine mode
+the shared server runs; never the fleet's shared server), with seeded realistic comments (median
+about 400 B, about 600 B mean), no garbage collection, on a loaded host:
+
+| Thread | Document | Rewrite (`--metadata`) | `bd show` | Store growth per appended-comment rewrite |
+|---|---:|---:|---:|---:|
+| 10 comments | 6.8 KB | 0.26 s | 0.19 s | |
+| 50 comments | 46 KB | 0.26 s | 0.20 s | |
+| 200 comments | 154 KB | 0.27 s | 0.21 s | median 42 KB (31 to 184 KB), 32% of a naive full copy |
+| 1000 comments | 825 KB | 0.36 s | 0.25 s | median 54 KB (41 to 893 KB), 16% of a naive full copy |
+
+Rewriting the whole document is cheap in time and Dolt shares the unchanged chunks, so growth per
+transition is roughly 5 to 25% of the document, with an occasional near-full copy when a chunk
+boundary moves. **The finding for the queue and thread beads:** `bd list --json` (and `--brief`)
+return every row's whole `metadata`, so the untriaged-queue read carries each report's documents:
+20 untriaged reports with 200-comment threads read as 3.4 MB in 0.35 s, against 15 KB in 0.22 s for
+20 reports without a thread, and `bd` has no metadata-free list. Keep the queue read to the fields
+it needs by routing it through a per-row read only where a thread exists, or by adding a
+metadata-free list route, before thread ingest (I7) ships.
+
 **Why the report bead and not elsewhere** (adopted from `bh-fptob` R4): records and checkpoint
 commit in one write; it is keyed where D1 keys; no queue or `bd ready` reads metadata; cost is
 per thread, not per comment. Native bd comments (add-only, no external id, actor key, revision or
@@ -775,7 +804,8 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
 - **Closing keywords** in a commit pushed to the default branch close the public issue early
   under `close-on-release`, outside Beadhive's control. The leak check warns in rendered text; a
   merge-time commit-message lint is follow-up work.
-- **Metadata growth** on very long threads is one indicative measurement (acceptance item 2).
+- **Metadata growth** on very long threads: re-measured in I1 (section 4): time is flat to about
+  1000 comments and Dolt shares unchanged chunks, but the queue read carries every document.
 - **Page-shift false deletions** under page-number pagination; mitigated by two confirmations and
   resurrection (a false tombstone costs one flip).
 - **Closure figures** are structural, not measured with Pants (acceptance item 1).

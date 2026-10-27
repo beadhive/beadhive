@@ -496,13 +496,29 @@ The import checker enforces the direction: intake may import only the tracker po
 (`modules.tracker.contracts`), never `modules.work.*` or `modules.planning.*` (G6, the
 consumer-exclusion table), never a legacy module, adapter or transport. Gap G7 is a module-local
 AST test: no legacy file except the composition root `intake_services.py` imports
-`modules.intake.domain` or `.application`. The skeleton changes no behaviour: `report`, `triage`
-and `escalate` still run on their current code, and the bead-store adapter, the composition root
-and the `intake.external` config keys arrive in later beads, all off by default.
+`modules.intake.domain` or `.application`.
+
+`bh report`, `bh escalate` and the triage verbs (`bh work intake|accept|reject|reroute|promote`)
+now run through the port. `beadhive.adapters.intake.BdReportStore` implements `ReportStore` over
+injected `beadhive-bd-cli` routes (it never imports the package or builds argv); the binding and
+last issue snapshot of a bound report live in the flat top-level metadata key `intake.source`, the
+issue URL in the bead's native `external_ref`. `beadhive.intake_services` is the legacy
+composition root: it binds the store to the hive's operational store (`store_target.operational_store`
+only, never a public store), supplies the label policy (`validate.bead_violations`) and renders the
+module's refusals as the legacy `(exit, error, message)` tuples. `report.py` keeps hive resolution,
+clone-on-demand and the push; `triage.py` is a thin facade; reroute to another hive is an
+orchestration in the root (`IntakeService.reroute_elsewhere` over the source store plus the
+caller's filing into the target). `report` no longer imports `triage`, which retired the owned
+legacy cycle `cycle-edge-036`. The import, link and discovery operations, the conversation model
+and the outbox, and the `intake.external` config keys arrive in later beads, all off by default.
+
 Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
-pass `beadhive.testing.intake.REPORT_STORE_CASES`. Module-internal tests are
+pass `beadhive.testing.intake.REPORT_STORE_CASES`: `BdReportStore` passes them on an in-process
+fake bd (`tests/test_intake_bead_store.py`) and on a real bd store
+(`tests/test_intake_bead_store_int.py`, `integration`). Module-internal tests are
 `tests/unit/modules/intake`, `tests/unit/testing/test_intake_report_store_kit.py` and, for G5 and
-G6, `tests/test_intake_import_boundaries.py`.
+G6, `tests/test_intake_import_boundaries.py`; the composition is pinned by
+`tests/test_intake_services.py`.
 
 ### `modules/worktrees`
 
