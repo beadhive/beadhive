@@ -21,7 +21,10 @@ import pytest
 from beadhive.adapters.intake import SOURCE_KEY, THREAD_KEY, BdReportStore
 from beadhive.modules.intake import (
     BeadView,
+    HoldFindingKind,
+    HoldSweepRequest,
     IntakeRefused,
+    IntakeService,
     IntakeStoreError,
     IssueBinding,
     IssueStatus,
@@ -207,6 +210,8 @@ class FakeBd:
 
     def _close(self, rest, stdin):
         row = self._row(rest[0])
+        if row["status"] == "closed":  # bd 1.3.0 closes a closed bead again, gates untouched
+            return ""
         live = [
             target
             for source, target, edge in self.edges
@@ -273,6 +278,11 @@ class _Missing(Exception):
 
 def _tokens(title: str) -> frozenset[str]:
     return frozenset(re.findall(r"[a-z0-9]+", title.lower()))
+
+
+class _NoLabels:
+    def violations(self, labels):
+        return ()
 
 
 def _store(bd: FakeBd | None = None) -> tuple[BdReportStore, FakeBd]:
@@ -766,7 +776,9 @@ def test_an_ordinary_close_failure_is_still_the_bd_close_failure_even_when_block
     assert not any("--force" in a for a in _argv(bd))
 
 
-def test_closing_again_after_a_crash_between_the_close_and_the_resolve_only_resolves() -> None:
+def test_closing_again_after_a_crash_is_a_noop_and_the_sweep_resolves_the_left_hold() -> None:
+    """bd closes a closed bead again without a word and leaves its gates alone, so the hold a
+    crash left behind is the doctor sweep's to resolve (harmless meanwhile: closed is not ready)."""
     store, bd = _store()
     bound = store.create(draft(bound=True))
     (hold,) = store.holds()
@@ -775,11 +787,10 @@ def test_closing_again_after_a_crash_between_the_close_and_the_resolve_only_reso
 
     store.close(bound, reason="retry", actor="a/4")
 
-    assert _argv(bd) == [
-        ["close", bound, "--reason", "retry"],  # bd would refuse to close it again
-        ["show", bound, "--json"],
-        ["gate", "resolve", hold.gate, "--reason", "report closed"],
-    ]
+    assert _argv(bd) == [["close", bound, "--reason", "retry"]]
+    assert store.holds() == (hold,)
+    sweep = IntakeService(store, _NoLabels()).sweep_holds(HoldSweepRequest("doctor", repair=True))
+    assert [f.kind for f in sweep.repaired] == [HoldFindingKind.UNRESOLVED]
     assert store.holds() == ()
 
 

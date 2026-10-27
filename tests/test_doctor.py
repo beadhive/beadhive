@@ -1348,6 +1348,7 @@ _DOCTOR_SECTIONS = {
     "mcp",
     "harness_plugin",
     "seats",
+    "intake_holds",
     "install",
     "observability",
     "build_verify",
@@ -3232,3 +3233,85 @@ def test_doctor_payload_tracker_section_is_always_present_and_empty_for_an_unbou
     fakebd,  # noqa: F811
 ):
     assert doctor.doctor_payload()["tracker_adapters"] == []
+
+
+# ---- intake holds (bh-eo8br) ---------------------------------------------------------------
+
+
+def _hold_cfg(tmp_path, *, adapter="tracker-github", checkout=True) -> dict:
+    cfg = _tracker_cfg(adapter=adapter)
+    cfg["managed_repos"][0]["path"] = str(tmp_path)
+    if checkout:
+        tmp_path.mkdir(exist_ok=True)
+    return cfg
+
+
+def _finding(kind, report="w-1", gate=""):
+    from beadhive.modules.intake import HoldFinding, HoldFindingKind
+
+    return HoldFinding(HoldFindingKind(kind), report, gate, f"{kind} detail")
+
+
+def test_intake_holds_sweep_reads_only_hives_that_bind_a_tracker_adapter(
+    monkeypatch, tmp_path
+) -> None:
+    from beadhive import intake_services
+
+    swept: list[Path] = []
+
+    def sweep(directory, **kwargs):
+        from beadhive.modules.intake import HoldSweep
+
+        swept.append(directory)
+        return HoldSweep((_finding("missing"),))
+
+    monkeypatch.setattr(intake_services, "sweep_holds", sweep)
+    monkeypatch.setattr(doctor.registry, "hive_dir", lambda entry: Path(entry["path"]))
+
+    assert doctor._data_intake_holds(_hold_cfg(tmp_path / "unbound", adapter=None)) == []
+    assert doctor._data_intake_holds(_hold_cfg(tmp_path / "uncloned", checkout=False)) == []
+    assert swept == []  # an unbound or uncloned hive costs nothing: no bd read at all
+    rows = doctor._data_intake_holds(_hold_cfg(tmp_path))
+
+    assert swept == [tmp_path]
+    assert [(r["hive"], r["kind"], r["report"], r["repairable"]) for r in rows] == [
+        ("github/octo/widgets", "missing", "w-1", True)
+    ]
+
+
+def test_each_finding_carries_the_exact_command_that_fixes_it(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    from beadhive import intake_services
+    from beadhive.modules.intake import HoldSweep
+
+    findings = (
+        _finding("missing", "w-1"),
+        _finding("unresolved", "w-2", "w-g2"),
+        _finding("orphaned", "", "w-g3"),
+    )
+    monkeypatch.setattr(intake_services, "sweep_holds", lambda d, **kw: HoldSweep(findings))
+    monkeypatch.setattr(doctor.registry, "hive_dir", lambda entry: Path(entry["path"]))
+
+    rows = doctor._data_intake_holds(_hold_cfg(tmp_path))
+    doctor._render_intake_holds(rows)
+
+    fixes = [r["remediation"] for r in rows]
+    assert fixes[0].startswith("bh -r github/octo/widgets bd gate create --blocks w-1 --type human")
+    assert "intake-hold: external report, never work" in fixes[0]
+    assert fixes[1] == "bh -r github/octo/widgets bd gate resolve w-g2"
+    assert fixes[2].startswith("bh -r github/octo/widgets bd show w-g3")
+    assert [r["repairable"] for r in rows] == [True, True, False]
+    out = capsys.readouterr().out
+    assert "# Intake holds (3)" in out and "missing — missing detail" in out and "fix: bh -r" in out
+
+
+def test_an_unbound_fleet_renders_nothing_and_the_payload_section_is_empty(
+    capsys,
+    hive,  # noqa: F811
+    fakebd,  # noqa: F811
+) -> None:
+    doctor._render_intake_holds([])
+
+    assert capsys.readouterr().out == ""
+    assert doctor.doctor_payload()["intake_holds"] == []

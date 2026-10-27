@@ -1253,6 +1253,31 @@ def _guard_open(data, bead):
         raise typer.Exit(1)
 
 
+def _guard_not_held_report(bead, cwd, *, verb="claimed"):
+    """Refuse a bead that carries an open `intake-hold:` gate: a bound external report is never
+    work (external-intake-module-adr.md section 7). Defence in depth behind the gate itself, which
+    keeps the bead out of `bd ready`, and behind the seat policy, which lets no seat resolve it:
+    a direct `bh work claim <report>` must still say why it will not take it. One gate read, and
+    silent for every bead without a hold (so every bead of a hive that never imported one)."""
+    from . import guard  # lazy: keep this module's import surface minimal
+
+    holds = [
+        g
+        for g in _bead_gates(bead, cwd)
+        if str(g.get("status")) == "open" and guard.is_intake_hold_gate(g)
+    ]
+    if not holds:
+        return
+    typer.echo(
+        f"✗ {bead} is an external report held by {holds[0].get('id', '?')} "
+        f"({guard.INTAKE_HOLD_GATE_MARKER}) — a report is never work and cannot be {verb}.\n"
+        f"  Triage it instead (`{config.BINARY_ALIAS} work intake`, accept or reject); "
+        "the work it asks for is a separate bead.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def _guard_not_other(data, actor, bead):
     """Refuse if assigned to a *different* actor — `bd --claim` would otherwise steal it."""
     cur = str(data.get("assignee") or "")

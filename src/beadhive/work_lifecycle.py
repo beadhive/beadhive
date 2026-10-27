@@ -143,6 +143,8 @@ class ShellWorkspace:
 
     def dispatch_gate(self, issue: Any, bead: str) -> None:
         try:
+            # a held external report is never dispatched, whatever its epic's conventions say
+            _work().work_logic._guard_not_held_report(bead, self._main)
             _work()._guard_conventions(self._cfg, issue, bead, self._main, action="dispatch")
         except typer.Exit as exc:  # the gate printed its own findings
             raise _core().Refused(exc.exit_code) from exc

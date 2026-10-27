@@ -172,6 +172,8 @@ class MemoryReportStore:
 
     def close(self, bead: str, *, reason: str, actor: str) -> None:
         row = self._row(bead)
+        if row.view.status == "closed":
+            return  # bd closes a closed bead again without a word, and leaves its gates alone
         holds = self._open_gates(bead)
         others = sorted(self._blockers.get(bead, ()))
         if not holds:
@@ -190,8 +192,7 @@ class MemoryReportStore:
                 f"{bead} is blocked by {', '.join(others)} besides its intake-hold — "
                 "resolve those before closing the report",
             )
-        if row.view.status != "closed":
-            self._finish_close(row, bead, reason)  # the forced close: first, so no ready window
+        self._finish_close(row, bead, reason)  # the forced close: first, so no ready window
         for gate in holds:
             self.resolve_hold(gate, actor=actor)
 

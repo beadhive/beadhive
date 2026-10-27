@@ -196,18 +196,22 @@ def test_a_native_report_with_a_live_blocker_fails_like_bd_does() -> None:
         store.close(native, reason="done", actor="dev/test")
 
 
-def test_a_closed_report_with_a_hold_left_by_a_crash_is_only_resolved_on_the_next_close() -> None:
-    """A crash between the forced close and the resolve leaves a closed report with an open hold;
-    closing again finishes the bookkeeping and does not close it twice."""
+def test_closing_again_after_a_crash_is_a_noop_and_the_sweep_resolves_the_left_hold() -> None:
+    """A crash between the forced close and the resolve leaves a closed report with an open hold.
+    bd closes a closed bead again without a word and leaves its gates alone, so the sweep (not a
+    second close) resolves the hold."""
     store = memory_store()
     bound = store.create(draft(bound=True))
     store._finish_close(store._row(bound), bound, "crashed before the resolve")
     assert len(store.holds()) == 1
+    writes = store.writes
 
     store.close(bound, reason="retry", actor="dev/test")
 
+    assert len(store.holds()) == 1 and store.writes == writes
+    sweep = IntakeService(store, _NoLabels()).sweep_holds(HoldSweepRequest("doctor", repair=True))
+    assert [f.kind for f in sweep.repaired] == [HoldFindingKind.UNRESOLVED]
     assert store.holds() == ()
-    assert [e for e in store.events() if e[0] == "close"] == [("close", bound)]
 
 
 def test_an_orphaned_hold_reads_as_blocking_nothing() -> None:

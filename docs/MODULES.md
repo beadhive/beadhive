@@ -535,6 +535,14 @@ no seat resolves it through `bh work approve`. The operator views count only `bl
 never blocks. `bd set-state` cannot clear a dimension, so unlinking keeps the `delivery` value
 (`delivery_after_unlink`).
 
+A bound report is held for life (`domain/hold.py`, `external-intake-module-adr.md` section 8): its
+`ReportStore.create` opens an `intake-hold:` human gate, so it is never in `bd ready` or `bh work
+ready`; `bh work claim`, `assign` and `claim --group` refuse it; a plain close is refused by bd; and
+`ReportStore.close` is the held close (`bd close --force` through `issue_close_held`, then resolve
+the hold, so there is no ready window). A born-native `bh report` item is never held. `bh doctor`
+reports the `intake_holds` findings (a missing, unresolved or orphaned hold) for hives whose public
+store binds a tracker adapter, and `IntakeService.sweep_holds(repair=True)` repairs them.
+
 Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
 pass `beadhive.testing.intake.REPORT_STORE_CASES`: `BdReportStore` passes them on an in-process
 fake bd (`tests/test_intake_bead_store.py`) and on a real bd store

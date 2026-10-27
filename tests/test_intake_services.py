@@ -406,3 +406,29 @@ def test_an_unresolvable_store_is_a_clean_refusal_with_nothing_written(wired, mo
     assert (code, new_id) == (1, "")
     assert error == "stores.public.path is inside the code checkout"
     assert fake.calls == []
+
+
+# -- the lifetime intake-hold ----------------------------------------------------------------
+
+
+def test_the_root_sweeps_one_operational_store_with_two_reads_and_writes_nothing(wired) -> None:
+    fake = wired(FakeBd())
+
+    sweep = intake_services.sweep_holds(CWD)
+
+    assert sweep.clean
+    assert fake.verbs() == [
+        "list --all --limit 0 --has-metadata-key intake.source",
+        "gate list --limit 0",
+    ]
+
+
+def test_a_hold_that_could_not_be_opened_names_the_report_and_where_to_look() -> None:
+    from beadhive.modules.intake import IntakeStoreError
+
+    exc = IntakeStoreError("bd gate create failed: boom", bead="wid-9", operation="open_hold")
+
+    message = intake_services.store_error_message(exc)
+
+    assert message.startswith("created wid-9 but could not hold it: bd gate create failed: boom")
+    assert "bh doctor" in message
