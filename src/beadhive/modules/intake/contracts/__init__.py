@@ -61,7 +61,16 @@ from ..domain import (
     thread_from_document,
     thread_to_document,
 )
-from .ports import CheckpointStore, IntakeLock, IntakePort, LabelPolicy, OutboxView, ReportStore
+from .ports import (
+    CheckpointStore,
+    IdSource,
+    IntakeLock,
+    IntakePort,
+    LabelPolicy,
+    OutboxView,
+    ReportStore,
+    Sanitizer,
+)
 
 __all__ = [
     "THREAD_KEY",
@@ -124,4 +133,44 @@ __all__ = [
     "ThreadView",
     "thread_from_document",
     "thread_to_document",
+]
+
+# -- the outbox records and the ``intake.outbox`` codec every ``ReportStore`` shares ---------
+
+from ..domain import (  # noqa: E402
+    OUTBOX_KEY,
+    LeakFinding,
+    LeakKind,
+    OpKind,
+    OpState,
+    OutboxDocument,
+    OutboxDocumentError,
+    OutboxRecord,
+    SanitizerFinding,
+    is_grant_id,
+    is_outbox_id,
+    mint_grant_id,
+    mint_outbox_id,
+    outbox_from_document,
+    outbox_to_document,
+)
+
+__all__ += [
+    "OUTBOX_KEY",
+    "IdSource",
+    "LeakFinding",
+    "LeakKind",
+    "OpKind",
+    "OpState",
+    "OutboxDocument",
+    "OutboxDocumentError",
+    "OutboxRecord",
+    "Sanitizer",
+    "SanitizerFinding",
+    "is_grant_id",
+    "is_outbox_id",
+    "mint_grant_id",
+    "mint_outbox_id",
+    "outbox_from_document",
+    "outbox_to_document",
 ]

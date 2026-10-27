@@ -44,6 +44,24 @@ class RefusalReason(StrEnum):
     CHECKPOINT_SCOPE = "checkpoint_scope"  # a stored token offered to a query of another scope
     INTAKE_BUSY = "intake_busy"  # another intake operation holds the binding's lock
     THREAD_MOVED = "thread_moved"  # the stored document's seq moved since it was read
+    # outbox refusals (the communication records and their O1 to O19 machine, bh-6wj9y R5)
+    OUTBOX_DISABLED = "outbox_disabled"  # intake.external.outbox.enabled is off (the default)
+    UNKNOWN_OUTBOX = "unknown_outbox"  # no record, or no such operation on it
+    INVALID_OUTBOX_ID = "invalid_outbox_id"  # not an opaque ob1_ id (never a bead id)
+    INVALID_DRAFT = "invalid_draft"  # a draft with no operation, or a label op with no base
+    COMMIT_LINKS_OFF = "commit_links_off"  # a public commit URL while commit_links is off
+    LABEL_NOT_OWNED = "label_not_owned"  # a label outside the owned prefixes
+    OUTBOX_TRANSITION = "outbox_transition"  # the event is not allowed from the current state
+    OPERATOR_SEAT_REQUIRED = "operator_seat_required"  # an agent seat, or no actor at all
+    STALE_DIGEST = "stale_digest"  # the digest is not the fresh render's
+    UNRESOLVED_FINDING = "unresolved_finding"  # a leak finding neither fixed nor published
+    NEVER_OVERRIDABLE = "never_overridable"  # a secret, no sanitizer, or a label not owned
+    UNKNOWN_FINDING = "unknown_finding"  # an override names no current finding
+    CAPABILITY_UNUSABLE = "capability_unusable"  # the write, or comments.read, is not usable
+    TARGET_MISMATCH = "target_mismatch"  # the record's target is no longer the binding
+    GRANT_REUSED = "grant_reused"  # a grant id the document already holds
+    GRANT_UNUSABLE = "grant_unusable"  # the approval's grant was consumed or voided
+    UNKNOWN_OUTCOME = "unknown_outcome"  # discarding an unknown needs accept_unknown
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
 

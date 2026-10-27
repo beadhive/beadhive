@@ -8,6 +8,8 @@
   pass, with :func:`run_report_store_case` / :func:`assert_report_store_conforms`.
 - :class:`InProcessIntakeLock` and :class:`MemoryOutboxView` (``lock``): a never-waiting
   in-process ``IntakeLock`` with a settable epoch, and an outbox read view over plain sets.
+- :class:`SequentialIdSource` and :class:`RecordingSanitizer` (``outbox``): a deterministic
+  ``IdSource`` and a recording ``Sanitizer`` for the outbox.
 
 It imports the intake module's contracts, so it is imported explicitly, never from
 :mod:`beadhive.testing`.
@@ -27,6 +29,7 @@ from .cases import (
 )
 from .lock import InProcessIntakeLock, MemoryOutboxView
 from .memory_store import MemoryReportStore
+from .outbox import RecordingSanitizer, SequentialIdSource
 
 __all__ = [
     "REPORT_STORE_CASES",
@@ -35,8 +38,10 @@ __all__ = [
     "InProcessIntakeLock",
     "MemoryOutboxView",
     "MemoryReportStore",
+    "RecordingSanitizer",
     "ReportStoreCase",
     "ReportStoreFactory",
+    "SequentialIdSource",
     "assert_report_store_conforms",
     "draft",
     "memory_store",

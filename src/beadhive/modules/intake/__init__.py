@@ -169,3 +169,23 @@ __all__ = [
     "origin_from_source_system",
     "origin_of",
 ]
+
+# -- the outbox's port-facing names (bh-6wj9y R4, R10, R11) ------------------------------------
+
+from .contracts import (  # noqa: E402
+    OUTBOX_KEY,
+    IdSource,
+    OutboxDocument,
+    OutboxDocumentError,
+    Sanitizer,
+    SanitizerFinding,
+)
+
+__all__ += [
+    "OUTBOX_KEY",
+    "IdSource",
+    "OutboxDocument",
+    "OutboxDocumentError",
+    "Sanitizer",
+    "SanitizerFinding",
+]
