@@ -3,7 +3,7 @@
 The pure machine lives in :mod:`..domain.outbox`; this is the only tracker-typed code of the
 outbox, and it is translation only: it never calls a writer or a reader. The supervised sender
 that holds ``IntakeLock``, persists O9 before the request and calls ``post_comment`` /
-``change_labels`` exactly once is a later bead (``bh-6wj9y`` R6, I9a and I9b).
+``change_labels`` exactly once is :mod:`.sender` (``bh-6wj9y`` R6, I9a and I9b).
 
 * :func:`write_grant` turns an O5 approval into the port's single-use ``WriteGrant``, scoped to
   one operation and the record's own issue.

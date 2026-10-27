@@ -309,9 +309,14 @@ class MemoryTracker:
         self._authorise(Operation.LABELS_CHANGE, issue, grant)
         self._request(write=True)
         self.world.writes += 1
+        ambiguous, self.world.ambiguous_next_write = self.world.ambiguous_next_write, None
+        if ambiguous is False:  # cut off before the tracker applied anything (K1)
+            raise WriteOutcomeUnknown("the tracker did not confirm the label change")
         labels = self.world.issues[issue.identifier].labels
         labels.difference_update(remove)
         labels.update(add)
+        if ambiguous:  # applied, but the caller cannot know
+            raise WriteOutcomeUnknown("the tracker did not confirm the label change")
         return WriteReceipt(grant.grant_id, grant.operation, issue, labels_after=frozenset(labels))
 
 

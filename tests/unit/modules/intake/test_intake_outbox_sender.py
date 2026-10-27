@@ -596,11 +596,13 @@ def test_retry_is_operator_only() -> None:
     assert s.op(oid).state is OpState.FAILED
 
 
-def test_labels_change_is_not_sendable_in_this_build() -> None:
-    s = Scene()
+def test_labels_change_has_its_own_gate_that_the_comment_sender_policy_leaves_off() -> None:
+    s = Scene()  # OutboxPolicy(enabled=True): the labels flag is its own, and off
     oid = s.draft()
     request = OutboxApprove(oid, s.digest(oid), "alice", kind=OpKind.LABELS)
-    refused(RefusalReason.NOT_AVAILABLE, s.intake.approve, request)
+    refused(RefusalReason.LABELS_DISABLED, s.intake.approve, request)
+    refused(RefusalReason.LABELS_DISABLED, s.intake.send, oid, actor="alice", kind=OpKind.LABELS)
+    assert s.requests() == (0, 0)  # the labels sender itself is covered by its own test module
 
 
 def test_a_published_operational_store_refuses_before_any_tracker_request() -> None:

@@ -566,6 +566,17 @@ passed and takes the tracker adapter and its marker codec injected. No `bh work 
 config key exists yet. Tests: `tests/unit/modules/intake/test_intake_outbox_sender.py` and
 `tests/test_intake_outbox_root.py`.
 
+The same sender also carries `labels.change` (I9b, `bh-88vji`) as its own gate: `OutboxPolicy`
+gains `labels_enabled` (off by default, separate from `enabled`, which gates the outbox and the
+comment), so a label operation is refused with `LABELS_DISABLED` at approve and at send before any
+tracker request; it is approved separately, mints its own grant and is sent with one
+`change_labels` whose `LabelOwnership` is the root's owned prefixes (`outbox_service_for(...,
+owned_label_prefixes=)`), and a label outside them is refused at draft, in the leak check, at
+approve and at send. `IntakePort.send` and `retry` take `kind` (default `comment.create`) and
+`discard` an optional one; `reconcile` reads the issue's labels back (labels carry no marker). See
+`external-intake-module-adr.md` section 11. Tests:
+`tests/unit/modules/intake/test_intake_outbox_labels_sender.py`.
+
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
 (`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so
 `bh label validate` accepts those values and refuses any other; nothing writes them yet. An

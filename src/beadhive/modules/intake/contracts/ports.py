@@ -32,6 +32,7 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    OpKind,
     OutboxApprove,
     OutboxDocument,
     OutboxListing,
@@ -95,8 +96,9 @@ class IntakePort(Protocol):
 
     def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep: ...  # bh doctor, hive repair
 
-    # the supervised outbox (bh-6wj9y R6, R11; D2): comment.create in this build. Nothing here
-    # runs from a timer: every write needs an operator approval minting a single-use grant.
+    # the supervised outbox (bh-6wj9y R6, R11; D2): comment.create and labels.change, each its own
+    # gate. Nothing here runs from a timer: every write needs an operator approval minting a
+    # single-use grant.
 
     def draft_reply(self, request: ReplyDraft) -> OutboxResult: ...  # O1 for a reply
 
@@ -106,17 +108,27 @@ class IntakePort(Protocol):
 
     def approve(self, request: OutboxApprove) -> OutboxResult: ...  # O5 (and O4 publishes)
 
-    def send(self, outbox_id: str, *, actor: str) -> OutboxResult: ...  # O9 to O13
+    def send(
+        self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT
+    ) -> OutboxResult: ...  # O9 to O13
 
     def reconcile(
         self, outbox_id: str | None = None, *, actor: str
     ) -> tuple[OutboxResult, ...]: ...  # O13 to O16, O19
 
     def discard(
-        self, outbox_id: str, *, reason: str, actor: str, accept_unknown: bool = False
+        self,
+        outbox_id: str,
+        *,
+        reason: str,
+        actor: str,
+        accept_unknown: bool = False,
+        kind: OpKind | None = None,
     ) -> OutboxResult: ...  # O8, O18
 
-    def retry(self, outbox_id: str, *, actor: str) -> OutboxResult: ...  # O17
+    def retry(
+        self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT
+    ) -> OutboxResult: ...  # O17
 
 
 @runtime_checkable

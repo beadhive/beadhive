@@ -274,6 +274,7 @@ from .leaks import check as leak_check  # noqa: E402
 from .outbox import (  # noqa: E402
     AGENT_SEAT_PREFIXES,
     COMMENTS_READ,
+    ISSUES_READ,
     MILESTONE_GROUP,
     OUTBOX_SCHEMA,
     Approval,
@@ -326,6 +327,7 @@ from .outbox_document import (  # noqa: E402
 __all__ += [
     "AGENT_SEAT_PREFIXES",
     "COMMENTS_READ",
+    "ISSUES_READ",
     "MILESTONE_GROUP",
     "NEVER_OVERRIDABLE",
     "NOTIFIED_BY_EVENT",

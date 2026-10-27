@@ -41,6 +41,7 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    OpKind,
     OutboxApprove,
     OutboxListing,
     OutboxQuery,
@@ -331,21 +332,27 @@ class IntakeService:
     def approve(self, request: OutboxApprove) -> OutboxResult:
         return self._outbox_service().approve(request)
 
-    def send(self, outbox_id: str, *, actor: str) -> OutboxResult:
-        return self._outbox_service().send(outbox_id, actor=actor)
+    def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
+        return self._outbox_service().send(outbox_id, actor=actor, kind=kind)
 
     def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:
         return self._outbox_service().reconcile(outbox_id, actor=actor)
 
     def discard(
-        self, outbox_id: str, *, reason: str, actor: str, accept_unknown: bool = False
+        self,
+        outbox_id: str,
+        *,
+        reason: str,
+        actor: str,
+        accept_unknown: bool = False,
+        kind: OpKind | None = None,
     ) -> OutboxResult:
         return self._outbox_service().discard(
-            outbox_id, reason=reason, actor=actor, accept_unknown=accept_unknown
+            outbox_id, reason=reason, actor=actor, accept_unknown=accept_unknown, kind=kind
         )
 
-    def retry(self, outbox_id: str, *, actor: str) -> OutboxResult:
-        return self._outbox_service().retry(outbox_id, actor=actor)
+    def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
+        return self._outbox_service().retry(outbox_id, actor=actor, kind=kind)
 
     # -- owned by later beads ----------------------------------------------------------------
 
@@ -452,18 +459,24 @@ class NullIntake:
     def approve(self, request: OutboxApprove) -> OutboxResult:
         raise _disabled()
 
-    def send(self, outbox_id: str, *, actor: str) -> OutboxResult:
+    def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         raise _disabled()
 
     def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:
         raise _disabled()
 
     def discard(
-        self, outbox_id: str, *, reason: str, actor: str, accept_unknown: bool = False
+        self,
+        outbox_id: str,
+        *,
+        reason: str,
+        actor: str,
+        accept_unknown: bool = False,
+        kind: OpKind | None = None,
     ) -> OutboxResult:
         raise _disabled()
 
-    def retry(self, outbox_id: str, *, actor: str) -> OutboxResult:
+    def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         raise _disabled()
 
 
