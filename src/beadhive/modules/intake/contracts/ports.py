@@ -52,6 +52,8 @@ from ..domain import (
     ThreadOutcome,
     ThreadRequest,
     ThreadView,
+    WorkDraft,
+    WorkProgress,
 )
 
 
@@ -76,6 +78,8 @@ class IntakePort(Protocol):
     def binding_of(self, report: str) -> IssueBinding | None: ...
 
     def reports_for_work(self, work: str) -> tuple[IssueBinding, ...]: ...  # merge/release hooks
+
+    def work_progress(self, report: str) -> WorkProgress: ...  # derived from the tracked work
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome: ...  # scheduled discovery
 
@@ -179,6 +183,12 @@ class ReportStore(Protocol):
         """Resolve one hold gate as bookkeeping (the repair for a hold left on a closed report).
 
         Never call this on an open report: resolving the hold first re-admits it to ready work."""
+        ...
+
+    def create_work(self, draft: WorkDraft) -> str:
+        """One create of a plain work bead (``accept --new-work``): the hive triplet labels, the
+        type, priority and description, and nothing of a report: no ``external_ref``, no
+        ``origin``, no ``intake`` state and no hold, so it is ordinary dispatchable work."""
         ...
 
     def tracked_work(self, report: str) -> str | None: ...

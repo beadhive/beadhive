@@ -37,6 +37,7 @@ from .outbox import (
     Receipt,
     ReleasedFact,
     Step,
+    UnlinkedFact,
 )
 from .thread import ThreadActor
 
@@ -164,15 +165,18 @@ def _record(record: OutboxRecord) -> dict[str, Any]:
 def outbox_to_document(doc: OutboxDocument) -> dict[str, Any]:
     """The JSON value stored under :data:`OUTBOX_KEY`."""
     merged, released = doc.facts.merged, doc.facts.released
+    facts: dict[str, Any] = {
+        "merged": None if merged is None else {"work": merged.work, "commit": merged.commit},
+        "released": None
+        if released is None
+        else {"tag": released.tag, "commit": released.commit, "verified": released.verified},
+    }
+    if doc.facts.unlinked is not None:  # omitted when unset: a document without one is unchanged
+        facts["unlinked"] = {"work": doc.facts.unlinked.work}
     return {
         "schema": doc.schema,
         "seq": doc.seq,
-        "facts": {
-            "merged": None if merged is None else {"work": merged.work, "commit": merged.commit},
-            "released": None
-            if released is None
-            else {"tag": released.tag, "commit": released.commit, "verified": released.verified},
-        },
+        "facts": facts,
         "records": {oid: _record(r) for oid, r in doc.records.items()},
     }
 
@@ -326,6 +330,7 @@ def outbox_from_document(value: Any) -> OutboxDocument:
             )
         facts = _mapping(raw.get("facts", {}), "facts")
         merged, released = facts.get("merged"), facts.get("released")
+        unlinked = facts.get("unlinked")
         records = [
             _decode_record(str(oid), item)
             for oid, item in _mapping(raw.get("records", {}), "records").items()
@@ -342,6 +347,9 @@ def outbox_from_document(value: Any) -> OutboxDocument:
                 else ReleasedFact(
                     str(released["tag"]), str(released["commit"]), bool(released["verified"])
                 ),
+                unlinked=None
+                if unlinked is None
+                else UnlinkedFact(str(_mapping(unlinked, "unlinked")["work"])),
             ),
             records={r.outbox_id: r for r in records},
             schema=schema,

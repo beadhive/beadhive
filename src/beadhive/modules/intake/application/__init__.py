@@ -4,6 +4,7 @@ supervised outbox sender and the module's own pager."""
 from __future__ import annotations
 
 from .importer import IssueImporter, revision_token, snapshot_of
+from .linker import LinkService
 from .paging import collect_snapshot, iterate_pages
 from .sender import OutboxService, StoreOutboxView
 from .service import IntakeService, NullIntake, bind_intake
@@ -12,6 +13,7 @@ from .threads import ThreadService
 __all__ = [
     "IntakeService",
     "IssueImporter",
+    "LinkService",
     "NullIntake",
     "OutboxService",
     "StoreOutboxView",

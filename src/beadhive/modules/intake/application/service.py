@@ -8,8 +8,9 @@ with ``INTAKE_DISABLED`` and ``thread_of`` reads nothing. The outbox operations 
 optional :class:`~.sender.OutboxService`; without one (the outbox off, the default) every one of
 them refuses with ``OUTBOX_DISABLED``, so nothing can be drafted, approved or sent. Import delegates
 to an optional :class:`~.importer.IssueImporter`; without one (no tracker bound) it refuses with
-``INTAKE_DISABLED``. Link and discovery are operations of the port that later beads own; until then
-they refuse with ``NOT_AVAILABLE``.
+``INTAKE_DISABLED``. Link, unlink, the derived work progress and ``accept --work`` /
+``--new-work`` run over the store alone through :class:`~.linker.LinkService`. Discovery is an
+operation of the port that a later bead owns; until then it refuses with ``NOT_AVAILABLE``.
 Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
@@ -18,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 
-from ..contracts import IntakePort, LabelPolicy, ReportStore
+from ..contracts import IntakeLock, IntakePort, LabelPolicy, ReportStore
 from ..domain import (
     INTAKE_DIM,
     INTAKE_UNTRIAGED,
@@ -57,6 +58,8 @@ from ..domain import (
     ThreadOutcome,
     ThreadRequest,
     ThreadView,
+    WorkDraft,
+    WorkProgress,
     channel_of,
     disposition_state,
     dupes_touching,
@@ -64,6 +67,7 @@ from ..domain import (
     may_disposition,
 )
 from .importer import IssueImporter
+from .linker import LinkService
 from .sender import OutboxService
 from .threads import ThreadService
 
@@ -91,7 +95,8 @@ class IntakeService:
     report``), so the recorded history reads as it does today. ``threads`` is bound only when
     comment ingestion is enabled (``intake.external.comments.enabled``, off by default),
     ``outbox`` only when the outbox is (``intake.external.outbox.enabled``, off by default) and
-    ``importer`` only when a tracker is (``bh work import`` refuses without it)."""
+    ``importer`` only when a tracker is (``bh work import`` refuses without it). ``lock`` is the
+    per-binding lock a link or unlink holds while it writes (none: a single in-process writer)."""
 
     def __init__(
         self,
@@ -102,6 +107,7 @@ class IntakeService:
         threads: ThreadService | None = None,
         outbox: OutboxService | None = None,
         importer: IssueImporter | None = None,
+        lock: IntakeLock | None = None,
     ) -> None:
         self._store = store
         self._labels = labels
@@ -109,6 +115,7 @@ class IntakeService:
         self._threads = threads
         self._outbox = outbox
         self._importer = importer
+        self._linker = LinkService(store, lock)
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -214,6 +221,8 @@ class IntakeService:
         return value
 
     def _accept(self, request: DispositionRequest) -> DispositionOutcome:
+        if request.work or request.new_work:
+            return self._accept_to_work(request)
         if request.issue_type or request.priority:
             self._store.update_fields(
                 request.report,
@@ -229,6 +238,92 @@ class IntakeService:
             issue_type=request.issue_type,
             priority=request.priority,
         )
+
+    def _accept_to_work(self, request: DispositionRequest) -> DispositionOutcome:
+        """Accept a bound report AND make it track work: an existing bead (``work``) or one triage
+        creates now (``new_work``). Every refusal is decided before the first write, so a refused
+        accept creates nothing; a failure after the link leaves the report tracked and still
+        untriaged, and repeating the accept with ``--work <that bead>`` finishes it.
+
+        ``--new-work``: the ``type``/``priority`` of the request go to the NEW bead (default: the
+        report's type, no priority). ``--work``: they go to the report, as a plain accept's do."""
+        if request.work and request.new_work:
+            raise IntakeRefused(
+                RefusalReason.INVALID_REQUEST, "--work and --new-work are mutually exclusive"
+            )
+        view = self._store.get(request.report)
+        if view is None:  # pragma: no cover - dispose checked it
+            raise IntakeRefused(RefusalReason.NOT_FOUND, f"{request.report} not found")
+        created = False
+        work = request.work
+        if request.new_work:
+            work = self._create_work_for(view, request)
+            created = True
+        try:
+            self._linker.link(LinkRequest(request.report, work, request.actor))
+        except (IntakeRefused, IntakeStoreError):
+            if created:
+                self._discard_work(work, request)
+            raise
+        if request.work and (request.issue_type or request.priority):
+            self._store.update_fields(
+                request.report,
+                issue_type=request.issue_type,
+                priority=request.priority,
+                actor=request.actor,
+            )
+        state = self._clear_intake(request, f"accepted; tracks {work}")
+        return DispositionOutcome(
+            request.report,
+            request.disposition,
+            state,
+            issue_type=request.issue_type,
+            priority=request.priority,
+            work=work,
+            created_work=created,
+        )
+
+    def _create_work_for(self, view: BeadView, request: DispositionRequest) -> str:
+        """Create the work bead of ``accept --new-work`` after checking, with nothing written,
+        that the report could track one (a bound, open report that tracks nothing yet)."""
+        if view.binding is None:
+            raise IntakeRefused(
+                RefusalReason.NOT_A_REPORT,
+                f"{request.report} is not a report bound to an external issue; a plain accept "
+                "already leaves it as ordinary backlog",
+            )
+        if view.status == "closed":
+            raise IntakeRefused(
+                RefusalReason.REPORT_CLOSED, f"{request.report} is closed; nothing to accept"
+            )
+        tracked = self._store.tracked_work(request.report)
+        if tracked:
+            raise IntakeRefused(
+                RefusalReason.ALREADY_LINKED_ELSEWHERE,
+                f"{request.report} already tracks {tracked}; finish with "
+                f"`accept {request.report} --work {tracked}`, or `link --replace` to move it",
+            )
+        draft = WorkDraft(
+            title=view.title,
+            issue_type=request.issue_type or view.issue_type or "task",
+            actor=request.actor,
+            description=_new_work_description(request.report),
+            priority=request.priority,
+        )
+        try:
+            return self._store.create_work(draft)
+        except IntakeStoreError as exc:
+            raise _retag(exc, "create_work", request.report) from exc
+
+    def _discard_work(self, work: str, request: DispositionRequest) -> None:
+        """Close the work bead an accept created and could not link (best effort: the failure
+        being reported is the link's, and an orphaned open work bead is visible in the backlog)."""
+        try:
+            self._store.close(
+                work, reason=f"not linked to {request.report}; accept failed", actor=request.actor
+            )
+        except (IntakeRefused, IntakeStoreError):
+            pass
 
     def _reject(self, request: DispositionRequest) -> DispositionOutcome:
         state = self._clear_intake(request, f"rejected: {request.reason}")
@@ -260,6 +355,18 @@ class IntakeService:
             if binding is not None:
                 bindings.append(binding)
         return tuple(bindings)
+
+    # -- the link between reports and work (I5) ----------------------------------------------
+
+    def link(self, request: LinkRequest) -> LinkOutcome:
+        """A bound report ``tracks`` a work bead of this store (:class:`~.linker.LinkService`)."""
+        return self._linker.link(request)
+
+    def unlink(self, report: str, *, actor: str) -> LinkOutcome:
+        return self._linker.unlink(report, actor=actor)
+
+    def work_progress(self, report: str) -> WorkProgress:
+        return self._linker.work_progress(report)
 
     # -- the conversation model -------------------------------------------------------------
 
@@ -349,12 +456,6 @@ class IntakeService:
 
     # -- owned by later beads ----------------------------------------------------------------
 
-    def link(self, request: LinkRequest) -> LinkOutcome:
-        raise _not_available("link")
-
-    def unlink(self, report: str, *, actor: str) -> LinkOutcome:
-        raise _not_available("unlink")
-
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
         raise _not_available("discover")
 
@@ -369,6 +470,15 @@ class IntakeService:
                 "(external intake is opt-in, and so is the tracker)",
             )
         return self._importer.import_issue(request)
+
+
+def _new_work_description(report: str) -> str:
+    """What triage writes on the work bead of ``accept --new-work``. Never the issue body: that is
+    untrusted public text, and the report that holds it stays the one place it is read."""
+    return (
+        f"Work created by triage for intake report {report}. Scope and acceptance: to be written "
+        f"by triage on this bead; read {report} for what was reported (it is held, not work)."
+    )
 
 
 def _comments_off() -> IntakeRefused:
@@ -418,6 +528,9 @@ class NullIntake:
 
     def reports_for_work(self, work: str) -> tuple[IssueBinding, ...]:
         return ()
+
+    def work_progress(self, report: str) -> WorkProgress:
+        return WorkProgress.UNLINKED
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
         raise _disabled()

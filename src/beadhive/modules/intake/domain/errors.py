@@ -32,6 +32,8 @@ class RefusalReason(StrEnum):
     TARGET_UNTRIAGED = "target_untriaged"
     TARGET_IS_REPORT = "target_is_report"
     ALREADY_LINKED_ELSEWHERE = "already_linked_elsewhere"
+    REPORT_CLOSED = "report_closed"  # a closed report is not linked (the edge is made while open)
+    INVALID_REQUEST = "invalid_request"  # contradictory options (``--work`` with ``--new-work``)
     # filing and disposition refusals (today's report.py and triage.py guards)
     INVALID_TYPE = "invalid_type"
     INVALID_LABELS = "invalid_labels"

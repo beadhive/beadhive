@@ -40,6 +40,7 @@ from beadhive.modules.intake.contracts import (
     ThreadActor,
     ThreadCheckpoint,
     ThreadIssue,
+    WorkDraft,
     mint_outbox_id,
     outbox_from_document,
 )
@@ -307,6 +308,23 @@ def _tracks_many_reports_to_one_work(factory: ReportStoreFactory) -> None:
     assert store.tracked_work(a) is None and store.trackers_of(work) == (b,)
 
 
+def _create_work_is_plain_work(factory: ReportStoreFactory) -> None:
+    store = factory()
+    work = store.create_work(
+        WorkDraft("Fix the login crash", "bug", "dev/test", "written by triage", "1")
+    )
+    view = store.get(work)
+    assert view is not None
+    assert (view.title, view.issue_type, view.priority) == ("Fix the login crash", "bug", "1")
+    # nothing of a report: no binding, no external_ref, no origin or intake state, no hold
+    assert view.binding is None and view.external_ref == "" and view.source_system == ""
+    assert not [label for label in view.labels if label.startswith(("origin:", "intake:"))]
+    assert set(store.scope().hive.labels()) <= set(view.labels)
+    assert store.holds() == () and store.bound_reports() == ()
+    assert store.list_open_labeled("intake:untriaged") == ()
+    assert store.tracked_work(work) is None and store.trackers_of(work) == ()
+
+
 def _unknown_bead_is_a_store_error(factory: ReportStoreFactory) -> None:
     store = factory()
     ghost = "acme-ghost"
@@ -541,6 +559,7 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.record-snapshot", _record_snapshot),
     ReportStoreCase("store.duplicate-pairs", _duplicate_pairs),
     ReportStoreCase("store.tracks-many-reports-to-one-work", _tracks_many_reports_to_one_work),
+    ReportStoreCase("store.create-work-is-plain-work", _create_work_is_plain_work),
     ReportStoreCase("store.unknown-bead-is-a-store-error", _unknown_bead_is_a_store_error),
     ReportStoreCase("store.thread-absent-reads-none", _thread_absent_reads_none),
     ReportStoreCase("store.thread-round-trips-whole", _thread_round_trips_whole),

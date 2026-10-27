@@ -67,6 +67,8 @@ from ..domain import (
     ThreadRequest,
     ThreadState,
     ThreadView,
+    WorkDraft,
+    WorkProgress,
     blockers_of,
     hold_findings,
     is_hold_gate,
@@ -155,6 +157,8 @@ __all__ = [
     "ThreadRequest",
     "ThreadState",
     "ThreadView",
+    "WorkDraft",
+    "WorkProgress",
     "thread_from_document",
     "thread_to_document",
 ]

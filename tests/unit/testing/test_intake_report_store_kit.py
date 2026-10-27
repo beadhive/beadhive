@@ -39,7 +39,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 27
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 28
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -268,6 +268,20 @@ class _OutboxForEveryBead(MemoryReportStore):
         return super().read_outbox(bead) or outbox(0, texts=())
 
 
+class _WorkBornAsUntriagedReport(MemoryReportStore):
+    """Creates the work bead of `accept --new-work` as a queued report: it would be triaged."""
+
+    def create_work(self, draft):
+        bead = super().create_work(draft)
+        self.set_state(bead, "intake", "untriaged", reason="x", actor="a")
+        return bead
+
+
+class _WorkDropsPriority(MemoryReportStore):
+    def create_work(self, draft):
+        return super().create_work(dataclasses.replace(draft, priority=""))
+
+
 _BROKEN = [
     (_AppendsState, "store.set-state-replaces-its-dimension"),
     (_ClearsOnEmpty, "store.set-state-replaces-but-never-clears"),
@@ -280,6 +294,8 @@ _BROKEN = [
     (_IgnoresThreshold, "store.duplicate-pairs"),
     (_LinkDiesWithTheReport, "store.tracks-many-reports-to-one-work"),
     (_UntrackIsANoOp, "store.tracks-many-reports-to-one-work"),
+    (_WorkBornAsUntriagedReport, "store.create-work-is-plain-work"),
+    (_WorkDropsPriority, "store.create-work-is-plain-work"),
     (_SilentOnUnknown, "store.unknown-bead-is-a-store-error"),
     (_SnapshotDropped, "store.record-snapshot"),
     (_AssignDropped, "store.assign"),
