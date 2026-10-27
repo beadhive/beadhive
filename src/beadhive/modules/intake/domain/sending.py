@@ -58,7 +58,8 @@ class RenderedRecord:
 @dataclass(frozen=True)
 class OutboxApprove:
     """O5 (with O4 for each ``publish``): the operator approves the digest they reviewed, the full
-    value or at least its 12-hex prefix. Only ``comment.create`` is sendable in this build."""
+    value or at least its 12-hex prefix. ``kind`` selects the operation: ``comment.create`` (the
+    default) or ``labels.change``; each is its own approval and mints its own grant."""
 
     outbox_id: str
     digest: str

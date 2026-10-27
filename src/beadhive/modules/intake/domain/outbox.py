@@ -81,6 +81,9 @@ _OPAQUE = re.compile(r"^(?:ob1|gr1)_[a-z2-7]{26}$")
 AGENT_SEAT_PREFIXES = ("dev/", "disp/", "crew/", "coord/")
 #: The read an approval needs usable, so that an unknown outcome can be reconciled (O5).
 COMMENTS_READ = "comments.read"
+#: The read a labels approval additionally needs usable: labels carry no marker, so an unknown
+#: outcome is reconciled by reading the issue's labels back.
+ISSUES_READ = "issues.read"
 #: The supersession scope of milestone records; a reply is its own group.
 MILESTONE_GROUP = "milestone"
 #: ``fail_reason`` of an operation that k complete snapshots proved absent (O16).
@@ -380,9 +383,14 @@ class OutboxDocument:
 
 @dataclass(frozen=True)
 class OutboxPolicy:
-    """The ``intake.external.outbox.*`` semantics. Off by default: nothing drafts."""
+    """The ``intake.external.outbox.*`` semantics. Off by default: nothing drafts.
+
+    ``labels_enabled`` is the ``labels.change`` gate, separate from ``enabled`` (which gates the
+    outbox and so ``comment.create``): with it off no label operation can be approved or sent,
+    whatever the adapter enables and whatever grant a comment holds (I9b)."""
 
     enabled: bool = False
+    labels_enabled: bool = False
     absent_confirmations: int = 2  # k in O16
     commit_links: bool = False
     agent_seat_prefixes: tuple[str, ...] = AGENT_SEAT_PREFIXES
@@ -715,6 +723,28 @@ def _require_operator(actor: str, policy: OutboxPolicy, event: str) -> None:
         )
 
 
+def require_kind_enabled(kind: OpKind, policy: OutboxPolicy) -> None:
+    """The per-operation gate: a label operation needs its own flag (off by default)."""
+    if kind is OpKind.LABELS and not policy.labels_enabled:
+        raise IntakeRefused(
+            RefusalReason.LABELS_DISABLED,
+            "labels.change is off for this hive (its own flag, separate from comment.create)",
+        )
+
+
+def _require_owned(op: OutboxOperation, policy: LeakPolicy) -> None:
+    """Only labels under an owned prefix are ever changed: refused before any approval or
+    attempt, whatever the stored diff says (a diff edited in the store, a narrowed policy)."""
+    diff = op.labels
+    if op.kind is not OpKind.LABELS or diff is None:
+        return
+    stray = sorted(label for label in diff.add | diff.remove if not policy.owns(label))
+    if stray:
+        raise IntakeRefused(
+            RefusalReason.LABEL_NOT_OWNED, f"not under an owned prefix: {', '.join(stray)}"
+        )
+
+
 def _require_target(record: OutboxRecord, ctx: RenderContext) -> None:
     if ctx.binding_url != record.binding.url:
         raise IntakeRefused(
@@ -1000,17 +1030,18 @@ def approve(
     which mints exactly one single-use grant. Approving one operation never approves another."""
     record = _record(doc, request.outbox_id)
     op = _op(record, request.kind)
+    require_kind_enabled(request.kind, policy)
     if op.state is not OpState.DRAFTED:
         raise _refuse_state(record, op, "approve")
     _require_operator(request.actor, policy, "approve")
-    missing = [
-        name for name in (request.kind.value, COMMENTS_READ) if name not in capabilities.usable
-    ]
+    reads = (COMMENTS_READ, ISSUES_READ) if request.kind is OpKind.LABELS else (COMMENTS_READ,)
+    missing = [name for name in (request.kind.value, *reads) if name not in capabilities.usable]
     if missing:
         raise IntakeRefused(
             RefusalReason.CAPABILITY_UNUSABLE, f"not usable on this tracker: {', '.join(missing)}"
         )
     _require_target(record, ctx)
+    _require_owned(op, ctx.policy)
     if not is_grant_id(grant_id) or grant_id in _grant_ids(doc):
         raise IntakeRefused(RefusalReason.GRANT_REUSED, f"{grant_id!r} is not a fresh grant id")
     fresh = render(record, request.kind, ctx)
@@ -1023,6 +1054,10 @@ def approve(
         found = ", ".join(f.id for f in unresolved(fresh.findings, op.overrides))
         raise IntakeRefused(
             RefusalReason.UNRESOLVED_FINDING, found or "the thread's issue is missing"
+        )
+    if request.kind is OpKind.LABELS and not (fresh.add or fresh.remove):
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "the issue already has this label state; nothing to change"
         )
     tx = _Tx(doc)
     approval = Approval(request.actor, fresh.digest, grant_id, tx.seq, op.overrides)
@@ -1158,6 +1193,7 @@ def begin_send(
     ``IntakeLock`` and ``guard_primary`` and persists this document BEFORE the request."""
     record = _record(doc, outbox_id)
     op = _op(record, kind)
+    require_kind_enabled(kind, policy)
     if op.state is not OpState.APPROVED:
         raise _refuse_state(record, op, "send")
     _require_operator(actor, policy, "send")
@@ -1167,6 +1203,7 @@ def begin_send(
             RefusalReason.GRANT_UNUSABLE, f"{outbox_id} {kind.value} has no unused grant"
         )
     _require_target(record, ctx)
+    _require_owned(op, ctx.policy)
     fresh = render(record, kind, ctx)
     if fresh.digest != approval.digest:
         raise IntakeRefused(
@@ -1524,6 +1561,7 @@ __all__ = [
     "ABSENT",
     "AGENT_SEAT_PREFIXES",
     "COMMENTS_READ",
+    "ISSUES_READ",
     "GRANT_ID_PREFIX",
     "MILESTONE_GROUP",
     "OUTBOX_ID_PREFIX",
@@ -1586,6 +1624,7 @@ __all__ = [
     "recover",
     "render",
     "render_text",
+    "require_kind_enabled",
     "reply_revision",
     "retry",
 ]

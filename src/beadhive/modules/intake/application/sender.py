@@ -1,31 +1,40 @@
-"""``OutboxService``: the supervised sender for ``comment.create`` (``bh-6wj9y`` R6, R7; D2).
+"""``OutboxService``: the supervised sender for ``comment.create`` and ``labels.change``
+(``bh-6wj9y`` R6, R7; D2).
 
 The pure O1 to O19 machine lives in :mod:`..domain.outbox` and the translation to and from the
 tracker port in :mod:`.outbox`; this layer runs the machine against a :class:`ReportStore` and a
 tracker in R6's order, and is the only code that ever calls a writer:
 
-* **Off by default.** Every operation refuses with ``OUTBOX_DISABLED`` unless the injected
-  :class:`OutboxPolicy` is enabled. Even then nothing is posted without the adapter's own
-  per-operation enable (``probe_capabilities`` reports ``comment.create`` usable, else O5
-  refuses; a disabled writer refuses before any request, which is O11) AND an operator approval
-  that minted a single-use grant (O5). No timer, flag, config key or agent seat can approve.
+* **Off by default, twice per operation.** Every operation refuses with ``OUTBOX_DISABLED``
+  unless the injected :class:`OutboxPolicy` is enabled, and a ``labels.change`` additionally
+  refuses with ``LABELS_DISABLED`` unless ``OutboxPolicy.labels_enabled`` (its own flag,
+  separate from the comment's). Even then nothing is written without the adapter's own
+  per-operation enable (``probe_capabilities`` reports the operation usable, else O5 refuses; a
+  disabled writer refuses before any request, which is O11) AND an operator approval of THAT
+  operation that minted its own single-use grant (O5); approving the comment never approves the
+  labels. No timer, flag, config key or agent seat can approve.
 * **One durable write per step**, each under the binding's :class:`IntakeLock` and with the
   store's ``seq`` re-check. On every lock acquisition a ``sending`` operation is recovered to
   ``unknown`` first (O13): this holder has the lock its writer held, so that writer is gone.
 * **Write-ahead, then exactly one request.** O9 (the attempt, the consumed grant) is persisted
-  BEFORE ``post_comment``; the grant is handed to the adapter once. A proof of no write is O11, any
-  other exception O12; nothing here retries.
-* **Reconcile** reads one complete comment listing per call, begun after the attempt ended (its
-  ``start_seq`` is the document ``seq`` read before the listing), outside the lock, and applies
-  it under the lock: the own marker from a known actor is O14 (or O19 late), a complete listing
-  without it one absence (O15), and k absences (``OutboxPolicy.absent_confirmations``, default
-  2) ``failed(absent)`` (O16). An ambiguous timeout therefore never causes a second post until
-  two complete listings have shown nothing was written and an operator has retried (O17) and
-  approved again.
+  BEFORE ``post_comment`` / ``change_labels``; the grant is handed to the adapter once. A proof
+  of no write is O11, any other exception O12; nothing here retries.
+* **Only owned labels.** A label operation is refused unless every label it adds or removes lies
+  under the root's owned prefixes (``LeakPolicy.owned_label_prefixes``, the adapter's
+  ``write.labels.owned_prefixes``): at draft, at the leak check (``label_not_owned``, never
+  overridable), at approve and at send before the write-ahead, and the same prefixes travel as
+  the ``LabelOwnership`` the writer checks again before any request.
+* **Reconcile** reads, per call and outside the lock, one complete comment listing (for a
+  comment) and one read of the issue's labels (for a label operation; labels carry no marker),
+  each begun after the attempt ended (its ``start_seq`` is the document ``seq`` read before the
+  read), and applies it under the lock: the own marker from a known actor, or labels that
+  already satisfy the diff, is O14 (or O19 late); a complete read without it is one absence
+  (O15), and k absences (``OutboxPolicy.absent_confirmations``, default 2) ``failed(absent)``
+  (O16). An ambiguous timeout therefore never causes a second write until two complete reads have
+  shown nothing was written and an operator has retried (O17) and approved again.
 
 The render is the dry run: no tracker request and no store write. The marker line is encoded by
 the injected ``marker_line`` (the adapter's own codec), so the bytes shown are the bytes posted.
-``labels.change`` is the next bead's (I9b): approving or sending it refuses ``NOT_AVAILABLE``.
 """
 
 from __future__ import annotations
@@ -36,6 +45,10 @@ from collections.abc import Callable, Iterable
 from beadhive.modules.tracker.contracts import (
     CommentQuery,
     CommentWriter,
+    IssueQuery,
+    IssueResolver,
+    LabelOwnership,
+    LabelWriter,
     OwnMarker,
     PageCursor,
     TrackerAdapter,
@@ -63,6 +76,7 @@ from ..domain import (
     OutboxEvent,
     OutboxListing,
     OutboxObservation,
+    OutboxOperation,
     OutboxPolicy,
     OutboxQuery,
     OutboxRecord,
@@ -72,6 +86,7 @@ from ..domain import (
     RenderContext,
     RenderedRecord,
     ReplyDraft,
+    SendPlan,
     StorePosture,
     ThreadActor,
     ThreadState,
@@ -91,28 +106,22 @@ from .threads import issue_key as binding_issue
 _RECONCILABLE = frozenset({OpState.SENDING, OpState.UNKNOWN})
 
 
+def _op_needs_reconcile(op: OutboxOperation) -> bool:
+    if op.state in _RECONCILABLE:
+        return True
+    if op.state is OpState.ABANDONED and op.outcome_unknown:
+        return True
+    return op.state is OpState.FAILED and op.fail_reason == machine.ABSENT
+
+
 def _needs_reconcile(record: OutboxRecord) -> bool:
-    for op in record.operations:
-        if op.state in _RECONCILABLE:
-            return True
-        if op.state is OpState.ABANDONED and op.outcome_unknown:
-            return True
-        if op.state is OpState.FAILED and op.fail_reason == machine.ABSENT:
-            return True
-    return False
+    return any(_op_needs_reconcile(op) for op in record.operations)
 
 
 def _disabled() -> IntakeRefused:
     return IntakeRefused(
         RefusalReason.OUTBOX_DISABLED,
         "the outbox is off for this hive (intake.external.outbox.enabled; opt-in)",
-    )
-
-
-def _labels_later(kind: OpKind) -> IntakeRefused:
-    return IntakeRefused(
-        RefusalReason.NOT_AVAILABLE,
-        f"{kind.value} is not sendable in this build; only comment.create is (labels: I9b)",
     )
 
 
@@ -207,7 +216,7 @@ class OutboxService:
                 ctx=self._ctx(request.report, binding, outbox_id),
             )
             self._commit(request.report, applied, expect, request.actor)
-        return self._result(request.report, applied, rules)
+        return self._result(request.report, applied, rules, OpKind.COMMENT)
 
     # -- O5: the gate ------------------------------------------------------------------------
 
@@ -217,8 +226,7 @@ class OutboxService:
         carries the dry run and the grant id. Refuses unless the tracker reports the write and
         ``comments.read`` usable, so an unknown outcome can always be reconciled."""
         self._require_enabled()
-        if request.kind is not OpKind.COMMENT:
-            raise _labels_later(request.kind)
+        machine.require_kind_enabled(request.kind, self._policy)  # before any tracker request
         require_private_store(self._posture)
         report, _ = self._locate(request.outbox_id)
         binding = self._bound_here(report)
@@ -250,7 +258,7 @@ class OutboxService:
             record = applied.document.records[request.outbox_id]
             rendered = machine.render(record, request.kind, ctx)
         approval = record.op(request.kind).approval  # type: ignore[union-attr]
-        result = self._result(report, applied, (*rules, *steps))
+        result = self._result(report, applied, (*rules, *steps), request.kind)
         return dataclasses.replace(
             result,
             rendered=rendered,
@@ -260,38 +268,37 @@ class OutboxService:
 
     # -- O9 to O13: send ---------------------------------------------------------------------
 
-    def send(self, outbox_id: str, *, actor: str) -> OutboxResult:
-        """O9 persisted, then exactly one ``post_comment``, then O10, O11 or O12, all under one
-        hold of the binding's lock. An approval whose render moved is invalidated instead (O7)
-        and nothing is sent."""
+    def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
+        """O9 persisted, then exactly one ``post_comment`` / ``change_labels``, then O10, O11 or
+        O12, all under one hold of the binding's lock. An approval whose render moved is
+        invalidated instead (O7) and nothing is sent."""
         self._require_enabled()
+        machine.require_kind_enabled(kind, self._policy)  # before any tracker request
         require_private_store(self._posture)
         report, _ = self._locate(outbox_id)
         binding = self._bound_here(report)
-        writer = self._tracker
-        if not isinstance(writer, CommentWriter):
-            raise IntakeRefused(
-                RefusalReason.CAPABILITY_UNUSABLE, "the bound tracker adapter has no comment writer"
-            )
+        writer = self._writer(kind)
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, rules = self._open(report, epoch, actor)
             record = self._record(doc, outbox_id)
-            op = record.op(OpKind.COMMENT)
+            op = record.op(kind)
             if op is None:
-                raise _labels_later(OpKind.LABELS)
+                raise IntakeRefused(
+                    RefusalReason.UNKNOWN_OUTBOX, f"{outbox_id} has no {kind.value} operation"
+                )
             ctx = self._ctx(report, binding, outbox_id)
             if op.state is OpState.APPROVED:
-                moved = machine.invalidate(doc, outbox_id, OpKind.COMMENT, ctx=ctx, actor=actor)
+                moved = machine.invalidate(doc, outbox_id, kind, ctx=ctx, actor=actor)
                 if moved.changed:  # O7: never send bytes the operator did not approve
                     self._commit(report, moved, expect, actor)
-                    result = self._result(report, moved, rules)
+                    result = self._result(report, moved, rules, kind)
                     return dataclasses.replace(
                         result, detail="the render moved since it was approved; approve it again"
                     )
             ahead = machine.begin_send(
                 doc,
                 outbox_id,
-                OpKind.COMMENT,
+                kind,
                 actor=actor,
                 policy=self._policy,
                 ctx=ctx,
@@ -303,36 +310,66 @@ class OutboxService:
             assert plan is not None  # begin_send always plans its one write
             record = doc.records[outbox_id]
             try:
-                answer = writer.post_comment(
-                    translate.issue_key(record),
-                    plan.body,
-                    marker=translate.own_marker(self._identity, outbox_id),
-                    grant=translate.plan_grant(record, plan),
-                )
+                answer = self._write(writer, kind, record, plan)
             except Exception as exc:  # noqa: BLE001 - the classification is the contract
                 if translate.send_outcome(exc) is translate.SendOutcome.REFUSED:
                     name = translate.refusal_name(exc)
-                    outcome = machine.record_refusal(
-                        doc, outbox_id, OpKind.COMMENT, name, actor=actor
-                    )
+                    outcome = machine.record_refusal(doc, outbox_id, kind, name, actor=actor)
                 else:
                     outcome = machine.record_unknown(
-                        doc, outbox_id, OpKind.COMMENT, actor=actor, detail=type(exc).__name__
+                        doc, outbox_id, kind, actor=actor, detail=type(exc).__name__
                     )
             else:
                 outcome = machine.record_receipt(
-                    doc, outbox_id, OpKind.COMMENT, translate.receipt(answer), actor=actor
+                    doc, outbox_id, kind, translate.receipt(answer), actor=actor
                 )
             self._commit(report, outcome, ahead.document.seq, actor)
             notified, detail = self._notify(report, outbox_id, outcome, actor)
-        result = self._result(report, outcome, (*rules, *(s.rule for s in ahead.steps)))
+        result = self._result(report, outcome, (*rules, *(s.rule for s in ahead.steps)), kind)
         return dataclasses.replace(result, notified=notified, detail=detail or result.detail)
+
+    def _writer(self, kind: OpKind) -> object:
+        """The bound adapter as the writer ``kind`` needs (refused when it has none)."""
+        if kind is OpKind.COMMENT:
+            if not isinstance(self._tracker, CommentWriter):
+                raise IntakeRefused(
+                    RefusalReason.CAPABILITY_UNUSABLE,
+                    "the bound tracker adapter has no comment writer",
+                )
+        elif not isinstance(self._tracker, LabelWriter):
+            raise IntakeRefused(
+                RefusalReason.CAPABILITY_UNUSABLE, "the bound tracker adapter has no label writer"
+            )
+        return self._tracker
+
+    def _ownership(self) -> LabelOwnership:
+        """The labels this sender may ever change: the root's owned prefixes, none when unset."""
+        return LabelOwnership(tuple(p for p in self._leaks.owned_label_prefixes if p))
+
+    def _write(self, writer: object, kind: OpKind, record: OutboxRecord, plan: SendPlan):
+        """The ONE request of an attempt, with the grant handed over once."""
+        grant = translate.plan_grant(record, plan)
+        issue = translate.issue_key(record)
+        if kind is OpKind.COMMENT:
+            assert isinstance(writer, CommentWriter)
+            return writer.post_comment(
+                issue,
+                plan.body,
+                marker=translate.own_marker(self._identity, plan.outbox_id),
+                grant=grant,
+            )
+        assert isinstance(writer, LabelWriter)
+        return writer.change_labels(
+            issue, add=plan.add, remove=plan.remove, ownership=self._ownership(), grant=grant
+        )
 
     # -- O13 to O16, O19: reconcile ----------------------------------------------------------
 
     def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:
         """One reconcile pass: for ``outbox_id``, or for every record that is ambiguous or could
-        still turn up late. Tracker-read-only; one comment listing per report."""
+        still turn up late. Tracker-read-only; per report one comment listing (when a comment
+        needs it) and one read of the issue's labels (when a label operation does). One result per
+        operation that was reconciled."""
         self._require_enabled()
         require_private_store(self._posture)
         targets: dict[str, list[str]] = {}
@@ -361,8 +398,16 @@ class OutboxService:
         key = binding_key(binding)
         with self._lock.hold(key) as epoch:  # O13 first, so every attempt has ended
             doc, _, recovered = self._open(report, epoch, actor)
-        start_seq = doc.seq  # read before the listing begins (ordered by seq, never by time)
-        comments, complete = self._listing(binding)
+        start_seq = doc.seq  # read before the reads begin (ordered by seq, never by time)
+        pending = {
+            oid: [op.kind for op in doc.records[oid].operations if _op_needs_reconcile(op)]
+            for oid in outbox_ids
+            if oid in doc.records
+        }
+        wanted = {kind for kinds in pending.values() for kind in kinds}
+        # a read nobody needs is not made, and is vacuously complete
+        comments, complete = self._listing(binding) if OpKind.COMMENT in wanted else ((), True)
+        labels = self._labels(binding) if OpKind.LABELS in wanted else None
         results: list[OutboxResult] = []
         with self._lock.hold(key) as epoch:
             doc, expect, again = self._open(report, epoch, actor)
@@ -372,7 +417,7 @@ class OutboxService:
             if me is not None:
                 known.add(me)
             marked = translate.marked_comments(comments, self._identity, frozenset(known))
-            observation = OutboxObservation(start_seq, complete, marked)
+            observation = OutboxObservation(start_seq, complete, marked, labels)
             applied: list[OutboxApplied] = []
             for outbox_id in outbox_ids:
                 step = machine.observe(
@@ -384,23 +429,33 @@ class OutboxService:
                 self._store.write_outbox(report, doc, expect_seq=expect, actor=actor)
             for step in applied:
                 notified, detail = self._notify(report, step.outbox_id, step, actor)
-                result = self._result(report, step, (*recovered, *again))
-                results.append(
-                    dataclasses.replace(
-                        result,
-                        complete=complete,
-                        notified=notified,
-                        detail=detail or self._reconcile_detail(step, complete),
+                for kind in pending.get(step.outbox_id) or [None]:
+                    result = self._result(report, step, (*recovered, *again), kind)
+                    read_ok = labels is not None if kind is OpKind.LABELS else complete
+                    results.append(
+                        dataclasses.replace(
+                            result,
+                            complete=read_ok,
+                            notified=notified if kind is not OpKind.LABELS else "",
+                            detail=(detail if kind is not OpKind.LABELS else "")
+                            or self._reconcile_detail(step, kind, read_ok),
+                        )
                     )
-                )
         return results
 
     # -- O8, O18, O17 ------------------------------------------------------------------------
 
     def discard(
-        self, outbox_id: str, *, reason: str, actor: str, accept_unknown: bool = False
+        self,
+        outbox_id: str,
+        *,
+        reason: str,
+        actor: str,
+        accept_unknown: bool = False,
+        kind: OpKind | None = None,
     ) -> OutboxResult:
-        """O8 (any grant voided), or O18 for an ``unknown`` with ``accept_unknown``."""
+        """O8 (any grant voided), or O18 for an ``unknown`` with ``accept_unknown``. ``kind``
+        names one operation; without it every non-terminal operation of the record is retired."""
         self._require_enabled()
         require_private_store(self._posture)
         report, _ = self._locate(outbox_id)
@@ -413,24 +468,24 @@ class OutboxService:
                 reason=reason,
                 actor=actor,
                 policy=self._policy,
+                kind=kind,
                 accept_unknown=accept_unknown,
             )
             self._commit(report, applied, expect, actor)
-        return self._result(report, applied, rules)
+        return self._result(report, applied, rules, kind)
 
-    def retry(self, outbox_id: str, *, actor: str) -> OutboxResult:
-        """O17: a ``failed`` comment back to ``drafted``; sending again needs a new approval."""
+    def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
+        """O17: a ``failed`` operation back to ``drafted``; sending again needs a new approval
+        (and, for labels, a fresh render against the labels as they now are)."""
         self._require_enabled()
         require_private_store(self._posture)
         report, _ = self._locate(outbox_id)
         binding = self._binding(report)
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, rules = self._open(report, epoch, actor)
-            applied = machine.retry(
-                doc, outbox_id, OpKind.COMMENT, actor=actor, policy=self._policy
-            )
+            applied = machine.retry(doc, outbox_id, kind, actor=actor, policy=self._policy)
             self._commit(report, applied, expect, actor)
-        result = self._result(report, applied, rules)
+        result = self._result(report, applied, rules, kind)
         return dataclasses.replace(result, detail="drafted again; render, approve and send anew")
 
     # -- helpers -----------------------------------------------------------------------------
@@ -552,33 +607,60 @@ class OutboxService:
             return tuple(comments), False
         return tuple(comments), True
 
-    def _reconcile_detail(self, applied: OutboxApplied, complete: bool) -> str:
-        if not complete:
-            return "the comment listing failed part-way; nothing was inferred"
+    def _labels(self, binding: IssueBinding) -> frozenset[str] | None:
+        """The issue's labels now (one read through ``IssueResolver.get``, else a paged listing
+        matched on the issue); ``None`` when the read failed or never found the issue, so nothing
+        is inferred from it."""
+        issue = binding_issue(binding)
+        tracker = self._tracker
+        try:
+            if isinstance(tracker, IssueResolver):
+                return frozenset(tracker.get(issue).labels)
+
+            def fetch(cursor: PageCursor | None):
+                return tracker.list_issues(IssueQuery(cursor=cursor))
+
+            for page in iterate_pages(fetch):
+                for row in page.items:
+                    if row.key == issue:
+                        return frozenset(row.labels)
+        except TrackerError:
+            return None
+        return None
+
+    def _reconcile_detail(self, applied: OutboxApplied, kind: OpKind | None, read_ok: bool) -> str:
+        noun = "label read" if kind is OpKind.LABELS else "comment listing"
+        if not read_ok:
+            return f"the {noun} failed part-way; nothing was inferred"
         record = applied.record
-        op = record.op(OpKind.COMMENT) if record is not None else None
+        op = record.op(kind or OpKind.COMMENT) if record is not None else None
         if op is None:
             return ""
         if op.state is OpState.UNKNOWN:
             return (
                 f"not found in {op.absent_confirmations} of the "
-                f"{self._policy.absent_confirmations} complete listings needed; reconcile again"
+                f"{self._policy.absent_confirmations} complete reads needed; reconcile again"
             )
         if op.state is OpState.FAILED and op.fail_reason == machine.ABSENT:
-            return "confirmed absent: nothing was posted; `retry`, then approve and send anew"
+            return "confirmed absent: nothing was written; `retry`, then approve and send anew"
         if op.duplicate_observed:
             return f"duplicate observed: {', '.join(op.duplicates)} (never removed automatically)"
         return ""
 
     @staticmethod
-    def _result(report: str, applied: OutboxApplied, rules: Iterable[str]) -> OutboxResult:
+    def _result(
+        report: str, applied: OutboxApplied, rules: Iterable[str], kind: OpKind | None = None
+    ) -> OutboxResult:
         record = applied.record
-        op = record.op(OpKind.COMMENT) if record is not None else None
+        if kind is None and record is not None and record.operations:
+            kind = OpKind.COMMENT if record.op(OpKind.COMMENT) else record.operations[0].kind
+        kind = kind or OpKind.COMMENT
+        op = record.op(kind) if record is not None else None
         receipt = op.receipt if op is not None else None
         return OutboxResult(
             report,
             applied.outbox_id,
-            OpKind.COMMENT,
+            kind,
             op.state if op is not None else None,
             (*rules, *(s.rule for s in applied.steps)),
             comment_id=(receipt.comment_id or "") if receipt is not None else "",
