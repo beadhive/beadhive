@@ -2873,6 +2873,41 @@ class TrackerGithubConfig(_QuietSection):
 # ---- intake.external (external-intake-module-adr.md section 15) -------------------
 
 
+class IntakeDiscoveryConfig(_QuietSection):
+    """``intake.external.discovery`` — the opt-in host-daemon discovery timer (everything off).
+
+    The timer runs pull-only discovery (the same upsert as `bh work import`; never a tracker or a
+    public-store write) every ``interval_seconds``. It runs only when ``intake.external.enabled``
+    AND ``discovery.enabled`` are both true; ``interval_seconds`` has no default, so enabling the
+    timer without choosing a cadence fails validation instead of picking one for the operator.
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Run the host-daemon discovery timer (default off)."
+    )
+    interval_seconds: float | None = Field(
+        None,
+        gt=0,
+        le=604_800,
+        description="Seconds between discovery runs. Required when `enabled` is true.",
+    )
+    full_reconcile_every: int = Field(
+        24,
+        ge=1,
+        le=100_000,
+        description=(
+            "Every Nth timer run is a full pass (all issues including closed, then the id "
+            "reconcile that marks `source_missing`); the rest resume from the checkpoint."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _interval_is_chosen_when_enabled(self) -> IntakeDiscoveryConfig:
+        if self.enabled and self.interval_seconds is None:
+            raise ValueError("discovery.enabled needs discovery.interval_seconds")
+        return self
+
+
 class IntakeExternalConfig(_QuietSection):
     """``intake.external`` — external issue intake (host-owned; everything off).
 
@@ -2882,11 +2917,13 @@ class IntakeExternalConfig(_QuietSection):
     """
 
     enabled: StrictBool = Field(
-        False, description="Enable external issue intake: `bh work import` (default off)."
+        False,
+        description="Enable external issue intake: `bh work import` and `discover` (default off).",
     )
     default_type: Literal["bug", "feature", "chore"] = Field(
         "bug", description="The issue type of an imported report."
     )
+    discovery: IntakeDiscoveryConfig = Field(default_factory=IntakeDiscoveryConfig)
 
 
 class IntakeConfig(_QuietSection):
@@ -3897,6 +3934,7 @@ __all__ = (
     "HqConfig",
     "IdentityConfig",
     "IntakeConfig",
+    "IntakeDiscoveryConfig",
     "IntakeExternalConfig",
     "KNOWN_TRACKER_ADAPTERS",
     "LogConfig",
