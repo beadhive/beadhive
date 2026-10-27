@@ -16,6 +16,7 @@ import pytest
 import typer
 
 from beadhive import guard, intake_services, private_paths, registry, store_target
+from beadhive.adapters.intake import ScrubSanitizer
 from beadhive.modules.intake import (
     IntakeRefused,
     IntakeStoreError,
@@ -33,7 +34,17 @@ from beadhive.modules.intake.contracts import (
     is_grant_id,
     is_outbox_id,
 )
-from beadhive.modules.intake.domain import OutboxPolicy
+from beadhive.modules.intake.domain import (
+    DraftRequest,
+    LabelBase,
+    LabelIntent,
+    OpKind,
+    OutboxDocument,
+    OutboxEvent,
+    OutboxPolicy,
+    RenderContext,
+)
+from beadhive.modules.intake.domain import outbox as machine
 from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS, OwnMarker
 from beadhive.testing.intake import (
     SCOPE,
@@ -259,3 +270,101 @@ def test_an_enabled_composition_drafts_approves_and_sends_once_on_the_injected_t
 
     assert sent.state is OpState.SENT and sent.notified == "replied"
     assert world.write_requests() == 1 and world.comment_count(issue) == 1
+
+
+def _label_scene(monkeypatch, *, policy: OutboxPolicy, prefixes=("beadhive:",), enabled=None):
+    """A bound report on a memory issue that carries labels, behind the real composition root."""
+    world = MemoryWorld()
+    labels = ("bug", "beadhive:triage", "needs-love")
+    issue = world.add_issue("a bug", at=at(1), labels=labels)
+    world.set_write_time(at(2))
+    tracker = MemoryTracker(world, enabled=enabled or READ_OPERATIONS | WRITE_OPERATIONS)
+    store = MemoryReportStore(SCOPE)
+    report = store.create(
+        ReportDraft(
+            "a bug",
+            "bug",
+            "origin:github",
+            "dev/import",
+            binding=IssueBinding("", "memory", world.locator, issue.url, issue.identifier),
+            snapshot=SourceSnapshot("a bug", "", IssueStatus.OPEN, "r1", labels=labels),
+        )
+    )
+    monkeypatch.setattr(intake_services, "report_store", lambda d, scope: store)
+    monkeypatch.setattr(
+        intake_services,
+        "store_posture",
+        lambda entry, *, acknowledged: intake_services.StorePosture(published=False),
+    )
+    service = intake_services.outbox_service_for(
+        CFG,
+        ENTRY,
+        "/hive",
+        tracker=tracker,
+        identity=ME,
+        marker_line=marker_line,
+        policy=policy,
+        lock=InProcessIntakeLock(),
+        ids=SequentialIdSource(),
+        owned_label_prefixes=prefixes,
+    )
+
+    def draft(add, remove) -> str:
+        leaks = intake_services.leak_policy(CFG, owned_label_prefixes=prefixes)
+        doc = store.read_outbox(report) or OutboxDocument()
+        oid = SequentialIdSource().outbox_id()
+        ctx = RenderContext(
+            issue.url, leaks, ScrubSanitizer(), labels=LabelBase("r1", frozenset(labels))
+        )
+        request = DraftRequest(
+            store.get(report).binding,
+            OutboxEvent.MERGED,
+            "c1",
+            "outbox",
+            comment=False,
+            labels=LabelIntent(frozenset(add), frozenset(remove)),
+        )
+        applied = machine.draft(doc, request, outbox_id=oid, policy=policy, ctx=ctx)
+        store.write_outbox(report, applied.document, expect_seq=doc.seq, actor="outbox")
+        return oid
+
+    return world, issue, store, service, draft
+
+
+def test_the_root_leaves_labels_off_unless_their_own_flag_is_passed(monkeypatch):
+    world, _, _, service, draft = _label_scene(monkeypatch, policy=OutboxPolicy(enabled=True))
+    oid = draft(("beadhive:accepted",), ("beadhive:triage",))  # drafting writes nothing remote
+    for call in (
+        lambda: service.send(oid, actor="alice", kind=OpKind.LABELS),
+        lambda: service.approve(OutboxApprove(oid, "0" * 12, "alice", kind=OpKind.LABELS)),
+    ):
+        with pytest.raises(IntakeRefused) as refused:
+            call()
+        assert refused.value.reason is RefusalReason.LABELS_DISABLED
+    assert world.write_requests() == 0 and world.read_requests() == 0
+
+
+def test_an_enabled_label_composition_changes_only_the_owned_labels_once(monkeypatch):
+    world, issue, _, service, draft = _label_scene(
+        monkeypatch, policy=OutboxPolicy(enabled=True, labels_enabled=True)
+    )
+    oid = draft(("beadhive:accepted",), ("beadhive:triage",))
+    shown = service.render(oid).of(OpKind.LABELS)
+    assert shown is not None and shown.findings == ()
+    approved = service.approve(OutboxApprove(oid, shown.short_digest, "alice", kind=OpKind.LABELS))
+    assert is_grant_id(approved.grant_id)
+    sent = service.send(oid, actor="alice", kind=OpKind.LABELS)
+
+    assert sent.state is OpState.SENT and sent.kind is OpKind.LABELS
+    assert world.server_labels(issue) == {"bug", "needs-love", "beadhive:accepted"}
+    assert world.write_requests() == 1
+
+
+def test_an_unset_owned_prefix_set_makes_every_label_write_impossible(monkeypatch):
+    world, _, _, _, draft = _label_scene(
+        monkeypatch, policy=OutboxPolicy(enabled=True, labels_enabled=True), prefixes=()
+    )
+    with pytest.raises(IntakeRefused) as refused:
+        draft(("beadhive:accepted",), ())
+    assert refused.value.reason is RefusalReason.LABEL_NOT_OWNED
+    assert world.write_requests() == 0

@@ -61,7 +61,7 @@ from beadhive.testing.tracker import MemoryTracker, MemoryWorld, at
 
 ME = OwnIdentity("acme/widgets", "inst-1")
 POLICY = LeakPolicy(bead_prefixes=frozenset({"acme", "bh"}), owned_label_prefixes=("beadhive:",))
-ON = OutboxPolicy(enabled=True)
+ON = OutboxPolicy(enabled=True, labels_enabled=True)
 C, L = OpKind.COMMENT, OpKind.LABELS
 OWNED = LabelOwnership(("beadhive:",))
 

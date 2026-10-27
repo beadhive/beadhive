@@ -51,9 +51,9 @@ POLICY = LeakPolicy(
     private_dimensions=frozenset({"intake", "origin", "delivery", "notified", "review"}),
     owned_label_prefixes=("beadhive:",),
 )
-ON = OutboxPolicy(enabled=True)
+ON = OutboxPolicy(enabled=True, labels_enabled=True)
 OPERATOR = "alice"
-ALL = Capabilities(frozenset({"comment.create", "labels.change", "comments.read"}))
+ALL = Capabilities(frozenset({"comment.create", "labels.change", "comments.read", "issues.read"}))
 BOT = ThreadActor("bot-1", "bot", "beadhive[bot]")
 LABELS = LabelBase("rev-1", frozenset({"bug", "beadhive:delivery-pending"}))
 C, L = OpKind.COMMENT, OpKind.LABELS
@@ -549,6 +549,68 @@ def test_x7_comment_and_labels_are_two_approvals_with_two_grants() -> None:
     plan = box.send(oid, C).plan
     assert plan.kind is C and plan.grant_id == comment.grant_id
     assert box.state(oid, L) is OpState.APPROVED  # sending the comment never sends the labels
+
+
+# -- I9b: the labels gate, its read and the owned-prefix guard ---------------------------------
+
+COMMENT_ONLY = OutboxPolicy(enabled=True)  # the labels flag is its own, and off by default
+
+
+def test_i9b_a_label_operation_needs_its_own_flag_to_be_approved_or_sent() -> None:
+    box = Outbox()
+    oid = box.draft(labels=LabelIntent(add=frozenset({"beadhive:merged"})))
+    box.approve(oid, L)
+    box.policy = COMMENT_ONLY
+    refused(RefusalReason.LABELS_DISABLED, box.send, oid, L)  # an approved op is not sendable
+    assert box.state(oid, L) is OpState.APPROVED
+    other = box.draft(revision="c2", labels=LabelIntent(add=frozenset({"beadhive:released"})))
+    refused(RefusalReason.LABELS_DISABLED, box.approve, other, L)
+    box.approve(other, C)  # the comment's gate is not the labels'
+    assert box.state(other, C) is OpState.APPROVED and box.state(other, L) is OpState.DRAFTED
+
+
+def test_i9b_a_label_approval_also_needs_issues_read_to_reconcile_an_unknown_outcome() -> None:
+    box = Outbox()
+    oid = box.draft(labels=LabelIntent(add=frozenset({"beadhive:merged"})))
+    no_issue_read = Capabilities(frozenset({"comment.create", "labels.change", "comments.read"}))
+    refused(RefusalReason.CAPABILITY_UNUSABLE, box.approve, oid, L, caps=no_issue_read)
+    box.approve(oid, C, caps=no_issue_read)  # a comment never needs it
+
+
+def test_i9b_a_label_change_the_issue_already_has_cannot_be_approved() -> None:
+    box = Outbox()
+    oid = box.draft(labels=LabelIntent(add=frozenset({"beadhive:delivery-pending"})))
+    refused(RefusalReason.INVALID_DRAFT, box.approve, oid, L)
+    assert box.state(oid, L) is OpState.DRAFTED
+
+
+def test_i9b_approve_and_send_refuse_a_stored_diff_outside_the_owned_prefixes() -> None:
+    box = Outbox()
+    oid = box.draft(labels=LabelIntent(add=frozenset({"beadhive:merged"})))
+    box.approve(oid, L)
+    record = box.doc.record(oid)
+    op = record.op(L)
+    # "bug" is already on the issue, so the approved bytes and digest do not move
+    stray = dataclasses.replace(
+        op, labels=dataclasses.replace(op.labels, add=op.labels.add | {"bug"})
+    )
+    record = dataclasses.replace(
+        record, operations=tuple(stray if o.kind is L else o for o in record.operations)
+    )
+    box.doc = dataclasses.replace(box.doc, records={**box.doc.records, oid: record})
+    refused(RefusalReason.LABEL_NOT_OWNED, box.send, oid, L)
+    assert box.state(oid, L) is OpState.APPROVED and not box.op(oid, L).attempts
+
+    fresh = Outbox()
+    other = fresh.draft(labels=LabelIntent(add=frozenset({"beadhive:merged"})))
+    record = fresh.doc.record(other)
+    op = record.op(L)
+    stray = dataclasses.replace(op, labels=dataclasses.replace(op.labels, add=frozenset({"x"})))
+    record = dataclasses.replace(
+        record, operations=tuple(stray if o.kind is L else o for o in record.operations)
+    )
+    fresh.doc = dataclasses.replace(fresh.doc, records={**fresh.doc.records, other: record})
+    refused(RefusalReason.LABEL_NOT_OWNED, fresh.approve, other, L)
 
 
 # -- O6: supersession (X4, X5) -----------------------------------------------------------------
