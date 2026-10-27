@@ -78,13 +78,15 @@ def _issue(
     )
 
 
-def _dependency(issue_id: str, depends_on_id: str) -> state_stream.WorkDependency:
+def _dependency(
+    issue_id: str, depends_on_id: str, kind: str = "blocks"
+) -> state_stream.WorkDependency:
     return state_stream.WorkDependency(
-        id=state_stream.projection_id("work-dependency", (HIVE, issue_id, depends_on_id, "blocks")),
+        id=state_stream.projection_id("work-dependency", (HIVE, issue_id, depends_on_id, kind)),
         hive=HIVE,
         issue_id=issue_id,
         depends_on_id=depends_on_id,
-        type="blocks",
+        type=kind,
         created_at=NOW,
         created_by="planner@example.test",
     )
@@ -215,6 +217,80 @@ def test_ready_active_blocked_and_recent_are_distinct_bounded_queues(tmp_path: P
     assert (invalid.status_code, invalid.json()["error"]["code"]) == (
         400,
         "invalid_work_items_limit",
+    )
+
+
+@pytest.mark.parametrize("kind", ["blocks", "conditional-blocks", "waits-for"])
+def test_each_blocking_edge_type_still_blocks_in_the_queue_view(kind: str) -> None:
+    payload = _queue_for_edge(kind, "blocked")
+
+    assert [(row["id"], row["blockerCount"]) for row in payload["items"]] == [("bh-held", 1)]
+    assert _queue_for_edge(kind, "ready")["items"] == []
+    prerequisite = _queue_for_edge(kind, "active")["items"][0]
+    assert (prerequisite["id"], prerequisite["blockedDependentCount"]) == ("bh-work", 1)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "tracks",  # a report tracks the work it reports on; it never gates the report
+        "frobnicates",  # an edge type nothing has heard of must not read as a blocker
+        "parent-child",
+        "related",
+        "discovered-from",
+        "relates-to",
+        "supersedes",
+    ],
+)
+def test_a_tracks_edge_and_an_unknown_edge_type_are_non_blocking_in_the_queue_view(
+    kind: str,
+) -> None:
+    ready = _queue_for_edge(kind, "ready")
+
+    assert [(row["id"], row["blockerCount"]) for row in ready["items"]] == [("bh-held", 0)]
+    assert _queue_for_edge(kind, "blocked")["items"] == []
+    prerequisite = _queue_for_edge(kind, "active")["items"][0]
+    assert (prerequisite["id"], prerequisite["blockedDependentCount"]) == ("bh-work", 0)
+
+
+def test_a_closed_blocking_prerequisite_no_longer_blocks_the_queue_view() -> None:
+    beads = _edge_snapshot("blocks", prerequisite_status="closed")
+
+    payload = operator_work_items.queue_payload(
+        hive_id=HIVE,
+        beads=beads,
+        runtime=_runtime("host-1", "runtime"),
+        query=operator_work_items.WorkItemQuery(queue="ready", limit=50),
+    )
+
+    assert [row["id"] for row in payload["items"]] == ["bh-held"]
+
+
+def test_both_operator_views_share_one_blocking_edge_set() -> None:
+    from beadhive import operator_contract
+
+    expected = frozenset({"blocks", "conditional-blocks", "waits-for"})
+    assert operator_work_items._BLOCKING_DEPENDENCIES == expected
+    assert operator_contract._BLOCKING_DEPENDENCIES == expected
+
+
+def _edge_snapshot(kind: str, *, prerequisite_status: str = "in_progress"):
+    """A report ``bh-held`` that depends on the work bead ``bh-work`` through one edge ``kind``."""
+    return state_stream.ProviderSnapshot(
+        scope="hive",
+        revision="beads-edge",
+        as_of=NOW,
+        issues=(_issue("bh-held"), _issue("bh-work", status=prerequisite_status)),
+        work_dependencies=(_dependency("bh-held", "bh-work", kind),),
+    )
+
+
+def _queue_for_edge(kind: str, queue: str) -> dict:
+    return operator_work_items.queue_payload(
+        hive_id=HIVE,
+        beads=_edge_snapshot(kind),
+        runtime=_runtime("host-1", "runtime"),
+        query=operator_work_items.WorkItemQuery(queue=queue, limit=50),
     )
 
 

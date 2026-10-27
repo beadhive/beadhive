@@ -40,7 +40,12 @@ DETAIL_MAX_AGENTS = 256
 DETAIL_MAX_ACTIONS = 64
 REMOTE_WARNING_MAX_BYTES = 4_096
 QUEUES = frozenset({"ready", "active", "blocked", "recent"})
-_NON_BLOCKING_DEPENDENCIES = frozenset({"parent-child", "related", "discovered-from"})
+# Only these edge types make a dependency a blocker (bd's `AffectsReadyWork` set without
+# `parent-child`, which bh treats as non-blocking). An allow-list of BLOCKING types, never of
+# non-blocking ones: a `tracks` edge or any type bd adds later must not be miscounted as a blocker
+# (external-intake-module-adr.md section 8, divergence D-f). Mirrored in `operator_contract.py` /
+# `operator_work_items.py`; `tests/test_operator_work_items.py` pins that the two agree.
+_BLOCKING_DEPENDENCIES = frozenset({"blocks", "conditional-blocks", "waits-for"})
 _LIVE_AGENT_STATES = frozenset(
     {AgentRunState.STARTING, AgentRunState.ACTIVE, AgentRunState.WAITING}
 )
@@ -226,7 +231,7 @@ def _queue_indexes(beads: ProviderSnapshot) -> _QueueIndexes:
     blocked_dependent_counts: dict[str, int] = {}
     open_gate_counts: dict[str, int] = {}
     for dependency in beads.work_dependencies:
-        if dependency.type in _NON_BLOCKING_DEPENDENCIES:
+        if dependency.type not in _BLOCKING_DEPENDENCIES:
             continue
         prerequisite = issues.get(dependency.depends_on_id)
         if prerequisite is None or prerequisite.status != "closed":
