@@ -144,7 +144,40 @@ class FakeBd:
         return json.dumps(rows)
 
     def _show(self, rest, stdin):
-        return json.dumps([self._row(rest[0])])
+        row = dict(self._row(rest[0]))
+        dependencies = [
+            {**self.issues[target], "dependency_type": edge}
+            for source, target, edge in self.edges
+            if source == rest[0]
+        ]
+        if dependencies:
+            row["dependencies"] = dependencies
+        return json.dumps([row])
+
+    def _gate(self, rest, stdin):
+        """``gate create --blocks B --type T --reason R`` / ``gate list`` / ``gate resolve G``,
+        shaped as bd 1.3.0 prints them (the description names the blocked bead)."""
+        action, flags = rest[0], self._flags(rest[1:])
+        if action == "create":
+            blocked = flags["--blocks"]
+            self._row(blocked)
+            self._n += 1
+            gate = f"{self.prefix}-{self._n:03d}"
+            self.issues[gate] = {
+                "id": gate,
+                "title": f"Gate: {flags['--type']}",
+                "description": f"Ad-hoc gate blocking {blocked}\n\nReason: {flags['--reason']}",
+                "status": "open",
+                "issue_type": "gate",
+                "labels": [],
+            }
+            self.edges.append((blocked, gate, "blocks"))
+            return json.dumps({"id": gate})
+        if action == "list":
+            gates = [r for r in self.issues.values() if r["issue_type"] == "gate"]
+            return json.dumps([g for g in gates if g["status"] == "open"])
+        self._row(rest[1])["status"] = "closed"  # resolve
+        return ""
 
     def _set_state(self, rest, stdin):
         row = self._row(rest[0])
@@ -173,7 +206,20 @@ class FakeBd:
         return ""
 
     def _close(self, rest, stdin):
-        self._row(rest[0])["status"] = "closed"
+        row = self._row(rest[0])
+        live = [
+            target
+            for source, target, edge in self.edges
+            if source == rest[0]
+            and edge in {"blocks", "conditional-blocks", "waits-for"}
+            and self.issues[target]["status"] != "closed"
+        ]
+        if live and "--force" not in rest:  # bd 1.3.0's refusal (bh-6wj9y E4)
+            raise _BadState(
+                f"cannot close blocked issue: {rest[0]} is blocked by [{', '.join(live)}] "
+                "(use --force to override)"
+            )
+        row["status"] = "closed"
         return ""
 
     def _dep(self, rest, stdin):
@@ -274,7 +320,7 @@ def test_a_bound_report_is_created_with_its_url_and_source_document_atomically()
 
     bead = store.create(draft(bound=True))
 
-    (call,) = bd.calls
+    call, _hold = bd.calls
     assert call["args"][-4:] == ["--external-ref", URL, "--metadata", "@/dev/stdin"]
     document = json.loads(call["stdin"])[SOURCE_KEY]
     assert document["schema"] == 1
@@ -600,3 +646,192 @@ def test_comment_ingestion_runs_end_to_end_over_the_bd_store() -> None:
     assert bd.issues[bead]["metadata"]["git.commits"] == {"commits": ["abc123"]}
     assert len([c for c in bd.calls if c["args"][0] == "update"]) == 2
     assert world.write_requests() == 0
+
+
+# -- the lifetime intake-hold --------------------------------------------------------------
+
+
+def _argv(bd: FakeBd) -> list[list[str]]:
+    return [c["args"] for c in bd.calls]
+
+
+def test_a_bound_report_is_held_at_once_by_a_human_gate_and_a_native_one_never_is() -> None:
+    store, bd = _store()
+
+    native = store.create(draft("born native"))
+    bound = store.create(draft(bound=True))
+
+    # the hold follows the create straight away, before any state stamp the service writes
+    assert [(a[0], a[1]) for a in _argv(bd)] == [
+        ("--json", "create"),
+        ("--json", "create"),
+        ("gate", "create"),
+    ]
+    assert _argv(bd)[2] == [
+        "gate",
+        "create",
+        "--blocks",
+        bound,
+        "--type",
+        "human",
+        "--reason",
+        "intake-hold: external report, never work",
+    ]
+    assert bd.calls[2]["actor"] == "dev/test"
+    assert [h.blocks for h in store.holds()] == [(bound,)] and native != bound
+
+
+def test_a_hold_that_cannot_be_opened_leaves_the_bound_report_named_in_the_error() -> None:
+    store, bd = _store()
+    real_gate = bd._gate
+
+    def refuse(rest, stdin):
+        raise _BadState("database is read-only")
+
+    bd._gate = refuse  # type: ignore[method-assign]
+
+    with pytest.raises(IntakeStoreError) as raised:
+        store.create(draft(bound=True))
+
+    error = raised.value
+    assert error.operation == "open_hold" and error.bead == "acme-001"
+    assert error.detail == "bd gate create failed: Error: database is read-only"
+    bd._gate = real_gate  # type: ignore[method-assign]
+    assert [r.id for r in store.bound_reports()] == ["acme-001"]  # created, open, unheld
+
+
+def test_the_held_close_asks_bd_for_the_plain_close_then_forces_it_then_resolves_the_hold() -> None:
+    store, bd = _store()
+    bound = store.create(draft(bound=True))
+    (hold,) = store.holds()
+    bd.calls.clear()
+
+    store.close(bound, reason="delivered", actor="a/4")
+
+    assert [(c["args"], c["actor"]) for c in bd.calls] == [
+        (["close", bound, "--reason", "delivered"], "a/4"),  # refused by bd: nothing written
+        (["show", bound, "--json"], ""),
+        (["close", bound, "--reason", "delivered", "--force"], "a/4"),
+        (["gate", "resolve", hold.gate, "--reason", "report closed"], "a/4"),
+    ]
+    view = store.get(bound)
+    assert view is not None and view.status == "closed" and store.holds() == ()
+    assert bd.issues[hold.gate]["status"] == "closed"
+
+
+def test_the_forced_close_comes_before_the_resolve_so_the_report_is_never_ready() -> None:
+    store, bd = _store()
+    bound = store.create(draft(bound=True))
+    seen: list[str] = []
+    real = bd._dispatch
+
+    def watch(args, stdin):
+        if args[:2] == ["gate", "resolve"]:
+            seen.append(bd.issues[bound]["status"])  # what bd says at the instant of the resolve
+        return real(args, stdin)
+
+    bd._dispatch = watch  # type: ignore[method-assign]
+
+    store.close(bound, reason="delivered", actor="a/4")
+
+    assert seen == ["closed"]
+
+
+def test_a_bound_report_with_another_live_blocker_is_refused_with_no_forced_close() -> None:
+    store, bd = _store()
+    bound, work = store.create(draft(bound=True)), store.create(draft("work"))
+    bd.edges.append((bound, work, "blocks"))
+    bd.calls.clear()
+
+    with pytest.raises(IntakeRefused) as refused:
+        store.close(bound, reason="done", actor="a/4")
+
+    assert refused.value.reason is RefusalReason.LIVE_BLOCKER and work in refused.value.detail
+    assert not any("--force" in a for a in _argv(bd))
+    view = store.get(bound)
+    assert view is not None and view.status == "open"
+
+
+def test_an_ordinary_close_failure_is_still_the_bd_close_failure_even_when_blocked() -> None:
+    """No hold in play: the refusal is bd's own, unchanged from before the hold existed."""
+    store, bd = _store()
+    native, work = store.create(draft("born native")), store.create(draft("work"))
+    bd.edges.append((native, work, "blocks"))
+
+    with pytest.raises(IntakeStoreError) as raised:
+        store.close(native, reason="done", actor="a/4")
+
+    assert raised.value.operation == "close" and raised.value.returncode == 1
+    assert raised.value.detail.startswith("bd close failed: Error: cannot close blocked issue")
+    assert not any("--force" in a for a in _argv(bd))
+
+
+def test_closing_again_after_a_crash_between_the_close_and_the_resolve_only_resolves() -> None:
+    store, bd = _store()
+    bound = store.create(draft(bound=True))
+    (hold,) = store.holds()
+    bd.issues[bound]["status"] = "closed"  # the forced close landed; the resolve never ran
+    bd.calls.clear()
+
+    store.close(bound, reason="retry", actor="a/4")
+
+    assert _argv(bd) == [
+        ["close", bound, "--reason", "retry"],  # bd would refuse to close it again
+        ["show", bound, "--json"],
+        ["gate", "resolve", hold.gate, "--reason", "report closed"],
+    ]
+    assert store.holds() == ()
+
+
+def test_a_resolve_that_fails_after_the_close_is_reported_with_the_gate_and_leaves_it_closed() -> (
+    None
+):
+    store, bd = _store()
+    bound = store.create(draft(bound=True))
+    real = bd._gate
+
+    def refuse(rest, stdin):
+        if rest[0] == "resolve":
+            raise _BadState("database is read-only")
+        return real(rest, stdin)
+
+    bd._gate = refuse  # type: ignore[method-assign]
+
+    with pytest.raises(IntakeStoreError) as raised:
+        store.close(bound, reason="done", actor="a/4")
+
+    error = raised.value
+    assert error.operation == "resolve_hold" and error.bead == store.holds()[0].gate
+    assert error.detail.startswith("bd gate resolve failed: ")
+    view = store.get(bound)
+    assert view is not None and view.status == "closed"  # harmless: closed is never ready
+
+
+def test_the_sweep_reads_ask_for_open_gates_their_dependents_and_the_bound_documents() -> None:
+    store, bd = _store()
+    bound = store.create(draft(bound=True))
+    store.create(draft("born native"))
+    review = bd._gate(
+        ["create", "--blocks", bound, "--type", "human", "--reason", "bh:review x"], None
+    )
+    bd.calls.clear()
+
+    holds = store.holds()
+    reports = store.bound_reports()
+
+    assert _argv(bd) == [
+        ["gate", "list", "--limit", "0", "--json"],
+        ["dep", "list", holds[0].gate, "--direction", "up", "--type", "blocks", "--json"],
+        ["list", "--all", "--limit", "0", "--has-metadata-key", SOURCE_KEY, "--json"],
+    ]
+    assert [h.blocks for h in holds] == [(bound,)]  # the review gate is not a hold
+    assert [r.id for r in reports] == [bound]
+    assert json.loads(review)["id"] not in {h.gate for h in holds}
+
+
+def test_holds_and_bound_reports_degrade_to_nothing_when_bd_cannot_answer() -> None:
+    store, bd = _store()
+    bd.fail_next = (1, "Error: no database")
+    assert store.holds() == ()
+    bd.fail_next = (1, "Error: no database")
+    assert store.bound_reports() == ()

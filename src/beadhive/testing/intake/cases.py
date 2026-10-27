@@ -352,6 +352,44 @@ def _thread_write_needs_its_bound_report(factory: ReportStoreFactory) -> None:
     assert store.read_thread(bead) is None and store.read_thread(native) is None
 
 
+def _bound_create_opens_a_hold_and_a_native_one_does_not(factory: ReportStoreFactory) -> None:
+    store = factory()
+    native = store.create(draft("born native"))
+    assert store.holds() == () and store.bound_reports() == ()
+    bound = store.create(draft(bound=True))
+    (hold,) = store.holds()
+    assert hold.blocks == (bound,) and hold.gate not in (native, bound)
+    assert [v.id for v in store.bound_reports()] == [bound]  # the native report is not bound
+
+
+def _close_is_the_held_close(factory: ReportStoreFactory) -> None:
+    """A bound report closes through ``close`` even though its own hold blocks a plain close, and
+    its hold is resolved afterwards; a native report closes as it always did."""
+    store = factory()
+    bound, native = store.create(draft(bound=True)), store.create(draft("born native"))
+    store.close(bound, reason="done", actor="dev/test")
+    store.close(native, reason="done", actor="dev/test")
+    for bead in (bound, native):
+        view = store.get(bead)
+        assert view is not None and view.status == "closed"
+    assert store.holds() == ()  # the hold is resolved as bookkeeping
+    assert [v.id for v in store.bound_reports()] == [bound]  # still findable, closed
+
+
+def _holds_open_and_resolve_one_at_a_time(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    store.open_hold(bead, actor="dev/test")
+    first, second = store.holds()
+    assert first.blocks == second.blocks == (bead,) and first.gate != second.gate
+    store.resolve_hold(first.gate, actor="dev/test")
+    assert [h.gate for h in store.holds()] == [second.gate]
+    _expect_store_error(lambda: store.resolve_hold("acme-ghost", actor="dev/test"))
+    _expect_store_error(lambda: store.open_hold("acme-ghost", actor="dev/test"))
+    store.close(bead, reason="done", actor="dev/test")  # closes through its one remaining hold
+    assert store.holds() == ()
+
+
 REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.scope-is-stable", _scope_is_stable),
     ReportStoreCase("store.create-reads-back", _create_reads_back),
@@ -379,6 +417,13 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.thread-on-a-closed-report", _thread_on_a_closed_report),
     ReportStoreCase(
         "store.thread-write-needs-its-bound-report", _thread_write_needs_its_bound_report
+    ),
+    ReportStoreCase(
+        "store.bound-create-opens-a-hold", _bound_create_opens_a_hold_and_a_native_one_does_not
+    ),
+    ReportStoreCase("store.close-is-the-held-close", _close_is_the_held_close),
+    ReportStoreCase(
+        "store.holds-open-and-resolve-one-at-a-time", _holds_open_and_resolve_one_at_a_time
     ),
 )
 

@@ -38,6 +38,8 @@ class RefusalReason(StrEnum):
     NOT_UNTRIAGED = "not_untriaged"
     REASON_REQUIRED = "reason_required"
     UNKNOWN_DISPOSITION = "unknown_disposition"
+    # the held close: a bound report with a live blocker other than its own intake-hold
+    LIVE_BLOCKER = "live_blocker"
     # thread ingestion refusals (the conversation model, bh-fptob)
     NOT_BOUND = "not_bound"  # the report is not bound to an external issue: it has no thread
     PUBLISHED_STORE = "published_store"  # the operational store would be published
@@ -62,9 +64,10 @@ class IntakeStoreError(Exception):
 
     ``operation`` names the failed step in the module's own vocabulary (``create``, ``set_state``,
     ``update_fields``, ``close``, ``assign``, ``track``, ``record_snapshot``, ``read_thread``,
-    ``write_thread``, plus the service's ``stamp:<dimension>`` and ``clear_intake`` re-tags) so a
-    transport can word its message; ``returncode`` is the store's own exit status (1 when it has
-    none)."""
+    ``write_thread``, ``open_hold``, ``resolve_hold``, plus the service's ``stamp:<dimension>``
+    and ``clear_intake`` re-tags) so a transport can word its message; ``returncode`` is the
+    store's own exit status (1 when it
+    has none)."""
 
     def __init__(
         self,

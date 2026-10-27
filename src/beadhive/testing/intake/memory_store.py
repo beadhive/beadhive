@@ -5,7 +5,10 @@ a token-overlap on titles (bd's mechanical ``find-duplicates`` is the real store
 models only what the port promises: a state write replaces its dimension's label, a closed bead
 stays readable and findable, a link survives the report's closure, and the ``intake.thread``
 document is one top-level metadata key, stored encoded (so it is proven JSON-serialisable),
-rewritten whole, guarded by the ``seq`` re-check, and never disturbing another key.
+rewritten whole, guarded by the ``seq`` re-check, and never disturbing another key. A bound
+report is born with an ``intake-hold:`` gate that keeps it out of :meth:`ready_ids`, :meth:`close`
+closes it first and resolves the hold after (the order is kept in :meth:`events`, so a test can
+prove there is no ready window), and :meth:`plain_close` refuses a held bead as ``bd close`` does.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from beadhive.modules.intake.contracts import (
     THREAD_KEY,
     BeadView,
     DuplicatePair,
+    HoldGate,
     IntakeRefused,
     IntakeStoreError,
     RefusalReason,
@@ -45,6 +49,14 @@ def _tokens(title: str) -> frozenset[str]:
     return frozenset(re.findall(r"[a-z0-9]+", title.lower()))
 
 
+@dataclass
+class _Gate:
+    """One hold gate: the bead it blocks (``""``: orphaned) and whether it is still open."""
+
+    blocks: str
+    open: bool = True
+
+
 class MemoryReportStore:
     """A fresh store bound to ``scope``. ``writes`` counts every mutating call, so a test can
     assert that a refusal changed nothing."""
@@ -53,6 +65,9 @@ class MemoryReportStore:
         self._scope = scope
         self._rows: dict[str, _Row] = {}
         self._tracks: dict[str, str] = {}
+        self._gates: dict[str, _Gate] = {}
+        self._blockers: dict[str, set[str]] = {}  # bead -> other live blockers (test control)
+        self._events: list[tuple[str, str]] = []
         self._next = 0
         self.writes = 0
         #: ``(bead, seq)`` of every durable ``intake.thread`` write, in order.
@@ -122,6 +137,8 @@ class MemoryReportStore:
             snapshot=draft.snapshot,
         )
         self._rows[bead] = _Row(view)
+        if binding is not None:
+            self.open_hold(bead, actor=draft.actor)
         return bead
 
     def set_state(self, bead: str, dimension: str, value: str, *, reason: str, actor: str) -> None:
@@ -155,9 +172,59 @@ class MemoryReportStore:
 
     def close(self, bead: str, *, reason: str, actor: str) -> None:
         row = self._row(bead)
+        holds = self._open_gates(bead)
+        others = sorted(self._blockers.get(bead, ()))
+        if not holds:
+            if others:  # what `bd close` says of a bead blocked by something that is not a hold
+                raise IntakeStoreError(
+                    f"bd close failed: cannot close blocked issue: {bead} is blocked by "
+                    f"{others} (use --force to override)",
+                    bead=bead,
+                    operation="close",
+                )
+            self._finish_close(row, bead, reason)
+            return
+        if others:
+            raise IntakeRefused(
+                RefusalReason.LIVE_BLOCKER,
+                f"{bead} is blocked by {', '.join(others)} besides its intake-hold — "
+                "resolve those before closing the report",
+            )
+        if row.view.status != "closed":
+            self._finish_close(row, bead, reason)  # the forced close: first, so no ready window
+        for gate in holds:
+            self.resolve_hold(gate, actor=actor)
+
+    def _finish_close(self, row: _Row, bead: str, reason: str) -> None:
         self.writes += 1
         row.view = dataclasses.replace(row.view, status="closed")
         row.history.append(("status", "closed", reason))
+        self._events.append(("close", bead))
+
+    def holds(self) -> tuple[HoldGate, ...]:
+        return tuple(
+            HoldGate(gate_id, (gate.blocks,) if gate.blocks in self._rows else ())
+            for gate_id, gate in self._gates.items()
+            if gate.open
+        )
+
+    def bound_reports(self) -> tuple[BeadView, ...]:
+        return tuple(r.view for r in self._rows.values() if r.view.binding is not None)
+
+    def open_hold(self, report: str, *, actor: str) -> None:
+        self._row(report)
+        self.writes += 1
+        gate_id = f"{self._scope.operational_prefix}-g{len(self._gates) + 1:04d}"
+        self._gates[gate_id] = _Gate(report)
+        self._events.append(("open_hold", gate_id))
+
+    def resolve_hold(self, gate: str, *, actor: str) -> None:
+        held = self._gates.get(gate)
+        if held is None:
+            raise IntakeStoreError(f"{gate} not found", bead=gate, operation="resolve_hold")
+        self.writes += 1
+        held.open = False
+        self._events.append(("resolve_hold", gate))
 
     def assign(self, bead: str, seat: str, *, actor: str) -> None:
         row = self._row(bead)
@@ -216,6 +283,48 @@ class MemoryReportStore:
         self._fail_thread_write = error or IntakeStoreError(
             "injected store failure", operation="write_thread"
         )
+
+    def plain_close(self, bead: str) -> None:
+        """A bare ``bd close`` (no ``--force``): refused while ``bead`` has any live blocker, a
+        hold included. Not part of the port; it lets a test show that only :meth:`close` closes a
+        held report."""
+        row = self._row(bead)
+        blockers = [*self._open_gates(bead), *sorted(self._blockers.get(bead, ()))]
+        if blockers:
+            raise IntakeStoreError(
+                f"cannot close blocked issue: {bead} is blocked by {blockers} "
+                "(use --force to override)",
+                bead=bead,
+                operation="close",
+            )
+        self._finish_close(row, bead, "plain close")
+
+    def add_blocker(self, bead: str, blocker: str) -> None:
+        """Make ``bead`` depend on another live blocker (a bead or a gate that is not a hold)."""
+        self._row(bead)
+        self._blockers.setdefault(bead, set()).add(blocker)
+
+    def lose_hold(self, gate: str) -> None:
+        """Delete a hold gate as a person could by hand: its blocking edge goes, the gate stays."""
+        self._gates[gate].blocks = ""
+
+    def ready_ids(self) -> tuple[str, ...]:
+        """What ``bd ready`` would list: open, unassigned beads with no live blocker."""
+        return tuple(
+            bead
+            for bead, row in self._rows.items()
+            if row.view.status == "open"
+            and not row.view.assignee
+            and not self._open_gates(bead)
+            and not self._blockers.get(bead)
+        )
+
+    def events(self) -> tuple[tuple[str, str], ...]:
+        """Every close and hold change, in order, as ``(event, bead-or-gate)``."""
+        return tuple(self._events)
+
+    def _open_gates(self, bead: str) -> list[str]:
+        return [gate_id for gate_id, g in self._gates.items() if g.open and g.blocks == bead]
 
     def history(self, bead: str) -> tuple[tuple[str, str, str], ...]:
         """Every state write and the close, in order, as ``(dimension, value, reason)``."""

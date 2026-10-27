@@ -26,6 +26,10 @@ from ..domain import (
     Disposition,
     DispositionOutcome,
     DispositionRequest,
+    HoldFinding,
+    HoldFindingKind,
+    HoldSweep,
+    HoldSweepRequest,
     ImportOutcome,
     ImportRequest,
     IntakeRefused,
@@ -46,6 +50,7 @@ from ..domain import (
     channel_of,
     disposition_state,
     dupes_touching,
+    hold_findings,
     may_disposition,
 )
 from .threads import ThreadService
@@ -260,6 +265,35 @@ class IntakeService:
     def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome:
         return self._thread_service().mark_considered(request)
 
+    # -- the lifetime intake-hold ------------------------------------------------------------
+
+    def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep:
+        """Compare the bound reports with the open holds; with ``request.repair`` also fix what is
+        repairable: open a hold on an open report that has none, resolve a hold left on a closed
+        report. Idempotent, and a repair that fails is reported, not raised, so one bad report
+        never hides the rest. An orphaned hold is reported only."""
+        reports = self._store.bound_reports()
+        findings = hold_findings(
+            [(view.id, view.status == "closed") for view in reports], self._store.holds()
+        )
+        if not request.repair:
+            return HoldSweep(findings)
+        repaired: list[HoldFinding] = []
+        failed: list[tuple[HoldFinding, str]] = []
+        for finding in findings:
+            if not finding.repairable:
+                continue
+            try:
+                if finding.kind is HoldFindingKind.MISSING:
+                    self._store.open_hold(finding.report, actor=request.actor)
+                else:
+                    self._store.resolve_hold(finding.gate, actor=request.actor)
+            except IntakeStoreError as exc:
+                failed.append((finding, exc.detail))
+            else:
+                repaired.append(finding)
+        return HoldSweep(findings, tuple(repaired), tuple(failed))
+
     # -- owned by later beads ----------------------------------------------------------------
 
     def import_issue(self, request: ImportRequest) -> ImportOutcome:
@@ -333,6 +367,9 @@ class NullIntake:
 
     def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome:
         raise _disabled()
+
+    def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep:
+        return HoldSweep()
 
 
 def _disabled() -> IntakeRefused:

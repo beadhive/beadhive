@@ -23,6 +23,9 @@ from ..domain import (
     DispositionOutcome,
     DispositionRequest,
     DuplicatePair,
+    HoldGate,
+    HoldSweep,
+    HoldSweepRequest,
     ImportOutcome,
     ImportRequest,
     IssueBinding,
@@ -79,6 +82,10 @@ class IntakePort(Protocol):
 
     def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome: ...  # triage watermark
 
+    # the lifetime intake-hold on a bound report (invariant H, external-intake-module-adr.md 7)
+
+    def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep: ...  # bh doctor, hive repair
+
 
 @runtime_checkable
 class ReportStore(Protocol):
@@ -92,7 +99,11 @@ class ReportStore(Protocol):
 
     def find_by_external_ref(self, url: str) -> tuple[BeadView, ...]: ...  # every status
 
-    def create(self, draft: ReportDraft) -> str: ...  # one create, external_ref included
+    def create(self, draft: ReportDraft) -> str:
+        """One create, ``external_ref`` included. A bound report (``draft.binding``) is born with
+        its ``intake-hold:`` gate, opened immediately after the create and before any state
+        stamp; a born-native report never gets one."""
+        ...
 
     def set_state(
         self, bead: str, dimension: str, value: str, *, reason: str, actor: str
@@ -102,13 +113,41 @@ class ReportStore(Protocol):
 
     def update_fields(self, bead: str, *, issue_type: str, priority: str, actor: str) -> None: ...
 
-    def close(self, bead: str, *, reason: str, actor: str) -> None: ...
+    def close(self, bead: str, *, reason: str, actor: str) -> None:
+        """Close ``bead``. The ONLY way a report closes.
+
+        A bound report carries an open ``intake-hold:`` gate for its whole life, and a plain close
+        of a blocked bead is refused. So for a report whose only live blockers are its own holds
+        this is the held close: force-close first, then resolve each hold as bookkeeping, so
+        there is no instant at which the report is open and unblocked (a crash between the two
+        leaves a closed report with an open hold, which is harmless and swept by ``bh doctor``).
+        A report with any other live blocker is refused with ``IntakeRefused(LIVE_BLOCKER)``,
+        and a bead with no hold closes as it always did."""
+        ...
 
     def assign(self, bead: str, seat: str, *, actor: str) -> None: ...
 
     def list_open_labeled(self, label: str) -> tuple[BeadView, ...]: ...
 
     def duplicate_pairs(self, *, threshold: float) -> tuple[DuplicatePair, ...]: ...
+
+    def holds(self) -> tuple[HoldGate, ...]:
+        """Every OPEN ``intake-hold:`` gate and the beads it blocks (none: an orphaned gate)."""
+        ...
+
+    def bound_reports(self) -> tuple[BeadView, ...]:
+        """Every bound report, of every status (those carrying the ``intake.source`` document)."""
+        ...
+
+    def open_hold(self, report: str, *, actor: str) -> None:
+        """Open one more ``intake-hold:`` gate on ``report`` (the repair for a missing hold)."""
+        ...
+
+    def resolve_hold(self, gate: str, *, actor: str) -> None:
+        """Resolve one hold gate as bookkeeping (the repair for a hold left on a closed report).
+
+        Never call this on an open report: resolving the hold first re-admits it to ready work."""
+        ...
 
     def tracked_work(self, report: str) -> str | None: ...
 

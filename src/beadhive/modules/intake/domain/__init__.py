@@ -6,6 +6,21 @@ Standard library only. Nothing here imports another layer or module.
 from __future__ import annotations
 
 from .errors import IntakeRefused, IntakeStoreError, RefusalReason
+from .hold import (
+    BLOCKING_EDGE_TYPES,
+    INTAKE_HOLD_GATE_TYPE,
+    INTAKE_HOLD_MARKER,
+    INTAKE_HOLD_REASON,
+    Blockers,
+    HoldFinding,
+    HoldFindingKind,
+    HoldGate,
+    HoldSweep,
+    HoldSweepRequest,
+    blockers_of,
+    hold_findings,
+    is_hold_gate,
+)
 from .models import (
     BeadView,
     Checkpoint,
@@ -114,6 +129,19 @@ from .vocabulary import (
 )
 
 __all__ = [
+    "INTAKE_HOLD_GATE_TYPE",
+    "INTAKE_HOLD_MARKER",
+    "INTAKE_HOLD_REASON",
+    "BLOCKING_EDGE_TYPES",
+    "Blockers",
+    "HoldFinding",
+    "HoldFindingKind",
+    "HoldGate",
+    "HoldSweep",
+    "HoldSweepRequest",
+    "blockers_of",
+    "hold_findings",
+    "is_hold_gate",
     "DELIVERY_DIM",
     "DISPOSITION_STATE",
     "INTAKE_DIM",
