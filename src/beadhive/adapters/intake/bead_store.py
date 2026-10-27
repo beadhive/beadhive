@@ -7,7 +7,11 @@ operation, the bead and bd's exit status; a read that bd cannot answer degrades 
 result the legacy callers always got (None / no rows).
 
 ``intake.source`` (the binding facts and last issue snapshot) is a flat top-level metadata key
-rewritten whole; see :mod:`beadhive.adapters.intake.documents`.
+rewritten whole; see :mod:`beadhive.adapters.intake.documents`. ``intake.thread`` (the
+conversation) is another such key: :meth:`BdReportStore.write_thread` re-reads the stored ``seq``
+(bd has no compare-and-swap) and then rewrites the whole document in ONE ``bd update --metadata``,
+so the records and the thread checkpoint always commit together. Only :meth:`read_thread` and
+:meth:`write_thread` decode it; the queue and lookup reads never do.
 """
 
 from __future__ import annotations
@@ -17,15 +21,22 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from beadhive.modules.intake.contracts import (
+    THREAD_KEY,
     BeadView,
     DuplicatePair,
+    IntakeRefused,
     IntakeStoreError,
+    RefusalReason,
     ReportDraft,
     SourceSnapshot,
     StoreScope,
+    Thread,
+    ThreadDocumentError,
+    thread_from_document,
+    thread_to_document,
 )
 
-from .documents import SOURCE_KEY, bead_view, current_source, source_document
+from .documents import SOURCE_KEY, bead_view, current_source, source_document, stored_thread
 
 
 class ReportRoutes(Protocol):
@@ -117,10 +128,8 @@ class BdReportStore:
         return self._scope  # type: ignore[return-value]
 
     def get(self, bead: str) -> BeadView | None:
-        data = self._routes.issue_show_raw(bead)
-        if isinstance(data, list):
-            data = data[0] if data else None
-        return bead_view(data) if isinstance(data, dict) else None
+        data = self._show(bead)
+        return bead_view(data) if data is not None else None
 
     def find_by_external_ref(self, url: str) -> tuple[BeadView, ...]:
         if not url:
@@ -156,6 +165,11 @@ class BdReportStore:
 
     def trackers_of(self, work: str) -> tuple[str, ...]:
         return self._edge_ids(work, direction="up")
+
+    def read_thread(self, bead: str) -> Thread | None:
+        """The bead's ``intake.thread`` (one ``bd show``); None for no bead or no document."""
+        row = self._show(bead)
+        return self._thread(bead, row) if row is not None else None
 
     # -- writes ------------------------------------------------------------------------------
 
@@ -199,10 +213,8 @@ class BdReportStore:
 
     def record_snapshot(self, bead: str, snapshot: SourceSnapshot, *, actor: str) -> None:
         """Rewrite the whole ``intake.source`` document with ``snapshot``, keeping its binding."""
-        data = self._routes.issue_show_raw(bead)
-        if isinstance(data, list):
-            data = data[0] if data else None
-        if not isinstance(data, dict):
+        data = self._show(bead)
+        if data is None:
             raise IntakeStoreError(f"{bead} not found", bead=bead, operation="record_snapshot")
         document = current_source(data)
         document.update(source_document(None, snapshot))
@@ -235,7 +247,53 @@ class BdReportStore:
         result = self._routes.dependency_remove(report, work, actor=actor)
         self._check(result, "untrack", report)
 
+    def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
+        """Re-read the stored ``seq``, then rewrite ``intake.thread`` whole in one ``bd update``.
+
+        The re-read is the record half of the ``IntakeLock`` (one host and one process are the
+        lock's): a document that moved since the caller read it is refused, writing nothing."""
+        row = self._show(bead)
+        if row is None:
+            raise IntakeStoreError(f"{bead} not found", bead=bead, operation="write_thread")
+        stored = self._thread(bead, row)
+        current = stored.seq if stored is not None else 0
+        if current != expect_seq:
+            raise IntakeRefused(
+                RefusalReason.THREAD_MOVED,
+                f"{bead}'s thread is at seq {current}, not {expect_seq}; re-read and retry",
+            )
+        if thread.seq <= expect_seq:
+            raise IntakeStoreError(
+                f"a thread write must advance seq past {expect_seq}",
+                bead=bead,
+                operation="write_thread",
+            )
+        if str(row.get("external_ref") or "") != thread.issue.url:
+            raise IntakeStoreError(
+                f"{bead} is not bound to {thread.issue.url}", bead=bead, operation="write_thread"
+            )
+        result = self._routes.issue_set_metadata_document(
+            bead, THREAD_KEY, thread_to_document(thread), actor=actor, capture=True
+        )
+        self._check(result, "write_thread", bead)
+
     # -- helpers -----------------------------------------------------------------------------
+
+    def _show(self, bead: str) -> dict | None:
+        data = self._routes.issue_show_raw(bead)
+        if isinstance(data, list):
+            data = data[0] if data else None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _thread(bead: str, row: dict) -> Thread | None:
+        document = stored_thread(row)
+        if document is None:
+            return None
+        try:
+            return thread_from_document(document)
+        except ThreadDocumentError as exc:  # never read as empty: the next write would replace it
+            raise IntakeStoreError(str(exc), bead=bead, operation="read_thread") from exc
 
     def _check(self, result: Any, operation: str, bead: str, *, prefix: str = "") -> None:
         if result.returncode:

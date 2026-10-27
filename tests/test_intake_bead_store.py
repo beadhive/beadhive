@@ -18,22 +18,31 @@ from typing import Any
 
 import pytest
 
-from beadhive.adapters.intake import SOURCE_KEY, BdReportStore
+from beadhive.adapters.intake import SOURCE_KEY, THREAD_KEY, BdReportStore
 from beadhive.modules.intake import (
     BeadView,
+    IntakeRefused,
     IntakeStoreError,
     IssueBinding,
     IssueStatus,
+    RefusalReason,
+    ReportDraft,
     ReportStore,
     SourceSnapshot,
+    StorePosture,
+    ThreadRequest,
+    ThreadService,
 )
 from beadhive.testing.intake import (
     REPORT_STORE_CASES,
     SCOPE,
     URL,
+    InProcessIntakeLock,
     draft,
     run_report_store_case,
+    thread,
 )
+from beadhive.testing.tracker import MemoryTracker, MemoryWorld, at
 from beadhive_bd_cli import CliRoutes, err_line
 
 
@@ -465,3 +474,121 @@ def test_a_lazy_scope_is_resolved_once_and_only_when_asked() -> None:
     store.create(draft())
     store.create(draft())
     assert resolved == [1]
+
+
+# -- the intake.thread document -------------------------------------------------------------
+
+
+def _bound(store: BdReportStore, bd: FakeBd) -> str:
+    bead = store.create(draft(bound=True))
+    bd.issues[bead]["metadata"]["git.commits"] = {"commits": ["abc123"]}
+    bd.calls.clear()
+    return bead
+
+
+def test_a_thread_write_rereads_the_seq_then_rewrites_only_its_own_key_on_stdin() -> None:
+    store, bd = _store()
+    bead = _bound(store, bd)
+
+    store.write_thread(bead, thread(3), expect_seq=0, actor="intake/ingest")
+
+    show, write = bd.calls
+    assert show["args"] == ["show", bead, "--json"]
+    assert write["args"] == ["update", bead, "--metadata", "@/dev/stdin"]
+    assert write["actor"] == "intake/ingest"
+    assert list(json.loads(write["stdin"])) == [THREAD_KEY]  # one key, the whole document
+    metadata = bd.issues[bead]["metadata"]
+    assert metadata["git.commits"] == {"commits": ["abc123"]}  # other writers' keys survive
+    assert metadata[SOURCE_KEY]["binding"]["identifier"] == "#7"
+    assert store.read_thread(bead) == thread(3)
+
+
+def test_a_stale_thread_write_is_refused_without_an_update() -> None:
+    store, bd = _store()
+    bead = _bound(store, bd)
+    store.write_thread(bead, thread(3), expect_seq=0, actor="a")
+    bd.calls.clear()
+
+    with pytest.raises(IntakeRefused) as refused:
+        store.write_thread(bead, thread(4), expect_seq=1, actor="a")
+
+    assert refused.value.reason is RefusalReason.THREAD_MOVED
+    assert [c["args"][0] for c in bd.calls] == ["show"]
+
+
+def test_a_failed_thread_update_is_a_store_error_naming_the_step() -> None:
+    store, bd = _store()
+    bead = _bound(store, bd)
+    original = bd._update
+
+    def failing(rest, stdin):
+        raise _Missing(rest[0])
+
+    bd._update = failing  # type: ignore[method-assign]
+    with pytest.raises(IntakeStoreError) as raised:
+        store.write_thread(bead, thread(3), expect_seq=0, actor="a")
+    bd._update = original  # type: ignore[method-assign]
+
+    assert raised.value.operation == "write_thread" and raised.value.bead == bead
+    assert store.read_thread(bead) is None
+
+
+def test_a_malformed_thread_is_a_read_error_and_never_overwritten() -> None:
+    store, bd = _store()
+    bead = _bound(store, bd)
+    bd.issues[bead]["metadata"][THREAD_KEY] = {"schema": 99}
+
+    for call in (
+        lambda: store.read_thread(bead),
+        lambda: store.write_thread(bead, thread(3), expect_seq=0, actor="a"),
+    ):
+        with pytest.raises(IntakeStoreError) as raised:
+            call()
+        assert raised.value.operation == "read_thread"
+    assert bd.issues[bead]["metadata"][THREAD_KEY] == {"schema": 99}
+
+
+def test_queue_and_lookup_reads_never_decode_a_thread() -> None:
+    """``bd list --json`` carries every row's metadata (bd 1.3.0 has no metadata-free list), so a
+    queue row holds its thread document; the queue path passes it through and never parses it."""
+    store, bd = _store()
+    bead = _bound(store, bd)
+    store.set_state(bead, "intake", "untriaged", reason="r", actor="a")
+    bd.issues[bead]["metadata"][THREAD_KEY] = "not a document"
+
+    (queued,) = store.list_open_labeled("intake:untriaged")
+    (found,) = store.find_by_external_ref(URL)
+
+    assert queued.id == found.id == bead and store.get(bead) is not None
+    assert queued.raw["metadata"][THREAD_KEY] == "not a document"
+
+
+def test_comment_ingestion_runs_end_to_end_over_the_bd_store() -> None:
+    world = MemoryWorld()
+    issue = world.add_issue("login is broken", at=at(1))
+    tracker = MemoryTracker(world)
+    store, bd = _store()
+    binding = IssueBinding("", "memory", world.locator, issue.url, issue.identifier)
+    bead = store.create(
+        ReportDraft("login is broken", "bug", "origin:github", "importer/a", binding=binding)
+    )
+    bd.issues[bead]["metadata"]["git.commits"] = {"commits": ["abc123"]}
+    first = world.add_comment(issue, "it crashes", at=at(2))
+    world.add_comment(issue, "me too", at=at(3))
+    service = ThreadService(
+        store, tracker, InProcessIntakeLock(), posture=StorePosture(published=False)
+    )
+    request = ThreadRequest(bead, "intake/ingest")
+
+    assert service.ingest_thread(request).written
+    writes = [c for c in bd.calls if c["args"][0] == "update"]
+    assert len(writes) == 1  # records and checkpoint in ONE bd update
+    assert not service.ingest_thread(request).written  # a boundary repeat: no update at all
+    world.edit_comment(first, "it crashes on save", at=at(4))
+    assert service.ingest_thread(request).written
+
+    stored = store.read_thread(bead)
+    assert stored is not None and stored.records[first.id].rev == 2
+    assert bd.issues[bead]["metadata"]["git.commits"] == {"commits": ["abc123"]}
+    assert len([c for c in bd.calls if c["args"][0] == "update"]) == 2
+    assert world.write_requests() == 0

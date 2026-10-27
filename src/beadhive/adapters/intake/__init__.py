@@ -7,6 +7,6 @@ and the failure-line parser.
 """
 
 from .bead_store import BdReportStore, ReportRoutes
-from .documents import SOURCE_KEY
+from .documents import SOURCE_KEY, THREAD_KEY
 
-__all__ = ["SOURCE_KEY", "BdReportStore", "ReportRoutes"]
+__all__ = ["SOURCE_KEY", "THREAD_KEY", "BdReportStore", "ReportRoutes"]
