@@ -1,6 +1,11 @@
 """Intake + outbound state vocabulary — the single owner of the cross-hive report
 state dimensions (epic).
 
+The intake and origin half of the vocabulary now lives in ``beadhive.modules.intake`` (its
+``domain/vocabulary.py``); this file is the stable facade that re-exports it and assembles
+``STATE_DIMENSIONS``. The contributor (``outbound`` / ``publish``) and dispatch (``escalation`` /
+``dispatch``) vocabularies stay here.
+
 The lifecycle states are modelled via native `bd set-state <bead> <dim>=<value>`
 (event-sourced, with the `<dim>:<value>` label cache) — NOT ad-hoc labels and NOT a
 re-implemented state store. This module owns only the *vocabulary*: the closed set of
@@ -92,29 +97,45 @@ per candidate bead per decision tick — cheap enough to be the loop-breaker's r
 
 from __future__ import annotations
 
+# The intake and origin vocabulary is owned by the intake module (external-intake-module-adr.md
+# section 3); this file is its facade. It re-exports the moved names through the module's public
+# API (never `.domain` / `.application`) so every importer keeps working unchanged, and builds
+# `STATE_DIMENSIONS` from `INTAKE_DIMENSIONS` plus the contributor and dispatch entries it keeps.
+from .modules.intake import (  # noqa: F401 - re-exported facade names
+    DISPOSITION_STATE,
+    INTAKE_DIMENSIONS,
+    INTAKE_PROMOTED,
+    INTAKE_UNTRIAGED,
+    ORIGIN_BACKFILL,
+    ORIGIN_DIM,
+    ORIGIN_ESCALATION,
+    ORIGIN_FACTORY_SEED,
+    ORIGIN_GITHUB,
+    ORIGIN_IMPORT,
+    ORIGIN_REPORT,
+    channel_of,
+    disposition_state,
+    is_escalation_origin,
+    is_promoted,
+    is_report_origin,
+    is_untriaged_intake,
+    origin_from_source_system,
+    origin_of,
+)
+
 # Built-in CLOSED state dimensions: {dimension: {allowed values}}. Owned by ws (not
 # per-hive config) so intake/outbound beads validate clean fleet-wide and downstream beads
 # (/ r7s7 / uxam.3) share ONE vocabulary instead of each inventing it.
 # `registry.closed_dimensions` merges these into the set `bh label validate` reads, so an
 # unknown value (e.g. `outbound:bogus`) is rejected.
 STATE_DIMENSIONS: dict[str, frozenset[str]] = {
-    # untriaged inbound; a triage disposition moves it to a terminal value (below)
-    "intake": frozenset({"untriaged", "accepted", "rejected", "rerouted", "promoted"}),
+    # untriaged inbound; a triage disposition moves it to a terminal value (intake module)
+    "intake": INTAKE_DIMENSIONS["intake"],
     "outbound": frozenset({"pending"}),  # staged outbound candidate (no public exposure)
     "publish": frozenset({"approved"}),  # contributor filed upstream (behind the human gate)
     # intake CHANNEL — the closed provenance dimension a report/import rides instead of
-    # overloading the sync-coupled native `source_system` (see the module docstring).
-    # `escalation` is the fire-and-forget HQ channel: an agent that
-    # hits a tool problem names the tool, hands it up to HQ, and never blocks.
-    # `factory-seed` is the synthetic-identity channel the HQ factory (local/factory/hq) stamps
-    # on the beads it seeds; registering it keeps those beads validate-clean fleet-wide so they
-    # never trip the intake gate.
-    # `backfill` is the historical-reconstruction channel the backfill skill stamps on beads it
-    # reconstructs from a rig's own history (git log, decision docs, …); registering it keeps
-    # backfilled beads validate-clean instead of guaranteed violations (bh-vfx9). The companion
-    # `source:<kind>` facet stays intentionally OPEN (no registry entry) — closed dimensions are
-    # reserved for values code actually branches on, which is true of `origin` but not `source`.
-    "origin": frozenset({"report", "github", "import", "escalation", "factory-seed", "backfill"}),
+    # overloading the sync-coupled native `source_system`; values owned by the intake module.
+    "origin": INTAKE_DIMENSIONS["origin"],
     # the unattended dispatch loop's open/closed escalation flag (bh-bh2h.2.1's vocabulary) —
     # see the module docstring's "Dispatcher failure dimensions" section.
     "escalation": frozenset({"raised", "resolved"}),
@@ -183,19 +204,8 @@ STATE_DIMENSIONS["dispatch"] = DISPATCH_CAUSES
 
 
 # Canonical `<dim>:<value>` label cache entries (what `bd set-state` writes).
-INTAKE_UNTRIAGED = "intake:untriaged"
-INTAKE_PROMOTED = "intake:promoted"  # handed to the planner (adopt queue key)
 OUTBOUND_PENDING = "outbound:pending"
 PUBLISH_APPROVED = "publish:approved"
-ORIGIN_REPORT = "origin:report"
-ORIGIN_GITHUB = "origin:github"
-ORIGIN_IMPORT = "origin:import"
-ORIGIN_ESCALATION = "origin:escalation"
-ORIGIN_FACTORY_SEED = "origin:factory-seed"  # HQ factory synthetic-identity seed (akyd)
-ORIGIN_BACKFILL = "origin:backfill"  # backfill skill historical reconstruction (bh-vfx9)
-
-# Dimension name for the intake channel — the single spelling report.py / triage derive from.
-ORIGIN_DIM = "origin"
 
 # The unattended dispatch loop's escalation flag (bh-bh2h.2.1's vocabulary).
 ESCALATION_DIM = "escalation"
@@ -234,85 +244,12 @@ DISPATCH_AMBIGUOUS_GATE = "dispatch:ambiguous_gate"
 DISPATCH_STUCK = "dispatch:stuck"
 DISPATCH_PROVISIONING_FAILED = "dispatch:provisioning_failed"
 
-# Triage disposition -> the terminal `intake` value it transitions to. Setting
-# any of these via `bd set-state` clears `untriaged` (leaving the triage queue) while recording the
-# outcome as an event-sourced state transition — NOT a silently-yanked label.
-DISPOSITION_STATE: dict[str, str] = {
-    "accept": "accepted",
-    "reject": "rejected",
-    "reroute": "rerouted",
-    "promote": "promoted",
-}
-
-
-def is_untriaged_intake(labels) -> bool:
-    """True while a bead is untriaged inbound (`intake:untriaged`). Triage clears the
-    intake dimension, so this predicate drives the triage queue."""
-    return INTAKE_UNTRIAGED in (labels or [])
-
-
-def is_promoted(labels) -> bool:
-    """True once a report has been promoted to the planner (`intake:promoted`). Drives the
-    planner's adopt queue, which builds on the triage `promote` verb."""
-    return INTAKE_PROMOTED in (labels or [])
-
-
-def disposition_state(disposition: str) -> str | None:
-    """The terminal `intake` value a disposition transitions to (e.g. ``accept`` -> ``accepted``),
-    or None for an unknown disposition."""
-    return DISPOSITION_STATE.get(disposition)
-
 
 def is_outbound_candidate(labels) -> bool:
     """True for a staged outbound candidate (`outbound:pending`) not yet filed upstream
     (`publish:approved`). Drives the contributor queue."""
     labels = labels or []
     return OUTBOUND_PENDING in labels and PUBLISH_APPROVED not in labels
-
-
-def origin_of(labels):
-    """The intake channel (`report` | `github` | `import`) stamped on a bead via the
-    `origin:<value>` label cache, or ``None`` when no valid origin label is present.
-
-    Reports carry an explicit `origin:report` label (set by `ws report`); imported beads do
-    NOT — for those, derive the channel from the native `source_system` via
-    ``origin_from_source_system`` (or use ``channel_of`` to resolve both in one call)."""
-    for label in labels or []:
-        if label.startswith(f"{ORIGIN_DIM}:"):
-            value = label.split(":", 1)[1]
-            if value in STATE_DIMENSIONS[ORIGIN_DIM]:
-                return value
-    return None
-
-
-def is_report_origin(labels) -> bool:
-    """True for a bead that entered through the cross-hive `ws report` channel
-    (`origin:report`). The triage queue keys on this channel."""
-    return ORIGIN_REPORT in (labels or [])
-
-
-def is_escalation_origin(labels) -> bool:
-    """True for a bead that entered through the fire-and-forget `ws escalate` channel
-    (`origin:escalation`). Always lands in HQ; the triage queue
-     will key on this channel once routing is wired."""
-    return ORIGIN_ESCALATION in (labels or [])
-
-
-def origin_from_source_system(source_system):
-    """Derive the intake channel from a bead's NATIVE `source_system` — a READ-side map for
-    imported beads (github / legacy import) that carry a `source_system` but no `origin:`
-    label. Returns the channel (`github` | `import` | `report`) or ``None`` for an unknown /
-    empty value. This does NOT re-stamp an origin label; it maps `source_system` → channel on
-    read so the triage queue is uniform WITHOUT double-stamping imports."""
-    value = (source_system or "").strip().lower()
-    return value if value in STATE_DIMENSIONS[ORIGIN_DIM] else None
-
-
-def channel_of(labels, source_system=None):
-    """Uniform intake channel for the triage queue: the explicit
-    `origin:` label if present (reports), else derived from the native `source_system`
-    (imported beads). Returns the channel or ``None``."""
-    return origin_of(labels) or origin_from_source_system(source_system)
 
 
 def is_escalation_raised(labels) -> bool:

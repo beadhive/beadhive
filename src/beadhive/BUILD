@@ -84,6 +84,7 @@ target(
         "./modules/agents",
         "./modules/config",
         "./modules/hives",
+        "./modules/intake",
         "./modules/state",
         "./modules/tracker",
         "./modules/work",
