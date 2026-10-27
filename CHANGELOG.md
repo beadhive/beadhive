@@ -13,6 +13,32 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.31.0 (2026-10-27)
+
+### Feat
+
+- **tracker-github**: add the comment.create writer and share one write seam with labels.change
+- **tracker-github**: add the labels.change writer for owned labels behind a single-use grant
+- **config**: refuse write.labels.enabled with empty owned_prefixes at load
+- **tracker-github**: add the GitHub adapter read path over githubkit
+- **tracker-github**: add the beadhive-tracker-github package skeleton and beadhive[github] extra
+- **tracker**: add informational tracker-adapter readiness rows to hive ready and doctor
+- **tracker**: list bound stores with their derived project in tracker status
+- **tracker**: compose the tracker.adapter category with R6-R13 refusals and a status renderer
+- **config**: tracker-adapter binding schema, plugins and plugin_kernel (bh-w22e8)
+- **testing**: add the beadhive.testing.tracker conformance kit
+- **tracker**: add the tracker adapter port contracts and paging helpers
+- **plugins**: add shared credentials module and one provenance-returning GitHub token chain
+
+### Fix
+
+- **hq**: surface restore-floor refusals on the operator authority read (bh-a0wem)
+- **hq**: accept a new frame's epoch-0 stamp provisioning at the restore floor (bh-a0wem)
+
+### Refactor
+
+- **plugins**: one shared host and kernel version constant for discovery (P5)
+
 ## v0.30.0 (2026-10-24)
 
 ### Feat
