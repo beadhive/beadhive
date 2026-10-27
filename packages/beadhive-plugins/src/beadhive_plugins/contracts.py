@@ -42,6 +42,11 @@ class DiagnosticCode(StrEnum):
     BUILD_OWNERSHIP = "build-ownership"
     BUILD_PROVEN_MANIFEST = "build-proven-manifest"
     BUILD_ATTEST_TAGS = "build-attest-tags"
+    # The ``tracker.adapter`` category (tracker-adapter-plugin-adr.md, status and doctor).
+    TRACKER_PACKAGE = "tracker-package"
+    TRACKER_CONFIG = "tracker-config"
+    TRACKER_CREDENTIAL = "tracker-credential"
+    TRACKER_CAPABILITY = "tracker-capability"
 
 
 @dataclass(frozen=True, order=True)

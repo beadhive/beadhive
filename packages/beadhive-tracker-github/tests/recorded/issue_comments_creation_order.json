@@ -1,0 +1,136 @@
+{
+  "description": "Per-issue comments come in creation order (since only), so the checkpoint is withheld until the final page and carries the running maximum (an old comment edited later).",
+  "provenance": "Synthetic, hand-assembled in the documented shape of GitHub REST API version 2022-11-28 responses (field set as returned by api.github.com for issues and issue comments). No test makes a live request; ids, users and bodies are invented.",
+  "interactions": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments?per_page=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org",
+          "link": "<https://api.github.com/repositories/9001/issues/7/comments?per_page=2&page=2>; rel=\"next\""
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/601",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-601",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 601,
+            "node_id": "IC_kwDOAAAB601",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-03-01T00:00:00Z",
+            "updated_at": "2026-03-09T00:00:00Z",
+            "author_association": "CONTRIBUTOR",
+            "body": "one (edited)",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/601/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": null
+          },
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/602",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-602",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 602,
+            "node_id": "IC_kwDOAAAB602",
+            "user": {
+              "login": "bob",
+              "id": 1002,
+              "node_id": "MDQ6VXNlcj1002",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1002?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/bob",
+              "html_url": "https://github.com/bob",
+              "followers_url": "https://api.github.com/users/bob/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-03-02T00:00:00Z",
+            "updated_at": "2026-03-02T00:00:00Z",
+            "author_association": "CONTRIBUTOR",
+            "body": "two",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/602/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": null
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repositories/9001/issues/7/comments?per_page=2&page=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4987",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-used": "13",
+          "x-ratelimit-resource": "core",
+          "x-github-api-version-selected": "2022-11-28",
+          "content-type": "application/json; charset=utf-8",
+          "x-oauth-scopes": "repo, read:org"
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/603",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-603",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 603,
+            "node_id": "IC_kwDOAAAB603",
+            "user": {
+              "login": "alice",
+              "id": 1001,
+              "node_id": "MDQ6VXNlcj1001",
+              "avatar_url": "https://avatars.githubusercontent.com/u/1001?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/alice",
+              "html_url": "https://github.com/alice",
+              "followers_url": "https://api.github.com/users/alice/followers",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-03-03T00:00:00Z",
+            "updated_at": "2026-03-03T00:00:00Z",
+            "author_association": "CONTRIBUTOR",
+            "body": "three",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/603/reactions",
+              "total_count": 0
+            },
+            "performed_via_github_app": null
+          }
+        ]
+      }
+    }
+  ]
+}

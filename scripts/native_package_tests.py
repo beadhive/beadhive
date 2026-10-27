@@ -15,6 +15,7 @@ EXCLUDED_PACKAGES = frozenset(
         "beadhive-hq-storage",
         "beadhive-hq-storage-dolt",
         "beadhive-pants",
+        "beadhive-tracker-github",
     }
 )
 SAFE_SHELL_PATH = re.compile(r"[A-Za-z0-9_./-]+")

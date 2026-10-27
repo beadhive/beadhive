@@ -267,8 +267,9 @@ def test_compatibility_facade_delegates_builtin_metadata_and_enablement(monkeypa
         host_executables={name: "1.0.0" for name in names},
     )
 
-    # `pants` is a built-in manifest (build.impact) with no legacy registry declaration.
-    builtins = sorted((*names, "pants"))
+    # `pants` (build.impact) and `tracker-github` (tracker.adapter) are built-in manifests with
+    # no legacy registry declaration.
+    builtins = sorted((*names, "pants", "tracker-github"))
     assert [plugin.manifest.plugin_id for plugin in result.plugins] == builtins
     assert {selection.plugin_id for selection in result.capabilities} == set(builtins)
     assert result.errors == ()
@@ -295,7 +296,15 @@ def test_kernel_disablement_overrides_legacy_enablement_and_never_runs_callback(
         "plugin_kernel": {
             "enabled": {
                 plugin_id: False
-                for plugin_id in ("herdr", "hitch", "observaloop", "orca", "pants", "repowise")
+                for plugin_id in (
+                    "herdr",
+                    "hitch",
+                    "observaloop",
+                    "orca",
+                    "pants",
+                    "repowise",
+                    "tracker-github",
+                )
             }
         }
     }

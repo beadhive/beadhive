@@ -740,3 +740,166 @@ def test_host_daemon_detect_only_handoff_warns_without_claiming_lifecycle(monkey
     assert check.state == "warn"
     assert "bh-q0lol.14" in check.detail
     assert "must not be rendered" not in check.detail
+
+
+# ---------------------------------------------------------------------------
+# tracker adapter rows (T2 of the tracker.adapter ADR): informational, one per bound store.
+# ---------------------------------------------------------------------------
+
+_TRACKER_TOKEN = "ghp_" + "A1b2C3d4E5" * 4
+_TRACKER_ON = {
+    "enabled": True,
+    "read": {"issues": {"enabled": True}, "comments": {"enabled": False}},
+}
+
+
+def _tracker_manifest_source():
+    """A TEST-ONLY manifest source: the real package manifest ships separately."""
+    from beadhive.kernel.plugins import (
+        BuiltInManifestSource,
+        ManifestDocument,
+        ManifestProvenance,
+    )
+
+    doc = {
+        "capabilities": {"provides": [{"api_version": 1, "id": "tracker.adapter"}]},
+        "compatibility": {
+            "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+            "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"},
+        },
+        "configuration": {
+            "legacy_namespaces": [],
+            "namespace": "plugins.tracker-github",
+            "schema_artifact": None,
+        },
+        "lifecycle": {"subscriptions": []},
+        "manifest_version": 1,
+        "plugin_id": "tracker-github",
+        "plugin_version": "1.0.0",
+        "presentation": {"cli": []},
+        "security": {"credentials": [], "executables": [], "permissions": []},
+    }
+    return BuiltInManifestSource(
+        (ManifestDocument(ManifestProvenance("test-only", "t.json"), json.dumps(doc).encode()),)
+    )
+
+
+def _bind_tracker(world, monkeypatch, *, plugins=None, installed=True):
+    """Bind the current hive's public store to the tracker adapter, optionally switching the
+    plugin on, with a test-only manifest source standing in for the package."""
+    from beadhive.bootstrap import tracker as tracker_module
+
+    cfg = config.load()
+    entry = next(e for e in cfg["managed_repos"] if e["repo"] == "myrepo")
+    entry["stores"] = {
+        "internal": {"remote": "widget-private"},
+        "public": {
+            "prefix": "mrpub",
+            "path": str(world.tmp / "stores" / "public"),
+            "remote": "git-origin",
+            "source": "github-issues",
+            "adapter": "tracker-github",
+        },
+    }
+    if plugins is not None:
+        cfg["plugins"] = plugins
+    config.save(cfg)
+    from beadhive.kernel.plugins import BuiltInManifestSource
+
+    source = _tracker_manifest_source() if installed else BuiltInManifestSource(())
+    monkeypatch.setattr(tracker_module, "builtin_manifest_source", lambda: source)
+
+
+def _tracker_lines(world):
+    result = hive_ready.probe_readiness()
+    return result, [c for c in result.checks if c.label == "tracker adapter"]
+
+
+def test_a_hive_with_no_binding_shows_no_tracker_row_and_builds_no_composition(world, monkeypatch):
+    from beadhive.bootstrap import tracker as tracker_module
+
+    def forbidden(**_kwargs):
+        raise AssertionError("an unbound hive must not build the tracker composition")
+
+    monkeypatch.setattr(tracker_module, "compose_tracker_category", forbidden)
+    _make_ready(world)
+
+    result, lines = _tracker_lines(world)
+
+    assert lines == []
+    assert result.ready is True
+
+
+def test_a_bound_store_with_the_plugin_disabled_is_one_na_row_and_changes_nothing(
+    world, monkeypatch
+):
+    _make_ready(world)
+    baseline = hive_ready.probe_readiness()
+    _bind_tracker(world, monkeypatch)  # plugins.tracker-github absent: off
+
+    result, lines = _tracker_lines(world)
+
+    (line,) = lines
+    assert (line.required, line.state) == (False, "na")
+    assert "disabled" in line.detail and line.detail.startswith("public:")
+    # Conformance is unaffected: same verdict and the same set of required checks as unbound.
+    assert result.ready is baseline.ready is True
+    required = [(c.label, c.state) for c in result.checks if c.required]
+    assert required == [(c.label, c.state) for c in baseline.checks if c.required]
+    others = [c for c in result.checks if c.label != "tracker adapter"]
+    assert [(c.label, c.required, c.state) for c in others] == [
+        (c.label, c.required, c.state) for c in baseline.checks
+    ]
+
+
+def test_a_bound_store_whose_plugin_is_not_installed_is_an_off_row_naming_the_extra(
+    world, monkeypatch
+):
+    _make_ready(world)
+    _bind_tracker(world, monkeypatch, installed=False)
+
+    result, (line,) = _tracker_lines(world)
+
+    assert (line.required, line.state) == (False, "off")
+    assert "beadhive[github]" in line.detail
+    assert result.ready is True
+
+
+def test_a_ready_row_names_the_bound_repository_and_never_fails_the_gate(
+    world, monkeypatch, capsys
+):
+    _make_ready(world)
+    _bind_tracker(world, monkeypatch, plugins={"tracker-github": _TRACKER_ON})
+
+    result, (line,) = _tracker_lines(world)
+
+    assert (line.required, line.state) == (False, "ok")
+    assert "myorg/myrepo" in line.detail and "issues.read" in line.detail
+    assert _run(verbose=True) == 0
+    assert "tracker adapter" in capsys.readouterr().out
+
+
+def test_every_problem_row_stays_a_non_required_warning(world, monkeypatch):
+    _make_ready(world)
+    # Enabled but the package is absent: the strongest row the ADR allows (R9 error once on).
+    _bind_tracker(world, monkeypatch, plugins={"tracker-github": _TRACKER_ON}, installed=False)
+
+    result, (line,) = _tracker_lines(world)
+
+    assert (line.required, line.state) == (False, "warn")
+    assert result.ready is True
+    assert _run() == 0
+
+
+def test_the_tracker_row_carries_no_credential(world, monkeypatch, capsys):
+    monkeypatch.setenv("GH_TOKEN", _TRACKER_TOKEN)
+    monkeypatch.setenv("GITHUB_TOKEN", _TRACKER_TOKEN)
+    _make_ready(world)
+    _bind_tracker(world, monkeypatch, plugins={"tracker-github": _TRACKER_ON})
+
+    assert _run(verbose=True) == 0
+    out = capsys.readouterr().out
+    assert "tracker adapter" in out
+    assert _TRACKER_TOKEN not in out
+    payload = hive_ready.ready_payload(True)
+    assert _TRACKER_TOKEN not in json.dumps(payload)

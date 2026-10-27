@@ -177,6 +177,10 @@ _OFFICIAL_V1_ARTIFACT_IDENTITIES = (
         "artifacts/plugin-config-repowise-v1.schema.json",
     ),
     (
+        "urn:beadhive:wire-schema:plugin-config:tracker-github:1",
+        "artifacts/plugin-config-tracker-github-v1.schema.json",
+    ),
+    (
         "urn:beadhive:wire-schema:plugin-manifest:1",
         "artifacts/plugin-manifest-v1.schema.json",
     ),

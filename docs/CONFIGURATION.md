@@ -353,11 +353,19 @@ managed_repos:
 | `sync` | `local`: `push-pull`; `remote`: `pull-only` | `local` allows `push-pull`/`none`; `remote` allows `pull-only`/`none` |
 | `source` | none | public only: `github-issues` |
 | `dispatch` | internal yes, public no | a public store can never be operational |
+| `adapter` | none (unbound) | public only, and requires `source`: the plugin id of the tracker adapter serving the store; known ids: `tracker-github` (serves `github-issues`). Fleet-owned intent only: it never enables a plugin, a read or a write ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md)) |
 
 `bh config validate` rejects a `stores` block without `internal`, duplicate prefixes, paths or
 remote names across the fleet, every invalid authority/sync combination, an internal `remote`
 that is not the hive's `dolt_remote`, a public `remote` with no descriptor of its own, and two
 descriptors (hive-level or nested) sharing one Dolt remote location.
+
+`adapter` is checked at load from the document alone: an unknown id, a value that is not a
+plugin id (rejected without being repeated), an adapter without `source`, an adapter on the
+internal store, and an adapter serving another source are errors. The projection never reads it.
+**Do not declare `adapter` yet:** a host whose binary predates the key cannot resolve any store of
+that hive, so the key stays unused until the schema has rotated to every host (`bh-uf986`).
+Validation errors of the stores block never repeat an input value.
 
 A public store with `source: github-issues` and `sync: pull-only` is filled only on demand by
 `bh hive remote sync <hive> --store <prefix> --pull-only` (formerly `bh hive project-issues`) — a
@@ -372,6 +380,47 @@ guarded one-time replacement). `bh hive project-issues` is its deprecated `--pul
 Running a partitioned hive — layout, bootstrap modes, explicit public sync and publication,
 diagnostics, recovery, and the separate rollout gate for a live hive — is in the operator guide
 [TWO-STORES.md](TWO-STORES.md).
+
+### `plugins` and `plugin_kernel` {#plugins}
+
+`plugins.<plugin_id>` is the canonical, plugin-owned namespace (the legacy top-level `hitch`,
+`orca`, `repowise`, `herdr` and `observaloop` sections remain its compatibility aliases). Built-in
+fragments are validated against their published `plugin-config-<id>-v1` schema; an unknown plugin
+id is kept as opaque, inactive data. `plugin_kernel` is core-owned discovery policy:
+`enabled.<plugin_id>` (a boolean override; `false` always wins), `capability_owners`
+(`capability.id@MAJOR` to plugin id) and `allow_external_entry_points` (default `false`). Both
+are **host-owned**: a fleet push cannot switch a plugin on. Both are absent by default.
+
+`plugins.tracker-github` configures the GitHub tracker adapter. Every switch is off and every
+boolean is strict (`"false"` is invalid, not truthy). There is no `repo` key: owner and
+repository come from the bound hive's `provider`/`org`/`repo`. No key holds a credential, a
+command or an approval; credentials stay ambient. The adapter ships as the optional
+`beadhive-tracker-github` package (install `beadhive[github]`); installing it enables nothing,
+and `import beadhive` never needs or imports its `githubkit` dependency.
+
+| Key (under `plugins.tracker-github`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | the plugin's own gate; off means no owner, no port and no network |
+| `base_url` | unset (public API) | GitHub Enterprise Server prefix: https, no userinfo, query or fragment |
+| `credential.sources` | `[env, gh]` | credential source names in precedence order; empty means anonymous |
+| `read.issues.enabled` / `read.comments.enabled` | `false` | enable `issues.read` / `comments.read` |
+| `read.include_closed` | `true` | scope within a read, not a feature switch |
+| `read.page_size` | unset | listing page size, 1 to 100 |
+| `http_cache.enabled` | `false` | conditional requests for the id-reconcile pass |
+| `retry.max_retries` / `retry.max_single_wait_seconds` / `retry.max_total_wait_seconds` | `3` / `60` / `120` | the retry budget; single wait at most the total |
+| `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
+| `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
+
+The adapter ships the read path and both writers, `comment.create` and `labels.change` (owned
+prefixes only). Each write flag binds its writer and nothing else, and each write still needs its
+own operator-approved single-use grant (no key can supply one). A read or write whose flag is off
+is refused before any request (a disabled writer has no method on the bound object).
+`read.include_closed: false` narrows issue listings but never the full id snapshot used to detect
+deletions (a closed issue still exists). Retries wait on the adapter's own budget
+above, never on githubkit's built-in retry.
+
+As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
+to every host (`bh-uf986`).
 
 ## `bh config` commands
 

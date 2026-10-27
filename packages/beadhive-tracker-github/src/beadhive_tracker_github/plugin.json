@@ -1,0 +1,36 @@
+{
+  "capabilities": {"provides": [{"api_version": 1, "id": "tracker.adapter"}]},
+  "compatibility": {
+    "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+    "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+  },
+  "configuration": {"legacy_namespaces": [], "namespace": "plugins.tracker-github", "schema_artifact": "urn:beadhive:wire-schema:plugin-config:tracker-github:1"},
+  "lifecycle": {"subscriptions": []},
+  "manifest_version": 1,
+  "plugin_id": "tracker-github",
+  "plugin_version": "1.0.0",
+  "presentation": {
+    "cli": [
+      {"capability_id": "tracker.adapter", "command": "plugin tracker-github doctor"},
+      {"capability_id": "tracker.adapter", "command": "plugin tracker-github status"}
+    ]
+  },
+  "security": {
+    "credentials": [
+      {
+        "id": "github-api",
+        "purpose": "authenticate GitHub REST requests; absent means anonymous, rate-limited reads",
+        "required": false,
+        "sources": [
+          {"kind": "environment-variable", "name": "GH_TOKEN"},
+          {"kind": "environment-variable", "name": "GITHUB_TOKEN"}
+        ]
+      }
+    ],
+    "executables": [{"name": "gh", "required": false, "version": {"maximum_exclusive": "999.0.0", "minimum_inclusive": "0.0.0"}}],
+    "permissions": [
+      {"id": "network.github.read", "purpose": "read issues and comments of the configured repository over HTTPS", "required": true},
+      {"id": "network.github.write", "purpose": "post a comment or change Beadhive-owned labels, only with a single-use operator-approved grant", "required": false}
+    ]
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "description": "One accepted comment.create write: the POST with the marked body and GitHub's 201 Created answer, then the per-issue listing that finds the comment again by its decoded marker.",
+  "provenance": "Synthetic, hand-assembled in the documented shape of GitHub REST API version 2022-11-28 (201 Created for POST /repos/{owner}/{repo}/issues/{issue_number}/comments, field set as returned for issue comments). Not captured from a live write; ids, users and bodies are invented. Live re-verification is pending the first operator-approved write recorded on bead bh-03s4w.",
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments",
+        "json": {
+          "body": "Thanks for the report. A fix is merged and ships in the next release.\n\n<!-- bh:v1 hive=acme/widgets install=6f1c2a7e-0b4d-4c5e-9a1b-2c3d4e5f6a7b outbox=ob1_01JC0000000000000000000000 -->"
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4989",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10",
+          "location": "https://api.github.com/repos/acme/widgets/issues/comments/701"
+        },
+        "json": {
+          "url": "https://api.github.com/repos/acme/widgets/issues/comments/701",
+          "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-701",
+          "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+          "id": 701,
+          "node_id": "IC_kwDOAAAB701",
+          "user": {
+            "login": "maintainer",
+            "id": 42,
+            "node_id": "MDQ6VXNlcjQy",
+            "avatar_url": "https://avatars.githubusercontent.com/u/42?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/maintainer",
+            "html_url": "https://github.com/maintainer",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+          },
+          "created_at": "2026-02-06T10:00:00Z",
+          "updated_at": "2026-02-06T10:00:00Z",
+          "author_association": "OWNER",
+          "body": "Thanks for the report. A fix is merged and ships in the next release.\n\n<!-- bh:v1 hive=acme/widgets install=6f1c2a7e-0b4d-4c5e-9a1b-2c3d4e5f6a7b outbox=ob1_01JC0000000000000000000000 -->",
+          "reactions": {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/701/reactions",
+            "total_count": 0,
+            "+1": 0,
+            "-1": 0,
+            "laugh": 0,
+            "hooray": 0,
+            "confused": 0,
+            "heart": 0,
+            "rocket": 0,
+            "eyes": 0
+          },
+          "performed_via_github_app": null
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4988",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": [
+          {
+            "url": "https://api.github.com/repos/acme/widgets/issues/comments/701",
+            "html_url": "https://github.com/acme/widgets/issues/7#issuecomment-701",
+            "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "id": 701,
+            "node_id": "IC_kwDOAAAB701",
+            "user": {
+              "login": "maintainer",
+              "id": 42,
+              "node_id": "MDQ6VXNlcjQy",
+              "avatar_url": "https://avatars.githubusercontent.com/u/42?v=4",
+              "gravatar_id": "",
+              "url": "https://api.github.com/users/maintainer",
+              "html_url": "https://github.com/maintainer",
+              "type": "User",
+              "user_view_type": "public",
+              "site_admin": false
+            },
+            "created_at": "2026-02-06T10:00:00Z",
+            "updated_at": "2026-02-06T10:00:00Z",
+            "author_association": "OWNER",
+            "body": "Thanks for the report. A fix is merged and ships in the next release.\n\n<!-- bh:v1 hive=acme/widgets install=6f1c2a7e-0b4d-4c5e-9a1b-2c3d4e5f6a7b outbox=ob1_01JC0000000000000000000000 -->",
+            "reactions": {
+              "url": "https://api.github.com/repos/acme/widgets/issues/comments/701/reactions",
+              "total_count": 0,
+              "+1": 0,
+              "-1": 0,
+              "laugh": 0,
+              "hooray": 0,
+              "confused": 0,
+              "heart": 0,
+              "rocket": 0,
+              "eyes": 0
+            },
+            "performed_via_github_app": null
+          }
+        ]
+      }
+    }
+  ]
+}

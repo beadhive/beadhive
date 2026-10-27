@@ -39,8 +39,10 @@ from .discovery import (
     discover_plugins,
     parse_kernel_config,
 )
+from .versions import BEADHIVE_COMPATIBILITY_VERSION, PLUGIN_KERNEL_VERSION
 
 __all__ = [
+    "BEADHIVE_COMPATIBILITY_VERSION",
     "BUILD_IMPACT",
     "BUILD_VERIFY",
     "BuildVerifier",
@@ -64,6 +66,7 @@ __all__ = [
     "ManifestProvenance",
     "ManifestSource",
     "LifecycleSubscriptionDeclaration",
+    "PLUGIN_KERNEL_VERSION",
     "PermissionRequirement",
     "PluginDiagnostic",
     "PluginKernelConfig",

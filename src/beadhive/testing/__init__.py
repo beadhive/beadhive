@@ -5,7 +5,9 @@ capability module can therefore import it without constructing Beadhive's runtim
 repository-root pytest fixtures.
 
 The :mod:`beadhive.testing.impact` subpackage (the ``ImpactBackend`` conformance kit) is imported
-explicitly, never from here: it depends on the work module's impact contract.
+explicitly, never from here: it depends on the work module's impact contract. Likewise the
+:mod:`beadhive.testing.tracker` subpackage (``MemoryTracker`` and the tracker adapter conformance
+cases) depends on the tracker module's contracts and is imported explicitly.
 """
 
 from .conformance import (

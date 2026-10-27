@@ -56,6 +56,9 @@ import os
 import signal
 import subprocess
 import sys
+from collections.abc import Callable, Mapping, Sequence
+
+from beadhive_plugins.credentials import ResolvedToken, TokenSource
 
 from . import otel
 
@@ -124,27 +127,32 @@ def _fill_git_workspace(env: dict[str, str]) -> None:
     _set(env, "GIT_WORKSPACE", workspace_root())
 
 
-def _fill_github_token(env: dict[str, str]) -> None:
-    """``GITHUB_TOKEN`` for a child that authenticates to GitHub over HTTPS, derived FRESH from
-    ``gh auth token`` and never persisted.
+#: The logical names ``credential.sources`` may carry (tracker-adapter plugin ADR): ``env`` is the
+#: environment variables, ``gh`` a fresh ``gh auth token``. Anything else is a configuration error.
+GITHUB_TOKEN_SOURCE_NAMES = ("env", "gh")
 
-    Order, and it is all precedence: an operator-set ``GITHUB_TOKEN`` is left alone; failing that
-    a set ``GH_TOKEN`` is MIRRORED (still the operator's value, under the name the providers
-    declare); only with neither set does bh derive one, and only when ``deps.satisfied(gh)``.
+#: Provenance of a token derived from ``gh auth token`` (the environment legs are ``env:<VAR>``).
+GH_AUTH_TOKEN_SOURCE = "gh-auth-token"
 
-    A token derived here lives in one dict and one child process. It reaches no log, no OTEL
-    attribute and no error message — every failure branch below names the STATE, never a value.
-    """
+
+def _github_env_order() -> tuple[str, ...]:
+    """``GITHUB_TOKEN`` first (operator intent for the name bh writes), then gh's own read order
+    from the dep row. De-duplicated: the row lists ``GITHUB_TOKEN`` too."""
+    from . import deps  # lazy: deps imports this module
+
+    gh = deps.by_name("gh")
+    order = [GITHUB_TOKEN_VAR, *(gh.auth.env_vars if gh.auth else ())]
+    return tuple(dict.fromkeys(order))
+
+
+def _derive_gh_auth_token() -> str | None:
+    """A fresh ``gh auth token`` when ``gh`` is installed and authenticated, else None.
+
+    Every failure branch names the STATE, never a value: on the success path stdout IS the
+    token, so it is never echoed here."""
     from . import credentials, deps, log  # lazy: both import this module
 
     gh = deps.by_name("gh")
-    if env.get(GITHUB_TOKEN_VAR, "").strip():
-        return  # operator intent — the launcher fills gaps, it never overrides
-    for var in gh.auth.env_vars:  # gh's own read order, from the dep row
-        if inherited := env.get(var, "").strip():
-            env[GITHUB_TOKEN_VAR] = inherited
-            return
-
     report = credentials.probe(gh)
     if not deps.satisfied(gh, authenticated=report.authenticated):
         log.get_logger(__name__).warning(
@@ -154,12 +162,11 @@ def _fill_github_token(env: dict[str, str]) -> None:
             remedy=report.remedy or gh.auth.remedy,
             consequence=gh.auth.consequence,
         )
-        return
+        return None
 
     res = run(["gh", "auth", "token"], check=False, capture=True, timeout=TOKEN_TIMEOUT)
     token = (res.stdout or "").strip()
     if res.returncode != 0 or not token:
-        # Never echo stdout/stderr here: on the success path it IS the token.
         log.get_logger(__name__).warning(
             "github_token_underivable",
             installed=True,
@@ -167,8 +174,69 @@ def _fill_github_token(env: dict[str, str]) -> None:
             remedy=gh.auth.remedy,
             consequence=gh.auth.consequence,
         )
-        return
-    env[GITHUB_TOKEN_VAR] = token
+        return None
+    return token
+
+
+def github_token_source(
+    environ: Mapping[str, str] | None = None,
+    *,
+    names: Sequence[str] = GITHUB_TOKEN_SOURCE_NAMES,
+    gh_auth_token: Callable[[], str | None] | None = None,
+) -> TokenSource:
+    """The one derivation of bh's GitHub credential chain, as an injectable zero-argument
+    :class:`~beadhive_plugins.credentials.TokenSource`.
+
+    Resolves in the order of *names* (default ``env`` then ``gh``): ``GITHUB_TOKEN``, then
+    ``GH_TOKEN`` (blank counts as unset), then a fresh ``gh auth token``. The result carries its
+    provenance (``env:GH_TOKEN``) and its value is redacted from ``repr``/``str``. Nothing is
+    cached, logged or stored: the source is called once per operation, and the ``gh`` leg is only
+    reached when no environment variable supplied a token. *environ* defaults to the live process
+    environment, read fresh on each call; *gh_auth_token* is the injectable ``gh`` leg (tests
+    pass a fake, so no process is spawned)."""
+    unknown = [name for name in names if name not in GITHUB_TOKEN_SOURCE_NAMES]
+    if unknown:
+        raise ValueError(f"unknown credential source name(s): {unknown}")
+    names = tuple(names)
+
+    def source() -> ResolvedToken | None:
+        env = os.environ if environ is None else environ
+        for name in names:
+            if name == "env":
+                for var in _github_env_order():
+                    if value := (env.get(var) or "").strip():
+                        return ResolvedToken(value, f"env:{var}")
+            elif value := ((gh_auth_token or _derive_gh_auth_token)() or "").strip():
+                return ResolvedToken(value, GH_AUTH_TOKEN_SOURCE)
+        return None
+
+    return source
+
+
+def resolve_github_token(
+    environ: Mapping[str, str] | None = None,
+    *,
+    gh_auth_token: Callable[[], str | None] | None = None,
+) -> ResolvedToken | None:
+    """Resolve the GitHub credential once, with provenance. See :func:`github_token_source`."""
+    return github_token_source(environ, gh_auth_token=gh_auth_token)()
+
+
+def _fill_github_token(env: dict[str, str]) -> None:
+    """``GITHUB_TOKEN`` for a child that authenticates to GitHub over HTTPS, derived FRESH from
+    ``gh auth token`` and never persisted.
+
+    Order, and it is all precedence: an operator-set ``GITHUB_TOKEN`` is left alone; failing that
+    a set ``GH_TOKEN`` is MIRRORED (still the operator's value, under the name the providers
+    declare); only with neither set does bh derive one, and only when ``deps.satisfied(gh)``.
+    The chain itself is :func:`resolve_github_token`; this only places its winner.
+
+    A token derived here lives in one dict and one child process. It reaches no log, no OTEL
+    attribute and no error message — every failure branch names the STATE, never a value.
+    """
+    resolved = resolve_github_token(env)
+    if resolved is not None and resolved.source != f"env:{GITHUB_TOKEN_VAR}":
+        env[GITHUB_TOKEN_VAR] = resolved.value
 
 
 def child_env(base=None, *, github_token: bool = False) -> dict[str, str]:

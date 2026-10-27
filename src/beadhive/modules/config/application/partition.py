@@ -40,6 +40,16 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "repowise",
         "hitch",
         "herdr",
+        # Plugin authority is host-owned (tracker-adapter-plugin-adr.md C2/D4): a fleet push may
+        # declare a store binding (`managed_repos`) but can never enable a plugin, a read or a
+        # write. The canonical namespaces of the five legacy sections keep their legacy owner.
+        "plugin_kernel",
+        "plugins.tracker-github",
+        "plugins.herdr",
+        "plugins.hitch",
+        "plugins.observaloop",
+        "plugins.orca",
+        "plugins.repowise",
         "host.daemon",
         "host.frame_bridge",
         "host.frame_id",

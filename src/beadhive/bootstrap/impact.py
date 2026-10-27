@@ -32,7 +32,12 @@ from beadhive_plugins.contracts import (
 
 from ..adapters.impact_git import GitTreeDiff
 from ..adapters.impact_paths import PATHS_BACKEND, PathsImpactBackend
-from ..kernel.plugins import builtin_manifest_source, discover_plugins
+from ..kernel.plugins import (
+    BEADHIVE_COMPATIBILITY_VERSION,
+    PLUGIN_KERNEL_VERSION,
+    builtin_manifest_source,
+    discover_plugins,
+)
 from ..modules.config.contracts import AttestConfig
 from ..modules.work.application.impact import select_resolver
 from ..modules.work.contracts.impact import ImpactBackend, ImpactResolver, TreeDiffPort
@@ -40,11 +45,6 @@ from ..modules.work.domain.impact import NATIVE_FULL, AttestKey
 
 #: The typed request bootstrap makes for ``build.impact``: the capability plus its port.
 BUILD_IMPACT_PORT = CapabilityKey(BUILD_IMPACT, ImpactBackend)
-
-# Host and kernel versions checked against manifest compatibility ranges; the same values the
-# legacy plugin facade (``beadhive.plugins``) composes built-in manifests with.
-_BEADHIVE_VERSION = "0.15.1"
-_KERNEL_VERSION = "1.0.0"
 
 # Constructing a backend reads its build configuration (e.g. ``pants.toml``). These failures
 # mean "not available on this checkout" and degrade to ``native-full`` with a fallback reason.
@@ -134,8 +134,8 @@ def collect_impact_backends(
     discovery = discover_plugins(
         tuple(sources) if sources is not None else (builtin_manifest_source(),),
         config=plugin_kernel,
-        beadhive_version=_BEADHIVE_VERSION,
-        kernel_version=_KERNEL_VERSION,
+        beadhive_version=BEADHIVE_COMPATIBILITY_VERSION,
+        kernel_version=PLUGIN_KERNEL_VERSION,
     )
     owner = discovery.owner_of(BUILD_IMPACT_PORT.capability)
     provider = next((item for item in providers if item.plugin_id == owner), None)

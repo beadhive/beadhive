@@ -85,6 +85,7 @@ target(
         "./modules/config",
         "./modules/hives",
         "./modules/state",
+        "./modules/tracker",
         "./modules/work",
         "./modules/worktrees",
         "./testing",

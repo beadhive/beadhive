@@ -74,7 +74,7 @@
       "id": "urn:beadhive:wire-schema:config:1",
       "kind": "json-schema",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:9c907ce18aa158889ae6f5fd3b9808ebae39ee6873de26f75012966a94b6f5f7",
+      "sha256": "sha256:f102f8a22c2219a7b1b8f3feb5f85c7ac82c2b438fd23840b4cfea1df0338775",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema",
       "version": 2
     },
@@ -218,6 +218,19 @@
       "kind": "json-schema",
       "path": "artifacts/plugin-config-repowise-v1.schema.json",
       "sha256": "sha256:5bd7769fd5e7cb56948e5886d60a77d7399fbf9c027b8c819367ec547f3d0b8f",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
+      "version": 2
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-config-tracker-github-v1-valid"
+      ],
+      "family": "plugin-fragment",
+      "id": "urn:beadhive:wire-schema:plugin-config:tracker-github:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-config-tracker-github-v1.schema.json",
+      "sha256": "sha256:38496b6e8de38e1ea925ec29ae67f226703229e025a28778e2b8b6ede5f602f1",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
       "version": 2
     },

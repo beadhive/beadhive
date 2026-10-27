@@ -130,6 +130,7 @@ def _unit_tests(area, owner, role):
 
 
 _unit_tests("", "root", "migration-debt")
+_unit_tests("bootstrap", "bootstrap", "bootstrap")
 _unit_tests("integrations", "integrations/herdr", "integration")
 _unit_tests("kernel/lifecycle", "kernel/lifecycle", "kernel")
 _unit_tests("kernel/operations", "kernel/operations", "kernel")
@@ -139,6 +140,7 @@ _unit_tests("modules/agents", "modules/agents", "capability")
 _unit_tests("modules/config", "modules/config", "capability")
 _unit_tests("modules/hives", "modules/hives", "capability")
 _unit_tests("modules/state", "modules/state", "capability")
+_unit_tests("modules/tracker", "modules/tracker", "capability")
 _unit_tests("modules/work", "modules/work", "capability")
 _unit_tests("modules/worktrees", "modules/worktrees", "capability")
 _unit_tests("testing", "testing", "testing-kit")

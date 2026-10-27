@@ -18,7 +18,14 @@ from typing import Any, Protocol
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ValidationError
 
-from ..contracts import HerdrConfig, HitchConfig, ObservaloopConfig, OrcaConfig, RepowiseConfig
+from ..contracts import (
+    HerdrConfig,
+    HitchConfig,
+    ObservaloopConfig,
+    OrcaConfig,
+    RepowiseConfig,
+    TrackerGithubConfig,
+)
 from .resolution import SourceLayer
 
 _URN_PREFIX = "urn:beadhive:wire-schema:plugin-config:"
@@ -29,6 +36,7 @@ _FRAGMENT_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "observaloop": ObservaloopConfig,
         "orca": OrcaConfig,
         "repowise": RepowiseConfig,
+        "tracker-github": TrackerGithubConfig,
     }
 )
 

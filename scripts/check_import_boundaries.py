@@ -67,6 +67,9 @@ _KIND_FIELDS = {
 }
 _FORBIDDEN_EXTERNAL_PREFIXES = (
     "fastmcp",
+    "gidgethub",
+    "github",  # PyGithub's import name; also covers githubkit
+    "githubkit",
     "herdr",
     "httpx",
     "opentelemetry",
@@ -74,6 +77,12 @@ _FORBIDDEN_EXTERNAL_PREFIXES = (
     "typer",
     "uvicorn",
 )
+# Tracker-product SDKs belong in their plugin package (tracker-adapter-port-adr.md G2): no layer
+# under the source root may import one, legacy modules included. Matched on whole name segments.
+_ROOT_FORBIDDEN_SDKS = ("githubkit", "gidgethub", "github")
+# Leaf modules import no other module's contracts or application (G3): the tracker port is
+# standard library only and must never couple to a consumer.
+_LEAF_MODULES = frozenset({"tracker"})
 _FORBIDDEN_LEGACY_PREFIXES = (
     "beadhive.cli",
     "beadhive.gateway_read",
@@ -238,6 +247,19 @@ def _is_forbidden_runtime(symbol: str) -> bool:
         return True
     parts = symbol.split(".")
     return len(parts) >= 2 and parts[0] == "beadhive" and parts[1].endswith("_plugin")
+
+
+def _is_root_forbidden_sdk(symbol: str) -> bool:
+    return symbol.split(".", 1)[0] in _ROOT_FORBIDDEN_SDKS
+
+
+def _leaf_violation(importer: PackageRole, imported: PackageRole) -> bool:
+    return (
+        importer.owner in _LEAF_MODULES
+        and importer.kind in {"domain", "contracts", "application"}
+        and imported.kind in {"contracts", "application"}
+        and imported.owner != importer.owner
+    )
 
 
 def _direction_allowed(importer: PackageRole, imported: PackageRole) -> bool:
@@ -442,15 +464,35 @@ def check(source_root: Path, ledger_path: Path) -> CheckResult:
     for edge in edges:
         importer_role = _role(edge.importer)
         imported_role = _role(edge.imported_module)
-        if importer_role.kind != "legacy":
+        if importer_role.kind == "legacy":
+            for symbol in edge.symbols:
+                if _is_root_forbidden_sdk(symbol):
+                    errors.append(
+                        f"{edge.importer_path}: forbidden tracker SDK import "
+                        f"{edge.importer} -> {symbol} (it belongs in its plugin package)"
+                    )
+        else:
             for symbol in edge.symbols:
                 violation = ""
-                if importer_role.kind in {"domain", "application"} and _is_forbidden_runtime(
-                    symbol
-                ):
+                if importer_role.kind in {
+                    "domain",
+                    "contracts",
+                    "application",
+                } and _is_forbidden_runtime(symbol):
                     violation = (
                         f"{edge.importer_path}: forbidden {importer_role.kind} runtime import "
                         f"{edge.importer} -> {symbol}"
+                    )
+                elif _is_root_forbidden_sdk(symbol):
+                    violation = (
+                        f"{edge.importer_path}: forbidden tracker SDK import "
+                        f"{edge.importer} -> {symbol} (it belongs in its plugin package)"
+                    )
+                elif _leaf_violation(importer_role, imported_role):
+                    violation = (
+                        f"{edge.importer_path}: forbidden leaf-module import "
+                        f"{importer_role.kind}/{importer_role.owner} -> "
+                        f"{imported_role.kind}/{imported_role.owner}: {symbol}"
                     )
                 elif not _direction_allowed(importer_role, imported_role):
                     violation = (

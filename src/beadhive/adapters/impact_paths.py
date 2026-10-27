@@ -93,11 +93,19 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "beadhive-plugins": (
         "tests/test_build_verify_surfaces.py",
+        "tests/test_github_projection.py",
         "tests/test_plugins.py",
+        "tests/test_two_store_e2e_int.py",
     ),
     # Root tests that adapt today's host slots to the validation broker port (bh-uljpc), select
     # the broker engine (bh-qrixp), resolve per-key reservations (bh-9oc32), set up a run
     # inside its execution root (bh-mf1o4) and run a gate's keys side by side (bh-qhrl6).
+    # The GitHub tracker adapter plugin (bh-h8kab, bh-51fdo): the real built-in manifest, the lazy
+    # provider row and the known-adapter table against the packaged manifest.
+    "beadhive-tracker-github": (
+        "tests/test_config_store_binding.py",
+        "tests/unit/bootstrap/test_tracker_github_composition.py",
+    ),
     "beadhive-validation-broker": (
         "tests/test_validation_broker_engine.py",
         "tests/test_validation_broker_slots.py",

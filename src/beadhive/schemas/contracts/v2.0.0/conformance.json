@@ -318,6 +318,12 @@
       "name": "plugin-config-repowise-v1-valid"
     },
     {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:tracker-github:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "plugin-config-tracker-github-v1-valid"
+    },
+    {
       "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
       "assertion": "valid-json-schema-instance",
       "input": {

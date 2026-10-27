@@ -1,0 +1,377 @@
+{
+  "description": "Refused comment.create writes (POST /repos/acme/widgets/issues/7/comments): one exchange per row of the bh-mqvdq refusal table, each with the exact one-line diagnostic and port error the adapter must raise. Used by tests/test_tracker_github_comment_write.py.",
+  "provenance": "Synthetic replay; NOTHING here was captured from a live write (no test ever writes to GitHub). Each interaction names its own evidence: the 401 and 404 status and message were observed live on read-only GETs (bh-mqvdq Evidence 10); every other row is the documented form. Live re-verification is pending the first operator-approved write recorded on bead bh-03s4w.",
+  "interactions": [
+    {
+      "name": "bad-credentials",
+      "provenance": "Live-observed status and message: bh-mqvdq Evidence 10 (docs/spikes/bh-mqvdq-github-identity.md, recorded output in docs/spikes/artifacts/bh-mqvdq/README.md), captured on a read-only GET and replayed onto the comment POST. The POST itself has NOT been observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json"
+        },
+        "json": {
+          "message": "Bad credentials",
+          "documentation_url": "https://docs.github.com/rest",
+          "status": "401"
+        }
+      },
+      "expect": {
+        "error": "AuthenticationFailed",
+        "diagnostic": "401 bad credentials: the token from env:GITHUB_TOKEN is invalid, revoked or expired"
+      }
+    },
+    {
+      "name": "invisible-to-the-token",
+      "provenance": "Live-observed status and message: bh-mqvdq Evidence 10 (docs/spikes/bh-mqvdq-github-identity.md, recorded output in docs/spikes/artifacts/bh-mqvdq/README.md), captured on a read-only GET and replayed onto the comment POST. The POST itself has NOT been observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": {
+          "message": "Not Found",
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "404"
+        }
+      },
+      "expect": {
+        "error": "NotVisible",
+        "diagnostic": "404: the repository or issue is invisible to this token (GitHub reports 'forbidden' as 'not found'); check the token's repository access and scope"
+      }
+    },
+    {
+      "name": "saml-sso-not-authorized",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10",
+          "x-github-sso": "required; url=https://github.com/orgs/acme/sso?authorization_request=AAAA"
+        },
+        "json": {
+          "message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.",
+          "documentation_url": "https://docs.github.com/articles/authenticating-to-a-github-organization-with-saml-single-sign-on/",
+          "status": "403"
+        }
+      },
+      "expect": {
+        "error": "PermissionDenied",
+        "diagnostic": "403 SSO: authorize this token for the organization (SAML SSO) and retry"
+      }
+    },
+    {
+      "name": "fine-grained-token-lacks-issues-write",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10",
+          "x-accepted-github-permissions": "issues=write; pull_requests=write"
+        },
+        "json": {
+          "message": "Resource not accessible by personal access token",
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "403"
+        }
+      },
+      "expect": {
+        "error": "PermissionDenied",
+        "needed": "issues=write; pull_requests=write",
+        "diagnostic": "403 token lacks the permission (endpoint needs issues=write; pull_requests=write): Resource not accessible by personal access token"
+      }
+    },
+    {
+      "name": "installation-token-lacks-permission",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10",
+          "x-accepted-github-permissions": "issues=write; pull_requests=write"
+        },
+        "json": {
+          "message": "Resource not accessible by integration",
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "403"
+        }
+      },
+      "expect": {
+        "error": "PermissionDenied",
+        "needed": "issues=write; pull_requests=write",
+        "diagnostic": "403 token lacks the permission (endpoint needs issues=write; pull_requests=write): Resource not accessible by integration"
+      }
+    },
+    {
+      "name": "repository-archived",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": {
+          "message": "Repository was archived so is read-only.",
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "403"
+        }
+      },
+      "expect": {
+        "error": "TargetStateRefused",
+        "diagnostic": "403 repository is archived (read-only)"
+      }
+    },
+    {
+      "name": "conversation-locked",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": {
+          "message": "Unable to create comment because issue is locked.",
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "403"
+        }
+      },
+      "expect": {
+        "error": "TargetStateRefused",
+        "diagnostic": "403 conversation is locked (not a credential problem)"
+      }
+    },
+    {
+      "name": "issues-disabled",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 410,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": {
+          "message": "Issues are disabled for this repo",
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "410"
+        }
+      },
+      "expect": {
+        "error": "TargetStateRefused",
+        "diagnostic": "410 issues are disabled on this repository"
+      }
+    },
+    {
+      "name": "issue-deleted",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 410,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": {
+          "message": "This issue was deleted",
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "410"
+        }
+      },
+      "expect": {
+        "error": "NotVisible",
+        "diagnostic": "410 the issue was deleted"
+      }
+    },
+    {
+      "name": "body-too-long",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 422,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": {
+          "message": "Validation Failed",
+          "errors": [
+            {
+              "resource": "IssueComment",
+              "code": "custom",
+              "field": "body",
+              "message": "body is too long (maximum is 65536 characters)"
+            }
+          ],
+          "documentation_url": "https://docs.github.com/rest/issues/comments#create-an-issue-comment",
+          "status": "422"
+        }
+      },
+      "expect": {
+        "error": "PayloadRejected",
+        "diagnostic": "422 payload rejected after authorization (Validation Failed); NOT a capability failure"
+      }
+    },
+    {
+      "name": "secondary-rate-limit-beyond-budget",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "4990",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10",
+          "retry-after": "600"
+        },
+        "json": {
+          "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+          "documentation_url": "https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits",
+          "status": "403"
+        }
+      },
+      "expect": {
+        "error": "RateLimited",
+        "kind": "throttle",
+        "diagnostic": "403 rate limited (not a permission refusal): back off; do NOT mark writes off"
+      }
+    },
+    {
+      "name": "primary-rate-limit-beyond-budget",
+      "provenance": "Documented form only: the bh-mqvdq refusal table (docs/spikes/bh-mqvdq-github-identity.md section 3) and the GitHub REST documentation for API version 2022-11-28. NOT observed live; re-verify on the first operator-approved write.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/issues/7/comments"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "x-ratelimit-limit": "5000",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "1767232800",
+          "x-ratelimit-resource": "core",
+          "x-ratelimit-used": "10"
+        },
+        "json": {
+          "message": "API rate limit exceeded for user ID 42.",
+          "documentation_url": "https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api",
+          "status": "403"
+        }
+      },
+      "expect": {
+        "error": "RateLimited",
+        "kind": "quota",
+        "diagnostic": "403 rate limited (not a permission refusal): back off; do NOT mark writes off"
+      }
+    }
+  ]
+}
