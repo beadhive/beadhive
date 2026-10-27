@@ -546,6 +546,21 @@ derived on read from the tracked bead. `intake_services.link_report` / `accept_t
 under the root lock, off unless `intake.external.enabled` and without a tracker; the verbs are not
 registered in the operation catalog yet (the ADR's I5 block has the recipe).
 
+Discovery (`bh-df64b`, I6) is `application/discovery.py` (`IssueDiscoverer`, behind
+`IntakeService.discover`): opt-in, pull-only, and the same upsert as import
+(`IssueImporter.upsert`), so a discovered report is exactly an imported one. An incremental pass
+pages `list_issues(since=<checkpoint>, include_closed=True)` and stores the tracker's own mark
+through `CheckpointStore` only after a page is durably upserted; a full pass (`--full`, or every
+`full_reconcile_every`-th timer run) re-pulls everything including closed issues and, on a COMPLETE
+id snapshot only, marks a vanished issue's report `source_missing` in its snapshot (it never
+deletes or closes a report). The root file-backs the checkpoint under `.bh/intake/checkpoints`
+(`beadhive.adapters.intake.FileCheckpointStore`; `MemoryCheckpointStore` for tests) and takes the
+same `FlockIntakeLock` as import. `intake_services.discover` composes it and the opt-in timer is the
+root module `intake_discovery.py` (the `release_catalog_auto_import` pattern, wired in
+`host_daemon.serve`): `intake.external.discovery.enabled` and `interval_seconds` are host-owned and
+off, and enabling it without a wired adapter refuses startup. `bh work discover` is not registered
+in the operation catalog yet (the ADR's I6 block has the recipe).
+
 The outbox (`bh-6wj9y`) is pure so far: `domain/outbox.py` holds the communication records (keyed
 by an opaque `ob1_` id and a stable `DraftKey`, rendering only their `PublicFacts` and message
 text) and the per-operation machine O1 to O19, `domain/leaks.py` the leak check,

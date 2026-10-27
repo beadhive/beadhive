@@ -392,6 +392,73 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   4. Run `just wire-publish` (operator, release step) to cut v2.16.0 and regenerate the derived
      artifacts, then the catalog-drift tests and `bh work check`.
 
+**As built (I6, `bh-df64b`).**
+
+- **Where.** `application/discovery.py` (`IssueDiscoverer`) behind `IntakeService.discover`
+  (`INTAKE_DISABLED` without a bound tracker, as import; `NullIntake` as before).
+  `IssueImporter` gains the lock-free `upsert(issue, actor)` and `binding_for(issue)` that import
+  itself uses, so discovery runs the import upsert **through the module** and never reaches the
+  adapter, `bd github sync` or a writer: the discoverer holds a `TrackerReader` only. The root is
+  `intake_services.discover` (the `intake.external.enabled` switch, the hive's tracker, the
+  operational `BdReportStore`, the root `FlockIntakeLock`, a `FileCheckpointStore`), the command
+  body `work_intake.discover` with `render_discover`, the Typer function `work.discover_cmd`, and
+  the timer `intake_discovery.py` wired into `host_daemon.serve` as a lifespan component.
+- **Incremental.** `list_issues(IssueQuery(since=<mark>, include_closed=True))` through intake's own
+  pager, then `CheckpointStore.put` of the page's own `checkpoint` token (the tracker's mark, never
+  the local clock) **after that page and every earlier one are upserted**; an adapter that only
+  returns the mark on its last page moves it once. `since` is inclusive, so the boundary issue
+  repeats as `unchanged` and a re-run writes nothing. A crash resumes from the last durable page.
+  The key is `issues:<tracker>:<project>` (`checkpoint_key`), so the comment sweep keeps its own.
+- **Full** (`--full`, and the timer's every `full_reconcile_every`-th run). The same pull **without**
+  `since` (open and closed, so a closed or newly closed issue is refreshed whatever the stored mark
+  says), then `collect_snapshot(IdQuery(ISSUES))`. Only a **complete** snapshot judges
+  `source_missing`: a bound report of this project whose URL is absent gets
+  `snapshot.source_missing=true`, one that is present again gets it cleared (counted `updated`); an
+  incomplete listing (any port error) changes nothing and `DiscoveryOutcome.reconciled` is false.
+  A full pass re-stores the marks it passes, so a crash mid-way only re-pulls (idempotent). No
+  report is ever deleted, closed or moved by discovery; another project's reports are skipped.
+- **Failure.** A refusal or store failure on any issue (`DUPLICATE_BINDING`, a failed create) stops
+  the run where it is: the mark never passes an issue that was not ingested, the error reaches the
+  caller (the CLI renders `store_error` with "run discover again"), earlier pages stay ingested.
+  A tracker failure is `TRACKER_ERROR`, a disabled `issues.read` is `INTAKE_DISABLED`, a busy
+  binding `INTAKE_BUSY`, a non-primary host `NOT_PRIMARY`, all before any write.
+- **Config.** `intake.external.discovery.{enabled, interval_seconds, full_reconcile_every}` (section
+  15), host-owned, in the generated config schema: `enabled` false; `interval_seconds` has no
+  default and is **required** when enabled (validation fails otherwise, and an older host rejects
+  the unknown keys, so nothing can switch the timer on by accident); `full_reconcile_every` 24.
+  `bh work discover` needs only `intake.external.enabled`; the timer needs both switches.
+- **The timer.** `intake_discovery.DiscoveryTimer.poll()` is one scheduling decision against an
+  injected monotonic clock: the first poll is due at once, the next one `interval` after the last
+  one **started**, no burst after a long gap, every Nth run full, a failing run or hive never stops
+  the loop, and a hive with no tracker, a non-primary host or a busy binding is a quiet skip. Its
+  `run()` is an asyncio loop around it with an injectable `sleep`, `component()` the
+  `HostDaemonLifespanComponent`. `build_loop(cfg)` is `None` unless both switches and a positive
+  interval are set, and **refuses daemon startup** when enabled without a `TrackerAdapters`:
+  `intake_services.process_adapters` is `None` until production credential wiring (`bh-kzs0b`)
+  lands, so the timer cannot run, and is never enabled in any real config, before that. Wiring it
+  needed no catalog or wire change (a lifespan component and config keys only).
+- **Tests.** `tests/unit/modules/intake/test_intake_discovery.py` (idempotence, resume, page-wise
+  durability under an injected crash, `--full`, `source_missing` and its incomplete-listing guard,
+  zero tracker writes, the lock), `tests/test_intake_discover_composition.py` (the byte-fingerprinted
+  public store untouched after every case, off by default, the file checkpoint, rendering),
+  `tests/test_intake_checkpoints.py` (the `CheckpointStore` contract on both implementations),
+  `tests/test_intake_discovery_timer.py` (the schedule on a **mocked clock**, off by default, the
+  daemon component) and `tests/test_config_intake.py`.
+- **Not done here.** The verb is **intentionally not registered** in `CLI_HANDLERS` or the operation
+  catalog: registering it needs `just wire-publish`, an operator-reserved release step.
+  `work.discover_cmd` and `work_intake.discover` are implemented and tested but unreachable from the
+  CLI until then. **Registration recipe**, in order:
+  1. `src/beadhive/kernel/operations/__init__.py`: add the `work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o`
+     row to `_CLI_ROWS` (match the encoding, option names and canonical-name map of the sibling
+     `work accept` / `work promote` rows).
+  2. `src/beadhive/work.py`: add `"work.discover": discover_cmd` to `CLI_HANDLERS`.
+  3. `src/beadhive/work.py`: add `discover_cmd = _CLI_CALLBACKS["work.discover"]` to the callback
+     assignments after `_CLI_CALLBACKS`, and drop the "Not yet in `CLI_HANDLERS`" sentence from the
+     `discover_cmd` docstring.
+  4. Run `just wire-publish` (operator, release step) to cut the next wire release and regenerate
+     the derived artifacts, then the catalog-drift tests and `bh work check`.
+  The timer needs none of this: it is **wired** in `host_daemon.serve` and only waits on `bh-kzs0b`.
+
 ### 6. Link, and a bound report is never work (D1)
 
 - **Edge:** `tracks`, report to work (`bd dep add <report> <work> -t tracks`): directional,
