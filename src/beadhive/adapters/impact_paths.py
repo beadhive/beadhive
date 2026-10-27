@@ -34,6 +34,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_intake_bead_store.py",
         "tests/test_intake_bead_store_int.py",
         "tests/test_intake_hold_int.py",
+        "tests/test_intake_link_int.py",
         "tests/test_merge_slot.py",
     ),
     "beadhive-beads-client": (
