@@ -246,6 +246,37 @@ def test_is_release_hold_gate(gate, expected):
     assert guard.is_release_hold_gate(gate) is expected
 
 
+# ---- intake-hold: gate classification (external-intake-module-adr.md section 7) ---------
+
+
+@pytest.mark.parametrize(
+    "gate,expected",
+    [
+        ({"reason": "intake-hold: bound report"}, True),
+        ({"reason": "INTAKE-HOLD: bound report"}, True),
+        ({"description": "blocks bh-1\n\nReason: intake-hold: bound report"}, True),
+        ({"reason": "release-hold: bc-epic"}, False),
+        ({"reason": "review abc123"}, False),
+        ({"reason": "security:sbom"}, False),
+        ({"description": "blocks bc-1\n\nReason: kickoff bc-1"}, False),
+        ({"description": "mentions intake-hold: but not as the reason"}, False),
+        ("not-a-dict", False),
+        ({}, False),
+    ],
+)
+def test_is_intake_hold_gate(gate, expected):
+    assert guard.is_intake_hold_gate(gate) is expected
+
+
+def test_the_intake_hold_marker_is_its_own_marker_not_outbound_or_publish():
+    assert guard.INTAKE_HOLD_GATE_MARKER == "intake-hold:"
+    assert guard.INTAKE_HOLD_GATE_MARKER not in {
+        guard.RELEASE_HOLD_GATE_MARKER,
+        guard.SECURITY_GATE_MARKER,
+    }
+    assert not guard.INTAKE_HOLD_GATE_MARKER.startswith(("outbound", "publish"))
+
+
 # ---- control-plane HQ-registry write partitioning (§2.1, bead .36) -----------
 
 

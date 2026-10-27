@@ -942,3 +942,24 @@ def test_ready_gated_no_separation_no_counter(monkeypatch):
     ids = [b["id"] for b in json.loads(res.stdout)]
     assert ids == ["a", "b", "c"]  # both fixes flush ahead of the feature — pair stays adjacent
     assert calls == []
+
+
+def test_gate_kind_classifies_intake_hold_marker():
+    """An `intake-hold:` gate is its own kind (a bound report's delivery hold), not 'other'."""
+    hold = {"id": "ih0", "description": "blocks mr-9\n\nReason: intake-hold: bound report"}
+    assert work_logic._gate_kind(hold) == "intake-hold"
+    assert work_logic._gate_kind({"reason": "intake-hold: bound report"}) == "intake-hold"
+    # the neighbours are unaffected, and a hold that merely names another kind is not hijacked.
+    assert work_logic._gate_kind({"description": "Reason: release-hold: e"}) == "release-hold"
+    assert work_logic._gate_kind({"description": "Reason: review cafef00d"}) == "review"
+    assert work_logic._gate_kind({"description": "Reason: kickoff mr-epic"}) == "kickoff"
+    assert work_logic._gate_kind({"description": "Reason: something else"}) == "other"
+
+
+def test_open_gate_lines_says_no_seat_approves_an_intake_hold(monkeypatch):
+    hold = {"id": "ih1", "status": "open", "description": "blocks mr-9\n\nReason: intake-hold: r"}
+    monkeypatch.setattr(work_logic, "_bead_gates", lambda bead, cwd: [hold])
+    lines = work_logic.open_gate_lines("mr-9", Path("/fake"))
+    assert len(lines) == 1
+    assert "intake-hold gate ih1" in lines[0] and "no seat approves it" in lines[0]
+    assert "work approve" not in lines[0]

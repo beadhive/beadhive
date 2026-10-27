@@ -75,6 +75,24 @@ def is_release_hold_gate(gate) -> bool:
     return RELEASE_HOLD_GATE_MARKER in reason or f"reason: {RELEASE_HOLD_GATE_MARKER}" in desc
 
 
+# Intake plane (external-intake-module-adr.md section 7): an `intake-hold:` gate holds a bound
+# report out of `bd ready` for the life of its delivery. Classified `intake-hold` by
+# `work_logic._gate_kind`. NO seat resolves it through `bh work approve` (enforced by
+# `beadhive_core.review`); only the intake module's held close resolves it, as bookkeeping.
+INTAKE_HOLD_GATE_MARKER = "intake-hold:"
+
+
+def is_intake_hold_gate(gate) -> bool:
+    """True when a bd gate dict is an `intake-hold:` gate — matched on the `intake-hold:` marker in
+    its reason/description (parallel to `is_release_hold_gate`). Tolerant of the two bd shapes: a
+    top-level `reason` field and the `reason: …` tail in `description`."""
+    if not isinstance(gate, dict):
+        return False
+    reason = str(gate.get("reason") or "").lower()
+    desc = str(gate.get("description") or "").lower()
+    return INTAKE_HOLD_GATE_MARKER in reason or f"reason: {INTAKE_HOLD_GATE_MARKER}" in desc
+
+
 def is_security_gate(gate) -> bool:
     """True when a bd gate dict is an Assurance `security:*` gate — matched on the `security:`
     marker in its reason/description (parallel to the review gate's `reason: review`). Tolerant of
