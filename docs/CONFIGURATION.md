@@ -437,6 +437,12 @@ and no key can enable or pre-approve a tracker write.
 | `discovery.enabled` | `false` | run the opt-in host-daemon discovery timer (needs `enabled` too) |
 | `discovery.interval_seconds` | unset | seconds between timer runs; **required** when `discovery.enabled` is true (there is no default cadence) |
 | `discovery.full_reconcile_every` | `24` | every Nth timer run is a full pass (all issues including closed, then the id reconcile); the rest resume from the checkpoint |
+| `completion_policy` | `close-on-merge` | which milestone completes a linked report: `close-on-merge`, or `close-on-release` (the report stays open and held, `delivery:merged`, until a release is verified) |
+| `milestones.draft_on_merge` | `false` | draft a `merged` outbox record when linked work merges |
+| `milestones.draft_on_release` | `false` | draft a `released` outbox record when `bh work delivery release <tag>` verifies a release |
+| `milestones.append_release_to_closed` | `false` | also draft the `released` record for a report that is already closed |
+| `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
+| `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
 plugin's `read.issues.enabled` ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md));
@@ -451,6 +457,11 @@ nothing; `--full` re-pulls every issue including closed ones and marks reports w
 `source_missing` in their snapshot (it never deletes or closes a report). The timer needs both
 `enabled` and `discovery.enabled`, a chosen `interval_seconds` and a wired tracker adapter (the
 daemon refuses to start otherwise); it never writes a tracker or the public store.
+
+The milestone and outbox keys only ever **draft**: a merge or a verified release leaves a `drafted`
+record for an operator to render, approve and send; no key sends, approves or mints a grant, and a
+tracker write still needs the adapter's own write flag. With every default, merge and release
+behave exactly as before.
 
 ## `bh config` commands
 

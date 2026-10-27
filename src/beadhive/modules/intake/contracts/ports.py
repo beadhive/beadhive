@@ -32,6 +32,8 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    MergeFact,
+    MilestoneOutcome,
     OpKind,
     OutboxApprove,
     OutboxDocument,
@@ -42,6 +44,7 @@ from ..domain import (
     PresenceRequest,
     QueueQuery,
     QueueView,
+    ReleaseFact,
     RenderedRecord,
     ReplyDraft,
     ReportDraft,
@@ -53,6 +56,7 @@ from ..domain import (
     ThreadOutcome,
     ThreadRequest,
     ThreadView,
+    Verdict,
     WorkDraft,
     WorkProgress,
 )
@@ -133,6 +137,14 @@ class IntakePort(Protocol):
     def retry(
         self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT
     ) -> OutboxResult: ...  # O17
+
+    # the milestone triggers (bh-6wj9y R9; I10). They DRAFT and never send: no grant, no writer, no
+    # tracker request. Free under ``NullIntake``; the work layer wraps both so a failure here is
+    # reported and never fails a merge or a release.
+
+    def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome: ...  # work.merge, work.finish
+
+    def on_release(self, fact: ReleaseFact) -> MilestoneOutcome: ...  # bh work delivery release
 
 
 @runtime_checkable
@@ -293,6 +305,21 @@ class IdSource(Protocol):
 
 
 @runtime_checkable
+class ReleaseVerifier(Protocol):
+    """The release seam (``bh-6wj9y`` R9): what a tag is and whether it contains a merge.
+
+    Read-only against git. ``resolve`` is the commit ``tag`` names (``None``: no such tag, so
+    nothing is verified or recorded); ``contains`` answers whether ``release_commit`` has
+    ``merge_commit`` in its history. Only ``Verdict.YES`` is proof; ``NO`` and ``UNKNOWN`` are
+    reported as not verified and never assumed. The root implements it with ``git``; tests inject
+    a fake."""
+
+    def resolve(self, tag: str) -> str | None: ...
+
+    def contains(self, release_commit: str, merge_commit: str) -> Verdict: ...
+
+
+@runtime_checkable
 class CheckpointStore(Protocol):
     """Opaque, local, non-secret resume tokens keyed per binding (not configuration)."""
 
@@ -315,6 +342,7 @@ __all__ = [
     "IntakePort",
     "LabelPolicy",
     "OutboxView",
+    "ReleaseVerifier",
     "ReportStore",
     "Sanitizer",
 ]

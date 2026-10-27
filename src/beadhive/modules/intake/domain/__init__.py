@@ -425,3 +425,35 @@ __all__ += [
     "RenderedRecord",
     "ReplyDraft",
 ]
+
+# -- the merge and release milestones (I10): facts, policy and fixed public wording -----------
+
+from .milestones import (  # noqa: E402
+    MERGED_MESSAGE,
+    RELEASED_MESSAGE,
+    MergeFact,
+    MilestoneItem,
+    MilestoneOutcome,
+    MilestonePolicy,
+    ReleaseFact,
+    fold_facts,
+    merged_draft,
+    merged_facts,
+    released_draft,
+    released_facts,
+)
+
+__all__ += [
+    "MERGED_MESSAGE",
+    "RELEASED_MESSAGE",
+    "MergeFact",
+    "MilestoneItem",
+    "MilestoneOutcome",
+    "MilestonePolicy",
+    "ReleaseFact",
+    "fold_facts",
+    "merged_draft",
+    "merged_facts",
+    "released_draft",
+    "released_facts",
+]

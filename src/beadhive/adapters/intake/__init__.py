@@ -6,12 +6,14 @@ Beadhive; the composition root (``beadhive.intake_services``) supplies the route
 and the failure-line parser. :class:`FileCheckpointStore` implements the module's
 ``CheckpointStore`` over atomic files in the hive's private state. :class:`ScrubSanitizer`
 implements the module's ``Sanitizer`` over the shared ``beadhive_plugins.credentials.scrub``
-until ``bh-o2mjz`` lands.
+until ``bh-o2mjz`` lands. :class:`GitReleaseVerifier` implements the ``ReleaseVerifier`` port
+over local git, read-only.
 """
 
 from .bead_store import BdReportStore, ReportRoutes
 from .checkpoints import FileCheckpointStore
 from .documents import SOURCE_KEY, THREAD_KEY
+from .release_verifier import GitReleaseVerifier
 from .sanitizer import ScrubSanitizer
 
 __all__ = [
@@ -19,6 +21,7 @@ __all__ = [
     "THREAD_KEY",
     "BdReportStore",
     "FileCheckpointStore",
+    "GitReleaseVerifier",
     "ReportRoutes",
     "ScrubSanitizer",
 ]

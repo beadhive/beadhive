@@ -820,8 +820,13 @@ def merge_group(cfg, group_arg, hive, rm):
     if rm:
         worktree.reclaim_merged(hive, branch)
     if base == config.integration_branch(cfg, entry):
-        from . import work_backup
+        from . import work_backup, work_intake
 
+        # The merge milestone (I10) for the members that closed; a no-op unless intake is on, and
+        # it never fails the merge.
+        work_intake.on_work_merged(
+            cfg, entry, main, base, [m for m in members if m not in failed_close], hive
+        )
         work_backup.reap_after_land(
             cfg=cfg,
             entry=entry,

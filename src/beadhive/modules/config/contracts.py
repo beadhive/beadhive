@@ -2908,6 +2908,41 @@ class IntakeDiscoveryConfig(_QuietSection):
         return self
 
 
+class IntakeMilestonesConfig(_QuietSection):
+    """``intake.external.milestones`` — which delivery milestones DRAFT an outbox record.
+
+    A milestone only ever drafts: nothing is sent without an operator's per-record approval, and
+    nothing drafts unless ``intake.external.outbox.enabled`` is on as well. All off by default.
+    """
+
+    draft_on_merge: StrictBool = Field(
+        False, description="Draft a `merged` record when linked work merges (default off)."
+    )
+    draft_on_release: StrictBool = Field(
+        False, description="Draft a `released` record when a release is verified (default off)."
+    )
+    append_release_to_closed: StrictBool = Field(
+        False,
+        description="Also draft the `released` record for a report already closed (default off).",
+    )
+
+
+class IntakeOutboxConfig(_QuietSection):
+    """``intake.external.outbox`` — the per-hive opt-in for communication records.
+
+    Enabling it lets milestones draft records and lets an operator approve them; it never sends
+    anything by itself, and the adapter's own write flag and a per-record approval minting a
+    single-use grant are still required to post.
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Allow outbox records to be drafted and approved (default off)."
+    )
+    mode: Literal["supervised"] = Field(
+        "supervised", description="The only accepted mode: every send needs an operator approval."
+    )
+
+
 class IntakeExternalConfig(_QuietSection):
     """``intake.external`` — external issue intake (host-owned; everything off).
 
@@ -2924,6 +2959,16 @@ class IntakeExternalConfig(_QuietSection):
         "bug", description="The issue type of an imported report."
     )
     discovery: IntakeDiscoveryConfig = Field(default_factory=IntakeDiscoveryConfig)
+    completion_policy: Literal["close-on-merge", "close-on-release"] = Field(
+        "close-on-merge",
+        description=(
+            "Which delivery milestone completes a linked report: `close-on-merge` closes it once "
+            "the work merged (and its record, if any, settled); `close-on-release` keeps it open "
+            "and held until the release is verified."
+        ),
+    )
+    milestones: IntakeMilestonesConfig = Field(default_factory=IntakeMilestonesConfig)
+    outbox: IntakeOutboxConfig = Field(default_factory=IntakeOutboxConfig)
 
 
 class IntakeConfig(_QuietSection):

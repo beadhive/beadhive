@@ -491,6 +491,22 @@ def link_cmd(
     return work_intake.link(bead, to, remove, replace, as_, hive, as_json)
 
 
+def delivery_release_cmd(
+    tag: str = typer.Argument(..., metavar="<tag>", help="the release tag to verify and record"),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Record a release for the delivery milestone: verify the tag exists (read-only against git),
+    move every report whose merge it contains to `delivery:released`, and draft a `released`
+    record when the hive turned that on. A merge the release cannot be shown to contain stays
+    `delivery:merged` (reported as not verified). Nothing is sent; off unless
+    `intake.external.enabled`.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-56s4l)."""
+    return work_intake.delivery_release(tag, as_, hive, as_json)
+
+
 def _refuse_public(verb: str, *values) -> None:
     """Refuse an operational verb aimed at a PUBLIC projection bead (bh-lniwf.5).
 

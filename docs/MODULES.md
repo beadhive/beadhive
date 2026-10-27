@@ -602,6 +602,23 @@ approve and at send. `IntakePort.send` and `retry` take `kind` (default `comment
 `external-intake-module-adr.md` section 11. Tests:
 `tests/unit/modules/intake/test_intake_outbox_labels_sender.py`.
 
+The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
+`MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
+`IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on
+every report that tracks the work, open or closed, records `facts.merged` in `intake.outbox`,
+drafts a `merged` record when `intake.external.milestones.draft_on_merge` and
+`outbox.enabled` are on, and applies the completion policy; a release is verified by the new
+`ReleaseVerifier` port (`beadhive.adapters.intake.GitReleaseVerifier`: `git rev-parse` and `git
+merge-base --is-ancestor`, read-only; kit fake `FakeReleaseVerifier`) and only a `YES` moves a
+report to `delivery:released`. Milestones only DRAFT: the service holds no tracker, grant or
+writer. The work layer calls `work_intake.on_work_merged` from `work.merge` and `finish` after the
+close, a no-op unless `intake.external.enabled` and never failing the merge. `bh work delivery
+release <tag>` is implemented (`work_intake.delivery_release`, `work.delivery_release_cmd`) but not
+registered in the operation catalog (the ADR's I10 block has the recipe). Tests:
+`tests/unit/modules/intake/test_intake_milestones.py`,
+`tests/test_intake_milestones_composition.py`, `tests/test_work_merge_milestones.py` and
+`tests/test_intake_milestones_int.py` (`integration`).
+
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
 (`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so
 `bh label validate` accepts those values and refuses any other; nothing writes them yet. An

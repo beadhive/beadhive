@@ -11,6 +11,8 @@
   ``CheckpointStore`` and an outbox read view over plain sets.
 - :class:`SequentialIdSource` and :class:`RecordingSanitizer` (``outbox``): a deterministic
   ``IdSource`` and a recording ``Sanitizer`` for the outbox.
+- :class:`FakeReleaseVerifier` (``release``): a scripted ``ReleaseVerifier`` (tags and ancestry
+  as plain data) for the milestone triggers.
 
 It imports the intake module's contracts, so it is imported explicitly, never from
 :mod:`beadhive.testing`.
@@ -31,11 +33,13 @@ from .cases import (
 from .lock import InProcessIntakeLock, MemoryCheckpointStore, MemoryOutboxView
 from .memory_store import MemoryReportStore
 from .outbox import RecordingSanitizer, SequentialIdSource
+from .release import FakeReleaseVerifier
 
 __all__ = [
     "REPORT_STORE_CASES",
     "SCOPE",
     "URL",
+    "FakeReleaseVerifier",
     "InProcessIntakeLock",
     "MemoryCheckpointStore",
     "MemoryOutboxView",

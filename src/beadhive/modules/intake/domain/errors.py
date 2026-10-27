@@ -71,6 +71,8 @@ class RefusalReason(StrEnum):
     # the supervised sender (I9a): the store's seq re-check and the host half of IntakeLock
     OUTBOX_MOVED = "outbox_moved"  # the stored intake.outbox seq moved since it was read
     NOT_PRIMARY = "not_primary"  # this host is not the hive's primary writer
+    # the milestone triggers (I10): the release verb names a tag the repository does not have
+    UNKNOWN_TAG = "unknown_tag"
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
 
