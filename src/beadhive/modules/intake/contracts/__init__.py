@@ -82,6 +82,7 @@ from .ports import (
     IntakePort,
     LabelPolicy,
     OutboxView,
+    ReleaseVerifier,
     ReportStore,
     Sanitizer,
 )
@@ -223,4 +224,27 @@ __all__ += [
     "OutboxResult",
     "RenderedRecord",
     "ReplyDraft",
+]
+
+# -- the merge and release milestones (I10) ---------------------------------------------------
+
+from ..domain import (  # noqa: E402
+    CompletionPolicy,
+    MergeFact,
+    MilestoneItem,
+    MilestoneOutcome,
+    MilestonePolicy,
+    ReleaseFact,
+    Verdict,
+)
+
+__all__ += [
+    "CompletionPolicy",
+    "MergeFact",
+    "MilestoneItem",
+    "MilestoneOutcome",
+    "MilestonePolicy",
+    "ReleaseFact",
+    "ReleaseVerifier",
+    "Verdict",
 ]

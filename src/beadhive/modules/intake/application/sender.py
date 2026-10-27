@@ -146,6 +146,7 @@ class OutboxService:
         sanitizer: Sanitizer | None,
         posture: StorePosture,
         holder: str = "intake",
+        completion: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._store = store
         self._tracker = tracker
@@ -158,6 +159,7 @@ class OutboxService:
         self._sanitizer = sanitizer
         self._posture = posture
         self._holder = holder
+        self._completion = completion
 
     # -- reads -------------------------------------------------------------------------------
 
@@ -325,6 +327,7 @@ class OutboxService:
                 )
             self._commit(report, outcome, ahead.document.seq, actor)
             notified, detail = self._notify(report, outbox_id, outcome, actor)
+        detail = _joined(detail, self._complete(report, outcome, actor))  # outside the lock
         result = self._result(report, outcome, (*rules, *(s.rule for s in ahead.steps)), kind)
         return dataclasses.replace(result, notified=notified, detail=detail or result.detail)
 
@@ -441,7 +444,13 @@ class OutboxService:
                             or self._reconcile_detail(step, kind, read_ok),
                         )
                     )
-        return results
+        completed = {step.outbox_id: self._complete(report, step, actor) for step in applied}
+        return [
+            dataclasses.replace(r, detail=_joined(r.detail, completed[r.outbox_id]))
+            if completed.get(r.outbox_id)
+            else r
+            for r in results
+        ]
 
     # -- O8, O18, O17 ------------------------------------------------------------------------
 
@@ -472,7 +481,9 @@ class OutboxService:
                 accept_unknown=accept_unknown,
             )
             self._commit(report, applied, expect, actor)
-        return self._result(report, applied, rules, kind)
+        result = self._result(report, applied, rules, kind)
+        completed = self._complete(report, applied, actor)  # outside the lock
+        return dataclasses.replace(result, detail=completed) if completed else result
 
     def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         """O17: a ``failed`` operation back to ``drafted``; sending again needs a new approval
@@ -576,6 +587,25 @@ class OutboxService:
             self._store.write_outbox(report, applied.document, expect_seq=expect, actor=actor)
         return applied.document
 
+    def _complete(self, report: str, applied: OutboxApplied, actor: str) -> str:
+        """The completion policy after a MILESTONE comment settled (``sent``, ``abandoned`` or
+        ``superseded``): the injected hook closes the report when it is complete. It runs OUTSIDE
+        the binding's lock (the hook takes it) and never un-sends or fails the operation: a
+        failure is reported in the result's detail. Without a hook, or for a reply, nothing."""
+        record = applied.record
+        if self._completion is None or record is None or not applied.changed:
+            return ""
+        if record.event not in {OutboxEvent.MERGED, OutboxEvent.RELEASED}:
+            return ""
+        op = record.op(OpKind.COMMENT)
+        if op is None or op.state not in machine.SETTLED:
+            return ""
+        try:
+            closed = self._completion(report, actor)
+        except (IntakeRefused, IntakeStoreError) as exc:
+            return f"the report could not be completed: {exc.detail}"
+        return "the report is complete and was closed" if closed else ""
+
     def _notify(
         self, report: str, outbox_id: str, applied: OutboxApplied, actor: str
     ) -> tuple[str, str]:
@@ -665,6 +695,10 @@ class OutboxService:
             (*rules, *(s.rule for s in applied.steps)),
             comment_id=(receipt.comment_id or "") if receipt is not None else "",
         )
+
+
+def _joined(first: str, second: str) -> str:
+    return "; ".join(part for part in (first, second) if part)
 
 
 def _created(record: OutboxRecord) -> int:

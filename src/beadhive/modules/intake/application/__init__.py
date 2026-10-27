@@ -6,6 +6,7 @@ from __future__ import annotations
 from .discovery import ISSUES_CHECKPOINT, IssueDiscoverer, checkpoint_key
 from .importer import IssueImporter, revision_token, snapshot_of
 from .linker import LinkService
+from .milestones import MilestoneService
 from .paging import collect_snapshot, iterate_pages
 from .sender import OutboxService, StoreOutboxView
 from .service import IntakeService, NullIntake, bind_intake
@@ -17,6 +18,7 @@ __all__ = [
     "IntakeService",
     "IssueImporter",
     "LinkService",
+    "MilestoneService",
     "NullIntake",
     "OutboxService",
     "StoreOutboxView",

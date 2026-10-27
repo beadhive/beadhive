@@ -11,7 +11,9 @@ to an optional :class:`~.importer.IssueImporter`; without one (no tracker bound)
 ``INTAKE_DISABLED``. Link, unlink, the derived work progress and ``accept --work`` /
 ``--new-work`` run over the store alone through :class:`~.linker.LinkService`. Discovery
 delegates to an optional :class:`~.discovery.IssueDiscoverer` and, without one (no tracker bound),
-refuses with ``INTAKE_DISABLED`` like import.
+refuses with ``INTAKE_DISABLED`` like import. The merge and release milestones delegate to an
+optional :class:`~.milestones.MilestoneService` (they only draft; without one they refuse with
+``INTAKE_DISABLED``, and ``NullIntake`` answers them for free).
 Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
@@ -43,6 +45,8 @@ from ..domain import (
     IssueBinding,
     LinkOutcome,
     LinkRequest,
+    MergeFact,
+    MilestoneOutcome,
     OpKind,
     OutboxApprove,
     OutboxListing,
@@ -54,6 +58,7 @@ from ..domain import (
     QueueQuery,
     QueueView,
     RefusalReason,
+    ReleaseFact,
     RenderedRecord,
     ReplyDraft,
     ReportDraft,
@@ -71,6 +76,7 @@ from ..domain import (
 from .discovery import IssueDiscoverer
 from .importer import IssueImporter
 from .linker import LinkService
+from .milestones import MilestoneService
 from .sender import OutboxService
 from .threads import ThreadService
 
@@ -113,6 +119,7 @@ class IntakeService:
         importer: IssueImporter | None = None,
         lock: IntakeLock | None = None,
         discoverer: IssueDiscoverer | None = None,
+        milestones: MilestoneService | None = None,
     ) -> None:
         self._store = store
         self._labels = labels
@@ -121,6 +128,7 @@ class IntakeService:
         self._outbox = outbox
         self._importer = importer
         self._discoverer = discoverer
+        self._milestones = milestones
         self._linker = LinkService(store, lock)
 
     # -- filing ------------------------------------------------------------------------------
@@ -466,6 +474,19 @@ class IntakeService:
     def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         return self._outbox_service().retry(outbox_id, actor=actor, kind=kind)
 
+    # -- the merge and release milestones (I10): they draft, they never send -----------------
+
+    def _milestone_service(self) -> MilestoneService:
+        if self._milestones is None:
+            raise _disabled()
+        return self._milestones
+
+    def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome:
+        return self._milestone_service().on_work_merged(fact)
+
+    def on_release(self, fact: ReleaseFact) -> MilestoneOutcome:
+        return self._milestone_service().on_release(fact)
+
     # -- discovery (I6) ----------------------------------------------------------------------
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
@@ -597,6 +618,12 @@ class NullIntake:
 
     def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         raise _disabled()
+
+    def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome:
+        return MilestoneOutcome()  # free: nothing is read, written or drafted
+
+    def on_release(self, fact: ReleaseFact) -> MilestoneOutcome:
+        return MilestoneOutcome()
 
 
 def _disabled() -> IntakeRefused:
