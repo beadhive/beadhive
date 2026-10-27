@@ -45,11 +45,13 @@ from pathlib import Path
 from typing import Any
 
 from . import bd, bd_cli, registry, store_target, validate
-from .adapters.intake import BdReportStore
+from .adapters.intake import BdReportStore, FileCheckpointStore
 from .modules.intake import (
     ORIGIN_GITHUB,
     ORIGIN_REPORT,
     REPORT_TYPES,
+    DiscoveryOutcome,
+    DiscoveryRequest,
     Disposition,
     DispositionOutcome,
     DispositionRequest,
@@ -62,6 +64,7 @@ from .modules.intake import (
     IntakeRefused,
     IntakeService,
     IntakeStoreError,
+    IssueDiscoverer,
     IssueImporter,
     LinkOutcome,
     LinkRequest,
@@ -358,6 +361,135 @@ def import_issue(
     except store_target.StoreResolutionError as exc:
         return ImportResult(1, str(exc), "store_unresolved")
     return ImportResult(0, outcome=outcome)
+
+
+# -- discovery (bh work discover, and the opt-in daemon timer) ----------------------------------
+
+
+@dataclass(frozen=True)
+class DiscoverResult:
+    """The rendering input of one discovery run (``bh work discover`` or one timer run for one
+    hive): ``code`` is the exit status, ``reason`` the stable refusal code (empty on success,
+    ``store_error`` for a store failure), ``error`` the one-line message naming the fix."""
+
+    code: int
+    error: str = ""
+    reason: str = ""
+    outcome: DiscoveryOutcome | None = None
+    full: bool = False
+    #: The report a failed run was upserting when its store write failed, when there was one.
+    report: str = ""
+
+
+@dataclass(frozen=True)
+class DiscoverySettings:
+    """``intake.external.discovery`` as the timer reads it. ``enabled`` is true only when BOTH
+    ``intake.external.enabled`` and ``discovery.enabled`` are literal ``true`` and a positive
+    ``interval_seconds`` was chosen (there is no default cadence); everything else is off."""
+
+    enabled: bool = False
+    interval_seconds: float = 0.0
+    full_reconcile_every: int = 24
+
+
+def discovery_settings(cfg: Mapping[str, Any]) -> DiscoverySettings:
+    """The discovery timer's settings from the host config: off unless explicitly enabled."""
+    section = ((cfg.get("intake") or {}).get("external")) or {}
+    node = section.get("discovery") or {}
+    interval = node.get("interval_seconds")
+    every = node.get("full_reconcile_every", 24)
+    valid_interval = isinstance(interval, (int, float)) and not isinstance(interval, bool)
+    every = every if isinstance(every, int) and not isinstance(every, bool) and every >= 1 else 24
+    on = (
+        section.get("enabled") is True
+        and node.get("enabled") is True
+        and valid_interval
+        and interval > 0
+    )
+    return DiscoverySettings(on, float(interval) if on else 0.0, every)
+
+
+def checkpoint_dir(directory) -> Path:
+    """``<hive>/.bh/intake/checkpoints``: the discovery marks, in the hive's private state."""
+    from . import private_paths
+
+    root = private_paths.ensure_repo_private_root(directory)
+    if root is None:
+        raise IntakeStoreError(
+            f"{directory} has no private .bh/ state for the intake checkpoints",
+            operation="checkpoint",
+        )
+    return root / "intake" / "checkpoints"
+
+
+def discover_message(exc: IntakeStoreError) -> str:
+    """The one-line message for a store failure during discovery."""
+    where = f" at {exc.bead}" if exc.bead else ""
+    step = exc.operation.removeprefix("stamp:")
+    return (
+        f"discovery stopped{where} ({step}): {exc.detail} "
+        "(the checkpoint did not move past it; run discover again)"
+    )
+
+
+def discover(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    actor: str,
+    *,
+    full: bool = False,
+    adapters: Any = None,
+    tracker: Any = None,
+    lock: IntakeLock | None = None,
+    checkpoints: Any = None,
+    hive: str = "",
+) -> DiscoverResult:
+    """Pull-only discovery of ``entry``'s external issues into its OPERATIONAL store, through the
+    module (the import upsert), never the adapter or ``bd github sync`` directly.
+
+    Off unless ``intake.external.enabled`` (``intake_disabled`` through the null port). The
+    tracker is the one the hive's public-store binding serves (``adapters``, asked for
+    ``issues.read`` only) or an explicit ``tracker`` port; with neither, discovery refuses (no
+    production credential wiring yet). It holds no write grant, resolves no public store and
+    writes none; checkpoints are the hive's private ``.bh/`` files (``checkpoints`` injects
+    another :class:`CheckpointStore`). ``full`` is ``--full``: every issue including closed, then
+    the id reconcile."""
+    enabled, default_type = external_intake_settings(cfg)
+    if enabled and tracker is None and adapters is None:
+        adapters = process_adapters(cfg)
+
+    def build():
+        port = tracker if tracker is not None else _bound_tracker(entry, adapters)
+        store = report_store(directory, lambda: store_scope(cfg, entry))
+        labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
+        held = (
+            lock
+            if lock is not None
+            else intake_lock(cfg, directory, hive=hive, verb="work discover")
+        )
+        importer = IssueImporter(
+            store, labels, port, held, origin=ORIGIN_GITHUB, default_type=default_type
+        )
+        marks = (
+            checkpoints
+            if checkpoints is not None
+            else FileCheckpointStore(lambda: checkpoint_dir(directory))
+        )
+        discoverer = IssueDiscoverer(store, port, importer, held, marks)
+        return IntakeService(store, labels, importer=importer, discoverer=discoverer)
+
+    try:
+        outcome = bind_intake(enabled, build).discover(DiscoveryRequest(actor, full_reconcile=full))
+    except IntakeRefused as exc:
+        return DiscoverResult(1, exc.detail, exc.reason.value, full=full)
+    except IntakeStoreError as exc:
+        return DiscoverResult(
+            exc.returncode, discover_message(exc), "store_error", full=full, report=exc.bead
+        )
+    except store_target.StoreResolutionError as exc:
+        return DiscoverResult(1, str(exc), "store_unresolved", full=full)
+    return DiscoverResult(0, outcome=outcome, full=full)
 
 
 # -- link (bh work link, accept --work / --new-work) --------------------------------------------

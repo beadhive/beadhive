@@ -453,6 +453,25 @@ def import_cmd(
     return work_intake.import_issue(url, hive, dry_run, as_json, as_)
 
 
+def discover_cmd(
+    hive: str = _HIVE,
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="re-pull every issue including closed ones, then reconcile which are gone",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+    as_: str = _AS,
+):
+    """Discover the hive's external issues: opt-in, pull-only, through the import upsert (held,
+    untriaged reports; resumes from its checkpoint, so a re-run is a no-op). Off unless
+    `intake.external.enabled`; never writes a tracker or the public store. `--full` re-pulls
+    open and closed issues and marks reports whose issue is gone `source_missing`.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-df64b)."""
+    return work_intake.discover(hive, full, as_json, as_)
+
+
 def link_cmd(
     bead: str = _BEAD,
     to: str = typer.Option("", "--to", help="the work bead (of this hive) the report tracks"),

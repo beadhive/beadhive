@@ -122,6 +122,41 @@ def render_import(result, url: str, dry_run: bool, as_json: bool) -> None:
         typer.echo(f"  → {report} (intake:untriaged, held: it is not work until triaged)")
 
 
+def render_discover(result, as_json: bool) -> None:
+    """Print one ``bh work discover`` result (human or ``--json``); non-zero exit on a refusal."""
+    outcome = result.outcome
+    if as_json:
+        payload = {
+            "ok": result.code == 0,
+            "full": result.full,
+            "reason": result.reason,
+            "error": result.error,
+            "report": result.report,
+            "created": outcome.created if outcome else 0,
+            "updated": outcome.updated if outcome else 0,
+            "unchanged": outcome.unchanged if outcome else 0,
+            "source_missing": outcome.source_missing if outcome else 0,
+            "checkpoint_advanced": bool(outcome and outcome.checkpoint_advanced),
+            "reconciled": bool(outcome and outcome.reconciled),
+            "reports": list(outcome.reports) if outcome else [],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if result.code:
+            raise typer.Exit(result.code)
+        return
+    if result.code or outcome is None:
+        code = f" ({result.reason})" if result.reason else ""
+        typer.echo(f"✗ discover refused{code}: {result.error}", err=True)
+        raise typer.Exit(result.code or 1)
+    mode = "full pass" if result.full else "incremental"
+    typer.echo(
+        f"✓ discover ({mode}): {outcome.created} created, {outcome.updated} updated, "
+        f"{outcome.unchanged} unchanged, {outcome.source_missing} newly source-missing"
+    )
+    for report in outcome.reports:
+        typer.echo(f"  → {report}")
+
+
 def render_link(result, report: str, as_json: bool) -> None:
     """Print one link, unlink or linking accept (human or ``--json``); non-zero exit on refusal."""
     outcome, disposition = result.outcome, result.disposition
@@ -247,3 +282,15 @@ def import_issue(
         cfg, entry, directory, url, actor, dry_run=dry_run, hive=hive
     )
     render_import(result, url, dry_run, as_json)
+
+
+def discover(hive: str = "", full: bool = False, as_json: bool = False, as_: str = ""):
+    """Discover the hive's external issues, pull-only, through the import upsert (off unless
+    ``intake.external.enabled``; never a tracker or public-store write). ``full`` re-pulls every
+    issue including closed ones and reconciles which ones are gone."""
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    directory = Path(registry.hive_dir(entry))
+    actor = identity.resolve_actor(as_)
+    result = intake_services.discover(cfg, entry, directory, actor, full=full, hive=hive)
+    render_discover(result, as_json)
