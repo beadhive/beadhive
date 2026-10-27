@@ -956,6 +956,95 @@ merge runs the trigger for the epic and every closed child a report tracks. Out 
 started, blocked and deprioritised milestones; revert detection (only an operator-recorded
 `reverted`, which drafts `corrected`).
 
+**As built (I10, `bh-56s4l`; milestones only draft).**
+
+- **Where.** `domain/milestones.py` holds the pure parts (`MergeFact`, `ReleaseFact`,
+  `MilestonePolicy`, `MilestoneItem` / `MilestoneOutcome`, the fixed public wording of the two
+  messages and `fold_facts`); `application/milestones.py` is `MilestoneService`, behind the new
+  `IntakePort` operations `on_work_merged` and `on_release` (a service without it refuses
+  `INTAKE_DISABLED`, `NullIntake` returns an empty outcome: free). The `ReleaseVerifier` port is in
+  `contracts` (`resolve(tag) -> commit | None`, `contains(release, merge) -> Verdict`);
+  `beadhive.adapters.intake.GitReleaseVerifier` implements it with `git rev-parse --verify
+  refs/tags/<tag>^{commit}` and `git merge-base --is-ancestor`, read-only (an operator-typed tag
+  or sha that is not a plain name is refused before git runs; only exit 0 is `YES`, only exit 1
+  `NO`, anything else `UNKNOWN`). The root adds `intake_services.work_merged`, `delivery_release`,
+  `milestone_settings` and `MilestoneResult`; the work layer adds `work_intake.on_work_merged`,
+  `delivery_release` and `render_delivery_release`.
+- **Drafts, never sends.** `MilestoneService` has no tracker, marker codec, identity, grant or
+  writer; `write_requests() == 0` across every trigger case. The `merged` record is keyed on the
+  merge commit and the `released` record on the tag (`DraftKey`), so a re-run drafts nothing (X2); a
+  `released` draft supersedes an unsent `merged` one (O6, X4) and leaves an `unknown` one alone
+  (X5). The wording is a constant per event with `{tag}` as its only placeholder, so a message
+  carries no bead id, branch or path by construction; a tag shaped like a bead id is held by the
+  leak check, never sent. A draft refused (a published store, no sanitizer) never stops the
+  `delivery` write: it is reported on the item.
+- **The merge trigger.** For each report that tracks the work (open or closed, X1): `delivery`
+  moves `pending|reverted` to `merged`; `facts.merged` and the drafted record are ONE
+  `intake.outbox` write made BEFORE the `set_state`, so a crash between the two leaves a fact the
+  re-run turns into the dimension, never a dimension no fact explains; then the completion policy.
+  Under the default `close-on-merge` with the outbox off the report closes at the merge (held
+  close, no ready window); under `close-on-release` merged but unreleased keeps the report open,
+  held, `delivery:merged`. One report failing (a held lock, a store error) is returned on its item
+  and the next is still handled.
+- **The release trigger.** Candidates are every bound report at `delivery:merged` (any status, so a
+  closed duplicate hears of it) plus open reports already at `released` (a crash between the
+  dimension and the close). The verifier is asked once per distinct merge commit. `YES` sets
+  `released`, `facts.released` and, when `milestones.draft_on_release` is on, a `released` record
+  (a closed report only with `append_release_to_closed`); `NO` and `UNKNOWN`, a report with no
+  recorded merge commit, or an unlinked one are reported "not verified" and change nothing (X3).
+  `bh work delivery release <tag>` refuses an unknown tag (`unknown_tag`) before recording
+  anything and refuses `intake_disabled` before it asks the verifier.
+- **The completion policy and the close rule.** `MilestoneService.complete(report, actor)`
+  evaluates `close_rule` and closes through `ReportStore.close`. The trigger calls it, and the
+  sender calls it (the new optional `OutboxService(completion=)`, composed by `outbox_service_for`)
+  after a milestone comment settles (`sent`, `abandoned` via `discard`, or reconciled), OUTSIDE the
+  binding's lock; a reply never runs it. X16: a sent `released` comment gives `notified:released`
+  and a closed report; a discarded one closes it with `notification_behind` true. Interpretation
+  (to be confirmed by the operator, as I8's): the close rule's `outbox_enabled` is "the outbox is
+  on AND drafting is on for the completion milestone", so an outbox that will never draft a
+  `merged` record does not strand a `close-on-merge` report open forever; with the outbox on and
+  drafting on, the report waits for the record, as I8 recorded. A superseded `merged` record
+  counts as settled, so under `close-on-merge` a release that supersedes it also completes the
+  report even though the `released` record is still a draft.
+- **The seam.** `work_merge` calls `_milestone_merged` after `close_merged` succeeds in `merge`,
+  the idempotent reconcile of an already landed bead, `finish` / `merge --molecule` (for the epic
+  and its children via `_molecule_members`), the molecule reconcile and the batch land
+  (`work_group`). Only a land onto the canonical integration branch counts: a merge into a
+  container is not on main yet. `work_intake.on_work_merged` returns before any bd or git call
+  unless `intake.external.enabled`, then reads the tip of the base (the merge commit), runs the
+  root function and turns every failure, unexpected exceptions included, into a stderr warning:
+  a hook failure never fails the merge. Not hooked: the PR landing path (`work.landing: pr`, where
+  the merge happens on GitHub) and the batch reconcile; a follow-up.
+- **Config (all off).** Under the host-owned `intake.external`: `completion_policy`
+  (`close-on-merge` | `close-on-release`), `milestones.draft_on_merge`, `.draft_on_release`,
+  `.append_release_to_closed`, `outbox.enabled`, `outbox.mode` (`supervised`, the only value). Only
+  a literal `true` enables; an unrecognised policy takes the conservative `close-on-release`. No key
+  sends, approves or mints a grant. `outbox.labels.on_delivery`, `public_evidence.commit_links` and
+  `absent_confirmations` stay with later beads; the milestones draft no label diff.
+- **Tests.** `tests/unit/modules/intake/test_intake_milestones.py` (X1 to X5, X16, X18, nothing
+  sends), `tests/test_intake_milestones_composition.py` (the root, the verifier, rendering, the
+  public store untouched), `tests/test_work_merge_milestones.py` (the seam and the non-fatal hook)
+  and `tests/test_intake_milestones_int.py` (a real bd store, `integration`).
+- **Not done here.** `bh work delivery release <tag>` is **intentionally not registered**: it
+  changes the published operation catalog and so needs `just wire-publish`, a release step
+  reserved for the operator (as for `import`, I4, and `link`, I5). `work_intake.delivery_release`
+  and `work.delivery_release_cmd` are implemented and tested but unreachable from the CLI.
+  **Registration recipe**, in order:
+  1. `src/beadhive/adapters/cli/projection.py` projects a migrated group's verbs as two-token
+     paths only (`<group> <verb>`; `project_cli_group` splits `path` into exactly two parts), so
+     the three-token `work delivery release` needs either a nested-path extension of that
+     projection plus the row below, or the flat spelling `work delivery-release` with the row
+     `work delivery-release|tag:string:r,as_:string:o,hive:string:o,as_json:boolean:o`. Decide
+     the spelling first (the ADR says `work delivery release`).
+  2. `src/beadhive/kernel/operations/__init__.py`: add that row to `_CLI_ROWS` (keep the rows
+     sorted).
+  3. `src/beadhive/work.py`: add `"work.delivery-release": delivery_release_cmd` to
+     `CLI_HANDLERS` (the key is the canonical operation identity), bind the `--json` option name
+     with `_bind_cli_handler(delivery_release_cmd, as_json="json_out")` if the catalog row names it
+     differently, and drop the "Not yet in `CLI_HANDLERS`" sentence from its docstring.
+  4. Run `just wire-publish` (operator, release step), then the catalog-drift tests and `bh work
+     check`.
+
 ### 13. Leak check and sanitizer seam
 
 Adopted as `bh-6wj9y` R10: a pure `domain.leaks.check(rendered, policy)` runs at O1, at every
