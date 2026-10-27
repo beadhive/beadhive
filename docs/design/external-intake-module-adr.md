@@ -653,6 +653,54 @@ other operation:
 - No public-store write exists. The next projection pull imports Beadhive's label changes as
   GitHub-authoritative data; that is the pull, not an outbox write.
 
+**As built in I9a (`bh-czes8`; `comment.create` only, every case offline).** The sender is
+`application/sender.py` (`OutboxService`), behind the new `IntakePort` operations `draft_reply`,
+`outbox`, `render`, `approve`, `send`, `reconcile`, `discard` and `retry`; `IntakeService` delegates
+them to an optional `OutboxService` and refuses with `OUTBOX_DISABLED` without one, `NullIntake`
+with `INTAKE_DISABLED`. `ReportStore` gains `read_outbox`, `write_outbox(..., expect_seq=)` (refused
+with `OUTBOX_MOVED`, writing nothing, when the stored `seq` moved; a bound report only) and
+`reports_with_outbox()`, with five contract cases run on `MemoryReportStore`, on `BdReportStore` over
+the fake bd and over a real bd store (the dotted `intake.outbox` key merges and lists like the other
+two). `StoreOutboxView` is the store-backed `OutboxView`, `issued()` included, that thread
+recognition reads. The root (`intake_services`) implements `IntakeLock` as `FlockIntakeLock`
+(`guard.guard_primary`, refused as `NOT_PRIMARY`; an exclusive never-waiting `fcntl.flock` on
+`.bh/intake/locks/<sha256(binding)>.lock`, held elsewhere as `INTAKE_BUSY`; `guard.live_epoch` as
+the epoch) and composes `outbox_service_for` with a `RandomIdSource`, the fleet `leak_policy`, the
+`store_posture` and the shared `ScrubSanitizer`. Interpretations:
+
+- Off twice over: no sender is bound unless the caller passes an enabled `OutboxPolicy` (the
+  default is off), and an enabled one still posts nothing without the adapter's own enable
+  (`probe_capabilities` must report `comment.create` and `comments.read` usable for O5; the
+  adapter is a `CommentWriter` only with its write flag on; a disabled writer is O11 before any
+  request) and an operator approval minting a single-use grant.
+- Every step is one durable `intake.outbox` write under the lock, and every lock acquisition first
+  recovers each `sending` operation to `unknown` (O13 with `holder_gone`): the holder now has the
+  exclusive lock its writer held, so that writer is gone. A process killed between O9 and the
+  request is therefore recovered by the next operation of any kind.
+- `approve` with `--publish` applies O4 and O5 in one write, so a refused approval publishes
+  nothing; its result carries the dry run and the minted grant id. A send whose fresh render no
+  longer has the approved digest takes O7 and posts nothing.
+- `reconcile` reads one complete comment listing per call, outside the lock, with `start_seq` the
+  document `seq` read (after O13) before the listing began, and applies it under the lock. Two
+  calls without the marker after the attempt ended are needed for `failed(absent)` (k = 2); a
+  listing that fails part-way changes nothing.
+- `notified=<event>` is written by `set_state` straight after the transition's document write (bd
+  has no transaction across the two); a failure is reported in the result and never un-sends. The
+  close rule is not evaluated here: only milestone records reach it (I10).
+- The marker line is rendered by an injected `marker_line` codec (the adapter's own), so the dry
+  run shows the posted bytes. The tracker adapter itself is injected: building it from the store
+  binding and credentials is `bh-kzs0b`'s, not this bead's.
+
+Not built here, pending an operator decision: the `bh work outbox` verbs (`show`, `approve`,
+`send`, `reconcile`, `discard`, `retry`, `draft`) and the `intake.external.outbox.*` config keys.
+Each verb widens the published operation catalog, which cuts a new wire release (`just
+wire-publish`), so they wait for that release to be authorised; the port operations above are the
+whole behaviour they would call. **Acceptance item 4 is pending:** no real tracker write has been
+made. The first real `comment.create` is an operator-approved step recorded on the bead, and the
+re-verification of assumption A1 (read-after-write visibility on complete listings) and of the
+`tracker-github` refusal diagnostics against recorded real responses happens on that first gated
+write; it has not been performed.
+
 ### 12. Milestone triggers and the release seam
 
 Adopted as `bh-6wj9y` R9: `on_work_merged(MergeFact(work, commit, actor))` from `work.merge` /
