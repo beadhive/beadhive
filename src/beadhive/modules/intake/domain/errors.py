@@ -23,7 +23,8 @@ class RefusalReason(StrEnum):
     CHANGE_REQUEST = "change_request"
     NOT_VISIBLE = "not_visible"
     DUPLICATE_BINDING = "duplicate_binding"
-    NOT_FOUND_IN_PROJECT = "not_found_in_project"
+    NOT_FOUND_IN_PROJECT = "not_found_in_project"  # the fallback's collapse of R3 to R6
+    TRACKER_ERROR = "tracker_error"  # the tracker could not answer (credential, rate limit, ...)
     # link refusals
     NOT_A_REPORT = "not_a_report"
     CROSS_STORE_LINK = "cross_store_link"

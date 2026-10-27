@@ -422,6 +422,25 @@ above, never on githubkit's built-in retry.
 As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
 to every host (`bh-uf986`).
 
+### `intake.external` {#intake-external}
+
+`intake.external` configures external issue intake
+([external-intake-module-adr.md](design/external-intake-module-adr.md) section 15). It is
+**host-owned** (a fleet push cannot switch it on), absent by default, and every switch is off.
+No key binds a tracker (the store binding does that), holds a credential, a grant or an approval,
+and no key can enable or pre-approve a tracker write.
+
+| Key (under `intake.external`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | enable `bh work import <issue-url>`; off means the intake port is the null one and import refuses with `intake_disabled` |
+| `default_type` | `bug` | issue type of an imported report: `bug`, `feature` or `chore` |
+
+`bh work import` additionally needs the hive's public store to bind a tracker adapter and the
+plugin's `read.issues.enabled` ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md));
+it lands the issue in `intake:untriaged` with `origin:github`, held, and never writes to the
+tracker. As with `adapter`, nothing in a shared config should set these keys until the schema has
+rotated to every host (`bh-tfko9`).
+
 ## `bh config` commands
 
 | Command | Effect |

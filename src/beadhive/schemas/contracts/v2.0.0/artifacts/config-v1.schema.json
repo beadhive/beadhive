@@ -2288,6 +2288,42 @@
       "title": "IdentityConfig",
       "type": "object"
     },
+    "IntakeConfig": {
+      "additionalProperties": false,
+      "description": "``intake`` — the intake module's host-owned settings.",
+      "properties": {
+        "external": {
+          "$ref": "#/$defs/IntakeExternalConfig"
+        }
+      },
+      "title": "IntakeConfig",
+      "type": "object"
+    },
+    "IntakeExternalConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external`` — external issue intake (host-owned; everything off).\n\nOff unless configured: with ``enabled`` false `bh work import` refuses and the intake port is\nthe null one. Nothing here binds a tracker, holds a credential, a grant or an approval, and no\nkey can enable or pre-approve a tracker write: a write is only ever the operator's, per record.",
+      "properties": {
+        "default_type": {
+          "default": "bug",
+          "description": "The issue type of an imported report.",
+          "enum": [
+            "bug",
+            "feature",
+            "chore"
+          ],
+          "title": "Default Type",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable external issue intake: `bh work import` (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "IntakeExternalConfig",
+      "type": "object"
+    },
     "LegacyBeadsConfig": {
       "additionalProperties": true,
       "description": "Legacy top-level Beads section with one live selector and opaque extensions.",
@@ -4187,6 +4223,18 @@
     },
     "hq": {
       "$ref": "#/$defs/HqConfig"
+    },
+    "intake": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntakeConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "External issue intake (host-owned, every switch off). Absent = intake off."
     },
     "log": {
       "$ref": "#/$defs/LogConfig"

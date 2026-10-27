@@ -37,12 +37,14 @@ import hashlib
 import os
 import socket
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from . import bd, bd_cli, registry, store_target, validate
 from .adapters.intake import BdReportStore
 from .modules.intake import (
+    ORIGIN_GITHUB,
     ORIGIN_REPORT,
     REPORT_TYPES,
     Disposition,
@@ -51,15 +53,20 @@ from .modules.intake import (
     HiveTriplet,
     HoldSweep,
     HoldSweepRequest,
+    ImportOutcome,
+    ImportRequest,
+    IntakeLock,
     IntakeRefused,
     IntakeService,
     IntakeStoreError,
+    IssueImporter,
     OwnIdentity,
     QueueQuery,
     RefusalReason,
     ReportDraft,
     StorePosture,
     StoreScope,
+    bind_intake,
 )
 from .modules.intake.application import OutboxService  # the composition root may (gap G7)
 from .modules.intake.domain import (  # the composition root may (gap G7)
@@ -223,6 +230,131 @@ def sweep_holds(directory, *, repair: bool = False, actor: str = "") -> HoldSwee
     return service_for_directory(directory).sweep_holds(HoldSweepRequest(actor, repair))
 
 
+# -- import (bh work import) ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ImportResult:
+    """The rendering input of one ``bh work import``: ``code`` is the exit status, ``reason`` the
+    stable refusal code (empty on success, ``store_error`` for a store failure), ``error`` the
+    one-line message naming the fix, ``outcome`` what was (or, for a dry run, would be) done."""
+
+    code: int
+    error: str = ""
+    reason: str = ""
+    outcome: ImportOutcome | None = None
+    #: The report a failed import had already created and held, when it did.
+    report: str = ""
+
+
+def external_intake_settings(cfg: Mapping[str, Any]) -> tuple[bool, str]:
+    """``(intake.external.enabled, intake.external.default_type)``: off, and ``bug``, by default.
+    Host-owned and global (no per-hive override): only a literal ``true`` enables it."""
+    section = ((cfg.get("intake") or {}).get("external")) or {}
+    return section.get("enabled") is True, str(section.get("default_type") or "bug")
+
+
+def process_adapters(cfg: Mapping[str, Any]) -> Any:
+    """The process's ``TrackerAdapters`` for ``cfg``, or ``None`` while production credential
+    wiring (``bh-kzs0b``) does not exist: then import refuses with a clear R0. This is the one
+    place that wiring lands; tests inject ``adapters=`` or ``tracker=`` instead."""
+    return None
+
+
+def _no_tracker_wiring() -> IntakeRefused:
+    return IntakeRefused(
+        RefusalReason.INTAKE_DISABLED,
+        "no tracker adapter is wired into this build of bh (production credential wiring is "
+        "bh-kzs0b); bind and enable the hive's tracker, then import",
+    )
+
+
+def _bound_tracker(entry: Mapping[str, Any], adapters: Any):
+    """The tracker port the hive's PUBLIC-store binding serves, for ``issues.read`` only.
+
+    ``adapters`` is the process's ``bootstrap.tracker.TrackerAdapters`` (injected: this root builds
+    no credential wiring). The binding names the adapter; it is the tracker adapter's own store
+    scope, never a bead-store resolution. R13 (no binding), a disabled plugin, a missing package
+    and ``issues.read`` not enabled are all R0: the refusal names the key to set."""
+    from .bootstrap import tracker as tracker_root  # lazy: the plugin kernel loads only on use
+    from .modules.tracker.contracts import Operation
+
+    if adapters is None:
+        raise _no_tracker_wiring()
+    try:
+        bound = adapters.for_store(entry, requested=frozenset({Operation.ISSUES_READ}))
+    except tracker_root.TrackerBindingError as exc:
+        raise IntakeRefused(RefusalReason.INTAKE_DISABLED, exc.message) from exc
+    return bound.port
+
+
+def import_message(exc: IntakeStoreError) -> str:
+    """The one-line message for a store failure during an import."""
+    operation, detail = exc.operation, exc.detail
+    if operation.startswith("stamp:") or operation in {"open_hold", "record_snapshot"}:
+        return (
+            f"imported {exc.bead} but could not finish it ({operation.removeprefix('stamp:')}): "
+            f"{detail} (it is held, so it is not work; run the import again to complete it)"
+        )
+    if operation == "create":
+        return f"nothing was imported: {detail}"
+    return store_error_message(exc)
+
+
+def import_issue(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    reference: str,
+    actor: str,
+    *,
+    dry_run: bool = False,
+    adapters: Any = None,
+    tracker: Any = None,
+    lock: IntakeLock | None = None,
+    hive: str = "",
+) -> ImportResult:
+    """Import one external issue into ``entry``'s OPERATIONAL store as an untriaged, held report.
+
+    Off unless ``intake.external.enabled`` (R0 ``intake_disabled`` through the null port). The
+    tracker is the one the hive's public-store binding serves (``adapters``, an injected
+    ``TrackerAdapters``) or an explicit ``tracker`` port; with neither, import refuses (R0): no
+    production credential wiring exists yet. Import only reads the tracker, holds no write grant,
+    resolves no public store and never writes one. A dry run classifies R0 to R8 and writes
+    nothing."""
+    enabled, default_type = external_intake_settings(cfg)
+    if enabled and tracker is None and adapters is None:
+        adapters = process_adapters(cfg)
+
+    def build():
+        port = tracker if tracker is not None else _bound_tracker(entry, adapters)
+        store = report_store(directory, lambda: store_scope(cfg, entry))
+        labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
+        importer = IssueImporter(
+            store,
+            labels,
+            port,
+            lock
+            if lock is not None
+            else intake_lock(cfg, directory, hive=hive, verb="work import"),
+            origin=ORIGIN_GITHUB,
+            default_type=default_type,
+        )
+        return IntakeService(store, labels, importer=importer)
+
+    try:
+        outcome = bind_intake(enabled, build).import_issue(
+            ImportRequest(reference, actor, dry_run=dry_run)
+        )
+    except IntakeRefused as exc:
+        return ImportResult(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return ImportResult(exc.returncode, import_message(exc), "store_error", report=exc.bead)
+    except store_target.StoreResolutionError as exc:
+        return ImportResult(1, str(exc), "store_unresolved")
+    return ImportResult(0, outcome=outcome)
+
+
 # -- dispositions ----------------------------------------------------------------------------
 
 
@@ -344,18 +476,20 @@ class RandomIdSource:
         return mint_grant_id(self._entropy(16))
 
 
-def _primary_guard(cfg: Mapping[str, Any], hive: str) -> Callable[[], None]:
+def _primary_guard(
+    cfg: Mapping[str, Any], hive: str, verb: str = "work outbox"
+) -> Callable[[], None]:
     def check() -> None:
         import typer
 
         from . import guard
 
         try:
-            guard.guard_primary(hive, cfg=cfg, verb="work outbox")
+            guard.guard_primary(hive, cfg=cfg, verb=verb)
         except typer.Exit as exc:
             raise IntakeRefused(
                 RefusalReason.NOT_PRIMARY,
-                "this host is not the hive's primary writer; run the outbox on the primary",
+                f"this host is not the hive's primary writer; run `bh {verb}` on the primary",
             ) from exc
 
     return check
@@ -382,11 +516,14 @@ def lock_dir(directory) -> Path:
     return root / "intake" / "locks"
 
 
-def intake_lock(cfg: Mapping[str, Any], directory, *, hive: str = "") -> FlockIntakeLock:
-    """The production lock for the hive at ``directory`` (``hive`` is the CLI's selector)."""
+def intake_lock(
+    cfg: Mapping[str, Any], directory, *, hive: str = "", verb: str = "work outbox"
+) -> FlockIntakeLock:
+    """The production lock for the hive at ``directory`` (``hive`` is the CLI's selector; ``verb``
+    names the write verb in a primary-host refusal)."""
     return FlockIntakeLock(
         lambda: lock_dir(directory),
-        primary=_primary_guard(cfg, hive),
+        primary=_primary_guard(cfg, hive, verb),
         epoch=_live_epoch(cfg, hive),
     )
 
@@ -473,18 +610,23 @@ def outbox_service_for(
 
 __all__ = [
     "FlockIntakeLock",
+    "ImportResult",
     "RandomIdSource",
     "ValidateLabelPolicy",
     "directory_store",
     "dispose",
     "duplicate_rows",
     "entry_dupes",
+    "external_intake_settings",
     "file_report",
     "fleet_prefixes",
+    "import_issue",
+    "import_message",
     "intake_lock",
     "leak_policy",
     "lock_dir",
     "outbox_service_for",
+    "process_adapters",
     "queue_rows",
     "report_store",
     "reroute_to_hive",

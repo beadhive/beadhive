@@ -44,6 +44,9 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         # declare a store binding (`managed_repos`) but can never enable a plugin, a read or a
         # write. The canonical namespaces of the five legacy sections keep their legacy owner.
         "plugin_kernel",
+        # External intake is host-owned too: a fleet push can never switch import on, and no
+        # intake key can enable or pre-approve a tracker write (external-intake-module-adr.md 15).
+        "intake",
         "plugins.tracker-github",
         "plugins.herdr",
         "plugins.hitch",

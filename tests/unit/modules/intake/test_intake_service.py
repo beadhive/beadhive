@@ -330,7 +330,6 @@ def test_operations_no_bead_has_implemented_yet_refuse_without_writing() -> None
     service, store, _ = _service()
 
     calls = (
-        lambda: service.import_issue(ImportRequest(URL, "dev/test")),
         lambda: service.link(LinkRequest("a", "b", "dev/test")),
         lambda: service.unlink("a", actor="dev/test"),
         lambda: service.discover(DiscoveryRequest("dev/test")),
@@ -339,6 +338,16 @@ def test_operations_no_bead_has_implemented_yet_refuse_without_writing() -> None
         with pytest.raises(IntakeRefused) as refused:
             call()
         assert refused.value.reason is RefusalReason.NOT_AVAILABLE
+    assert store.writes == 0
+
+
+def test_import_without_a_bound_tracker_is_disabled_not_unimplemented() -> None:
+    service, store, _ = _service()
+
+    with pytest.raises(IntakeRefused) as refused:
+        service.import_issue(ImportRequest(URL, "dev/test"))
+
+    assert refused.value.reason is RefusalReason.INTAKE_DISABLED
     assert store.writes == 0
 
 

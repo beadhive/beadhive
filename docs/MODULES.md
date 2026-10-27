@@ -526,6 +526,16 @@ store history, so purging is not erasure. Its tests run on `MemoryTracker` with 
 (`tests/unit/modules/intake/test_intake_threads.py` is the `bh-fptob` plan T1 to T19,
 `test_intake_thread_rules.py` drives the rules directly).
 
+Import (`bh-2ef4g`) is `application/importer.py` (`IssueImporter`, behind
+`IntakeService.import_issue`): it resolves the URL through the tracker's optional `IssueResolver`
+(distinct refusals R3 to R7) or pages `list_issues` (one `NOT_FOUND_IN_PROJECT`), keys on the
+canonical URL in the operational store only, creates a held report in `intake:untriaged` with
+`origin:github`, and re-imports as a snapshot update plus repair of any missing piece. It reads the
+tracker and never writes it. `intake_services.import_issue` composes it; the switch
+`intake.external.enabled` is host-owned and off, and until production credential wiring (`bh-kzs0b`)
+the verb refuses with `intake_disabled`. Its lock is the root's `FlockIntakeLock` (below), shared
+with the outbox sender: a mutating import takes `guard_primary` and the per-binding `flock`.
+
 The outbox (`bh-6wj9y`) is pure so far: `domain/outbox.py` holds the communication records (keyed
 by an opaque `ob1_` id and a stable `DraftKey`, rendering only their `PublicFacts` and message
 text) and the per-operation machine O1 to O19, `domain/leaks.py` the leak check,

@@ -336,6 +336,62 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
 - Import, link and discovery perform **no tracker write**, hold no `WriteGrant` and call no
   writer. Issue bodies are untrusted input, stored as data and never interpreted.
 
+**As built (I4, `bh-2ef4g`).**
+
+- **Where.** `application/importer.py` (`IssueImporter`, the only tracker-typed code of import)
+  behind `IntakeService.import_issue`; `intake_services.import_issue` composes the
+  `intake.external.enabled` switch (host-owned, off), the tracker the hive's public-store binding
+  serves (an injected `TrackerAdapters`, asked for `issues.read` only; R13, a disabled plugin and
+  a disabled read are all R0 `INTAKE_DISABLED` naming the key to set), the operational
+  `BdReportStore`, the root `FlockIntakeLock` and `ValidateLabelPolicy`. `work_intake.import_issue`
+  is the command body and `work.import_cmd` the Typer function. **No production credential wiring exists**
+  (`bh-kzs0b`): `intake_services.process_adapters` returns `None`, so the verb refuses with R0 until
+  that bead binds a real `TrackerAdapters`; tests inject `adapters=` or `tracker=`.
+- **Resolver and fallback.** With an `IssueResolver`: `resolve(url)` (pure) gives R3, R4 and the
+  URL form of R5; `get(key)` (one read) gives R6 and the read form of R5; R7 is the canonical URL
+  `get` answered differing from the one asked for and no longer resolving in this project (a
+  rename inside the project is accepted and keys on the new URL). Without one, `list_issues` is
+  paged and matched on the URL stripped of query, fragment and trailing slash (the only
+  canonicalisation that needs no grammar), and R3 to R7 are the one `NOT_FOUND_IN_PROJECT`. Any
+  other tracker failure is `TRACKER_ERROR` (a new reason) with the adapter's already-scrubbed
+  message; `OperationNotEnabled` is R0.
+- **Revision.** The snapshot's `revision` token is the tracker's `updated_at` plus its optional
+  version, `<iso8601>[#<version>]`; `domain.rules.revision_is_newer` decides: equal or older is a
+  no-op, an unreadable token is refreshed rather than frozen. Repairs of an interrupted create
+  (`hold`, `origin`, `intake`, `source`) are reported in `ImportOutcome.repaired`, fix only the
+  missing piece and never touch an existing disposition; a closed report is never given a hold.
+  The hold repair is a targeted `holds()` check for this report, not `sweep_holds`, so a re-import
+  does not scan every report.
+- **Lock and config.** Import uses the root's one `FlockIntakeLock` (`intake_services.intake_lock`,
+  the same lock the outbox sender holds): `guard_primary` first (`NOT_PRIMARY`, naming `bh work
+  import`), then an advisory never-waiting `flock` under the hive's `.bh/intake/locks/`
+  (`INTAKE_BUSY`), yielding `live_epoch`. A dry run takes no lock.
+  `intake.external` carries `enabled` and `default_type` only, is **host-owned** and global (a
+  per-hive override in the fleet-owned `managed_repos` would let a fleet push enable import, so none
+  exists yet); it is documented in `docs/CONFIGURATION.md`.
+- **Tests.** `tests/unit/modules/intake/test_intake_import.py` (R0 to R8 on the resolver and the
+  fallback, dry run, repair, idempotence, closed issues) and
+  `tests/test_intake_import_composition.py` (the composition: acceptance item 5 with a
+  byte-fingerprinted public-store fixture and a `resolve_store` spy after every case, the config
+  switch, store failures, rendering).
+  `MemoryWorld.transfer_issue` is the minimal model of a transfer that R7 needs (`bh-ukesf`).
+- **Not done here.** The verb is **intentionally not registered** in `CLI_HANDLERS` or the
+  operation catalog: registering it needs `just wire-publish`, which cuts the next wire release
+  (v2.16.0), a release step reserved for the operator. `work.import_cmd` and
+  `work_intake.import_issue` are implemented and tested but unreachable from the CLI until then.
+  **Registration recipe**, in order:
+  1. `src/beadhive/kernel/operations/__init__.py`: add the `work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o`
+     row to `_CLI_ROWS` (match the encoding, option names and canonical-name map of the sibling
+     `work accept` / `work promote` rows).
+  2. `src/beadhive/work.py`: add `"work.import": import_cmd` to `CLI_HANDLERS` (no
+     `_bind_cli_handler` rename is needed: the Python parameters are already `url`, `hive`,
+     `dry_run`, `as_json`, `as_`).
+  3. `src/beadhive/work.py`: add `import_cmd = _CLI_CALLBACKS["work.import"]` to the block of
+     callback assignments after `_CLI_CALLBACKS`, as `reject_cmd` and `promote_cmd` have, and
+     drop the "Not yet in `CLI_HANDLERS`" sentence from the `import_cmd` docstring.
+  4. Run `just wire-publish` (operator, release step) to cut v2.16.0 and regenerate the derived
+     artifacts, then the catalog-drift tests and `bh work check`.
+
 ### 6. Link, and a bound report is never work (D1)
 
 - **Edge:** `tracks`, report to work (`bd dep add <report> <work> -t tracks`): directional,

@@ -27,6 +27,7 @@ from beadhive.modules.tracker.contracts import (
     LabelWriter,
     Operation,
     OperationNotEnabled,
+    OtherProject,
     TrackerAdapter,
     UrlNotRecognized,
     WriteOutcomeUnknown,
@@ -134,6 +135,29 @@ def test_get_refuses_a_change_request_reached_through_an_issue_url() -> None:
     key = tracker.resolve(world.issue_url(int(change.internal_id or 0)))
     with pytest.raises(ChangeRequestUrl):
         tracker.get(key)
+
+
+def test_a_transferred_issue_leaves_the_listing_and_answers_its_old_key_with_the_new_one() -> None:
+    """``MemoryWorld.transfer_issue`` (the minimal model of a tracker transfer, bh-ukesf): the
+    issue is no longer in this project's listings, but its old key still reads and answers with
+    the canonical key of the other project, which this project's resolver then refuses."""
+    world = MemoryWorld()
+    kept = world.add_issue("stays", at=at(1))
+    moved = world.add_issue("moves", at=at(2))
+    tracker = MemoryTracker(world)
+
+    new_key = world.transfer_issue(moved, to="acme/elsewhere", at=at(3))
+
+    assert (
+        new_key.url == "memory://acme/elsewhere/issues/2" and new_key.identifier == moved.identifier
+    )
+    assert [i.key for i in tracker.list_issues(IssueQuery()).items] == [kept]
+    assert tracker.list_ids(IdQuery(IdSubject.ISSUES)).ids == (kept.url,)
+    assert tracker.get(moved).key == new_key
+    with pytest.raises(OtherProject):
+        tracker.resolve(new_key.url)
+    assert tracker.get(kept).key == kept  # an untouched issue still needs its exact key
+    assert world.write_requests() == 0
 
 
 def test_resolver_refusals_do_not_echo_the_pasted_url() -> None:

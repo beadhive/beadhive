@@ -431,6 +431,23 @@ def promote_cmd(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     return work_intake.promote(bead, as_, hive)
 
 
+def import_cmd(
+    url: str = typer.Argument(..., help="the external issue's own URL (not a bead id)"),
+    hive: str = _HIVE,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="classify and report would-create/would-update; write nothing"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+    as_: str = _AS,
+):
+    """Import an external issue as an untriaged, held internal report bead (read-only toward the
+    tracker; off unless `intake.external.enabled`). Re-importing the same URL updates its snapshot
+    and never duplicates it or resets triage.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-2ef4g)."""
+    return work_intake.import_issue(url, hive, dry_run, as_json, as_)
+
+
 def _refuse_public(verb: str, *values) -> None:
     """Refuse an operational verb aimed at a PUBLIC projection bead (bh-lniwf.5).
 
