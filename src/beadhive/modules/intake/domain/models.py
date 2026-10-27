@@ -275,6 +275,9 @@ class DiscoveryOutcome:
     source_missing: int = 0
     checkpoint_advanced: bool = False
     reports: tuple[str, ...] = field(default_factory=tuple)
+    #: A full pass whose id snapshot was complete, so ``source_missing`` was judged (an
+    #: incomplete snapshot never marks anything missing).
+    reconciled: bool = False
 
 
 @dataclass(frozen=True)

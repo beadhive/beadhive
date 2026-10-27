@@ -9,8 +9,9 @@ optional :class:`~.sender.OutboxService`; without one (the outbox off, the defau
 them refuses with ``OUTBOX_DISABLED``, so nothing can be drafted, approved or sent. Import delegates
 to an optional :class:`~.importer.IssueImporter`; without one (no tracker bound) it refuses with
 ``INTAKE_DISABLED``. Link, unlink, the derived work progress and ``accept --work`` /
-``--new-work`` run over the store alone through :class:`~.linker.LinkService`. Discovery is an
-operation of the port that a later bead owns; until then it refuses with ``NOT_AVAILABLE``.
+``--new-work`` run over the store alone through :class:`~.linker.LinkService`. Discovery
+delegates to an optional :class:`~.discovery.IssueDiscoverer` and, without one (no tracker bound),
+refuses with ``INTAKE_DISABLED`` like import.
 Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
@@ -67,6 +68,7 @@ from ..domain import (
     hold_findings,
     may_disposition,
 )
+from .discovery import IssueDiscoverer
 from .importer import IssueImporter
 from .linker import LinkService
 from .sender import OutboxService
@@ -96,7 +98,8 @@ class IntakeService:
     report``), so the recorded history reads as it does today. ``threads`` is bound only when
     comment ingestion is enabled (``intake.external.comments.enabled``, off by default),
     ``outbox`` only when the outbox is (``intake.external.outbox.enabled``, off by default) and
-    ``importer`` only when a tracker is (``bh work import`` refuses without it). ``lock`` is the
+    ``importer`` and ``discoverer`` only when a tracker is (``bh work import`` and ``bh work
+    discover`` refuse without it). ``lock`` is the
     per-binding lock a link or unlink holds while it writes (none: a single in-process writer)."""
 
     def __init__(
@@ -109,6 +112,7 @@ class IntakeService:
         outbox: OutboxService | None = None,
         importer: IssueImporter | None = None,
         lock: IntakeLock | None = None,
+        discoverer: IssueDiscoverer | None = None,
     ) -> None:
         self._store = store
         self._labels = labels
@@ -116,6 +120,7 @@ class IntakeService:
         self._threads = threads
         self._outbox = outbox
         self._importer = importer
+        self._discoverer = discoverer
         self._linker = LinkService(store, lock)
 
     # -- filing ------------------------------------------------------------------------------
@@ -461,10 +466,17 @@ class IntakeService:
     def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         return self._outbox_service().retry(outbox_id, actor=actor, kind=kind)
 
-    # -- owned by later beads ----------------------------------------------------------------
+    # -- discovery (I6) ----------------------------------------------------------------------
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
-        raise _not_available("discover")
+        """Opt-in, pull-only discovery through the import upsert; see :class:`IssueDiscoverer`."""
+        if self._discoverer is None:
+            raise IntakeRefused(
+                RefusalReason.INTAKE_DISABLED,
+                "discover needs a bound tracker with issues.read enabled "
+                "(external intake is opt-in, and so is the tracker)",
+            )
+        return self._discoverer.discover(request)
 
     # -- import (I4) -------------------------------------------------------------------------
 
@@ -499,12 +511,6 @@ def _outbox_off() -> IntakeRefused:
     return IntakeRefused(
         RefusalReason.OUTBOX_DISABLED,
         "the outbox is off for this hive (intake.external.outbox.enabled; opt-in)",
-    )
-
-
-def _not_available(operation: str) -> IntakeRefused:
-    return IntakeRefused(
-        RefusalReason.NOT_AVAILABLE, f"intake {operation} is not implemented in this build"
     )
 
 

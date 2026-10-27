@@ -324,15 +324,15 @@ def test_binding_of_and_reports_for_work() -> None:
     assert service.reports_for_work("acme-nothing") == ()
 
 
-# -- owned by later beads -------------------------------------------------------------------
+# -- import and discovery need a bound tracker ------------------------------------------------
 
 
-def test_discovery_no_bead_has_implemented_yet_refuses_without_writing() -> None:
+def test_discovery_without_a_bound_tracker_is_disabled_and_writes_nothing() -> None:
     service, store, _ = _service()
 
     with pytest.raises(IntakeRefused) as refused:
         service.discover(DiscoveryRequest("dev/test"))
-    assert refused.value.reason is RefusalReason.NOT_AVAILABLE
+    assert refused.value.reason is RefusalReason.INTAKE_DISABLED
     assert store.writes == 0
 
 

@@ -1,5 +1,6 @@
-"""``InProcessIntakeLock`` and ``MemoryOutboxView``: deterministic stand-ins for intake's lock and
-outbox read ports (external-intake-module-adr.md sections 4 and 9).
+"""``InProcessIntakeLock``, ``MemoryCheckpointStore`` and ``MemoryOutboxView``: deterministic
+stand-ins for intake's lock, checkpoint and outbox read ports (external-intake-module-adr.md
+sections 4 and 9).
 
 The lock never waits: a second hold of a held binding is refused at once with
 ``IntakeRefused(INTAKE_BUSY)``, so a test can prove an operation refused without any timing. The
@@ -12,7 +13,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from beadhive.modules.intake.contracts import IntakeRefused, RefusalReason, ThreadActor
+from beadhive.modules.intake.contracts import (
+    Checkpoint,
+    IntakeRefused,
+    RefusalReason,
+    ThreadActor,
+)
 
 
 class InProcessIntakeLock:
@@ -38,6 +44,22 @@ class InProcessIntakeLock:
 
     def held(self, binding_key: str) -> bool:
         return binding_key in self._held
+
+
+class MemoryCheckpointStore:
+    """A :class:`~beadhive.modules.intake.contracts.CheckpointStore` in a dict, recording every
+    ``put`` (key and token, in order) so a test can assert when a mark moved."""
+
+    def __init__(self) -> None:
+        self.marks: dict[str, Checkpoint] = {}
+        self.puts: list[tuple[str, str]] = []
+
+    def get(self, binding_key: str) -> Checkpoint | None:
+        return self.marks.get(binding_key)
+
+    def put(self, binding_key: str, checkpoint: Checkpoint) -> None:
+        self.puts.append((binding_key, checkpoint.token))
+        self.marks[binding_key] = checkpoint
 
 
 @dataclass

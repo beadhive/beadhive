@@ -150,14 +150,27 @@ class IssueImporter:
     def import_issue(self, request: ImportRequest) -> ImportOutcome:
         reference = self._reference(request.reference)
         issue = self._resolve(reference)
-        project = self._tracker.describe().project
-        binding = IssueBinding(
-            "", project.tracker, project.locator, issue.key.url, issue.key.identifier
-        )
+        binding = self.binding_for(issue)
         if request.dry_run:
             return self._decide(issue, binding)[0]
         with self._lock.hold(binding_key(binding)):
             return self._upsert(issue, binding, request.actor)
+
+    # -- the upsert, shared with discovery (I6) ------------------------------------------------
+
+    def binding_for(self, issue: TrackerIssue) -> IssueBinding:
+        """``issue`` as a binding of this tracker's project (no report yet)."""
+        project = self._tracker.describe().project
+        return IssueBinding(
+            "", project.tracker, project.locator, issue.key.url, issue.key.identifier
+        )
+
+    def upsert(self, issue: TrackerIssue, actor: str) -> ImportOutcome:
+        """The import's upsert for an issue already read from the tracker, WITHOUT taking the
+        binding lock: the caller (discovery) holds :class:`IntakeLock` for its whole run, and a
+        second hold of the same binding would refuse as busy. Same refusals from the store side
+        (``DUPLICATE_BINDING``), same repairs, same no-op for an unchanged revision."""
+        return self._upsert(issue, self.binding_for(issue), actor)
 
     # -- refusals before any tracker request (R1, R2) ------------------------------------------
 
