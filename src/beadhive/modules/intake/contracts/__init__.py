@@ -1,12 +1,15 @@
 """The intake module's public contracts: the consumer port, the outbound ports and the domain
-records and refusals they speak (re-exported, as the ``modules/hives`` shape).
+records and refusals they speak (re-exported, as the ``modules/hives`` shape), plus the
+``intake.thread`` document codec every ``ReportStore`` implementation shares.
 """
 
 from __future__ import annotations
 
 from ..domain import (
+    THREAD_KEY,
     BeadView,
     Checkpoint,
+    ConsiderRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     Disposition,
@@ -24,20 +27,36 @@ from ..domain import (
     LinkKind,
     LinkOutcome,
     LinkRequest,
+    OwnIdentity,
+    PresenceOutcome,
+    PresenceRequest,
     QueueItem,
     QueueQuery,
     QueueView,
     RefusalReason,
     ReportDraft,
     SourceSnapshot,
+    StorePosture,
     StoreScope,
+    Thread,
+    ThreadActor,
+    ThreadDocumentError,
+    ThreadEvent,
+    ThreadOutcome,
+    ThreadPolicy,
+    ThreadRequest,
+    ThreadView,
+    thread_from_document,
+    thread_to_document,
 )
-from .ports import CheckpointStore, IntakePort, LabelPolicy, ReportStore
+from .ports import CheckpointStore, IntakeLock, IntakePort, LabelPolicy, OutboxView, ReportStore
 
 __all__ = [
+    "THREAD_KEY",
     "BeadView",
     "Checkpoint",
     "CheckpointStore",
+    "ConsiderRequest",
     "DiscoveryOutcome",
     "DiscoveryRequest",
     "Disposition",
@@ -48,6 +67,7 @@ __all__ = [
     "ImportKind",
     "ImportOutcome",
     "ImportRequest",
+    "IntakeLock",
     "IntakePort",
     "IntakeRefused",
     "IntakeStoreError",
@@ -57,6 +77,10 @@ __all__ = [
     "LinkKind",
     "LinkOutcome",
     "LinkRequest",
+    "OutboxView",
+    "OwnIdentity",
+    "PresenceOutcome",
+    "PresenceRequest",
     "QueueItem",
     "QueueQuery",
     "QueueView",
@@ -64,5 +88,16 @@ __all__ = [
     "ReportDraft",
     "ReportStore",
     "SourceSnapshot",
+    "StorePosture",
     "StoreScope",
+    "Thread",
+    "ThreadActor",
+    "ThreadDocumentError",
+    "ThreadEvent",
+    "ThreadOutcome",
+    "ThreadPolicy",
+    "ThreadRequest",
+    "ThreadView",
+    "thread_from_document",
+    "thread_to_document",
 ]
