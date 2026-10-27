@@ -751,6 +751,41 @@ def test_file_non_adopted_molecule_makes_no_dep_or_import(hive, monkeypatch):
     assert _dep_add_args(fb) is None
 
 
+def test_file_a_tracked_bound_report_links_tracks_and_carries_no_external_ref(hive, monkeypatch):
+    """External-intake D-c: a BOUND report is tracked by the filed epic (`bd dep add <report>
+    <epic> -t tracks`, non-blocking), never made its child, and its external_ref is not copied."""
+    fb = FakeBdAdopt()
+    monkeypatch.setattr(bd_mod, "_run", fb)
+    spec = hive.tmp / "tracked.yaml"
+    spec.write_text(
+        "\n".join(
+            [
+                "epic:",
+                "  title: Deliver the login fix",
+                "  description: from a held report",
+                "  tracks: [rep-1]",
+                "issues:",
+                "  - handle: a",
+                "    title: fix it",
+                "    acceptance: fixed",
+                "    component: runtime",
+                "    deps: []",
+            ]
+        )
+        + "\n"
+    )
+
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+
+    assert not fb.imported
+    assert "--external-ref" not in fb.create_args(title="Deliver the login fix")
+    assert _dep_add_args(fb) == ["dep", "add", "rep-1", "mr-1", "-t", "tracks"]
+    assert not any(
+        args[:2] == ["dep", "add"] and args[2] == "rep-1" and "parent-child" in args
+        for _actor, args in fb.calls
+    )
+
+
 # ---- adopt verb: seed a frame from a promoted report ------------------------
 
 

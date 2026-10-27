@@ -19,6 +19,14 @@ Two provenance facets carry through to the filed epic (see ``ws/state.py``):
     report) and it rides the epic to completion. A ``blocks`` edge is not usable here: bd forbids
     blocking dependencies between an epic and a task, so ``parent-child`` is the sanctioned link.
 
+A BOUND report (one imported from an external issue, carrying its ``intake.source`` document; see
+``docs/design/external-intake-module-adr.md``, D-c) is different: it is held for life and is never
+work, and a second bead carrying its URL would make every later import of that issue refuse. So it
+is NOT folded into ``adopts`` and carries no provenance onto the epic: the frame lists it under
+``tracks``, ``ws plan file`` links it ``tracks`` (report to epic, non-blocking) instead of
+child-of, no ``external_ref`` is copied, and only its id and title seed the epic text (the issue
+body is untrusted public text and is read on the report, not copied into dispatchable work).
+
 This module is Typer-free and bd-free — pure spec shaping over already-read bead JSON. ``plan.py``
 owns the CLI verb plus every bd read/write (the ``plan.run`` test seam), so the two planes share
 one subprocess seam and the shaping logic stays trivially unit-testable.
@@ -27,6 +35,7 @@ one subprocess seam and the shaping logic stays trivially unit-testable.
 from __future__ import annotations
 
 from . import state
+from .adapters.intake import SOURCE_KEY
 
 # Native system-of-record provenance fields carried from an origin report onto the filed epic.
 PROVENANCE_FIELDS = ("source_system", "external_ref")
@@ -47,15 +56,24 @@ def _seed_title(beads: list[dict]) -> str:
     return f"Adopt: {first}{suffix}"
 
 
+def is_bound_report(bead: dict) -> bool:
+    """True for a report imported from an external issue: the bead row carries the module's
+    ``intake.source`` document. Such a report is tracked by the epic, never adopted (D-c)."""
+    metadata = bead.get("metadata")
+    return isinstance(metadata, dict) and SOURCE_KEY in metadata
+
+
 def _seed_description(beads: list[dict]) -> str:
-    """Seed the epic description from the report text(s) so the planner opens with the full ask."""
+    """Seed the epic description from the report text(s) so the planner opens with the full ask.
+
+    A bound report contributes its id and title only: its body is untrusted public text."""
     lines = ["Adopted from promoted intake report(s):", ""]
     for bead in beads:
         bid = str(bead.get("id") or "?")
         title = str(bead.get("title") or "").strip()
         lines.append(f"- {bid}: {title}".rstrip())
         body = str(bead.get("description") or "").strip()
-        if body:
+        if body and not is_bound_report(bead):
             lines.append(f"  {body}")
     return "\n".join(lines)
 
@@ -65,6 +83,8 @@ def _provenance(beads: list[dict]) -> tuple[str, str]:
     of the FIRST report that carries either (a GitHub-sourced report keeps its ``gh-<n>`` trace).
     ``('', '')`` when no report carries native provenance (a born-native cross-hive report)."""
     for bead in beads:
+        if is_bound_report(bead):  # D-c: a bound report's external_ref stays on the report
+            continue
         source_system = str(bead.get("source_system") or "").strip()
         external_ref = str(bead.get("external_ref") or "").strip()
         if source_system or external_ref:
@@ -84,8 +104,11 @@ def frame_from_beads(beads: list[dict]) -> dict:
     epic: dict = {
         "title": _seed_title(beads),
         "description": _seed_description(beads),
-        "adopts": [str(b.get("id")) for b in beads if b.get("id")],
+        "adopts": [str(b.get("id")) for b in beads if b.get("id") and not is_bound_report(b)],
     }
+    tracked = [str(b.get("id")) for b in beads if b.get("id") and is_bound_report(b)]
+    if tracked:
+        epic["tracks"] = tracked
     source_system, external_ref = _provenance(beads)
     if source_system:
         epic["source_system"] = source_system
@@ -100,6 +123,12 @@ def frame_from_beads(beads: list[dict]) -> dict:
 def adopts_of(epic: dict) -> list[str]:
     """The originating report id(s) an adopted epic links back to (``[]`` when not adopted)."""
     return [str(x) for x in (epic.get("adopts") or []) if str(x).strip()]
+
+
+def tracks_of(epic: dict) -> list[str]:
+    """The BOUND report id(s) an epic tracks (``[]`` when none): linked ``tracks``, report to epic,
+    and left open and held; never adopted as children (D-c)."""
+    return [str(x) for x in (epic.get("tracks") or []) if str(x).strip()]
 
 
 def provenance_of(epic: dict) -> tuple[str, str]:

@@ -193,6 +193,7 @@ def file(spec: dict, cwd: Path, actor: str, cfg: Any) -> Any:
                 epic_id=epic_id,
                 epic_external_ref="" if epic_id else external_ref,
                 adopted_reports=tuple(adopt.adopts_of(epic)),
+                tracked_reports=tuple(adopt.tracks_of(epic)),
                 release_breaking_handles=release_breaking_handles,
             )
     except (core.PlanningError, core.MoleculeFilingFailed, core.GateCreateFailed) as exc:
