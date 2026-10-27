@@ -6,8 +6,9 @@
   substitutes for a real one. No bd, no filesystem, no clock.
 - :data:`REPORT_STORE_CASES` (``cases``): the reusable contract cases every ``ReportStore`` must
   pass, with :func:`run_report_store_case` / :func:`assert_report_store_conforms`.
-- :class:`InProcessIntakeLock` and :class:`MemoryOutboxView` (``lock``): a never-waiting
-  in-process ``IntakeLock`` with a settable epoch, and an outbox read view over plain sets.
+- :class:`InProcessIntakeLock`, :class:`MemoryCheckpointStore` and :class:`MemoryOutboxView`
+  (``lock``): a never-waiting in-process ``IntakeLock`` with a settable epoch, a recording
+  ``CheckpointStore`` and an outbox read view over plain sets.
 - :class:`SequentialIdSource` and :class:`RecordingSanitizer` (``outbox``): a deterministic
   ``IdSource`` and a recording ``Sanitizer`` for the outbox.
 
@@ -27,7 +28,7 @@ from .cases import (
     run_report_store_case,
     thread,
 )
-from .lock import InProcessIntakeLock, MemoryOutboxView
+from .lock import InProcessIntakeLock, MemoryCheckpointStore, MemoryOutboxView
 from .memory_store import MemoryReportStore
 from .outbox import RecordingSanitizer, SequentialIdSource
 
@@ -36,6 +37,7 @@ __all__ = [
     "SCOPE",
     "URL",
     "InProcessIntakeLock",
+    "MemoryCheckpointStore",
     "MemoryOutboxView",
     "MemoryReportStore",
     "RecordingSanitizer",

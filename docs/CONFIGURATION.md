@@ -432,14 +432,25 @@ and no key can enable or pre-approve a tracker write.
 
 | Key (under `intake.external`) | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | enable `bh work import <issue-url>`; off means the intake port is the null one and import refuses with `intake_disabled` |
+| `enabled` | `false` | enable `bh work import <issue-url>` and `bh work discover`; off means the intake port is the null one and they refuse with `intake_disabled` |
 | `default_type` | `bug` | issue type of an imported report: `bug`, `feature` or `chore` |
+| `discovery.enabled` | `false` | run the opt-in host-daemon discovery timer (needs `enabled` too) |
+| `discovery.interval_seconds` | unset | seconds between timer runs; **required** when `discovery.enabled` is true (there is no default cadence) |
+| `discovery.full_reconcile_every` | `24` | every Nth timer run is a full pass (all issues including closed, then the id reconcile); the rest resume from the checkpoint |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
 plugin's `read.issues.enabled` ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md));
 it lands the issue in `intake:untriaged` with `origin:github`, held, and never writes to the
 tracker. As with `adapter`, nothing in a shared config should set these keys until the schema has
 rotated to every host (`bh-tfko9`).
+
+`bh work discover [--full]` and the daemon timer run the same pull-only discovery through the
+import upsert: an incremental pass resumes from its checkpoint (a file in the hive's private
+`.bh/intake/checkpoints`, the tracker's own mark, never the local clock) and a re-run changes
+nothing; `--full` re-pulls every issue including closed ones and marks reports whose issue is gone
+`source_missing` in their snapshot (it never deletes or closes a report). The timer needs both
+`enabled` and `discovery.enabled`, a chosen `interval_seconds` and a wired tracker adapter (the
+daemon refuses to start otherwise); it never writes a tracker or the public store.
 
 ## `bh config` commands
 

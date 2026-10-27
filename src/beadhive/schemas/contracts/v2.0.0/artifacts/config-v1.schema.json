@@ -2299,6 +2299,43 @@
       "title": "IntakeConfig",
       "type": "object"
     },
+    "IntakeDiscoveryConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.discovery`` — the opt-in host-daemon discovery timer (everything off).\n\nThe timer runs pull-only discovery (the same upsert as `bh work import`; never a tracker or a\npublic-store write) every ``interval_seconds``. It runs only when ``intake.external.enabled``\nAND ``discovery.enabled`` are both true; ``interval_seconds`` has no default, so enabling the\ntimer without choosing a cadence fails validation instead of picking one for the operator.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Run the host-daemon discovery timer (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "full_reconcile_every": {
+          "default": 24,
+          "description": "Every Nth timer run is a full pass (all issues including closed, then the id reconcile that marks `source_missing`); the rest resume from the checkpoint.",
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Full Reconcile Every",
+          "type": "integer"
+        },
+        "interval_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 604800,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Seconds between discovery runs. Required when `enabled` is true.",
+          "title": "Interval Seconds"
+        }
+      },
+      "title": "IntakeDiscoveryConfig",
+      "type": "object"
+    },
     "IntakeExternalConfig": {
       "additionalProperties": false,
       "description": "``intake.external`` — external issue intake (host-owned; everything off).\n\nOff unless configured: with ``enabled`` false `bh work import` refuses and the intake port is\nthe null one. Nothing here binds a tracker, holds a credential, a grant or an approval, and no\nkey can enable or pre-approve a tracker write: a write is only ever the operator's, per record.",
@@ -2314,9 +2351,12 @@
           "title": "Default Type",
           "type": "string"
         },
+        "discovery": {
+          "$ref": "#/$defs/IntakeDiscoveryConfig"
+        },
         "enabled": {
           "default": false,
-          "description": "Enable external issue intake: `bh work import` (default off).",
+          "description": "Enable external issue intake: `bh work import` and `discover` (default off).",
           "title": "Enabled",
           "type": "boolean"
         }

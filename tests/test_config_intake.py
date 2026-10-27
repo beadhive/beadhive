@@ -9,6 +9,7 @@ from beadhive.modules.config.application import partition
 from beadhive.modules.config.contracts import (
     BeadhiveConfig,
     IntakeConfig,
+    IntakeDiscoveryConfig,
     IntakeExternalConfig,
     ManagedRepoEntry,
     iter_schema_fields,
@@ -75,5 +76,76 @@ def test_there_is_no_per_hive_override_a_fleet_document_could_carry() -> None:
 def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
     names = {f.path.rsplit(".", 1)[-1] for f in iter_schema_fields() if f.path.startswith("intake")}
 
-    assert names == {"intake", "external", "enabled", "default_type"}
+    assert names == {
+        "intake",
+        "external",
+        "enabled",
+        "default_type",
+        "discovery",
+        "interval_seconds",
+        "full_reconcile_every",
+    }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
+
+
+# -- intake.external.discovery (bh-df64b): the opt-in daemon timer, off by default --
+
+
+def test_discovery_is_off_by_default_and_has_no_default_cadence() -> None:
+    discovery = IntakeConfig().external.discovery
+
+    assert discovery == IntakeDiscoveryConfig()
+    assert (discovery.enabled, discovery.interval_seconds) == (False, None)
+    assert discovery.full_reconcile_every == 24
+
+
+def test_a_discovery_section_validates_when_a_cadence_is_chosen() -> None:
+    config = BeadhiveConfig.model_validate(
+        {
+            "intake": {
+                "external": {
+                    "enabled": True,
+                    "discovery": {
+                        "enabled": True,
+                        "interval_seconds": 900,
+                        "full_reconcile_every": 6,
+                    },
+                }
+            }
+        }
+    )
+
+    assert config.intake is not None
+    discovery = config.intake.external.discovery
+    assert (discovery.enabled, discovery.interval_seconds, discovery.full_reconcile_every) == (
+        True,
+        900.0,
+        6,
+    )
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        {"enabled": True},  # enabling the timer without choosing an interval
+        {"enabled": "true", "interval_seconds": 60},
+        {"enabled": True, "interval_seconds": 0},
+        {"enabled": True, "interval_seconds": -5},
+        {"interval_seconds": 60, "full_reconcile_every": 0},
+        {"token": "x"},  # unknown keys fail closed on every host
+    ],
+)
+def test_a_bad_discovery_section_fails_closed(section) -> None:
+    with pytest.raises(ValidationError):
+        BeadhiveConfig.model_validate({"intake": {"external": {"discovery": section}}})
+
+
+def test_discovery_is_host_owned_so_a_fleet_push_cannot_start_the_timer() -> None:
+    paths = [f.path for f in iter_schema_fields() if f.path.startswith("intake.external.discovery")]
+
+    assert {
+        "intake.external.discovery.enabled",
+        "intake.external.discovery.interval_seconds",
+        "intake.external.discovery.full_reconcile_every",
+    } <= set(paths)
+    assert {partition.partition_of(path) for path in paths} == {partition.HOST}
