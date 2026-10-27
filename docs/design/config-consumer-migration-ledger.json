@@ -553,28 +553,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2365,
+        "line": 2366,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2435,
+        "line": 2436,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2613,
+        "line": 2614,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2626,
+        "line": 2627,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -2100,14 +2100,14 @@
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 6336,
+        "line": 6398,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 7571,
+        "line": 7633,
         "path": "tests/test_work.py",
         "target": "beadhive.config.max_commits"
       },

@@ -36,7 +36,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 19
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 22
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -189,6 +189,51 @@ class _ThreadForEveryBead(MemoryReportStore):
         return super().read_thread(bead) or thread(0)
 
 
+class _BoundCreateUnheld(MemoryReportStore):
+    """Creates a bound report open and unheld: it would be offered as work."""
+
+    def create(self, draft):
+        bead = super().create(draft)
+        for gate in self._gates.values():
+            gate.open = False
+        return bead
+
+
+class _NativeCreateHeld(MemoryReportStore):
+    """Holds a born-native report too, which would keep every `bh report` item out of ready."""
+
+    def create(self, draft):
+        bead = super().create(draft)
+        if draft.binding is None:
+            self.open_hold(bead, actor="a")
+        return bead
+
+
+class _CloseLeavesTheHold(MemoryReportStore):
+    def close(self, bead, *, reason, actor):
+        self._finish_close(self._row(bead), bead, reason)
+
+
+class _CloseRefusedWhileHeld(MemoryReportStore):
+    """A plain close: refused by the bound report's own hold, so it can never be closed."""
+
+    def close(self, bead, *, reason, actor):
+        self.plain_close(bead)
+
+
+class _ResolveClosesEveryHold(MemoryReportStore):
+    def resolve_hold(self, gate, *, actor):
+        blocked = self._gates[gate].blocks
+        for other in self._gates.values():
+            if other.blocks == blocked:
+                other.open = False
+
+
+class _OpenHoldIgnored(MemoryReportStore):
+    def open_hold(self, report, *, actor):
+        self._row(report)
+
+
 _BROKEN = [
     (_AppendsState, "store.set-state-replaces-its-dimension"),
     (_ClearsOnEmpty, "store.set-state-replaces-but-never-clears"),
@@ -213,6 +258,12 @@ _BROKEN = [
     (_ThreadRefusedWhenClosed, "store.thread-on-a-closed-report"),
     (_ThreadAnyBead, "store.thread-write-needs-its-bound-report"),
     (_ThreadForEveryBead, "store.thread-absent-reads-none"),
+    (_BoundCreateUnheld, "store.bound-create-opens-a-hold"),
+    (_NativeCreateHeld, "store.bound-create-opens-a-hold"),
+    (_CloseLeavesTheHold, "store.close-is-the-held-close"),
+    (_CloseRefusedWhileHeld, "store.close-is-the-held-close"),
+    (_ResolveClosesEveryHold, "store.holds-open-and-resolve-one-at-a-time"),
+    (_OpenHoldIgnored, "store.holds-open-and-resolve-one-at-a-time"),
 ]
 
 

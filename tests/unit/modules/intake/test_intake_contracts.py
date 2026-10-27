@@ -61,6 +61,7 @@ def test_port_names_match_the_adr() -> None:
         "reconcile_presence",
         "thread_of",
         "mark_considered",
+        "sweep_holds",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",
@@ -80,6 +81,10 @@ def test_port_names_match_the_adr() -> None:
         "trackers_of",
         "read_thread",
         "write_thread",
+        "holds",
+        "bound_reports",
+        "open_hold",
+        "resolve_hold",
     }
     assert {m for m in vars(contracts.CheckpointStore) if not m.startswith("_")} == {"get", "put"}
     assert {m for m in vars(contracts.LabelPolicy) if not m.startswith("_")} == {"violations"}

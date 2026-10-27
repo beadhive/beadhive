@@ -36,6 +36,8 @@ from .modules.intake import (
     DispositionOutcome,
     DispositionRequest,
     HiveTriplet,
+    HoldSweep,
+    HoldSweepRequest,
     IntakeRefused,
     IntakeService,
     IntakeStoreError,
@@ -122,6 +124,11 @@ def store_error_message(exc: IntakeStoreError) -> str:
         return f"could not clear intake state: {detail}"
     if operation == "assign":
         return f"bounce to superintendent failed: {detail}"
+    if operation == "open_hold":
+        return (
+            f"created {exc.bead} but could not hold it: {detail} "
+            "(it is open and unheld: `bh doctor` reports it, with the command that holds it)"
+        )
     return detail
 
 
@@ -181,6 +188,16 @@ def duplicate_rows(directory, threshold: float = 0.5, method: str = "mechanical"
     """Likely-duplicate pair records across a hive's open issues (``bd find-duplicates``)."""
     pairs = directory_store(directory).duplicate_pairs(threshold=threshold, method=method)
     return [dict(pair.raw) for pair in pairs]
+
+
+# -- the lifetime intake-hold -----------------------------------------------------------------
+
+
+def sweep_holds(directory, *, repair: bool = False, actor: str = "") -> HoldSweep:
+    """Compare the bound reports of the store at ``directory`` with its open ``intake-hold:`` gates
+    (and, with ``repair``, open a missing hold and resolve a stale one). Reads only the operational
+    store; a hive that never imported a report has none and sweeps clean."""
+    return service_for_directory(directory).sweep_holds(HoldSweepRequest(actor, repair))
 
 
 # -- dispositions ----------------------------------------------------------------------------
@@ -253,6 +270,7 @@ __all__ = [
     "queue_rows",
     "report_store",
     "reroute_to_hive",
+    "sweep_holds",
     "service_for",
     "service_for_directory",
     "store_error_message",

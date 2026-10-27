@@ -425,6 +425,44 @@ E4):
    `delivery:released` and the `released` record likewise. `notified` is not advanced for
    `abandoned` or `superseded`, so `notification_behind` stays visible.
 
+**As built (I3, `bh-eo8br`).**
+
+- **Held create.** `ReportStore.create` opens the hold (`bd gate create --blocks <report> --type
+  human --reason "intake-hold: external report, never work"`) straight after the `bd create`, for a
+  draft with a binding only; a born-native report (`bh report`, `bh escalate`) never gets one. bd
+  has no transaction across the two calls, so a failure on the second leaves the report open and
+  unheld, raises `IntakeStoreError(operation="open_hold")` carrying the new id, and is exactly the
+  "open bound report without a hold" case the sweep finds.
+- **Held close.** `BdReportStore.close` runs the ordinary `bd close` first, so a bead with no hold
+  closes (and fails) byte for byte as before. Only a refusal reads the bead's blockers
+  (`blockers_of`, from `bd show`): when every live one is its own `intake-hold:` gate it runs
+  `issue_close_held` (`bd close --force`) and then `gate resolve` on each hold; any other live
+  blocker is `IntakeRefused(LIVE_BLOCKER)` with nothing written. A second `close` on an already
+  closed report is a bd no-op (bd 1.3.0 closes a closed bead again with exit 0 and leaves its
+  gates alone), so a hold left by a crash between the two steps is resolved by the sweep, not by
+  a retry; it is harmless meanwhile because a closed bead is never ready.
+- **Claim refusal.** The dispatch gate of `claim` and `assign` (`ShellWorkspace.dispatch_gate`)
+  and the member check of `claim --group` refuse a bead with an open `intake-hold:` gate
+  (`work_logic._guard_not_held_report`), naming the gate and pointing to triage. It is one
+  `bd gate list` read and silent for every other bead.
+- **Doctor.** `bh doctor` gains an `intake_holds` section (payload key `intake_holds`, a list of
+  findings, empty and unrendered when nothing is wrong). A finding is `missing` (an open bound
+  report without an open hold), `unresolved` (an open hold on a closed report) or `orphaned` (a
+  hold that blocks no bound report); bound reports are the beads carrying `intake.source`. Only
+  hives whose public store binds a tracker adapter are read (the only hives that can import a
+  report), so a fleet that binds none pays nothing. Each finding carries the exact `bh -r <hive>
+  bd ...` command that fixes it. The repair itself is `IntakeService.sweep_holds(repair=True)`
+  (open a missing hold, resolve a stale one, report an orphan), which the import verb's "repair a
+  missing piece" step (I4) calls. A `bh doctor` flag and a `bh hive repair` mode were not added,
+  for the reason the `report` lane was not: each widens the published operation catalog and so
+  needs a wire release.
+- **Tests.** The `store.bound-create-opens-a-hold`, `store.close-is-the-held-close` and
+  `store.holds-open-and-resolve-one-at-a-time` contract cases run on `MemoryReportStore`, on
+  `BdReportStore` over the fake bd and over a real bd store. `tests/test_intake_hold_int.py`
+  replays E4 against the bd binary (hold, refused plain close, forced close with a ready probe
+  after every mutation showing no window, metadata on a closed bead, `--has-metadata-key`) and
+  breaks each invariant by hand to drive the sweep.
+
 **Operator-view blocker list (D-f, `bh-6wj9y` wins).** `operator_contract.py` and
 `operator_work_items.py` both define `_NON_BLOCKING_DEPENDENCIES = {"parent-child", "related",
 "discovered-from"}` and count every other edge type as a blocker (verified for this ADR). Replace

@@ -21,9 +21,12 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from beadhive.modules.intake.contracts import (
+    INTAKE_HOLD_GATE_TYPE,
+    INTAKE_HOLD_REASON,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
+    HoldGate,
     IntakeRefused,
     IntakeStoreError,
     RefusalReason,
@@ -32,6 +35,8 @@ from beadhive.modules.intake.contracts import (
     StoreScope,
     Thread,
     ThreadDocumentError,
+    blockers_of,
+    is_hold_gate,
     thread_from_document,
     thread_to_document,
 )
@@ -79,6 +84,18 @@ class ReportRoutes(Protocol):
     def issue_close(
         self, beads: Any, *, reason: str, actor: str = ..., force: bool = ..., capture: bool = ...
     ) -> Any: ...
+
+    def issue_close_held(
+        self, bead: str, *, reason: str, actor: str = ..., capture: bool = ...
+    ) -> Any: ...
+
+    def gate_create(
+        self, bead: str, gate_type: str, reason: str = ..., *, actor: str = ..., capture: bool = ...
+    ) -> Any: ...
+
+    def gate_list(self, *, include_resolved: bool = ..., strict: bool = ...) -> Any: ...
+
+    def gate_resolve(self, gate_id: str, *, reason: str = ..., actor: str = ...) -> Any: ...
 
     def issue_set_metadata_document(
         self, bead: str, key: str, document: Any, *, actor: str = ..., capture: bool = ...
@@ -159,6 +176,31 @@ class BdReportStore:
             if isinstance(p, dict)
         )
 
+    def holds(self) -> tuple[HoldGate, ...]:
+        """Every open ``intake-hold:`` gate and the beads it blocks, read from the gate's own
+        dependents (``bd dep list <gate> --direction up``), so a gate whose edge is gone reads as
+        blocking nothing."""
+        rows = self._routes.gate_list()
+        if not isinstance(rows, list):
+            return ()
+        holds: list[HoldGate] = []
+        for row in rows:
+            if not (isinstance(row, dict) and row.get("status") == "open" and is_hold_gate(row)):
+                continue
+            gate = str(row.get("id", ""))
+            edges = self._routes.dependency_list(gate, direction="up", type_="blocks")
+            blocked = (
+                tuple(sorted(str(r.get("id", "")) for r in edges if isinstance(r, dict)))
+                if isinstance(edges, list)
+                else ()
+            )
+            holds.append(HoldGate(gate, blocked))
+        return tuple(holds)
+
+    def bound_reports(self) -> tuple[BeadView, ...]:
+        rows = self._routes.issue_list(has_metadata_key=SOURCE_KEY, all_=True, limit=0)
+        return self._views(rows)
+
     def tracked_work(self, report: str) -> str | None:
         ids = self._edge_ids(report, direction="down")
         return ids[0] if ids else None
@@ -203,6 +245,11 @@ class BdReportStore:
             created = ""
         if not created:
             raise IntakeStoreError("bd create reported no new bead id", operation="create")
+        if binding is not None:
+            # a bound report is never work: hold it at once, before any state stamp. Not atomic
+            # with the create (bd has no transaction across the two); a failure here leaves the
+            # report open and unheld, carries its id, and the `bh doctor` hold sweep finds it.
+            self.open_hold(str(created), actor=draft.actor)
         return str(created)
 
     def set_state(self, bead: str, dimension: str, value: str, *, reason: str, actor: str) -> None:
@@ -232,8 +279,43 @@ class BdReportStore:
         self._check(result, "update_fields", bead, prefix="bd update failed: ")
 
     def close(self, bead: str, *, reason: str, actor: str) -> None:
+        """Close ``bead``; a bound report's lifetime hold makes it the held close.
+
+        The ordinary ``bd close`` goes first, so a bead with no hold closes (and fails) exactly as
+        it always did. Only a refusal reads the bead's blockers: when every live one is its own
+        ``intake-hold:`` gate this closes it with ``bd close --force`` (overriding only that
+        refusal) and THEN resolves the hold, so the report is never open and unblocked (resolving
+        first re-admits it to ``bd ready``; bh-6wj9y E4). A report with any other live blocker is
+        refused, and a failure with no hold in play is the ordinary close failure."""
         result = self._routes.issue_close(bead, reason=reason, actor=actor, capture=True)
-        self._check(result, "close", bead, prefix="bd close failed: ")
+        if not result.returncode:
+            return
+        row = self._show(bead)
+        blockers = blockers_of(row) if row is not None else None
+        if blockers is None or not blockers.holds:
+            self._check(result, "close", bead, prefix="bd close failed: ")
+            return
+        if blockers.others:
+            raise IntakeRefused(
+                RefusalReason.LIVE_BLOCKER,
+                f"{bead} is blocked by {', '.join(blockers.others)} besides its intake-hold — "
+                "resolve those before closing the report",
+            )
+        if not blockers.closed:
+            forced = self._routes.issue_close_held(bead, reason=reason, actor=actor, capture=True)
+            self._check(forced, "close", bead, prefix="bd close failed: ")
+        for gate in blockers.holds:  # bookkeeping: a closed bead is never ready
+            self.resolve_hold(gate, actor=actor)
+
+    def open_hold(self, report: str, *, actor: str) -> None:
+        result = self._routes.gate_create(
+            report, INTAKE_HOLD_GATE_TYPE, INTAKE_HOLD_REASON, actor=actor, capture=True
+        )
+        self._check(result, "open_hold", report, prefix="bd gate create failed: ")
+
+    def resolve_hold(self, gate: str, *, actor: str) -> None:
+        result = self._routes.gate_resolve(gate, reason="report closed", actor=actor)
+        self._check(result, "resolve_hold", gate, prefix="bd gate resolve failed: ")
 
     def assign(self, bead: str, seat: str, *, actor: str) -> None:
         result = self._routes.issue_assign(bead, seat, actor=actor, capture=True)

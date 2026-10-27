@@ -6,8 +6,12 @@ records and refusals they speak (re-exported, as the ``modules/hives`` shape), p
 from __future__ import annotations
 
 from ..domain import (
+    INTAKE_HOLD_GATE_TYPE,
+    INTAKE_HOLD_MARKER,
+    INTAKE_HOLD_REASON,
     THREAD_KEY,
     BeadView,
+    Blockers,
     Checkpoint,
     CheckpointScope,
     CommentRecord,
@@ -23,6 +27,11 @@ from ..domain import (
     Evidence,
     Flag,
     HiveTriplet,
+    HoldFinding,
+    HoldFindingKind,
+    HoldGate,
+    HoldSweep,
+    HoldSweepRequest,
     ImportKind,
     ImportOutcome,
     ImportRequest,
@@ -58,6 +67,9 @@ from ..domain import (
     ThreadRequest,
     ThreadState,
     ThreadView,
+    blockers_of,
+    hold_findings,
+    is_hold_gate,
     thread_from_document,
     thread_to_document,
 )
@@ -73,6 +85,18 @@ from .ports import (
 )
 
 __all__ = [
+    "INTAKE_HOLD_GATE_TYPE",
+    "INTAKE_HOLD_MARKER",
+    "INTAKE_HOLD_REASON",
+    "Blockers",
+    "HoldFinding",
+    "HoldFindingKind",
+    "HoldGate",
+    "HoldSweep",
+    "HoldSweepRequest",
+    "blockers_of",
+    "hold_findings",
+    "is_hold_gate",
     "THREAD_KEY",
     "BeadView",
     "Checkpoint",
