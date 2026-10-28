@@ -466,6 +466,18 @@ def impl__reconcile_landed_molecule(api, cfg, entry, main, epic, epic_data, mol_
     ):
         _pair_container_or_exit(api, cfg, entry, main, epic, base)
         closed = api.work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
+        if closed:
+            _milestone_merged(
+                api,
+                cfg,
+                entry,
+                main,
+                base,
+                api.config.integration_branch(cfg, entry),
+                [epic],
+                hive,
+                molecule=epic,
+            )
         api._close_molecule_origin_reports(origin_reports, epic, main)
         api._close_swarm_bead(epic, main)
         api._teardown_coordinator_seat(cfg, hive, epic)
@@ -622,6 +634,8 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
         _pair_container_or_exit(api, cfg, entry, main, epic, base)
         closed = api.work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
+        if closed:
+            _milestone_merged(api, cfg, entry, main, base, integration, [epic], hive, molecule=epic)
         api._close_molecule_origin_reports(origin_reports, epic, main)
         api._close_swarm_bead(epic, main)
         api._teardown_coordinator_seat(cfg, hive, epic)
@@ -1054,6 +1068,10 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
         _pair_container_or_exit(api, cfg, entry, main, bead, base)
         closed = api.work_logic.close_merged(bead, main, "merged", data=fresh)
         api._clear_review_label(bead, fresh, main)
+        if closed:
+            _milestone_merged(
+                api, cfg, entry, main, base, api.config.integration_branch(cfg, entry), [bead], hive
+            )
     if rm:
         api.worktree.reclaim_merged(hive, bead)
     if not closed:
@@ -1438,6 +1456,7 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
             raise
         if closed:
             _reap_accepted_safety_refs(api, entry, branch, boundary="merge close")
+            _milestone_merged(api, cfg, entry, main, base, integration, [bead], hive)
     if closed:
         _reap_backups_after_land(api, cfg, entry, main, [bead], base)
     api.otel.record_merge_duration(
@@ -1473,6 +1492,19 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
         )
         raise api.typer.Exit(postland_rc)
     api.typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
+
+
+def _milestone_merged(api, cfg, entry, main, base, integration, beads, hive, *, molecule=""):
+    """The merge milestone (I10): record ``delivery:merged`` on the reports that track the work
+    just closed on ``base``. Only a land on the canonical integration branch counts: a merge into
+    a container is not on main yet, and the molecule's own land triggers its children.
+
+    Never fails the merge: ``work_intake.on_work_merged`` is a no-op unless
+    ``intake.external.enabled`` and turns every failure into a warning."""
+    if base != integration:
+        return
+    members = (lambda: api._molecule_members(molecule, main)) if molecule else None
+    api.work_intake.on_work_merged(cfg, entry, main, base, beads, hive, members)
 
 
 def _reap_accepted_safety_refs(api, entry, branch, *, boundary):

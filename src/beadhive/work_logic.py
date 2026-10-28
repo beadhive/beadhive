@@ -1148,10 +1148,11 @@ def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
 
 
 def _gate_kind(gate) -> str:
-    """'review' | 'security' | 'release-hold' | 'kickoff' | 'other' — classified from the same
-    description markers the verbs write: `reason: review` (submit), the `security:` marker (warden,
-    via `guard.is_security_gate`), the `release-hold:` marker (planning, via
-    `guard.is_release_hold_gate`), and `kickoff` (molecule kickoff gates)."""
+    """'review' | 'security' | 'release-hold' | 'intake-hold' | 'kickoff' | 'other' — classified
+    from the same description markers the verbs write: `reason: review` (submit), the `security:`
+    marker (warden, via `guard.is_security_gate`), the `release-hold:` marker (planning, via
+    `guard.is_release_hold_gate`), the `intake-hold:` marker (a bound report's delivery hold, via
+    `guard.is_intake_hold_gate`), and `kickoff` (molecule kickoff gates)."""
     from . import guard  # lazy: keep this typer-free module's import surface minimal
 
     desc = str(gate.get("description") or "").lower()
@@ -1161,6 +1162,8 @@ def _gate_kind(gate) -> str:
         return "security"
     if guard.is_release_hold_gate(gate):
         return "release-hold"
+    if guard.is_intake_hold_gate(gate):
+        return "intake-hold"
     if "kickoff" in desc:
         return "kickoff"
     return "other"
@@ -1213,6 +1216,11 @@ def _append_gate_line(g: dict, bead, lines: list[str]) -> None:
             f"  - release-hold gate {gid}: needs a releaser — "
             f"`{config.BINARY_ALIAS} work approve {bead} --as releaser/<name>`"
         )
+    elif kind == "intake-hold":
+        lines.append(
+            f"  - intake-hold gate {gid}: held report — no seat approves it; "
+            "only the intake module's close resolves it"
+        )
     else:
         lines.append(f"  - {kind} gate {gid}: {_gate_reason(g)}")
 
@@ -1243,6 +1251,31 @@ def _guard_open(data, bead):
     if str(data.get("status", "")) == "closed":
         typer.echo(f"✗ bead {bead} is closed", err=True)
         raise typer.Exit(1)
+
+
+def _guard_not_held_report(bead, cwd, *, verb="claimed"):
+    """Refuse a bead that carries an open `intake-hold:` gate: a bound external report is never
+    work (external-intake-module-adr.md section 7). Defence in depth behind the gate itself, which
+    keeps the bead out of `bd ready`, and behind the seat policy, which lets no seat resolve it:
+    a direct `bh work claim <report>` must still say why it will not take it. One gate read, and
+    silent for every bead without a hold (so every bead of a hive that never imported one)."""
+    from . import guard  # lazy: keep this module's import surface minimal
+
+    holds = [
+        g
+        for g in _bead_gates(bead, cwd)
+        if str(g.get("status")) == "open" and guard.is_intake_hold_gate(g)
+    ]
+    if not holds:
+        return
+    typer.echo(
+        f"✗ {bead} is an external report held by {holds[0].get('id', '?')} "
+        f"({guard.INTAKE_HOLD_GATE_MARKER}) — a report is never work and cannot be {verb}.\n"
+        f"  Triage it instead (`{config.BINARY_ALIAS} work intake`, accept or reject); "
+        "the work it asks for is a separate bead.",
+        err=True,
+    )
+    raise typer.Exit(1)
 
 
 def _guard_not_other(data, actor, bead):

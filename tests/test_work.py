@@ -6272,6 +6272,68 @@ def test_dispatch_gate_passes_wellformed_and_resolves_parent(hive, fakebd, monke
     assert fakebd.did("update", "mr-1.1", "--claim")
 
 
+# ---- intake-hold: a bound external report is never claimed or assigned (bh-eo8br) --------------
+
+
+def _hold(fakebd, bead, *, status="open", reason="intake-hold: external report, never work"):
+    fakebd.gates.append(
+        {
+            "id": f"g{len(fakebd.gates)}",
+            "status": status,
+            "description": f"Ad-hoc gate blocking {bead}\n\nReason: {reason}",
+            "await_type": "human",
+        }
+    )
+    return fakebd.gates[-1]["id"]
+
+
+def test_claim_refuses_a_held_external_report_and_takes_nothing(hive, fakebd, capsys):
+    fakebd.seed("mr-7", title="imported report")
+    gate = _hold(fakebd, "mr-7")
+
+    with pytest.raises(typer.Exit):
+        work.claim(bead="mr-7", as_="dev/dev", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "mr-7 is an external report held by" in err and gate in err
+    assert "never work" in err and "cannot be claimed" in err
+    assert not fakebd.did("update", "mr-7", "--claim")  # no lease, no worktree
+
+
+def test_assign_refuses_a_held_external_report_too(hive, fakebd, capsys):
+    fakebd.seed("mr-7", title="imported report")
+    _hold(fakebd, "mr-7")
+
+    with pytest.raises(typer.Exit):
+        work.assign(bead="mr-7", to="dev/dev", as_="disp/lead", hive="myrepo")
+
+    assert "cannot be claimed" in capsys.readouterr().err
+    assert not fakebd.did("assign", "mr-7", "dev/dev")
+
+
+def test_the_hold_refusal_names_only_the_held_bead_and_ignores_other_gates(hive, fakebd):
+    """A review gate, a resolved hold and a hold on a sibling do not stop a claim."""
+    fakebd.seed("mr-7", title="ordinary work")
+    fakebd.seed("mr-8", title="held report")
+    _hold(fakebd, "mr-7", reason="bh:review abc1234")
+    _hold(fakebd, "mr-7", status="closed")  # resolved: the report was closed through the store
+    _hold(fakebd, "mr-8")
+    _hold(fakebd, "mr-70")  # the match is anchored: mr-70's hold is not mr-7's
+
+    work.claim(bead="mr-7", as_="dev/dev", hive="myrepo")
+
+    assert fakebd.did("update", "mr-7", "--claim")
+
+
+def test_a_hive_with_no_hold_pays_one_gate_read_and_claims_as_before(hive, fakebd):
+    fakebd.seed("mr-7", title="ordinary work")
+
+    work.claim(bead="mr-7", as_="dev/dev", hive="myrepo")
+
+    assert fakebd.did("update", "mr-7", "--claim")
+    assert fakebd.did("gate", "list")
+
+
 def test_finish_lands_molecule_like_merge_molecule(hive, fakebd):
     """finish <epic> is the epic-only alias of `merge --molecule`: lands the assembled molecule as
     one bubble and closes the epic."""

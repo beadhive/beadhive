@@ -71,11 +71,11 @@ last_verified_commit = "bh-3qkmk.5"
 expiry_trigger = "Move the released Development Frame Bridge runtime behind adapters/frame_bridge after its compatibility consumers reach zero."
 
 [cycle_snapshot]
-sha256 = "a3b51f4f4bacd3a0f1ea72e161e9d4a9d15b947f523539420a2dba392ffa5685"
-components = 8
-modules = 58
-edges = 147
-symbols = 170
+sha256 = "0cca4a78b811d36a4d6a40a55e47d7f38f1789c105e91c0bd020e5de91dd180d"
+components = 7
+modules = 56
+edges = 145
+symbols = 168
 
 [[cycle_exception]]
 id = "cycle-edge-001"
@@ -662,23 +662,6 @@ importer = "beadhive.storage_migrate"
 importer_path = "src/beadhive/storage_migrate.py"
 imported_module = "beadhive.hq"
 symbols = ["beadhive.hq.BackupPlan", "beadhive.hq.BackupTarget"]
-target_owner_package = "src/beadhive (legacy flat package)"
-successor = "bh-inqwc"
-reason = "Exact feedback edge required by the frozen pre-module import graph."
-consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
-executable_test = "tests/test_import_boundaries.py"
-test_closure = "just architecture-check; just check"
-introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
-last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
-expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
-
-[[cycle_exception]]
-id = "cycle-edge-036"
-status = "active"
-importer = "beadhive.triage"
-importer_path = "src/beadhive/triage.py"
-imported_module = "beadhive.report"
-symbols = ["beadhive.report"]
 target_owner_package = "src/beadhive (legacy flat package)"
 successor = "bh-inqwc"
 reason = "Exact feedback edge required by the frozen pre-module import graph."

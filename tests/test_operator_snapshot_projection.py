@@ -148,6 +148,38 @@ def test_projection_is_compact_strict_and_counts_only_the_exact_hive() -> None:
     )
 
 
+def _edge_item(kind: str, *, prerequisite_status: str = "in_progress") -> dict[str, object]:
+    """The snapshot row of a report (``bh-held``) that depends on ``bh-work`` through ``kind``."""
+    projected = _project(
+        _snapshot(
+            (_issue("bh-held"), _issue("bh-work", status=prerequisite_status)),
+            work_dependencies=(_dependency("bh-held", "bh-work", kind=kind),),
+        )
+    )
+    return next(item for item in projected["workItems"] if item["id"] == "bh-held")
+
+
+@pytest.mark.parametrize("kind", ["blocks", "conditional-blocks", "waits-for"])
+def test_each_blocking_edge_type_still_blocks_in_the_snapshot_view(kind: str) -> None:
+    item = _edge_item(kind)
+
+    assert (item["readiness"], item["blockerCount"]) == ("blocked", 1)
+    closed = _edge_item(kind, prerequisite_status="closed")
+    assert (closed["readiness"], closed["blockerCount"]) == ("ready", 0)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["tracks", "frobnicates", "parent-child", "related", "discovered-from", "relates-to"],
+)
+def test_a_tracks_edge_and_an_unknown_edge_type_are_non_blocking_in_the_snapshot_view(
+    kind: str,
+) -> None:
+    item = _edge_item(kind)
+
+    assert (item["readiness"], item["blockerCount"]) == ("ready", 0)
+
+
 def _factory_scale_snapshot(*, open_count: int) -> state_stream.ProviderSnapshot:
     statuses = (
         ["open"] * open_count
@@ -162,19 +194,23 @@ def _factory_scale_snapshot(*, open_count: int) -> state_stream.ProviderSnapshot
         for index, status in enumerate(statuses)
     )
     current_count = open_count + 31
-    dependencies = tuple(
-        _dependency(
-            f"bh-scale-{index % current_count}"
-            if index < 400
-            else f"bh-scale-{current_count + index % (len(issues) - current_count)}",
-            f"bh-scale-{(index + 1) % current_count}"
-            if index < 400
-            else f"bh-scale-{current_count + (index + 1) % (len(issues) - current_count)}",
-            kind=f"blocks-{index}",
+    # Dependency ids are natural keys over (issue, prerequisite, type): a repeated pair is one edge.
+    # They stay `blocks` edges, because an unknown type no longer counts as a blocker.
+    dependencies = {
+        edge.id: edge
+        for edge in (
+            _dependency(
+                f"bh-scale-{index % current_count}"
+                if index < 400
+                else f"bh-scale-{current_count + index % (len(issues) - current_count)}",
+                f"bh-scale-{(index + 1) % current_count}"
+                if index < 400
+                else f"bh-scale-{current_count + (index + 1) % (len(issues) - current_count)}",
+            )
+            for index in range(7_439)
         )
-        for index in range(7_439)
-    )
-    return _snapshot(issues, work_dependencies=dependencies)
+    }
+    return _snapshot(issues, work_dependencies=tuple(dependencies.values()))
 
 
 def test_factory_scale_1344_current_items_are_complete_and_under_target() -> None:

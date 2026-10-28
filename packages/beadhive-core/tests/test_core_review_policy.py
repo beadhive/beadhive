@@ -37,6 +37,7 @@ KICKOFF = Gate("k1", "open", f"blocks {BEAD}\n\nReason: kickoff {BEAD}", await_t
 PROSE = Gate("p1", "open", f"blocks {BEAD}\n\nReason: review the rollout plan with ops")
 SECURITY = Gate("s1", "open", f"blocks {BEAD}\n\nReason: security:secret-scan")
 HOLD = Gate("h1", "open", f"blocks {BEAD}\n\nReason: release-hold: bh-epic")
+INTAKE_HOLD = Gate("i1", "open", f"blocks {BEAD}\n\nReason: intake-hold: bound report")
 
 
 # ---- transport fixture ---------------------------------------------------------------------
@@ -345,6 +346,40 @@ def test_releaser_clears_release_hold_gate() -> None:
     assert [n.text for n in outcome.notices] == [
         f"✓ cleared {BEAD}: resolved release-hold gate h1 as releaser/rel"
     ]
+
+
+@pytest.mark.parametrize(
+    "actor", ["rev/bob", "dev/dev", "warden/sec", "releaser/rel", "disp/main", "intake/i2"]
+)
+def test_no_seat_resolves_an_intake_hold_gate_through_approve(actor: str) -> None:
+    world = World(gates=Gates([INTAKE_HOLD]))
+
+    with pytest.raises(ReviewFailed) as failure:
+        world.commands().approve(BEAD, actor)
+
+    message = _texts(failure)[-1]
+    assert "intake-hold gate i1" in message and "no seat" in message
+    assert "owner-only" not in message and "warden-only" not in message
+    assert failure.value.exit_code == 1
+    assert world.gates.resolved == [] and world.beads.writes == []
+
+
+def test_approve_beside_an_intake_hold_resolves_only_the_review_gate() -> None:
+    world = World(gates=Gates([REVIEW, INTAKE_HOLD]))
+
+    world.commands().approve(BEAD, "rev/bob")
+
+    assert world.gates.resolved == [("g1", "approved by rev/bob", "rev/bob")]
+
+
+def test_a_resolved_intake_hold_is_not_a_refusal_it_is_just_no_review_gate() -> None:
+    closed = Gate("i0", "closed", f"blocks {BEAD}\n\nReason: intake-hold: bound report")
+    world = World(gates=Gates([closed]))
+
+    with pytest.raises(ReviewFailed) as failure:
+        world.commands().approve(BEAD, "rev/bob")
+
+    assert _texts(failure) == [f"✗ no open review gate for {BEAD} — nothing to approve"]
 
 
 # ---- bounce --------------------------------------------------------------------------------

@@ -239,6 +239,35 @@ as they did for the undotted keys probed in `bh-fptob` E11 and `bh-6wj9y` E4; if
 the dot, the fallback spelling is `intake_source`, `intake_thread`, `intake_outbox`, chosen once
 for all three before any lands.
 
+**Verified (I1, `bh-j3ayl`, bd 1.3.0; settles the dotted-key question and acceptance item 2).**
+`tests/test_intake_bead_store_int.py` pins, against a real bd store, that a dotted key is one flat
+top-level key: `bd update --metadata` merges top-level keys and replaces a key's value whole (the
+nested keys of the old value are gone), another dotted key survives a rewrite, `bd list
+--has-metadata-key intake.thread` matches exactly that key and never its `intake` prefix or a
+`intake.thread.seq` path, and metadata stays writable and listable on a closed bead. The fallback
+spelling (`intake_source` and the like) is **not** needed. Documents travel on stdin
+(`--metadata @/dev/stdin`), not argv: a multi-megabyte thread would exceed one argv string.
+
+Growth was re-measured on an isolated scratch Dolt sql-server store (server mode, the engine mode
+the shared server runs; never the fleet's shared server), with seeded realistic comments (median
+about 400 B, about 600 B mean), no garbage collection, on a loaded host:
+
+| Thread | Document | Rewrite (`--metadata`) | `bd show` | Store growth per appended-comment rewrite |
+|---|---:|---:|---:|---:|
+| 10 comments | 6.8 KB | 0.26 s | 0.19 s | |
+| 50 comments | 46 KB | 0.26 s | 0.20 s | |
+| 200 comments | 154 KB | 0.27 s | 0.21 s | median 42 KB (31 to 184 KB), 32% of a naive full copy |
+| 1000 comments | 825 KB | 0.36 s | 0.25 s | median 54 KB (41 to 893 KB), 16% of a naive full copy |
+
+Rewriting the whole document is cheap in time and Dolt shares the unchanged chunks, so growth per
+transition is roughly 5 to 25% of the document, with an occasional near-full copy when a chunk
+boundary moves. **The finding for the queue and thread beads:** `bd list --json` (and `--brief`)
+return every row's whole `metadata`, so the untriaged-queue read carries each report's documents:
+20 untriaged reports with 200-comment threads read as 3.4 MB in 0.35 s, against 15 KB in 0.22 s for
+20 reports without a thread, and `bd` has no metadata-free list. Keep the queue read to the fields
+it needs by routing it through a per-row read only where a thread exists, or by adding a
+metadata-free list route, before thread ingest (I7) ships.
+
 **Why the report bead and not elsewhere** (adopted from `bh-fptob` R4): records and checkpoint
 commit in one write; it is keyed where D1 keys; no queue or `bd ready` reads metadata; cost is
 per thread, not per comment. Native bd comments (add-only, no external id, actor key, revision or
@@ -307,6 +336,129 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
 - Import, link and discovery perform **no tracker write**, hold no `WriteGrant` and call no
   writer. Issue bodies are untrusted input, stored as data and never interpreted.
 
+**As built (I4, `bh-2ef4g`).**
+
+- **Where.** `application/importer.py` (`IssueImporter`, the only tracker-typed code of import)
+  behind `IntakeService.import_issue`; `intake_services.import_issue` composes the
+  `intake.external.enabled` switch (host-owned, off), the tracker the hive's public-store binding
+  serves (an injected `TrackerAdapters`, asked for `issues.read` only; R13, a disabled plugin and
+  a disabled read are all R0 `INTAKE_DISABLED` naming the key to set), the operational
+  `BdReportStore`, the root `FlockIntakeLock` and `ValidateLabelPolicy`. `work_intake.import_issue`
+  is the command body and `work.import_cmd` the Typer function. **No production credential wiring exists**
+  (`bh-kzs0b`): `intake_services.process_adapters` returns `None`, so the verb refuses with R0 until
+  that bead binds a real `TrackerAdapters`; tests inject `adapters=` or `tracker=`.
+- **Resolver and fallback.** With an `IssueResolver`: `resolve(url)` (pure) gives R3, R4 and the
+  URL form of R5; `get(key)` (one read) gives R6 and the read form of R5; R7 is the canonical URL
+  `get` answered differing from the one asked for and no longer resolving in this project (a
+  rename inside the project is accepted and keys on the new URL). Without one, `list_issues` is
+  paged and matched on the URL stripped of query, fragment and trailing slash (the only
+  canonicalisation that needs no grammar), and R3 to R7 are the one `NOT_FOUND_IN_PROJECT`. Any
+  other tracker failure is `TRACKER_ERROR` (a new reason) with the adapter's already-scrubbed
+  message; `OperationNotEnabled` is R0.
+- **Revision.** The snapshot's `revision` token is the tracker's `updated_at` plus its optional
+  version, `<iso8601>[#<version>]`; `domain.rules.revision_is_newer` decides: equal or older is a
+  no-op, an unreadable token is refreshed rather than frozen. Repairs of an interrupted create
+  (`hold`, `origin`, `intake`, `source`) are reported in `ImportOutcome.repaired`, fix only the
+  missing piece and never touch an existing disposition; a closed report is never given a hold.
+  The hold repair is a targeted `holds()` check for this report, not `sweep_holds`, so a re-import
+  does not scan every report.
+- **Lock and config.** Import uses the root's one `FlockIntakeLock` (`intake_services.intake_lock`,
+  the same lock the outbox sender holds): `guard_primary` first (`NOT_PRIMARY`, naming `bh work
+  import`), then an advisory never-waiting `flock` under the hive's `.bh/intake/locks/`
+  (`INTAKE_BUSY`), yielding `live_epoch`. A dry run takes no lock.
+  `intake.external` carries `enabled` and `default_type` only, is **host-owned** and global (a
+  per-hive override in the fleet-owned `managed_repos` would let a fleet push enable import, so none
+  exists yet); it is documented in `docs/CONFIGURATION.md`.
+- **Tests.** `tests/unit/modules/intake/test_intake_import.py` (R0 to R8 on the resolver and the
+  fallback, dry run, repair, idempotence, closed issues) and
+  `tests/test_intake_import_composition.py` (the composition: acceptance item 5 with a
+  byte-fingerprinted public-store fixture and a `resolve_store` spy after every case, the config
+  switch, store failures, rendering).
+  `MemoryWorld.transfer_issue` is the minimal model of a transfer that R7 needs (`bh-ukesf`).
+- **Not done here.** The verb is **intentionally not registered** in `CLI_HANDLERS` or the
+  operation catalog: registering it needs `just wire-publish`, which cuts the next wire release
+  (v2.16.0), a release step reserved for the operator. `work.import_cmd` and
+  `work_intake.import_issue` are implemented and tested but unreachable from the CLI until then.
+  **Registration recipe**, in order:
+  1. `src/beadhive/kernel/operations/__init__.py`: add the `work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o`
+     row to `_CLI_ROWS` (match the encoding, option names and canonical-name map of the sibling
+     `work accept` / `work promote` rows).
+  2. `src/beadhive/work.py`: add `"work.import": import_cmd` to `CLI_HANDLERS` (no
+     `_bind_cli_handler` rename is needed: the Python parameters are already `url`, `hive`,
+     `dry_run`, `as_json`, `as_`).
+  3. `src/beadhive/work.py`: add `import_cmd = _CLI_CALLBACKS["work.import"]` to the block of
+     callback assignments after `_CLI_CALLBACKS`, as `reject_cmd` and `promote_cmd` have, and
+     drop the "Not yet in `CLI_HANDLERS`" sentence from the `import_cmd` docstring.
+  4. Run `just wire-publish` (operator, release step) to cut v2.16.0 and regenerate the derived
+     artifacts, then the catalog-drift tests and `bh work check`.
+
+**As built (I6, `bh-df64b`).**
+
+- **Where.** `application/discovery.py` (`IssueDiscoverer`) behind `IntakeService.discover`
+  (`INTAKE_DISABLED` without a bound tracker, as import; `NullIntake` as before).
+  `IssueImporter` gains the lock-free `upsert(issue, actor)` and `binding_for(issue)` that import
+  itself uses, so discovery runs the import upsert **through the module** and never reaches the
+  adapter, `bd github sync` or a writer: the discoverer holds a `TrackerReader` only. The root is
+  `intake_services.discover` (the `intake.external.enabled` switch, the hive's tracker, the
+  operational `BdReportStore`, the root `FlockIntakeLock`, a `FileCheckpointStore`), the command
+  body `work_intake.discover` with `render_discover`, the Typer function `work.discover_cmd`, and
+  the timer `intake_discovery.py` wired into `host_daemon.serve` as a lifespan component.
+- **Incremental.** `list_issues(IssueQuery(since=<mark>, include_closed=True))` through intake's own
+  pager, then `CheckpointStore.put` of the page's own `checkpoint` token (the tracker's mark, never
+  the local clock) **after that page and every earlier one are upserted**; an adapter that only
+  returns the mark on its last page moves it once. `since` is inclusive, so the boundary issue
+  repeats as `unchanged` and a re-run writes nothing. A crash resumes from the last durable page.
+  The key is `issues:<tracker>:<project>` (`checkpoint_key`), so the comment sweep keeps its own.
+- **Full** (`--full`, and the timer's every `full_reconcile_every`-th run). The same pull **without**
+  `since` (open and closed, so a closed or newly closed issue is refreshed whatever the stored mark
+  says), then `collect_snapshot(IdQuery(ISSUES))`. Only a **complete** snapshot judges
+  `source_missing`: a bound report of this project whose URL is absent gets
+  `snapshot.source_missing=true`, one that is present again gets it cleared (counted `updated`); an
+  incomplete listing (any port error) changes nothing and `DiscoveryOutcome.reconciled` is false.
+  A full pass re-stores the marks it passes, so a crash mid-way only re-pulls (idempotent). No
+  report is ever deleted, closed or moved by discovery; another project's reports are skipped.
+- **Failure.** A refusal or store failure on any issue (`DUPLICATE_BINDING`, a failed create) stops
+  the run where it is: the mark never passes an issue that was not ingested, the error reaches the
+  caller (the CLI renders `store_error` with "run discover again"), earlier pages stay ingested.
+  A tracker failure is `TRACKER_ERROR`, a disabled `issues.read` is `INTAKE_DISABLED`, a busy
+  binding `INTAKE_BUSY`, a non-primary host `NOT_PRIMARY`, all before any write.
+- **Config.** `intake.external.discovery.{enabled, interval_seconds, full_reconcile_every}` (section
+  15), host-owned, in the generated config schema: `enabled` false; `interval_seconds` has no
+  default and is **required** when enabled (validation fails otherwise, and an older host rejects
+  the unknown keys, so nothing can switch the timer on by accident); `full_reconcile_every` 24.
+  `bh work discover` needs only `intake.external.enabled`; the timer needs both switches.
+- **The timer.** `intake_discovery.DiscoveryTimer.poll()` is one scheduling decision against an
+  injected monotonic clock: the first poll is due at once, the next one `interval` after the last
+  one **started**, no burst after a long gap, every Nth run full, a failing run or hive never stops
+  the loop, and a hive with no tracker, a non-primary host or a busy binding is a quiet skip. Its
+  `run()` is an asyncio loop around it with an injectable `sleep`, `component()` the
+  `HostDaemonLifespanComponent`. `build_loop(cfg)` is `None` unless both switches and a positive
+  interval are set, and **refuses daemon startup** when enabled without a `TrackerAdapters`:
+  `intake_services.process_adapters` is `None` until production credential wiring (`bh-kzs0b`)
+  lands, so the timer cannot run, and is never enabled in any real config, before that. Wiring it
+  needed no catalog or wire change (a lifespan component and config keys only).
+- **Tests.** `tests/unit/modules/intake/test_intake_discovery.py` (idempotence, resume, page-wise
+  durability under an injected crash, `--full`, `source_missing` and its incomplete-listing guard,
+  zero tracker writes, the lock), `tests/test_intake_discover_composition.py` (the byte-fingerprinted
+  public store untouched after every case, off by default, the file checkpoint, rendering),
+  `tests/test_intake_checkpoints.py` (the `CheckpointStore` contract on both implementations),
+  `tests/test_intake_discovery_timer.py` (the schedule on a **mocked clock**, off by default, the
+  daemon component) and `tests/test_config_intake.py`.
+- **Not done here.** The verb is **intentionally not registered** in `CLI_HANDLERS` or the operation
+  catalog: registering it needs `just wire-publish`, an operator-reserved release step.
+  `work.discover_cmd` and `work_intake.discover` are implemented and tested but unreachable from the
+  CLI until then. **Registration recipe**, in order:
+  1. `src/beadhive/kernel/operations/__init__.py`: add the `work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o`
+     row to `_CLI_ROWS` (match the encoding, option names and canonical-name map of the sibling
+     `work accept` / `work promote` rows).
+  2. `src/beadhive/work.py`: add `"work.discover": discover_cmd` to `CLI_HANDLERS`.
+  3. `src/beadhive/work.py`: add `discover_cmd = _CLI_CALLBACKS["work.discover"]` to the callback
+     assignments after `_CLI_CALLBACKS`, and drop the "Not yet in `CLI_HANDLERS`" sentence from the
+     `discover_cmd` docstring.
+  4. Run `just wire-publish` (operator, release step) to cut the next wire release and regenerate
+     the derived artifacts, then the catalog-drift tests and `bh work check`.
+  The timer needs none of this: it is **wired** in `host_daemon.serve` and only waits on `bh-kzs0b`.
+
 ### 6. Link, and a bound report is never work (D1)
 
 - **Edge:** `tracks`, report to work (`bd dep add <report> <work> -t tracks`): directional,
@@ -335,6 +487,87 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   carrying the URL would make `find_by_external_ref` return two rows and R8 would refuse every
   later import and discovery of that issue; a held report as a `parent-child` molecule step would
   also be offered to `work_next`.
+
+**As built (I5, `bh-v2rr6`).**
+
+- **Where.** `domain/link.py` holds the pure rules (`check_link`, `delivery_at_link`,
+  `work_progress_of`); `application/linker.py` is `LinkService`, behind the `IntakePort` operations
+  `link`, `unlink` and the new `work_progress`, and behind `dispose(accept)` when the request
+  carries `work` or `new_work`. `ReportStore` gains `create_work` (a plain `bd create`: the hive
+  triplet labels, type, description and priority, and no `external_ref`, `origin`, `intake` state
+  or hold), run on `MemoryReportStore`, on `BdReportStore` over the fake bd and over a real bd store
+  as the `store.create-work-is-plain-work` contract case. `intake_services.link_report` and
+  `accept_to_work` compose them over the operational store and the root `FlockIntakeLock`, behind
+  `intake.external.enabled` (off: `NullIntake`, every write refuses `intake_disabled`, no store is
+  built). A link composes no tracker. The command bodies are `work_intake.link` and
+  `work_intake.accept(..., work=, new_work=)`; `work.link_cmd` is the Typer function.
+- **Rules, in order, each a refusal before any write.** A public-store id on either side
+  (`PUBLIC_STORE_ID`), `SELF_LINK`, an unknown report (`NOT_FOUND`), a report with no binding
+  (`NOT_A_REPORT`), a closed report (`REPORT_CLOSED`, new), a work id outside the operational prefix
+  or not found there (`CROSS_STORE_LINK`; a foreign id is never looked up), a target that is itself
+  bound (`TARGET_IS_REPORT`, D-a, which also covers chains), an untriaged target
+  (`TARGET_UNTRIAGED`), then `already_linked` (no edge write), `ALREADY_LINKED_ELSEWHERE` unless
+  `--replace` (untrack the old edge, then track the new, `relinked`). An accepted born-native report
+  is ordinary backlog and may be a target. `--work` with `--new-work` is `INVALID_REQUEST` (new).
+- **`delivery:pending` at link.** A new edge writes `pending` when the report has no value, keeps
+  `pending`, and sets `pending` again when the value was a milestone of other work (`merged`,
+  `released`, `reverted`); an existing edge only repairs a missing value. The exception is a re-link
+  to the very work the report was unlinked from, whose milestone value still describes it.
+- **Where the `unlinked` fact lives (decided here).** In the report's `intake.outbox` document,
+  `facts.unlinked = {"work": <id>}` (`UnlinkedFact` beside `MergedFact` and `ReleasedFact` in
+  `DeliveryFacts`), as `bh-6wj9y` R2 proposed. It is encoded only when set, so a document without
+  one is byte-identical to before; the document write is the usual whole-document rewrite with the
+  `seq` re-check, under the `IntakeLock`, and a link that follows clears it. Unlink writes the fact
+  first, then removes the edge, so a crash between them leaves a fact and an edge that the next
+  unlink or link tidies, never a delivery value no fact explains. The value stays (`pending` stays
+  `pending`); `work_progress` reports `unlinked` because the edge is gone.
+- **Accept with work.** `accept <report> --work <id>` links (idempotently) then clears `intake`;
+  repeating it finishes an accept that was interrupted after the link. `--new-work` first checks,
+  with nothing written, that the report is bound, open and tracks nothing, creates the work bead
+  (title: the report's title; description: triage's own sentence naming the report, never the issue
+  body; type: `--type` or the report's; priority: `--priority`), links it, and closes that bead if
+  the link then fails. With `--new-work` the `--type` and `--priority` go to the new bead; with
+  `--work` they go to the report, as a plain accept's do. A born-native report is refused
+  `NOT_A_REPORT` (a plain accept already leaves it as backlog).
+- **Work progress** is `IntakePort.work_progress(report)`, derived on read from the tracked bead:
+  `closed` if its status is closed, `in_review` if it carries `review:pending`, `in_progress` for
+  `in_progress` or `hooked`, else `open`; `unlinked` when the report tracks nothing. Nothing is
+  stored. It has no verb yet (I10's templates read it).
+- **Adopt (D-c).** `adopt.frame_from_beads` treats a report that carries the `intake.source`
+  document as bound: it goes under the frame's `tracks` (not `adopts`), contributes no
+  `source_system` or `external_ref` to the epic, and seeds the epic text with its id and title only
+  (the issue body is untrusted public text and is read on the report). `plan_filing.file` passes
+  `tracked_reports` to `beadhive_core.compile_molecule`, which lowers each to `bd dep add <report>
+  <epic> -t tracks` (report to epic, non-blocking, the report stays open and held) instead of
+  `parent-child`. Born-native adopted reports are unchanged. `plan show` does not list tracked
+  reports yet.
+- **Tests.** `tests/unit/modules/intake/test_intake_link.py` (rules, service, accept, progress,
+  delivery table, the fact's codec), `tests/test_intake_link_composition.py` (the root: off by
+  default, the public-store fixture byte-identical and `SCOPE_PUBLIC` never resolved after every
+  case, no tracker write, rendering, the command bodies), `tests/test_intake_link_int.py` (a real
+  bd store: two reports to one work, unlink one, nothing held becomes ready, the work is ready
+  throughout, `accept --new-work`, a `tracks` edge to an epic), plus the adopt, plan and core
+  planning cases.
+- **Not done here.** `bh work link` and the `--work` / `--new-work` options of `accept` are
+  **intentionally not registered**: each changes the published operation catalog and so needs
+  `just wire-publish`, a release step reserved for the operator (as for `import`, I4).
+  `work_intake.link` and `work.link_cmd` are implemented and tested but unreachable from the CLI;
+  `work_intake.accept` already takes `work` and `new_work` but `accept_cmd` does not pass them.
+  **Registration recipe**, in order:
+  1. `src/beadhive/kernel/operations/__init__.py`: add the row
+     `work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o`
+     to `_CLI_ROWS` (keep the rows sorted), and extend the `work accept` row to
+     `work accept|bead:string:r,type_:string:o,priority:string:o,as_:string:o,hive:string:o,work:string:o,new_work:boolean:o`.
+  2. `src/beadhive/work.py`: add `"work.link": link_cmd` to `CLI_HANDLERS` and
+     `link_cmd = _CLI_CALLBACKS["work.link"]` to the callback assignments; drop the "Not yet in
+     `CLI_HANDLERS`" sentence from the `link_cmd` docstring.
+  3. `src/beadhive/work.py`: give `accept_cmd` the two options
+     (`work: str = typer.Option("", "--work", help="track this existing work bead")` and
+     `new_work: bool = typer.Option(False, "--new-work", help="create a work bead and track it")`)
+     and pass them on: `return work_intake.accept(bead, issue_type, priority, as_, hive, work,
+     new_work)`; update its docstring.
+  4. Run `just wire-publish` (operator, release step), then the catalog-drift tests and `bh work
+     check`.
 
 ### 7. Report dimensions, the hold gate and field ownership
 
@@ -396,6 +629,44 @@ E4):
    `delivery:released` and the `released` record likewise. `notified` is not advanced for
    `abandoned` or `superseded`, so `notification_behind` stays visible.
 
+**As built (I3, `bh-eo8br`).**
+
+- **Held create.** `ReportStore.create` opens the hold (`bd gate create --blocks <report> --type
+  human --reason "intake-hold: external report, never work"`) straight after the `bd create`, for a
+  draft with a binding only; a born-native report (`bh report`, `bh escalate`) never gets one. bd
+  has no transaction across the two calls, so a failure on the second leaves the report open and
+  unheld, raises `IntakeStoreError(operation="open_hold")` carrying the new id, and is exactly the
+  "open bound report without a hold" case the sweep finds.
+- **Held close.** `BdReportStore.close` runs the ordinary `bd close` first, so a bead with no hold
+  closes (and fails) byte for byte as before. Only a refusal reads the bead's blockers
+  (`blockers_of`, from `bd show`): when every live one is its own `intake-hold:` gate it runs
+  `issue_close_held` (`bd close --force`) and then `gate resolve` on each hold; any other live
+  blocker is `IntakeRefused(LIVE_BLOCKER)` with nothing written. A second `close` on an already
+  closed report is a bd no-op (bd 1.3.0 closes a closed bead again with exit 0 and leaves its
+  gates alone), so a hold left by a crash between the two steps is resolved by the sweep, not by
+  a retry; it is harmless meanwhile because a closed bead is never ready.
+- **Claim refusal.** The dispatch gate of `claim` and `assign` (`ShellWorkspace.dispatch_gate`)
+  and the member check of `claim --group` refuse a bead with an open `intake-hold:` gate
+  (`work_logic._guard_not_held_report`), naming the gate and pointing to triage. It is one
+  `bd gate list` read and silent for every other bead.
+- **Doctor.** `bh doctor` gains an `intake_holds` section (payload key `intake_holds`, a list of
+  findings, empty and unrendered when nothing is wrong). A finding is `missing` (an open bound
+  report without an open hold), `unresolved` (an open hold on a closed report) or `orphaned` (a
+  hold that blocks no bound report); bound reports are the beads carrying `intake.source`. Only
+  hives whose public store binds a tracker adapter are read (the only hives that can import a
+  report), so a fleet that binds none pays nothing. Each finding carries the exact `bh -r <hive>
+  bd ...` command that fixes it. The repair itself is `IntakeService.sweep_holds(repair=True)`
+  (open a missing hold, resolve a stale one, report an orphan), which the import verb's "repair a
+  missing piece" step (I4) calls. A `bh doctor` flag and a `bh hive repair` mode were not added,
+  for the reason the `report` lane was not: each widens the published operation catalog and so
+  needs a wire release.
+- **Tests.** The `store.bound-create-opens-a-hold`, `store.close-is-the-held-close` and
+  `store.holds-open-and-resolve-one-at-a-time` contract cases run on `MemoryReportStore`, on
+  `BdReportStore` over the fake bd and over a real bd store. `tests/test_intake_hold_int.py`
+  replays E4 against the bd binary (hold, refused plain close, forced close with a ready probe
+  after every mutation showing no window, metadata on a closed bead, `--has-metadata-key`) and
+  breaks each invariant by hand to drive the sweep.
+
 **Operator-view blocker list (D-f, `bh-6wj9y` wins).** `operator_contract.py` and
 `operator_work_items.py` both define `_NON_BLOCKING_DEPENDENCIES = {"parent-child", "related",
 "discovered-from"}` and count every other edge type as a blocker (verified for this ADR). Replace
@@ -436,6 +707,45 @@ Adopted as `bh-fptob` R1 to R8, stored in `intake.thread`:
   `known_actors()`.
 - **Triage watermark** `considered_rev` derives "new evidence"; it never changes the `intake`
   dimension (wake-on-reply waits for `bh-elkv`, D3).
+
+**How triage marks `considered_rev` (decided in I7, `bh-rkmq1`; was open).** Through an explicit
+module operation, `IntakePort.mark_considered(ConsiderRequest(report, actor, through_seq))`, and
+**never** as a side effect of a disposition. Triage reads `IntakePort.thread_of(report)` (the
+document plus the derived `new_evidence` and `flagged` reads) and passes back that view's `seq`;
+each record's `considered_rev` becomes its highest `rev` seen at or before that seq, and the
+thread's `considered_seq` covers tombstones up to it, so a comment that arrived after the read stays
+new evidence. Marking is idempotent, takes the `IntakeLock`, writes only `intake.thread` (one
+write with the `seq` re-check) and never the `intake` dimension. Why not a disposition side
+effect: a disposition can be made without reading the thread (a spam reject from the title alone)
+and would then hide unread evidence; an accepted report keeps receiving comments with no further
+disposition to mark them; and a disposition writes the `intake` dimension through `set_state`,
+which cannot commit atomically with an `intake.thread` write. The CLI spelling (a `bh work intake`
+sub-verb or a flag on the thread read, never `promote`) is the CLI bead's to ratify; a disposition
+verb may later offer an explicit opt-in flag that calls the same operation.
+
+**As built in I7 (`bh-rkmq1`).** The pure rules are `domain/thread.py` over intake-owned records
+(`Observation`, `CommentRecord`, `Thread`); the schema-versioned codec is
+`domain/thread_document.py` (re-exported from `contracts`, so every `ReportStore` shares one
+format; a malformed or newer-schema document is a store error and is never read as empty, so it is
+never overwritten). `application/threads.py` (`ThreadService`) is the only tracker-typed code of
+the model. `IntakePort` gains `ingest_thread`, `reconcile_thread`, `reconcile_presence`,
+`thread_of` and `mark_considered`; `IntakeService` delegates them to an optional `ThreadService`
+and refuses with `INTAKE_DISABLED` without one (comment ingestion off, the default), as does
+`NullIntake`. `ReportStore` gains `read_thread` and `write_thread(bead, thread, expect_seq=,
+actor=)`: the store re-reads the stored `seq` and refuses with `THREAD_MOVED`, writing nothing,
+unless it still equals `expect_seq`; `BdReportStore` then rewrites the whole key in one `bd update
+--metadata @/dev/stdin`. `IntakeLock.hold(binding_key)` and the read-only `OutboxView`
+(`receipt_ids`, `pending`, `issued`, `known_actors`) are new contracts; the kit ships a
+never-waiting `InProcessIntakeLock` (refuses `INTAKE_BUSY`) and `MemoryOutboxView`. The root's
+lock implementation (guard, flock, epoch) stays with I9. Every operation refuses before any tracker
+read on a published operational store without acknowledgement (`PUBLISHED_STORE`; the posture is
+injected, and the root computes it when it composes ingestion), on a born-native report
+(`NOT_BOUND`), on a report bound to another project (`OTHER_PROJECT`) and on a stored token of
+another scope (`CHECKPOINT_SCOPE`). A reconcile pass collects its snapshot outside the lock and
+applies it under the lock with the `seq` it read before the snapshot began, so a record ingested
+meanwhile is never a candidate. Recognition uses the evidence of a record's first sighting and
+never demotes an own record, so editing a marker into or out of a comment never changes its role.
+The project-wide sweep and its `CheckpointStore` home are not built here (discovery, I6).
 
 **Layering (an unrecorded divergence, resolved here).** `bh-fptob` R10 and `bh-6wj9y` R16 each
 describe a "domain bead" that "depends only on the tracker contracts", and `bh-6wj9y`'s domain
@@ -483,6 +793,43 @@ promise exactly-once remote writes". The marker carries `hive=<owner/repo>`, an 
 an opaque `outbox_id` (`ob1_` plus 26 base32 characters, never derived from a bead id), so it can
 never match a `<prefix>-<id>` bead shape.
 
+**As built in I8 (`bh-g62yn`; pure domain, nothing sends).** The records and the machine are
+`domain/outbox.py`, the leak check `domain/leaks.py`, the `delivery`/`notified` rules and the close
+rule's inputs `domain/delivery.py`, and the schema-versioned `intake.outbox` codec
+`domain/outbox_document.py` (re-exported from `contracts`; a malformed or newer document is an
+error, never an empty outbox). `application/outbox.py` only translates (`WriteGrant` from an
+approval, `CapabilityReport` to the usable set, `WriteReceipt` to a receipt, a listing to marked
+comments, and which port errors prove nothing was written); the sender, `read_outbox` /
+`write_outbox`, the `IntakePort` operations, the verbs and the config keys stay with I9 and I10, and
+`OutboxPolicy()` is off. The contracts gain `Sanitizer` and `IdSource`;
+`beadhive.adapters.intake.ScrubSanitizer` implements `Sanitizer` over the shared `scrub()` and
+`TOKEN_PATTERN` (binding it is the root's, with I9); the kit adds `SequentialIdSource` and
+`RecordingSanitizer`. Interpretations the table left open:
+
+- One applied rule is one document write: `seq` is bumped once and every history step of that
+  call carries it (O1 with its O3 and O6, O15 with O16).
+- `Attempt.end_seq` is the last `seq` at which the request could still have been in flight (the
+  `seq` before the O10 to O13 write), so O15's guard is literally `start_seq > end_seq`; a read
+  counts as an absence once (its `start_seq` must exceed the last counted one). An unsatisfied
+  complete label read counts the same way for a label operation.
+- The operator types the full digest or at least its 12-hex prefix. A label render keeps the
+  drafted `base_revision` while the owned labels are unchanged (another revision bump does not
+  void an approval); once a human changed an owned label the digest moves, O9 refuses
+  `STALE_DIGEST`, and O7 rebases the diff onto the current labels.
+- "No sanitizer bound" is a `no_sanitizer` finding, never overridable like `secret` and
+  `label_not_owned`. A publish (O4) names a finding id and is matched by kind and text, so an edit
+  that changes the text needs a new one. A secret's finding is stored redacted.
+- An operator seat is any named actor outside `OutboxPolicy.agent_seat_prefixes` (`dev/`, `disp/`
+  and their legacy spellings); O4, O5, O8, O9, O17 and O18 require one.
+- A second marked comment on a `sent` operation sets `duplicates` (`duplicate_observed`) without a
+  transition. A record whose operations all retired unsent is `retired`. A draft carrying a
+  public commit URL while `commit_links` is off is refused, not silently stripped. With the outbox
+  on and no completion record yet, the close rule waits.
+
+R14 coverage: `tests/unit/modules/intake/test_intake_outbox_*.py` run X2, X4 to X13 and X16 on the
+pure rules (X8 to X10 also on `MemoryTracker`, X9 with K1), and X1, X3 and X18 at the domain level
+(the triggers are I10's). X14 and X15 are the hold bead's (I3) and X17's store half is I9's.
+
 ### 11. Writes and gates
 
 There are exactly two tracker writes, and nothing else can be written because the port has no
@@ -510,6 +857,90 @@ other operation:
 - No public-store write exists. The next projection pull imports Beadhive's label changes as
   GitHub-authoritative data; that is the pull, not an outbox write.
 
+**As built in I9a (`bh-czes8`; `comment.create` only, every case offline).** The sender is
+`application/sender.py` (`OutboxService`), behind the new `IntakePort` operations `draft_reply`,
+`outbox`, `render`, `approve`, `send`, `reconcile`, `discard` and `retry`; `IntakeService` delegates
+them to an optional `OutboxService` and refuses with `OUTBOX_DISABLED` without one, `NullIntake`
+with `INTAKE_DISABLED`. `ReportStore` gains `read_outbox`, `write_outbox(..., expect_seq=)` (refused
+with `OUTBOX_MOVED`, writing nothing, when the stored `seq` moved; a bound report only) and
+`reports_with_outbox()`, with five contract cases run on `MemoryReportStore`, on `BdReportStore` over
+the fake bd and over a real bd store (the dotted `intake.outbox` key merges and lists like the other
+two). `StoreOutboxView` is the store-backed `OutboxView`, `issued()` included, that thread
+recognition reads. The root (`intake_services`) implements `IntakeLock` as `FlockIntakeLock`
+(`guard.guard_primary`, refused as `NOT_PRIMARY`; an exclusive never-waiting `fcntl.flock` on
+`.bh/intake/locks/<sha256(binding)>.lock`, held elsewhere as `INTAKE_BUSY`; `guard.live_epoch` as
+the epoch) and composes `outbox_service_for` with a `RandomIdSource`, the fleet `leak_policy`, the
+`store_posture` and the shared `ScrubSanitizer`. Interpretations:
+
+- Off twice over: no sender is bound unless the caller passes an enabled `OutboxPolicy` (the
+  default is off), and an enabled one still posts nothing without the adapter's own enable
+  (`probe_capabilities` must report `comment.create` and `comments.read` usable for O5; the
+  adapter is a `CommentWriter` only with its write flag on; a disabled writer is O11 before any
+  request) and an operator approval minting a single-use grant.
+- Every step is one durable `intake.outbox` write under the lock, and every lock acquisition first
+  recovers each `sending` operation to `unknown` (O13 with `holder_gone`): the holder now has the
+  exclusive lock its writer held, so that writer is gone. A process killed between O9 and the
+  request is therefore recovered by the next operation of any kind.
+- `approve` with `--publish` applies O4 and O5 in one write, so a refused approval publishes
+  nothing; its result carries the dry run and the minted grant id. A send whose fresh render no
+  longer has the approved digest takes O7 and posts nothing.
+- `reconcile` reads one complete comment listing per call, outside the lock, with `start_seq` the
+  document `seq` read (after O13) before the listing began, and applies it under the lock. Two
+  calls without the marker after the attempt ended are needed for `failed(absent)` (k = 2); a
+  listing that fails part-way changes nothing.
+- `notified=<event>` is written by `set_state` straight after the transition's document write (bd
+  has no transaction across the two); a failure is reported in the result and never un-sends. The
+  close rule is not evaluated here: only milestone records reach it (I10).
+- The marker line is rendered by an injected `marker_line` codec (the adapter's own), so the dry
+  run shows the posted bytes. The tracker adapter itself is injected: building it from the store
+  binding and credentials is `bh-kzs0b`'s, not this bead's.
+
+Not built here, pending an operator decision: the `bh work outbox` verbs (`show`, `approve`,
+`send`, `reconcile`, `discard`, `retry`, `draft`) and the `intake.external.outbox.*` config keys.
+Each verb widens the published operation catalog, which cuts a new wire release (`just
+wire-publish`), so they wait for that release to be authorised; the port operations above are the
+whole behaviour they would call. **Acceptance item 4 is pending:** no real tracker write has been
+made. The first real `comment.create` is an operator-approved step recorded on the bead, and the
+re-verification of assumption A1 (read-after-write visibility on complete listings) and of the
+`tracker-github` refusal diagnostics against recorded real responses happens on that first gated
+write; it has not been performed.
+
+**As built in I9b (`bh-88vji`; `labels.change`, every case offline).** The same `OutboxService`
+sends and reconciles a label operation with the same receipts; nothing new is registered (no verb,
+no catalog entry, no config key). Interpretations:
+
+- A separate gate: `OutboxPolicy.labels_enabled` (default `False`) beside `enabled`. Without it
+  `approve`, `send` and the pure `begin_send` refuse a label operation with `LABELS_DISABLED`
+  (before any tracker request, the capability probe included) while the comment's gate is
+  untouched; with it, the adapter's own `labels.change` enable, `issues.read` and `comments.read`
+  must all be usable (O5), and the operator approves each operation separately: a label approval
+  mints its own `grant_id` and its own digest, and approving the comment never approves the labels.
+  A change the issue already has (empty effective add and remove) cannot be approved.
+- Only owned labels: the owned prefixes are the root's `LeakPolicy.owned_label_prefixes` (the
+  adapter's `write.labels.owned_prefixes`, passed to `outbox_service_for`; none means no label can
+  be written). A foreign label is refused at draft (`LABEL_NOT_OWNED`), held by the never
+  overridable `label_not_owned` finding, refused again at approve and at O9 BEFORE the write-ahead
+  from the stored diff itself (an edited store, a narrowed config), and the writer is handed exactly
+  those prefixes as its `LabelOwnership`, which it checks again before any request.
+- Reconciliation: labels carry no marker, so `reconcile` reads the issue's labels back (one
+  `IssueResolver.get`, else a paged `list_issues` matched on the issue), outside the lock and after
+  the attempt ended, and the unchanged machine applies it: labels that satisfy the diff are O14 (O19
+  late), a complete read that does not is one absence (O15), k absences `failed(absent)` (O16); a
+  read that fails or never finds the issue infers nothing. Only the reads an operation needs are
+  made (a label-only report makes no comment listing). An ambiguous label write therefore never
+  changes labels twice: a retry needs `failed(absent)`, an operator `retry` and a new approval.
+- `IntakePort.send` and `retry` gain `kind` (default `comment.create`), `discard` an optional one,
+  and `OutboxResult.kind` says which operation a result is about. `MemoryTracker.change_labels`
+  now honours `fail_next_write_ambiguously` like `post_comment` (kit extension K1).
+- Drafting a label diff stays the milestone trigger's job (I10, `labels.on_delivery`); the tests
+  draft through the pure `draft` rule.
+
+**Acceptance item 4 stays pending for `labels.change`:** no real tracker write has been made. The
+first real label change is an operator-approved step recorded on the bead, and the acceptance
+re-verification against recorded real responses (the label write's diagnostics and the
+read-after-write visibility of the labels read-back) happens on that first gated write; it has not
+been performed.
+
 ### 12. Milestone triggers and the release seam
 
 Adopted as `bh-6wj9y` R9: `on_work_merged(MergeFact(work, commit, actor))` from `work.merge` /
@@ -524,6 +955,95 @@ supersede an unsent `merged` draft with a `released` one in the `milestone` grou
 merge runs the trigger for the epic and every closed child a report tracks. Out of scope for v1:
 started, blocked and deprioritised milestones; revert detection (only an operator-recorded
 `reverted`, which drafts `corrected`).
+
+**As built (I10, `bh-56s4l`; milestones only draft).**
+
+- **Where.** `domain/milestones.py` holds the pure parts (`MergeFact`, `ReleaseFact`,
+  `MilestonePolicy`, `MilestoneItem` / `MilestoneOutcome`, the fixed public wording of the two
+  messages and `fold_facts`); `application/milestones.py` is `MilestoneService`, behind the new
+  `IntakePort` operations `on_work_merged` and `on_release` (a service without it refuses
+  `INTAKE_DISABLED`, `NullIntake` returns an empty outcome: free). The `ReleaseVerifier` port is in
+  `contracts` (`resolve(tag) -> commit | None`, `contains(release, merge) -> Verdict`);
+  `beadhive.adapters.intake.GitReleaseVerifier` implements it with `git rev-parse --verify
+  refs/tags/<tag>^{commit}` and `git merge-base --is-ancestor`, read-only (an operator-typed tag
+  or sha that is not a plain name is refused before git runs; only exit 0 is `YES`, only exit 1
+  `NO`, anything else `UNKNOWN`). The root adds `intake_services.work_merged`, `delivery_release`,
+  `milestone_settings` and `MilestoneResult`; the work layer adds `work_intake.on_work_merged`,
+  `delivery_release` and `render_delivery_release`.
+- **Drafts, never sends.** `MilestoneService` has no tracker, marker codec, identity, grant or
+  writer; `write_requests() == 0` across every trigger case. The `merged` record is keyed on the
+  merge commit and the `released` record on the tag (`DraftKey`), so a re-run drafts nothing (X2); a
+  `released` draft supersedes an unsent `merged` one (O6, X4) and leaves an `unknown` one alone
+  (X5). The wording is a constant per event with `{tag}` as its only placeholder, so a message
+  carries no bead id, branch or path by construction; a tag shaped like a bead id is held by the
+  leak check, never sent. A draft refused (a published store, no sanitizer) never stops the
+  `delivery` write: it is reported on the item.
+- **The merge trigger.** For each report that tracks the work (open or closed, X1): `delivery`
+  moves `pending|reverted` to `merged`; `facts.merged` and the drafted record are ONE
+  `intake.outbox` write made BEFORE the `set_state`, so a crash between the two leaves a fact the
+  re-run turns into the dimension, never a dimension no fact explains; then the completion policy.
+  Under the default `close-on-merge` with the outbox off the report closes at the merge (held
+  close, no ready window); under `close-on-release` merged but unreleased keeps the report open,
+  held, `delivery:merged`. One report failing (a held lock, a store error) is returned on its item
+  and the next is still handled.
+- **The release trigger.** Candidates are every bound report at `delivery:merged` (any status, so a
+  closed duplicate hears of it) plus open reports already at `released` (a crash between the
+  dimension and the close). The verifier is asked once per distinct merge commit. `YES` sets
+  `released`, `facts.released` and, when `milestones.draft_on_release` is on, a `released` record
+  (a closed report only with `append_release_to_closed`); `NO` and `UNKNOWN`, a report with no
+  recorded merge commit, or an unlinked one are reported "not verified" and change nothing (X3).
+  `bh work delivery release <tag>` refuses an unknown tag (`unknown_tag`) before recording
+  anything and refuses `intake_disabled` before it asks the verifier.
+- **The completion policy and the close rule.** `MilestoneService.complete(report, actor)`
+  evaluates `close_rule` and closes through `ReportStore.close`. The trigger calls it, and the
+  sender calls it (the new optional `OutboxService(completion=)`, composed by `outbox_service_for`)
+  after a milestone comment settles (`sent`, `abandoned` via `discard`, or reconciled), OUTSIDE the
+  binding's lock; a reply never runs it. X16: a sent `released` comment gives `notified:released`
+  and a closed report; a discarded one closes it with `notification_behind` true. Interpretation
+  (to be confirmed by the operator, as I8's): the close rule's `outbox_enabled` is "the outbox is
+  on AND drafting is on for the completion milestone", so an outbox that will never draft a
+  `merged` record does not strand a `close-on-merge` report open forever; with the outbox on and
+  drafting on, the report waits for the record, as I8 recorded. A superseded `merged` record
+  counts as settled, so under `close-on-merge` a release that supersedes it also completes the
+  report even though the `released` record is still a draft.
+- **The seam.** `work_merge` calls `_milestone_merged` after `close_merged` succeeds in `merge`,
+  the idempotent reconcile of an already landed bead, `finish` / `merge --molecule` (for the epic
+  and its children via `_molecule_members`), the molecule reconcile and the batch land
+  (`work_group`). Only a land onto the canonical integration branch counts: a merge into a
+  container is not on main yet. `work_intake.on_work_merged` returns before any bd or git call
+  unless `intake.external.enabled`, then reads the tip of the base (the merge commit), runs the
+  root function and turns every failure, unexpected exceptions included, into a stderr warning:
+  a hook failure never fails the merge. Not hooked: the PR landing path (`work.landing: pr`, where
+  the merge happens on GitHub) and the batch reconcile; a follow-up.
+- **Config (all off).** Under the host-owned `intake.external`: `completion_policy`
+  (`close-on-merge` | `close-on-release`), `milestones.draft_on_merge`, `.draft_on_release`,
+  `.append_release_to_closed`, `outbox.enabled`, `outbox.mode` (`supervised`, the only value). Only
+  a literal `true` enables; an unrecognised policy takes the conservative `close-on-release`. No key
+  sends, approves or mints a grant. `outbox.labels.on_delivery`, `public_evidence.commit_links` and
+  `absent_confirmations` stay with later beads; the milestones draft no label diff.
+- **Tests.** `tests/unit/modules/intake/test_intake_milestones.py` (X1 to X5, X16, X18, nothing
+  sends), `tests/test_intake_milestones_composition.py` (the root, the verifier, rendering, the
+  public store untouched), `tests/test_work_merge_milestones.py` (the seam and the non-fatal hook)
+  and `tests/test_intake_milestones_int.py` (a real bd store, `integration`).
+- **Not done here.** `bh work delivery release <tag>` is **intentionally not registered**: it
+  changes the published operation catalog and so needs `just wire-publish`, a release step
+  reserved for the operator (as for `import`, I4, and `link`, I5). `work_intake.delivery_release`
+  and `work.delivery_release_cmd` are implemented and tested but unreachable from the CLI.
+  **Registration recipe**, in order:
+  1. `src/beadhive/adapters/cli/projection.py` projects a migrated group's verbs as two-token
+     paths only (`<group> <verb>`; `project_cli_group` splits `path` into exactly two parts), so
+     the three-token `work delivery release` needs either a nested-path extension of that
+     projection plus the row below, or the flat spelling `work delivery-release` with the row
+     `work delivery-release|tag:string:r,as_:string:o,hive:string:o,as_json:boolean:o`. Decide
+     the spelling first (the ADR says `work delivery release`).
+  2. `src/beadhive/kernel/operations/__init__.py`: add that row to `_CLI_ROWS` (keep the rows
+     sorted).
+  3. `src/beadhive/work.py`: add `"work.delivery-release": delivery_release_cmd` to
+     `CLI_HANDLERS` (the key is the canonical operation identity), bind the `--json` option name
+     with `_bind_cli_handler(delivery_release_cmd, as_json="json_out")` if the catalog row names it
+     differently, and drop the "Not yet in `CLI_HANDLERS`" sentence from its docstring.
+  4. Run `just wire-publish` (operator, release step), then the catalog-drift tests and `bh work
+     check`.
 
 ### 13. Leak check and sanitizer seam
 
@@ -775,7 +1295,8 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
 - **Closing keywords** in a commit pushed to the default branch close the public issue early
   under `close-on-release`, outside Beadhive's control. The leak check warns in rendered text; a
   merge-time commit-message lint is follow-up work.
-- **Metadata growth** on very long threads is one indicative measurement (acceptance item 2).
+- **Metadata growth** on very long threads: re-measured in I1 (section 4): time is flat to about
+  1000 comments and Dolt shares unchanged chunks, but the queue read carries every document.
 - **Page-shift false deletions** under page-number pagination; mitigated by two confirmations and
   resurrection (a false tombstone costs one flip).
 - **Closure figures** are structural, not measured with Pants (acceptance item 1).
@@ -784,9 +1305,14 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
 
 ## What remains open
 
-- Whether triage marks `considered_rev` through a module verb (not `promote`) or as a side
-  effect of a disposition (`bh-fptob` R10 item 4); decide in I7.
-- Clearing a dimension value on unlink (acceptance item 3).
+- ~~Whether triage marks `considered_rev` through a module verb or as a side effect of a
+  disposition~~: decided in I7, a module operation (section 9).
+- The untriaged-queue read still carries every report's `intake.thread` (bd 1.3.0's `bd list
+  --json` has no metadata-free projection, section 4). The queue path never decodes it; trimming
+  the transfer needs a route change (a metadata-free list, or a template `--format` list) that
+  also changes the raw rows `bh work intake --json` emits, so it is its own decision.
+- ~~Clearing a dimension value on unlink (acceptance item 3).~~ Resolved by I2 (`bh-cokbi`), see
+  "I2 measurement" below.
 - The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).
 - Started, blocked and deprioritised milestones; revert detection.
 - A closing-keyword lint on merge commits.
@@ -809,3 +1335,38 @@ This ADR does **not** file the implementation molecule, does not run `/bh:replan
    it.
 4. A1 and K1 go to the tracker implementation molecule as additive items; the G5 withdrawal of
    "`(+ application)`" is recorded here for that molecule's checker work.
+
+## I2 measurement: `bd set-state` cannot clear a `delivery` value
+
+Acceptance item 3, measured by I2 (`bh-cokbi`) on bd 1.3.0 against a throwaway embedded store
+(no real hive touched; `tests/test_intake_bead_store_int.py::test_set_state_cannot_clear_a_delivery_value_so_unlinking_keeps_it`
+re-runs it):
+
+| Attempt | Result |
+|---|---|
+| `bd set-state <id> delivery=` | refused, exit 1: `invalid state format "delivery=", expected <dimension>=<value>`; the label stays |
+| `bd set-state <id> =pending` | refused the same way, exit 1 |
+| `bd set-state <id> delivery` (no `=`) | refused, `expected <dimension>=<value>` |
+| `bd set-state --help` | no unset or clear flag |
+| `bd set-state <id> delivery=merged` after `pending` | replaces: the label cache becomes `delivery:merged`, an event bead records `Previous: pending` |
+| `bd label remove <id> delivery:pending` | drops the label cache only. No event bead is written, so the history still reads `delivery -> pending` while the label says nothing |
+
+**Chosen behaviour.** Unlink never clears `delivery`. The value stays (`pending` stays
+`pending`) and an `unlinked` fact is recorded beside it, because a raw label removal would leave
+the event-sourced history and the label cache disagreeing. The pure rule is
+`delivery_after_unlink(labels)` in the intake domain (`DeliveryAfterUnlink(value, unlinked=True)`);
+the ReportStore contract case `store.set-state-replaces-but-never-clears` pins that a store
+replaces a dimension but refuses an empty value, on `MemoryReportStore`, on `BdReportStore`
+over the fake bd and over a real bd store. Where the `unlinked` fact is stored was the link bead's
+(I5) decision: the report's `intake.outbox` document, `facts.unlinked` (see "As built (I5)" in
+section 6); I2 only fixed that the dimension is not the place.
+
+## I2 scope note: the `report` lane
+
+The `report` lane in `_readiness` (a bead whose only open gates are `intake-hold:` gates) is
+**not** part of I2's delivered change. Both operator views emit `readiness` on published wire
+types (`WorkItemReadiness`, `SnapshotWorkItemSummary` and `RemoteSnapshotWorkItemSummary` in
+`daemon_contract.py`, and the OpenAPI document they generate), so a new lane value widens a
+published contract that older clients validate strictly. Until it is decided and rotated, a held
+report reads `blocked: 1 open gate`, which is accurate. An `intake-hold:` gate already reaches
+the wire gate list as kind `other`.

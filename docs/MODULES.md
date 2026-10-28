@@ -480,6 +480,170 @@ Concrete adapters live in plugin packages. Consumers test against
 `beadhive.testing.tracker.TRACKER_CASES`. Module-internal tests are `tests/unit/modules/tracker`
 and `tests/unit/testing/test_tracker_conformance_kit.py`.
 
+### `modules/intake`
+
+Owns **external intake**: the one shared intake queue, the intake and origin vocabulary and, in
+later beads, import, link, the conversation model and the outbox (`external-intake-module-adr.md`).
+The consumer port is `beadhive.modules.intake.contracts.IntakePort`; `IntakeService` is its one
+implementation and `NullIntake` is bound when intake is off (`bind_intake`). Intake's own outbound
+ports are `ReportStore` (the bead store holding report beads), `CheckpointStore` and `LabelPolicy`.
+`domain` is standard library only and holds the records, `RefusalReason` / `IntakeRefused`, the
+vocabulary (`INTAKE_DIMENSIONS`, moved out of `beadhive.state`, which stays a facade that builds
+`STATE_DIMENSIONS` from it) and pure rules; `application` also owns intake's own pager over the
+tracker port's contracts, because intake may not import `tracker.application` (G5).
+
+The import checker enforces the direction: intake may import only the tracker port's contracts
+(`modules.tracker.contracts`), never `modules.work.*` or `modules.planning.*` (G6, the
+consumer-exclusion table), never a legacy module, adapter or transport. Gap G7 is a module-local
+AST test: no legacy file except the composition root `intake_services.py` imports
+`modules.intake.domain` or `.application`.
+
+`bh report`, `bh escalate` and the triage verbs (`bh work intake|accept|reject|reroute|promote`)
+now run through the port. `beadhive.adapters.intake.BdReportStore` implements `ReportStore` over
+injected `beadhive-bd-cli` routes (it never imports the package or builds argv); the binding and
+last issue snapshot of a bound report live in the flat top-level metadata key `intake.source`, the
+issue URL in the bead's native `external_ref`. `beadhive.intake_services` is the legacy
+composition root: it binds the store to the hive's operational store (`store_target.operational_store`
+only, never a public store), supplies the label policy (`validate.bead_violations`) and renders the
+module's refusals as the legacy `(exit, error, message)` tuples. `report.py` keeps hive resolution,
+clone-on-demand and the push; `triage.py` is a thin facade; reroute to another hive is an
+orchestration in the root (`IntakeService.reroute_elsewhere` over the source store plus the
+caller's filing into the target). `report` no longer imports `triage`, which retired the owned
+legacy cycle `cycle-edge-036`. The import, link and discovery operations, the outbox and the
+`intake.external` config keys arrive in later beads, all off by default.
+
+The conversation model (`bh-fptob`) is `domain/thread.py` (pure rules over intake-owned records:
+`(id, revision, digest)` upserts, a local `seq`, tombstones only from complete id snapshots,
+layered own-message recognition, the `considered_rev` triage watermark) and
+`application/threads.py` (`ThreadService`, the only tracker-typed code of the model). A bound
+report's thread lives in the flat metadata key `intake.thread`, rewritten whole in one store write
+together with its per-issue checkpoint, under the per-binding `IntakeLock` and the store's `seq`
+re-check (`ReportStore.read_thread` / `write_thread`; `THREAD_MOVED` when the document moved).
+`IntakeService` delegates the thread operations to an optional `ThreadService` and refuses them
+with `INTAKE_DISABLED` without one, so comment ingestion is off by default. Purging a tombstoned
+body removes it from the current document only; under the archive rule earlier versions remain in
+store history, so purging is not erasure. Its tests run on `MemoryTracker` with explicit `at=`
+(`tests/unit/modules/intake/test_intake_threads.py` is the `bh-fptob` plan T1 to T19,
+`test_intake_thread_rules.py` drives the rules directly).
+
+Import (`bh-2ef4g`) is `application/importer.py` (`IssueImporter`, behind
+`IntakeService.import_issue`): it resolves the URL through the tracker's optional `IssueResolver`
+(distinct refusals R3 to R7) or pages `list_issues` (one `NOT_FOUND_IN_PROJECT`), keys on the
+canonical URL in the operational store only, creates a held report in `intake:untriaged` with
+`origin:github`, and re-imports as a snapshot update plus repair of any missing piece. It reads the
+tracker and never writes it. `intake_services.import_issue` composes it; the switch
+`intake.external.enabled` is host-owned and off, and until production credential wiring (`bh-kzs0b`)
+the verb refuses with `intake_disabled`. Its lock is the root's `FlockIntakeLock` (below), shared
+with the outbox sender: a mutating import takes `guard_primary` and the per-binding `flock`.
+
+Link (`bh-v2rr6`, I5) is `application/linker.py` (`LinkService`, behind `IntakeService.link`,
+`unlink`, `work_progress` and `dispose(accept)` with `work` / `new_work`): a bound report `tracks`
+a work bead of the same operational store (several reports to one work), decided by the pure rules
+in `domain/link.py` before any write; a bound report is never a target (D-a) and no edge crosses
+stores. A link writes `delivery:pending`; an unlink keeps the value (`bd set-state` cannot clear
+one) and records an `unlinked` fact in the report's `intake.outbox` document. Work progress is
+derived on read from the tracked bead. `intake_services.link_report` / `accept_to_work` compose it
+under the root lock, off unless `intake.external.enabled` and without a tracker; the verbs are not
+registered in the operation catalog yet (the ADR's I5 block has the recipe).
+
+Discovery (`bh-df64b`, I6) is `application/discovery.py` (`IssueDiscoverer`, behind
+`IntakeService.discover`): opt-in, pull-only, and the same upsert as import
+(`IssueImporter.upsert`), so a discovered report is exactly an imported one. An incremental pass
+pages `list_issues(since=<checkpoint>, include_closed=True)` and stores the tracker's own mark
+through `CheckpointStore` only after a page is durably upserted; a full pass (`--full`, or every
+`full_reconcile_every`-th timer run) re-pulls everything including closed issues and, on a COMPLETE
+id snapshot only, marks a vanished issue's report `source_missing` in its snapshot (it never
+deletes or closes a report). The root file-backs the checkpoint under `.bh/intake/checkpoints`
+(`beadhive.adapters.intake.FileCheckpointStore`; `MemoryCheckpointStore` for tests) and takes the
+same `FlockIntakeLock` as import. `intake_services.discover` composes it and the opt-in timer is the
+root module `intake_discovery.py` (the `release_catalog_auto_import` pattern, wired in
+`host_daemon.serve`): `intake.external.discovery.enabled` and `interval_seconds` are host-owned and
+off, and enabling it without a wired adapter refuses startup. `bh work discover` is not registered
+in the operation catalog yet (the ADR's I6 block has the recipe).
+
+The outbox (`bh-6wj9y`) is pure so far: `domain/outbox.py` holds the communication records (keyed
+by an opaque `ob1_` id and a stable `DraftKey`, rendering only their `PublicFacts` and message
+text) and the per-operation machine O1 to O19, `domain/leaks.py` the leak check,
+`domain/delivery.py` the `delivery`/`notified` rules and `domain/outbox_document.py` the
+`intake.outbox` codec.
+`application/outbox.py` only translates to and from the tracker port (`WriteGrant`, receipts,
+capabilities, which errors prove nothing was written); the sender is `application/sender.py`
+(below), and `OutboxPolicy()` is off. The `Sanitizer` and `IdSource` ports are in the
+contracts; `beadhive.adapters.intake.ScrubSanitizer` implements the first over the shared
+`scrub()` until `bh-o2mjz`, and with no sanitizer every operation is held. Tests:
+`tests/unit/modules/intake/test_intake_outbox_*.py` (the `bh-6wj9y` R14 cases at the domain level,
+X9 on `MemoryTracker` with kit extension K1).
+
+The supervised `comment.create` sender (I9a, `bh-czes8`) is `application/sender.py`:
+`OutboxService` runs the machine against `ReportStore.read_outbox` / `write_outbox` (one whole
+`intake.outbox` rewrite per step, refused with `OUTBOX_MOVED` when the stored `seq` moved) under the
+binding's `IntakeLock`, recovering a dead sender's `sending` to `unknown` (O13) on every lock
+acquisition. `IntakePort` gains `draft_reply`, `outbox`, `render` (the dry run: no tracker request,
+no store write), `approve` (O5, minting one single-use grant checked by the typed digest),
+`send` (O9 persisted before exactly one `post_comment`), `reconcile` (one complete comment listing
+per call; two without the marker after the attempt ended make it `failed(absent)`), `discard` and
+`retry`. `IntakeService` delegates them to an optional `OutboxService` and refuses with
+`OUTBOX_DISABLED` without one. `StoreOutboxView` is the store-backed `OutboxView` (with `issued()`)
+thread recognition reads. The root (`intake_services`) adds `FlockIntakeLock` (`guard_primary`, an
+`fcntl.flock` under `.bh/intake/locks`, `guard.live_epoch`), `RandomIdSource`, `leak_policy`,
+`store_posture` and `outbox_service_for`, which binds no sender unless an enabled `OutboxPolicy` is
+passed and takes the tracker adapter and its marker codec injected. No `bh work outbox` verb or
+config key exists yet. Tests: `tests/unit/modules/intake/test_intake_outbox_sender.py` and
+`tests/test_intake_outbox_root.py`.
+
+The same sender also carries `labels.change` (I9b, `bh-88vji`) as its own gate: `OutboxPolicy`
+gains `labels_enabled` (off by default, separate from `enabled`, which gates the outbox and the
+comment), so a label operation is refused with `LABELS_DISABLED` at approve and at send before any
+tracker request; it is approved separately, mints its own grant and is sent with one
+`change_labels` whose `LabelOwnership` is the root's owned prefixes (`outbox_service_for(...,
+owned_label_prefixes=)`), and a label outside them is refused at draft, in the leak check, at
+approve and at send. `IntakePort.send` and `retry` take `kind` (default `comment.create`) and
+`discard` an optional one; `reconcile` reads the issue's labels back (labels carry no marker). See
+`external-intake-module-adr.md` section 11. Tests:
+`tests/unit/modules/intake/test_intake_outbox_labels_sender.py`.
+
+The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
+`MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
+`IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on
+every report that tracks the work, open or closed, records `facts.merged` in `intake.outbox`,
+drafts a `merged` record when `intake.external.milestones.draft_on_merge` and
+`outbox.enabled` are on, and applies the completion policy; a release is verified by the new
+`ReleaseVerifier` port (`beadhive.adapters.intake.GitReleaseVerifier`: `git rev-parse` and `git
+merge-base --is-ancestor`, read-only; kit fake `FakeReleaseVerifier`) and only a `YES` moves a
+report to `delivery:released`. Milestones only DRAFT: the service holds no tracker, grant or
+writer. The work layer calls `work_intake.on_work_merged` from `work.merge` and `finish` after the
+close, a no-op unless `intake.external.enabled` and never failing the merge. `bh work delivery
+release <tag>` is implemented (`work_intake.delivery_release`, `work.delivery_release_cmd`) but not
+registered in the operation catalog (the ADR's I10 block has the recipe). Tests:
+`tests/unit/modules/intake/test_intake_milestones.py`,
+`tests/test_intake_milestones_composition.py`, `tests/test_work_merge_milestones.py` and
+`tests/test_intake_milestones_int.py` (`integration`).
+
+The closed `delivery` (`pending|merged|released|reverted`) and `notified`
+(`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so
+`bh label validate` accepts those values and refuses any other; nothing writes them yet. An
+`intake-hold:` gate (`guard.INTAKE_HOLD_GATE_MARKER`) classifies as gate kind `intake-hold`, and
+no seat resolves it through `bh work approve`. The operator views count only `blocks`,
+`conditional-blocks` and `waits-for` edges as blockers, so a `tracks` edge or any unknown edge type
+never blocks. `bd set-state` cannot clear a dimension, so unlinking keeps the `delivery` value
+(`delivery_after_unlink`).
+
+A bound report is held for life (`domain/hold.py`, `external-intake-module-adr.md` section 8): its
+`ReportStore.create` opens an `intake-hold:` human gate, so it is never in `bd ready` or `bh work
+ready`; `bh work claim`, `assign` and `claim --group` refuse it; a plain close is refused by bd; and
+`ReportStore.close` is the held close (`bd close --force` through `issue_close_held`, then resolve
+the hold, so there is no ready window). A born-native `bh report` item is never held. `bh doctor`
+reports the `intake_holds` findings (a missing, unresolved or orphaned hold) for hives whose public
+store binds a tracker adapter, and `IntakeService.sweep_holds(repair=True)` repairs them.
+
+Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
+pass `beadhive.testing.intake.REPORT_STORE_CASES`: `BdReportStore` passes them on an in-process
+fake bd (`tests/test_intake_bead_store.py`) and on a real bd store
+(`tests/test_intake_bead_store_int.py`, `integration`). Module-internal tests are
+`tests/unit/modules/intake`, `tests/unit/testing/test_intake_report_store_kit.py` and, for G5 and
+G6, `tests/test_intake_import_boundaries.py`; the composition is pinned by
+`tests/test_intake_services.py`.
+
 ### `modules/worktrees`
 
 Owns workspace binding, branch/worktree identity, creation/removal policy, inventory, status,

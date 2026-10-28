@@ -879,6 +879,67 @@ def _render_beads_routing(findings: list[dict]) -> None:
         typer.echo(f"    fix: {f['remediation']}")
 
 
+# ---- intake holds section (bh-eo8br) ---------------------------------------------------
+# A bound external report carries an open `intake-hold:` gate for its whole life, which keeps it out
+# of `bd ready` (external-intake-module-adr.md section 7). This section compares each hive's bound
+# reports with its open holds: an open report without one (it could be offered as work), a hold
+# left open on a closed report (a crash between the forced close and the resolve), and a hold that
+# blocks no bound report. Only a hive whose public store binds a tracker adapter can import a
+# report, so only those hives are read (two bd reads each); every other hive costs nothing and a
+# fleet that binds none sees no section at all. Read-only: the remediation line is the exact
+# command, and the module's `sweep_holds(repair=True)` is what an intake verb repairs with.
+
+
+def _hold_remediation(hive_id: str, finding) -> str:
+    from .modules.intake import HoldFindingKind
+
+    bd_cmd = f"{config.BINARY_ALIAS} -r {hive_id} bd"
+    if finding.kind is HoldFindingKind.MISSING:
+        return (
+            f"{bd_cmd} gate create --blocks {finding.report} --type human --reason "
+            '"intake-hold: external report, never work"'
+        )
+    if finding.kind is HoldFindingKind.UNRESOLVED:
+        return f"{bd_cmd} gate resolve {finding.gate}"
+    return f"{bd_cmd} show {finding.gate} — resolve it by hand if nothing needs the hold"
+
+
+def _data_intake_holds(cfg) -> list[dict]:
+    """One row per finding across the hives whose public store binds a tracker adapter and that
+    have a local checkout (an uncloned hive is skipped)."""
+    from . import intake_services
+    from .bootstrap.tracker_readiness import has_binding
+
+    findings: list[dict] = []
+    for e in registry.hives(cfg):
+        path = registry.hive_dir(e)
+        if not has_binding([e]) or not path.is_dir():
+            continue
+        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
+        for f in intake_services.sweep_holds(path).findings:
+            findings.append(
+                {
+                    "hive": hive_id,
+                    "kind": f.kind.value,
+                    "report": f.report,
+                    "gate": f.gate,
+                    "detail": f.detail,
+                    "repairable": f.repairable,
+                    "remediation": _hold_remediation(hive_id, f),
+                }
+            )
+    return findings
+
+
+def _render_intake_holds(findings: list[dict]) -> None:
+    if not findings:  # silent when unused, like the tracker adapters section
+        return
+    typer.echo(f"\n# Intake holds ({len(findings)})")
+    for f in findings:
+        typer.echo(f"  ⚠ {f['hive']}: {f['kind']} — {f['detail']}")
+        typer.echo(f"    fix: {f['remediation']}")
+
+
 # ---- bead stores section (bh-lniwf.7) -------------------------------------------
 # Partitioned hives (managed_repos[*].stores, docs/design/two-store-scope-adr.md) show EACH store:
 # scope, local root, prefix, transport, authority, sync direction and honest health. Health never
@@ -3368,6 +3429,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
+        "intake_holds": _timed(timings, "intake_holds", _data_intake_holds, cfg),
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
@@ -3455,7 +3517,7 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``hq_remotes``, ``node_id``, ``beads_role``, ``beads_routing``,
     ``stores``, ``group_auth``, ``mcp``, ``harness_plugin``,
-    ``seats``,
+    ``seats``, ``intake_holds``,
     ``install``, ``observability``, ``build_verify``, ``tracker_adapters``, ``writer_fence``,
     ``forward``, ``warnings``), plus
     ``timings`` (section name -> milliseconds
@@ -3465,7 +3527,9 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     (bh-og0q.4's silent-when-unused bar) — every other key is always present. By default
     ``seats`` does NOT run the per-seat `hitch profile preflight` fanout (bh-gqfrm) — pass
     ``full_seats=True`` for the complete per-seat breakdown; the cheap default still says
-    explicitly that per-seat detail was skipped. Exposed as the
+    explicitly that per-seat detail was skipped. ``intake_holds`` (bh-eo8br) is ``[]`` unless a hive
+    whose public store binds a tracker adapter has a bound report out of step with its
+    ``intake-hold:`` gate. Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
 
@@ -3567,6 +3631,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_mcp(data["mcp"])
     _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])
+    _render_intake_holds(data.get("intake_holds") or [])
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_build_verify(data["build_verify"])

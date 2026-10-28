@@ -83,6 +83,12 @@ _ROOT_FORBIDDEN_SDKS = ("githubkit", "gidgethub", "github")
 # Leaf modules import no other module's contracts or application (G3): the tracker port is
 # standard library only and must never couple to a consumer.
 _LEAF_MODULES = frozenset({"tracker"})
+# Consumer-exclusion rule (external-intake-module-adr.md gap G6): a module that serves consumers
+# may not import its own consumers, in any module layer. Intake's consumers are the work and
+# planning modules; they reach intake through its port, never the other way round. A two-entry
+# table beside the G3 leaf rule, because ``_direction_allowed`` lets a module's contracts and
+# application import another module's public contracts.
+_CONSUMER_EXCLUSIONS = {"intake": frozenset({"work", "planning"})}
 _FORBIDDEN_LEGACY_PREFIXES = (
     "beadhive.cli",
     "beadhive.gateway_read",
@@ -259,6 +265,15 @@ def _leaf_violation(importer: PackageRole, imported: PackageRole) -> bool:
         and importer.kind in {"domain", "contracts", "application"}
         and imported.kind in {"contracts", "application"}
         and imported.owner != importer.owner
+    )
+
+
+def _consumer_violation(importer: PackageRole, imported: PackageRole) -> bool:
+    layers = {"domain", "contracts", "application"}
+    return (
+        importer.kind in layers
+        and imported.kind in layers
+        and imported.owner in _CONSUMER_EXCLUSIONS.get(importer.owner, frozenset())
     )
 
 
@@ -491,6 +506,12 @@ def check(source_root: Path, ledger_path: Path) -> CheckResult:
                 elif _leaf_violation(importer_role, imported_role):
                     violation = (
                         f"{edge.importer_path}: forbidden leaf-module import "
+                        f"{importer_role.kind}/{importer_role.owner} -> "
+                        f"{imported_role.kind}/{imported_role.owner}: {symbol}"
+                    )
+                elif _consumer_violation(importer_role, imported_role):
+                    violation = (
+                        f"{edge.importer_path}: forbidden consumer-module import "
                         f"{importer_role.kind}/{importer_role.owner} -> "
                         f"{imported_role.kind}/{imported_role.owner}: {symbol}"
                     )

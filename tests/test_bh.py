@@ -1337,3 +1337,41 @@ def test_register_preserves_comments_and_flow(cfg_path):
     # reloads and parses
     cfg = config.load()
     assert any(str(e["repo"]) == "newthing" for e in cfg["managed_repos"])
+
+
+_DELIVERY_VALUES = ("pending", "merged", "released", "reverted")
+_NOTIFIED_VALUES = ("replied", "merged", "released", "corrected")
+
+
+def test_validate_accepts_every_delivery_and_notified_value(cfg_path, monkeypatch):
+    """`bh label validate` accepts the report dimensions the intake module registers."""
+    cfg = config.load()
+    labels = [f"delivery:{v}" for v in _DELIVERY_VALUES] + [
+        f"notified:{v}" for v in _NOTIFIED_VALUES
+    ]
+    for label in labels:
+        _issues(monkeypatch, [{"id": "ag-infra-1", "labels": [label]}])
+        assert validate._issue_checks(cfg)[0] == [], label
+
+
+def test_validate_refuses_unknown_delivery_and_notified_values(cfg_path, monkeypatch):
+    cfg = config.load()
+    for label, dimension in (
+        ("delivery:shipped", "bad-delivery"),
+        ("delivery:", "bad-delivery"),
+        # the other dimension's values do not leak across: `replied` is notified-only
+        ("delivery:replied", "bad-delivery"),
+        ("notified:pending", "bad-notified"),
+        ("notified:whenever", "bad-notified"),
+    ):
+        _issues(monkeypatch, [{"id": "ag-infra-1", "labels": [label]}])
+        assert any(dimension in p for p in validate._issue_checks(cfg)[0]), label
+
+
+def test_report_dimensions_are_closed_fleet_wide_and_listed_as_allowed(cfg_path):
+    closed = registry.closed_dimensions(config.load())
+    assert closed["delivery"] == set(_DELIVERY_VALUES)
+    assert closed["notified"] == set(_NOTIFIED_VALUES)
+    # they are new names: the contributor's single-valued `outbound`/`publish` and the code-owned
+    # `release` dimension are neither reused nor widened.
+    assert closed["outbound"] == {"pending"} and closed["publish"] == {"approved"}

@@ -164,6 +164,7 @@ class MemoryTracker:
             r
             for r in self.world.issues.values()
             if not r.change_request
+            and not r.transferred
             and (include_closed or r.state is IssueState.OPEN)
             and (since is None or r.updated >= since)
         ]
@@ -243,7 +244,7 @@ class MemoryTracker:
             raise NotVisible(f"{key.identifier} is not visible")
         if row.change_request:
             raise ChangeRequestUrl(f"{key.identifier} is a change request, not an issue")
-        if row.key != key:
+        if row.key != key and not row.transferred:
             raise NotVisible(f"{key.identifier} is not visible")
         return self._issue(row)
 
@@ -308,9 +309,14 @@ class MemoryTracker:
         self._authorise(Operation.LABELS_CHANGE, issue, grant)
         self._request(write=True)
         self.world.writes += 1
+        ambiguous, self.world.ambiguous_next_write = self.world.ambiguous_next_write, None
+        if ambiguous is False:  # cut off before the tracker applied anything (K1)
+            raise WriteOutcomeUnknown("the tracker did not confirm the label change")
         labels = self.world.issues[issue.identifier].labels
         labels.difference_update(remove)
         labels.update(add)
+        if ambiguous:  # applied, but the caller cannot know
+            raise WriteOutcomeUnknown("the tracker did not confirm the label change")
         return WriteReceipt(grant.grant_id, grant.operation, issue, labels_after=frozenset(labels))
 
 

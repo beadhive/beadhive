@@ -91,6 +91,9 @@ def test_reason_falls_back_to_first_case_insensitive_description_marker():
         ("Reason: kickoff bh-epic", None, "kickoff"),
         ("Reason: release-hold: bh-epic kickoff later", None, "other"),
         ("Reason: review the rollout", None, "other"),
+        # the wire kind set is closed: an intake hold is classified 'intake-hold' internally and
+        # reaches the wire as 'other' (the `report` lane stays out of the published contract).
+        ("Reason: intake-hold: bound report", None, "other"),
         ("unmarked", "security: policy", "security"),
     ],
 )

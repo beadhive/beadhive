@@ -401,7 +401,12 @@ def accept_cmd(
     as_: str = _AS,
     hive: str = _HIVE,
 ):
-    """Accept an intake report into backlog and clear its intake state."""
+    """Accept an intake report into backlog and clear its intake state.
+
+    `work_intake.accept` also takes `work` / `new_work` (`accept --work <id>` / `--new-work`,
+    bh-v2rr6): those options are NOT on this verb yet, because adding them changes the published
+    catalog and so needs a wire release (see the I5 registration recipe in the external-intake
+    ADR)."""
     return work_intake.accept(bead, issue_type, priority, as_, hive)
 
 
@@ -429,6 +434,77 @@ def reroute_cmd(
 def promote_cmd(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Promote an intake report to the planner."""
     return work_intake.promote(bead, as_, hive)
+
+
+def import_cmd(
+    url: str = typer.Argument(..., help="the external issue's own URL (not a bead id)"),
+    hive: str = _HIVE,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="classify and report would-create/would-update; write nothing"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+    as_: str = _AS,
+):
+    """Import an external issue as an untriaged, held internal report bead (read-only toward the
+    tracker; off unless `intake.external.enabled`). Re-importing the same URL updates its snapshot
+    and never duplicates it or resets triage.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-2ef4g)."""
+    return work_intake.import_issue(url, hive, dry_run, as_json, as_)
+
+
+def discover_cmd(
+    hive: str = _HIVE,
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="re-pull every issue including closed ones, then reconcile which are gone",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+    as_: str = _AS,
+):
+    """Discover the hive's external issues: opt-in, pull-only, through the import upsert (held,
+    untriaged reports; resumes from its checkpoint, so a re-run is a no-op). Off unless
+    `intake.external.enabled`; never writes a tracker or the public store. `--full` re-pulls
+    open and closed issues and marks reports whose issue is gone `source_missing`.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-df64b)."""
+    return work_intake.discover(hive, full, as_json, as_)
+
+
+def link_cmd(
+    bead: str = _BEAD,
+    to: str = typer.Option("", "--to", help="the work bead (of this hive) the report tracks"),
+    remove: bool = typer.Option(False, "--remove", help="stop tracking (the other reports stay)"),
+    replace: bool = typer.Option(
+        False, "--replace", help="move a report that tracks other work to --to"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Make an imported report track a work bead, many reports to one (`delivery:pending`); the
+    report stays held and is never work. `--remove` unlinks it (the delivery value is kept and an
+    `unlinked` fact recorded). Off unless `intake.external.enabled`; never touches a tracker.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-v2rr6)."""
+    return work_intake.link(bead, to, remove, replace, as_, hive, as_json)
+
+
+def delivery_release_cmd(
+    tag: str = typer.Argument(..., metavar="<tag>", help="the release tag to verify and record"),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Record a release for the delivery milestone: verify the tag exists (read-only against git),
+    move every report whose merge it contains to `delivery:released`, and draft a `released`
+    record when the hive turned that on. A merge the release cannot be shown to contain stays
+    `delivery:merged` (reported as not verified). Nothing is sent; off unless
+    `intake.external.enabled`.
+
+    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-56s4l)."""
+    return work_intake.delivery_release(tag, as_, hive, as_json)
 
 
 def _refuse_public(verb: str, *values) -> None:

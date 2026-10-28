@@ -205,6 +205,20 @@ def public_store_owner(cfg, bead: str):
     return None
 
 
+def public_store_prefixes(cfg) -> frozenset[str]:
+    """Every configured PUBLIC store prefix across the fleet (``stores.public.prefix``). Prefixes
+    are unique fleet-wide, so this is what lets a bead id be recognised as a public projection id
+    without opening any store (intake refuses to bind to one)."""
+    prefixes: set[str] = set()
+    for entry in hives(cfg):
+        stores = entry.get("stores") if hasattr(entry, "get") else None
+        public = stores.get("public") if hasattr(stores, "get") else None
+        prefix = str(public.get("prefix", "") or "") if hasattr(public, "get") else ""
+        if prefix:
+            prefixes.add(prefix)
+    return frozenset(prefixes)
+
+
 def resolve_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = True) -> BeadHiveResolution:
     """Resolve an exact bead id to one registered hive without changing state.
 

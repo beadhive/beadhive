@@ -79,6 +79,9 @@ BATCH_ITEM_CAP = 100
 BLOCKS_EDGE = "blocks"
 #: The edge type an issue-to-epic (or adopted-report-to-epic) ownership edge lowers to.
 PARENT_CHILD_EDGE = "parent-child"
+#: The edge a held, externally bound report is linked to the epic that delivers it: non-blocking and
+#: directional (report to epic), never ownership (external-intake-module-adr.md, D-c).
+_TRACKS_EDGE = "tracks"
 
 #: The compiled epic's request-local key; issue keys carry an ``issue:`` prefix so a molecule
 #: handle can never collide with it.
@@ -240,6 +243,7 @@ def compile_molecule(
     epic_id: str | None = None,
     epic_external_ref: str = "",
     adopted_reports: Sequence[str] = (),
+    tracked_reports: Sequence[str] = (),
     cap: int = BATCH_ITEM_CAP,
 ) -> CompiledMolecule:
     """Compile one validated molecule spec into a single ordered ``BatchApply`` plan.
@@ -250,7 +254,9 @@ def compile_molecule(
     that id instead of a request-local key; every other molecule primitive — child creates, the
     parent-child and declared-dependency edges, and any adopted-report link — still compiles into
     the ONE request. ``adopted_reports`` are pre-existing report ids linked child-of the epic
-    (child-owns-report direction: the epic never blocks on an open report).
+    (child-owns-report direction: the epic never blocks on an open report). ``tracked_reports``
+    are held reports bound to an external issue: they are linked ``tracks`` the epic (report to
+    epic, non-blocking, left open and held), never as its children.
 
     Raises :class:`MoleculeTooLarge` before returning anything if the compiled request would
     exceed ``cap`` items — this function never mutates anything, so raising here is side-effect
@@ -304,6 +310,8 @@ def compile_molecule(
         items.append(
             _dep_add_item(source=Ref(id=report_id), target=epic_ref, type_=PARENT_CHILD_EDGE)
         )
+    for report_id in tracked_reports:
+        items.append(_dep_add_item(source=Ref(id=report_id), target=epic_ref, type_=_TRACKS_EDGE))
 
     if len(items) > cap:
         raise MoleculeTooLarge(len(items), cap)
@@ -427,6 +435,7 @@ class PlanningCommands:
         epic_id: str | None = None,
         epic_external_ref: str = "",
         adopted_reports: Sequence[str] = (),
+        tracked_reports: Sequence[str] = (),
         release_breaking_handles: Sequence[str] = (),
         cap: int = BATCH_ITEM_CAP,
     ) -> FileOutcome:
@@ -437,6 +446,7 @@ class PlanningCommands:
             epic_id=epic_id,
             epic_external_ref=epic_external_ref,
             adopted_reports=adopted_reports,
+            tracked_reports=tracked_reports,
             cap=cap,
         )
         outcome = self._filer.apply(compiled, actor=actor)
@@ -458,7 +468,7 @@ class PlanningCommands:
             filed_epic_id,
             len(compiled.graph.order),
             len(compiled.graph.roots),
-            len(adopted_reports),
+            len(adopted_reports) + len(tracked_reports),
         )
 
 

@@ -2870,6 +2870,113 @@ class TrackerGithubConfig(_QuietSection):
         return value
 
 
+# ---- intake.external (external-intake-module-adr.md section 15) -------------------
+
+
+class IntakeDiscoveryConfig(_QuietSection):
+    """``intake.external.discovery`` — the opt-in host-daemon discovery timer (everything off).
+
+    The timer runs pull-only discovery (the same upsert as `bh work import`; never a tracker or a
+    public-store write) every ``interval_seconds``. It runs only when ``intake.external.enabled``
+    AND ``discovery.enabled`` are both true; ``interval_seconds`` has no default, so enabling the
+    timer without choosing a cadence fails validation instead of picking one for the operator.
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Run the host-daemon discovery timer (default off)."
+    )
+    interval_seconds: float | None = Field(
+        None,
+        gt=0,
+        le=604_800,
+        description="Seconds between discovery runs. Required when `enabled` is true.",
+    )
+    full_reconcile_every: int = Field(
+        24,
+        ge=1,
+        le=100_000,
+        description=(
+            "Every Nth timer run is a full pass (all issues including closed, then the id "
+            "reconcile that marks `source_missing`); the rest resume from the checkpoint."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _interval_is_chosen_when_enabled(self) -> IntakeDiscoveryConfig:
+        if self.enabled and self.interval_seconds is None:
+            raise ValueError("discovery.enabled needs discovery.interval_seconds")
+        return self
+
+
+class IntakeMilestonesConfig(_QuietSection):
+    """``intake.external.milestones`` — which delivery milestones DRAFT an outbox record.
+
+    A milestone only ever drafts: nothing is sent without an operator's per-record approval, and
+    nothing drafts unless ``intake.external.outbox.enabled`` is on as well. All off by default.
+    """
+
+    draft_on_merge: StrictBool = Field(
+        False, description="Draft a `merged` record when linked work merges (default off)."
+    )
+    draft_on_release: StrictBool = Field(
+        False, description="Draft a `released` record when a release is verified (default off)."
+    )
+    append_release_to_closed: StrictBool = Field(
+        False,
+        description="Also draft the `released` record for a report already closed (default off).",
+    )
+
+
+class IntakeOutboxConfig(_QuietSection):
+    """``intake.external.outbox`` — the per-hive opt-in for communication records.
+
+    Enabling it lets milestones draft records and lets an operator approve them; it never sends
+    anything by itself, and the adapter's own write flag and a per-record approval minting a
+    single-use grant are still required to post.
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Allow outbox records to be drafted and approved (default off)."
+    )
+    mode: Literal["supervised"] = Field(
+        "supervised", description="The only accepted mode: every send needs an operator approval."
+    )
+
+
+class IntakeExternalConfig(_QuietSection):
+    """``intake.external`` — external issue intake (host-owned; everything off).
+
+    Off unless configured: with ``enabled`` false `bh work import` refuses and the intake port is
+    the null one. Nothing here binds a tracker, holds a credential, a grant or an approval, and no
+    key can enable or pre-approve a tracker write: a write is only ever the operator's, per record.
+    """
+
+    enabled: StrictBool = Field(
+        False,
+        description="Enable external issue intake: `bh work import` and `discover` (default off).",
+    )
+    default_type: Literal["bug", "feature", "chore"] = Field(
+        "bug", description="The issue type of an imported report."
+    )
+    discovery: IntakeDiscoveryConfig = Field(default_factory=IntakeDiscoveryConfig)
+    completion_policy: Literal["close-on-merge", "close-on-release"] = Field(
+        "close-on-merge",
+        description=(
+            "Which delivery milestone completes a linked report: `close-on-merge` closes it once "
+            "the work merged (and its record, if any, settled); `close-on-release` keeps it open "
+            "and held until the release is verified."
+        ),
+    )
+    milestones: IntakeMilestonesConfig = Field(default_factory=IntakeMilestonesConfig)
+    outbox: IntakeOutboxConfig = Field(default_factory=IntakeOutboxConfig)
+
+
+class IntakeConfig(_QuietSection):
+    """``intake`` — the intake module's host-owned settings."""
+
+    external: IntakeExternalConfig = Field(default_factory=IntakeExternalConfig)
+
+
 # ---- plugins / plugin_kernel (plugin-kernel-v1-adr.md section 6) -----------------
 
 _PLUGIN_ID_RE = re.compile(r"[a-z][a-z0-9-]*")
@@ -3499,6 +3606,10 @@ class BeadhiveConfig(BaseSettings):
     repowise: RepowiseConfig = Field(default_factory=RepowiseConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
     herdr: HerdrConfig = Field(default_factory=HerdrConfig)
+    intake: IntakeConfig | None = Field(
+        None,
+        description="External issue intake (host-owned, every switch off). Absent = intake off.",
+    )
     plugins: PluginsConfig | None = Field(
         None,
         description="Canonical plugin-owned namespaces `plugins.<plugin_id>`. Built-in fragments "
@@ -3867,6 +3978,9 @@ __all__ = (
     "HostLeaseConfig",
     "HqConfig",
     "IdentityConfig",
+    "IntakeConfig",
+    "IntakeDiscoveryConfig",
+    "IntakeExternalConfig",
     "KNOWN_TRACKER_ADAPTERS",
     "LogConfig",
     "ManagedRepoEntry",

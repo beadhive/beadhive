@@ -2288,6 +2288,145 @@
       "title": "IdentityConfig",
       "type": "object"
     },
+    "IntakeConfig": {
+      "additionalProperties": false,
+      "description": "``intake`` — the intake module's host-owned settings.",
+      "properties": {
+        "external": {
+          "$ref": "#/$defs/IntakeExternalConfig"
+        }
+      },
+      "title": "IntakeConfig",
+      "type": "object"
+    },
+    "IntakeDiscoveryConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.discovery`` — the opt-in host-daemon discovery timer (everything off).\n\nThe timer runs pull-only discovery (the same upsert as `bh work import`; never a tracker or a\npublic-store write) every ``interval_seconds``. It runs only when ``intake.external.enabled``\nAND ``discovery.enabled`` are both true; ``interval_seconds`` has no default, so enabling the\ntimer without choosing a cadence fails validation instead of picking one for the operator.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Run the host-daemon discovery timer (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "full_reconcile_every": {
+          "default": 24,
+          "description": "Every Nth timer run is a full pass (all issues including closed, then the id reconcile that marks `source_missing`); the rest resume from the checkpoint.",
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Full Reconcile Every",
+          "type": "integer"
+        },
+        "interval_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 604800,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Seconds between discovery runs. Required when `enabled` is true.",
+          "title": "Interval Seconds"
+        }
+      },
+      "title": "IntakeDiscoveryConfig",
+      "type": "object"
+    },
+    "IntakeExternalConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external`` — external issue intake (host-owned; everything off).\n\nOff unless configured: with ``enabled`` false `bh work import` refuses and the intake port is\nthe null one. Nothing here binds a tracker, holds a credential, a grant or an approval, and no\nkey can enable or pre-approve a tracker write: a write is only ever the operator's, per record.",
+      "properties": {
+        "completion_policy": {
+          "default": "close-on-merge",
+          "description": "Which delivery milestone completes a linked report: `close-on-merge` closes it once the work merged (and its record, if any, settled); `close-on-release` keeps it open and held until the release is verified.",
+          "enum": [
+            "close-on-merge",
+            "close-on-release"
+          ],
+          "title": "Completion Policy",
+          "type": "string"
+        },
+        "default_type": {
+          "default": "bug",
+          "description": "The issue type of an imported report.",
+          "enum": [
+            "bug",
+            "feature",
+            "chore"
+          ],
+          "title": "Default Type",
+          "type": "string"
+        },
+        "discovery": {
+          "$ref": "#/$defs/IntakeDiscoveryConfig"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable external issue intake: `bh work import` and `discover` (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "milestones": {
+          "$ref": "#/$defs/IntakeMilestonesConfig"
+        },
+        "outbox": {
+          "$ref": "#/$defs/IntakeOutboxConfig"
+        }
+      },
+      "title": "IntakeExternalConfig",
+      "type": "object"
+    },
+    "IntakeMilestonesConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.milestones`` — which delivery milestones DRAFT an outbox record.\n\nA milestone only ever drafts: nothing is sent without an operator's per-record approval, and\nnothing drafts unless ``intake.external.outbox.enabled`` is on as well. All off by default.",
+      "properties": {
+        "append_release_to_closed": {
+          "default": false,
+          "description": "Also draft the `released` record for a report already closed (default off).",
+          "title": "Append Release To Closed",
+          "type": "boolean"
+        },
+        "draft_on_merge": {
+          "default": false,
+          "description": "Draft a `merged` record when linked work merges (default off).",
+          "title": "Draft On Merge",
+          "type": "boolean"
+        },
+        "draft_on_release": {
+          "default": false,
+          "description": "Draft a `released` record when a release is verified (default off).",
+          "title": "Draft On Release",
+          "type": "boolean"
+        }
+      },
+      "title": "IntakeMilestonesConfig",
+      "type": "object"
+    },
+    "IntakeOutboxConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.outbox`` — the per-hive opt-in for communication records.\n\nEnabling it lets milestones draft records and lets an operator approve them; it never sends\nanything by itself, and the adapter's own write flag and a per-record approval minting a\nsingle-use grant are still required to post.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Allow outbox records to be drafted and approved (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "mode": {
+          "const": "supervised",
+          "default": "supervised",
+          "description": "The only accepted mode: every send needs an operator approval.",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "title": "IntakeOutboxConfig",
+      "type": "object"
+    },
     "LegacyBeadsConfig": {
       "additionalProperties": true,
       "description": "Legacy top-level Beads section with one live selector and opaque extensions.",
@@ -4187,6 +4326,18 @@
     },
     "hq": {
       "$ref": "#/$defs/HqConfig"
+    },
+    "intake": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntakeConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "External issue intake (host-owned, every switch off). Absent = intake off."
     },
     "log": {
       "$ref": "#/$defs/LogConfig"

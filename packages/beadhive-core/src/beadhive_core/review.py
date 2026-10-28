@@ -73,6 +73,7 @@ APPROVED = "approved"
 _REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
 _SECURITY_MARKER = "security:"
 _RELEASE_HOLD_MARKER = "release-hold:"
+_INTAKE_HOLD_MARKER = "intake-hold:"
 _WARDEN_PREFIX = "warden/"
 _RELEASER_PREFIX = "releaser/"
 
@@ -112,6 +113,11 @@ class Gate:
     def is_release_hold(self) -> bool:
         reason, description = self._text()
         return _RELEASE_HOLD_MARKER in reason or f"reason: {_RELEASE_HOLD_MARKER}" in description
+
+    @property
+    def is_intake_hold(self) -> bool:
+        reason, description = self._text()
+        return _INTAKE_HOLD_MARKER in reason or f"reason: {_INTAKE_HOLD_MARKER}" in description
 
 
 class GateLookupFailed(RuntimeError):
@@ -307,6 +313,7 @@ class ReviewCommands:
             if cleared is not None:
                 return cleared
             if not open_review:
+                self._refuse_intake_hold(run, bead, gates)
                 raise run.fail(f"✗ no open review gate for {bead} — nothing to approve")
             self._guard_human(run, bead, open_review)
             self._guard_self_review(run, bead, actor, _text(issue.assignee).strip())
@@ -368,6 +375,23 @@ class ReviewCommands:
             run.say(f"✓ cleared {bead}: resolved release-hold gate {hold.id} as {actor}")
             return ReviewOutcome("approve", bead, actor, (hold.id,), tuple(run.notices))
         return None
+
+    def _refuse_intake_hold(self, run: _Run, bead: str, gates: Sequence[Gate]) -> None:
+        """No seat resolves an ``intake-hold:`` gate through ``approve``.
+
+        The hold keeps a bound report out of ``bd ready`` for the life of its delivery; only the
+        intake module's held close resolves it, as bookkeeping. A warden or releaser is refused
+        exactly like a developer, so the owner-only wording of the assurance gates never applies.
+        """
+        hold = next((gate for gate in gates if gate.is_intake_hold and gate.is_open), None)
+        if hold is not None:
+            raise run.fail(
+                f"✗ intake-hold gate {hold.id or '?'} is not a seat's to resolve — no seat "
+                f"(developer, warden, releaser, ...) can clear it with "
+                f"`{self._policy.cli_name} work approve`.\n"
+                "  The intake-hold: gate holds a bound report out of dispatch until its delivery "
+                "completes; only the intake module's close resolves it."
+            )
 
     def _guard_human(self, run: _Run, bead: str, open_review: Sequence[Gate]) -> None:
         non_human = next(

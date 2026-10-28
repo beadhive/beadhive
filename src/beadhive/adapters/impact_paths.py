@@ -31,6 +31,11 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_bd_cli_boundary.py",
         "tests/test_beads_routing.py",
         "tests/test_guard_primary.py",
+        "tests/test_intake_bead_store.py",
+        "tests/test_intake_bead_store_int.py",
+        "tests/test_intake_hold_int.py",
+        "tests/test_intake_link_int.py",
+        "tests/test_intake_milestones_int.py",
         "tests/test_merge_slot.py",
     ),
     "beadhive-beads-client": (
