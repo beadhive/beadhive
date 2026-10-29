@@ -543,8 +543,8 @@ in `domain/link.py` before any write; a bound report is never a target (D-a) and
 stores. A link writes `delivery:pending`; an unlink keeps the value (`bd set-state` cannot clear
 one) and records an `unlinked` fact in the report's `intake.outbox` document. Work progress is
 derived on read from the tracked bead. `intake_services.link_report` / `accept_to_work` compose it
-under the root lock, off unless `intake.external.enabled` and without a tracker; the verbs are not
-registered in the operation catalog yet (the ADR's I5 block has the recipe).
+under the root lock, off unless `intake.external.enabled` and without a tracker; `bh work link` and
+`bh work accept --work/--new-work` are registered in the operation catalog (wire 2.16.0, bh-73td2).
 
 Discovery (`bh-df64b`, I6) is `application/discovery.py` (`IssueDiscoverer`, behind
 `IntakeService.discover`): opt-in, pull-only, and the same upsert as import
@@ -558,8 +558,8 @@ deletes or closes a report). The root file-backs the checkpoint under `.bh/intak
 same `FlockIntakeLock` as import. `intake_services.discover` composes it and the opt-in timer is the
 root module `intake_discovery.py` (the `release_catalog_auto_import` pattern, wired in
 `host_daemon.serve`): `intake.external.discovery.enabled` and `interval_seconds` are host-owned and
-off, and enabling it without a wired adapter refuses startup. `bh work discover` is not registered
-in the operation catalog yet (the ADR's I6 block has the recipe).
+off, and enabling it without a wired adapter refuses startup. `bh work discover` and `bh work import`
+are registered in the operation catalog (wire 2.16.0, bh-73td2).
 
 The outbox (`bh-6wj9y`) is pure so far: `domain/outbox.py` holds the communication records (keyed
 by an opaque `ob1_` id and a stable `DraftKey`, rendering only their `PublicFacts` and message
@@ -587,8 +587,11 @@ per call; two without the marker after the attempt ended make it `failed(absent)
 thread recognition reads. The root (`intake_services`) adds `FlockIntakeLock` (`guard_primary`, an
 `fcntl.flock` under `.bh/intake/locks`, `guard.live_epoch`), `RandomIdSource`, `leak_policy`,
 `store_posture` and `outbox_service_for`, which binds no sender unless an enabled `OutboxPolicy` is
-passed and takes the tracker adapter and its marker codec injected. No `bh work outbox` verb or
-config key exists yet. Tests: `tests/unit/modules/intake/test_intake_outbox_sender.py` and
+passed and takes the tracker adapter and its marker codec injected. The seven `bh work outbox`
+verbs (wire 2.16.0, bh-73td2) call it through `intake_services.outbox_call`; they need
+`intake.external.enabled` and `intake.external.outbox.enabled`, and refuse naming `bh-kzs0b` until
+credential wiring supplies the tracker. Tests:
+`tests/unit/modules/intake/test_intake_outbox_sender.py` and
 `tests/test_intake_outbox_root.py`.
 
 The same sender also carries `labels.change` (I9b, `bh-88vji`) as its own gate: `OutboxPolicy`
@@ -613,8 +616,8 @@ merge-base --is-ancestor`, read-only; kit fake `FakeReleaseVerifier`) and only a
 report to `delivery:released`. Milestones only DRAFT: the service holds no tracker, grant or
 writer. The work layer calls `work_intake.on_work_merged` from `work.merge` and `finish` after the
 close, a no-op unless `intake.external.enabled` and never failing the merge. `bh work delivery
-release <tag>` is implemented (`work_intake.delivery_release`, `work.delivery_release_cmd`) but not
-registered in the operation catalog (the ADR's I10 block has the recipe). Tests:
+release <tag>` is registered in the operation catalog (wire 2.16.0, bh-73td2; `work_intake.delivery_release`,
+`work.delivery_release_cmd`, mounted on the nested `work delivery` group). Tests:
 `tests/unit/modules/intake/test_intake_milestones.py`,
 `tests/test_intake_milestones_composition.py`, `tests/test_work_merge_milestones.py` and
 `tests/test_intake_milestones_int.py` (`integration`).
