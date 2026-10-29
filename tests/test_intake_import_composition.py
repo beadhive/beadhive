@@ -225,13 +225,13 @@ def test_r0_intake_is_off_unless_the_switch_is_literally_true(rig, intake) -> No
     rig.assert_public_store_untouched()
 
 
-def test_r0_without_production_wiring_the_verb_says_so_and_does_nothing(rig) -> None:
+def test_r0_with_the_tracker_not_switched_on_the_verb_says_so_and_does_nothing(rig) -> None:
     key = rig.issue()
 
-    result = rig.import_(key.url, adapters=None)  # process_adapters() is None until bh-kzs0b
+    result = rig.import_(key.url, adapters=None)  # process_adapters() is None unless switched on
 
     assert (result.code, result.reason) == (1, "intake_disabled")
-    assert "bh-kzs0b" in result.error
+    assert "plugins.tracker-github.enabled" in result.error
     assert rig.store.writes == 0
     rig.assert_public_store_untouched()
 

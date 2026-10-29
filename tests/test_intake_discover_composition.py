@@ -5,8 +5,8 @@ binding serves (a real ``TrackerAdapters`` over ``MemoryTracker``), the operatio
 (in-memory, standing in for bd), the root lock and the file-backed checkpoint in the hive's private
 ``.bh/``. What only the composition adds is pinned here:
 
-* off by default (``intake_disabled``, nothing composed) and refused, naming ``bh-kzs0b``, while no
-  production credential wiring exists;
+* off by default (``intake_disabled``, nothing composed) and refused, naming the config to set,
+  while the tracker plugin is not switched on;
 * acceptance item 5 of external-intake-module-adr.md: the composition never resolves
   ``SCOPE_PUBLIC`` and the byte-fingerprinted public-store fixture is IDENTICAL after every case;
   the world sees zero tracker write requests;
@@ -183,10 +183,10 @@ def test_intake_is_off_unless_the_switch_is_literally_true(rig, intake) -> None:
 def test_without_production_wiring_discover_says_so_and_does_nothing(rig) -> None:
     rig.issue("One")
 
-    result = discover(rig, adapters=None)  # process_adapters() is None until bh-kzs0b
+    result = discover(rig, adapters=None)  # process_adapters() is None unless switched on
 
     assert (result.code, result.reason) == (1, "intake_disabled")
-    assert "bh-kzs0b" in result.error
+    assert "plugins.tracker-github.enabled" in result.error
     assert rig.store.writes == 0 and marks(rig) == []
     rig.assert_public_store_untouched()
 

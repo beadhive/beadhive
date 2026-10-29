@@ -10,8 +10,8 @@ Pinned here, and nowhere else, because only the registered CLI adds it:
 * every verb appears under ``bh work --help`` (``delivery`` and ``outbox`` as sub-groups);
 * everything is OFF by default: with ``intake.external`` unset each verb refuses, or (the outbox
   listing, which reads nothing) reports an empty outbox, with a message naming the switch;
-* ``import`` and ``discover`` refuse naming ``bh-kzs0b`` while production credential wiring is
-  absent, and the outbox verbs that need a tracker refuse the same way;
+* ``import`` and ``discover`` refuse naming the config to set while the tracker is not switched on,
+  and the outbox verbs that need a tracker refuse saying the outbox is not wired;
 * one smoke case per verb on the enabled path.
 """
 
@@ -140,7 +140,7 @@ def test_the_outbox_is_off_even_when_external_intake_is_on(rig) -> None:
     assert "intake.external.outbox.enabled" in doc(result)["error"]
 
 
-# -- no production credential wiring yet (bh-kzs0b) ------------------------------------------
+# -- the tracker is not switched on / the outbox tracker is not wired ---------------------
 
 
 @pytest.mark.parametrize(
@@ -150,14 +150,15 @@ def test_the_outbox_is_off_even_when_external_intake_is_on(rig) -> None:
         ["discover", "--hive", "widget", "--json"],
     ],
 )
-def test_import_and_discover_refuse_naming_the_wiring_bead(rig, monkeypatch, argv) -> None:
+def test_import_and_discover_refuse_naming_what_to_configure(rig, monkeypatch, argv) -> None:
     switch(rig, ENABLED)
     monkeypatch.setattr(intake_services, "process_adapters", lambda cfg: None)
 
     result = bh(*argv)
 
     assert result.exit_code == 1
-    assert doc(result)["reason"] == "intake_disabled" and "bh-kzs0b" in doc(result)["error"]
+    assert doc(result)["reason"] == "intake_disabled"
+    assert "plugins.tracker-github.enabled" in doc(result)["error"]
     rig.assert_public_store_untouched()
 
 
@@ -173,14 +174,14 @@ def test_import_and_discover_refuse_naming_the_wiring_bead(rig, monkeypatch, arg
         ["retry", "ob1_x"],
     ],
 )
-def test_outbox_verbs_that_need_a_tracker_refuse_naming_the_wiring_bead(rig, argv) -> None:
+def test_outbox_verbs_that_need_a_tracker_refuse_saying_the_outbox_is_unwired(rig, argv) -> None:
     switch(rig, OUTBOX_ON)
 
     seat = [] if argv[0] == "show" else ["--as", OPERATOR]  # a read has no acting seat
     result = bh("outbox", *argv, "--hive", "widget", *seat, "--json")
 
     assert result.exit_code == 1
-    assert doc(result)["reason"] == "intake_disabled" and "bh-kzs0b" in doc(result)["error"]
+    assert doc(result)["reason"] == "intake_disabled" and "marker codec" in doc(result)["error"]
     assert rig.world.write_requests() == 0
 
 

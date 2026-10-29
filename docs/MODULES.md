@@ -532,9 +532,11 @@ Import (`bh-2ef4g`) is `application/importer.py` (`IssueImporter`, behind
 canonical URL in the operational store only, creates a held report in `intake:untriaged` with
 `origin:github`, and re-imports as a snapshot update plus repair of any missing piece. It reads the
 tracker and never writes it. `intake_services.import_issue` composes it; the switch
-`intake.external.enabled` is host-owned and off, and until production credential wiring (`bh-kzs0b`)
-the verb refuses with `intake_disabled`. Its lock is the root's `FlockIntakeLock` (below), shared
-with the outbox sender: a mutating import takes `guard_primary` and the per-binding `flock`.
+`intake.external.enabled` is host-owned and off, and the tracker is built only when
+`plugins.tracker-github.enabled` is also true (`intake_services.process_adapters`, `bh-kzs0b`);
+otherwise the verb refuses with `intake_disabled` naming both keys. Its lock is the root's
+`FlockIntakeLock` (below), shared with the outbox sender: a mutating import takes `guard_primary`
+and the per-binding `flock`.
 
 Link (`bh-v2rr6`, I5) is `application/linker.py` (`LinkService`, behind `IntakeService.link`,
 `unlink`, `work_progress` and `dispose(accept)` with `work` / `new_work`): a bound report `tracks`
@@ -589,8 +591,8 @@ thread recognition reads. The root (`intake_services`) adds `FlockIntakeLock` (`
 `store_posture` and `outbox_service_for`, which binds no sender unless an enabled `OutboxPolicy` is
 passed and takes the tracker adapter and its marker codec injected. The seven `bh work outbox`
 verbs (wire 2.16.0, bh-73td2) call it through `intake_services.outbox_call`; they need
-`intake.external.enabled` and `intake.external.outbox.enabled`, and refuse naming `bh-kzs0b` until
-credential wiring supplies the tracker. Tests:
+`intake.external.enabled` and `intake.external.outbox.enabled`, and refuse saying the outbox
+tracker is not wired until `outbox_wiring` supplies the tracker, identity and marker codec. Tests:
 `tests/unit/modules/intake/test_intake_outbox_sender.py` and
 `tests/test_intake_outbox_root.py`.
 

@@ -344,9 +344,18 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   serves (an injected `TrackerAdapters`, asked for `issues.read` only; R13, a disabled plugin and
   a disabled read are all R0 `INTAKE_DISABLED` naming the key to set), the operational
   `BdReportStore`, the root `FlockIntakeLock` and `ValidateLabelPolicy`. `work_intake.import_issue`
-  is the command body and `work.import_cmd` the Typer function. **No production credential wiring exists**
-  (`bh-kzs0b`): `intake_services.process_adapters` returns `None`, so the verb refuses with R0 until
-  that bead binds a real `TrackerAdapters`; tests inject `adapters=` or `tracker=`.
+  is the command body and `work.import_cmd` the Typer function. **Production wiring (`bh-kzs0b`).**
+  `intake_services.process_adapters(cfg)` builds the process `TrackerAdapters` only when both
+  host-owned switches are `true`: `intake.external.enabled` and `plugins.tracker-github.enabled`
+  (folded with `plugin_kernel`, so a kernel-disabled or invalid fragment is off). Its token source
+  is `run.github_token_source(names=plugins.tracker-github.credential.sources)` (default
+  `GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token`): composing the adapters and binding a store read
+  no credential, the source is called by the adapter once per operation and is never cached,
+  logged or stored. With either switch off it returns `None` and the verb refuses with R0 naming
+  both keys and `stores.public.adapter`; the binding, the plugin and each operation are still
+  decided per store by `TrackerAdapters.for_store`. Nothing is cached across calls: a command, or
+  the daemon's timer, owns one `TrackerAdapters` per configuration snapshot. Tests inject
+  `adapters=` or `tracker=`; `tests/test_intake_process_adapters.py` pins the wiring.
 - **Resolver and fallback.** With an `IssueResolver`: `resolve(url)` (pure) gives R3, R4 and the
   URL form of R5; `get(key)` (one read) gives R6 and the read form of R5; R7 is the canonical URL
   `get` answered differing from the one asked for and no longer resolving in this project (a
@@ -378,8 +387,8 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
 - **Registered (`bh-73td2`, wire 2.16.0).** `bh work import <url> [--hive] [--dry-run] [--json]
   [--as]` is the catalog row `work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o`
   (`_CLI_ROWS`), `"work.import": import_cmd` in `CLI_HANDLERS`, and `import_cmd` is the generated
-  callback. It stays off unless `intake.external.enabled`, and with no production credential wiring
-  (`bh-kzs0b`) it refuses `intake_disabled` naming that bead. CLI only: no MCP row was added.
+  callback. It stays off unless `intake.external.enabled`, and without `plugins.tracker-github.enabled`
+  as well it refuses `intake_disabled` naming both keys. CLI only: no MCP row was added.
   Tests: `tests/test_intake_cli_verbs.py` runs it from `cli.app`.
 
 **As built (I6, `bh-df64b`).**
@@ -424,9 +433,10 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   `run()` is an asyncio loop around it with an injectable `sleep`, `component()` the
   `HostDaemonLifespanComponent`. `build_loop(cfg)` is `None` unless both switches and a positive
   interval are set, and **refuses daemon startup** when enabled without a `TrackerAdapters`:
-  `intake_services.process_adapters` is `None` until production credential wiring (`bh-kzs0b`)
-  lands, so the timer cannot run, and is never enabled in any real config, before that. Wiring it
-  needed no catalog or wire change (a lifespan component and config keys only).
+  `intake_services.process_adapters` is `None` unless `intake.external.enabled` and
+  `plugins.tracker-github.enabled` are both set (`bh-kzs0b`), so the timer cannot run without them,
+  and no real config enables it yet. Wiring it needed no catalog or wire change (a lifespan
+  component and config keys only).
 - **Tests.** `tests/unit/modules/intake/test_intake_discovery.py` (idempotence, resume, page-wise
   durability under an injected crash, `--full`, `source_missing` and its incomplete-listing guard,
   zero tracker writes, the lock), `tests/test_intake_discover_composition.py` (the byte-fingerprinted
@@ -437,8 +447,9 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
 - **Registered (`bh-73td2`, wire 2.16.0).** `bh work discover [--hive] [--full] [--json]
   [--as]` is the catalog row `work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o`,
   `"work.discover": discover_cmd` in `CLI_HANDLERS`. Off unless `intake.external.enabled`; without
-  production credential wiring it refuses naming `bh-kzs0b`. CLI only, no MCP row. The timer needed
-  no registration: it is **wired** in `host_daemon.serve` and only waits on `bh-kzs0b`.
+  the tracker plugin switched on it refuses naming the keys to set. CLI only, no MCP row. The timer
+  needed no registration: it is **wired** in `host_daemon.serve` and now builds from
+  `process_adapters` (`bh-kzs0b`) when both switches and the discovery switch are set.
 
 ### 6. Link, and a bound report is never work (D1)
 
@@ -862,7 +873,9 @@ the epoch) and composes `outbox_service_for` with a `RandomIdSource`, the fleet 
   close rule is not evaluated here: only milestone records reach it (I10).
 - The marker line is rendered by an injected `marker_line` codec (the adapter's own), so the dry
   run shows the posted bytes. The tracker adapter itself is injected: building it from the store
-  binding and credentials is `bh-kzs0b`'s, not this bead's.
+  binding and credentials is `bh-kzs0b`'s, not this bead's. `bh-kzs0b` built the process
+  `TrackerAdapters` for import and discover only; the outbox's own tracker, identity and marker
+  codec are **not** built from it (see "Not done here" under the verbs below).
 
 **The `bh work outbox` verbs (`bh-73td2`, wire 2.16.0).** `show`, `approve`, `send`, `reconcile`,
 `discard`, `retry` and `draft` are registered as `work outbox <verb>` (three tokens, on the nested
@@ -870,11 +883,19 @@ the epoch) and composes `outbox_service_for` with a `RandomIdSource`, the fleet 
 behaviour; the verbs add only the command bodies (`work_intake.outbox_*`), their renderers and
 `intake_services.outbox_call`, which composes three independent switches, each a distinct refusal
 decided before any write or tracker request: `intake.external.enabled` (`intake_disabled`),
-`intake.external.outbox.enabled` (`outbox_disabled`), then the tracker (`intake_disabled` naming
-`bh-kzs0b`: there is no production credential wiring, so `intake_services.outbox_wiring` returns
-nothing and every verb that needs a tracker refuses; tests patch that one seam). The listing form
-of `show` (no id) makes no tracker request and works without wiring. Interpretations, to be
-confirmed by the operator:
+`intake.external.outbox.enabled` (`outbox_disabled`), then the tracker (`intake_disabled`:
+`intake_services.outbox_wiring` still returns nothing, so every verb that needs a tracker refuses
+saying the outbox tracker is not wired; tests patch that one seam). The listing form of `show` (no
+id) makes no tracker request and works without wiring.
+
+**Not done here (`bh-kzs0b`).** `outbox_wiring` is empty. Building the outbox's `tracker` (a
+`TrackerAdapters.for_store` bound port narrowed to the writers), `OwnIdentity` (hive and install
+UUID) and the adapter's `marker_line` codec from the plugin binding is not done: the marker codec
+lives in the plugin package, which root may not import. Until it lands, `bh work outbox show <id>`
+(a dry run against the tracker) and every sending verb refuse; `bh-kzs0b` built the process
+`TrackerAdapters` for import and discover only, so it does not make `bh-fehna` moot.
+
+Interpretations, to be confirmed by the operator:
 
 - `show [<outbox-id>] [--bead B] [--open]`: with an id it is the dry run whose digest the operator
   types; without one it lists records.
