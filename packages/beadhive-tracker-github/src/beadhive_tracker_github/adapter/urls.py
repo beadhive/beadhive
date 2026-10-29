@@ -6,14 +6,17 @@
 * the **API base** requests go to (``https://api.github.com`` by default);
 * the **web root** issue URLs live under (``https://github.com``; for GHES the API host without
   its ``/api/v3`` path; for an ``api.``-prefixed host, the host without ``api.``);
-* the canonical issue URL, ``<web root>/<owner>/<name>/issues/<number>``, which is
-  ``IssueKey.url``, the consumers' join key, and equal to the ``html_url`` GitHub reports.
+* the canonical issue URL, ``<web root>/<owner>/<name>/issues/<number>`` in the bound project's
+  spelling, which is ``IssueKey.url``, the consumers' join key. It equals the ``html_url`` GitHub
+  reports up to the owner/name case, which :meth:`GitHubLocation.canonical_url` settles.
 
 :meth:`GitHubLocation.resolve` is pure (amendment A1): it never sends a request and each refusal
 is its own port error, in this order: ``UrlNotRecognized`` (not an issue or pull-request URL of
 this GitHub host), ``OtherProject`` (another repository), ``ChangeRequestUrl`` (a pull request).
 GitHub owner and repository names are case-insensitive, so they are compared case-folded and the
-canonical URL carries the bound project's spelling. A refusal never repeats the URL.
+canonical URL carries the bound project's spelling. :meth:`GitHubLocation.canonical_url` applies
+the same rule to an ``html_url`` GitHub reported (which carries the repository's own spelling), so
+``resolve`` and every read return one ``IssueKey.url`` per issue. A refusal never repeats the URL.
 
 :meth:`GitHubLocation.check_next` guards the one URL this adapter follows that it did not build:
 the ``Link: rel="next"`` URL a page cursor carries. A cursor is opaque but comes back from the
@@ -98,6 +101,17 @@ class GitHubLocation:
 
     def same_repository(self, owner: str, name: str) -> bool:
         return owner.casefold() == self.owner.casefold() and name.casefold() == self.name.casefold()
+
+    def canonical_url(self, url: str) -> str:
+        """``url`` re-spelled to the canonical issue URL when it names an issue of this repository
+        (any owner/name case), else unchanged. The single place a reported ``html_url`` is
+        normalised; a pull request, another repository or an unparsable URL passes through."""
+        parsed = self._parse(url)
+        if parsed is None or not self.same_repository(parsed[0], parsed[1]):
+            return url
+        if parsed[2] != "issue":
+            return url
+        return self.issue_url(parsed[3])
 
     # -- the IssueResolver grammar -------------------------------------------------------------
 

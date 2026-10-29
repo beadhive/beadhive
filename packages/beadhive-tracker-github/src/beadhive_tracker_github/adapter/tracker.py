@@ -255,7 +255,11 @@ class GitHubTrackerAdapter:
         rows, reply, nxt = self._issue_page(
             query, state="all" if include_closed else "open", sort="updated"
         )
-        issues = tuple(mapping.issue(row) for row in rows if not mapping.is_change_request(row))
+        issues = tuple(
+            mapping.issue(row, self._location.canonical_url)
+            for row in rows
+            if not mapping.is_change_request(row)
+        )
         return Page(
             issues,
             self._cursor(nxt) if nxt else None,
@@ -283,7 +287,9 @@ class GitHubTrackerAdapter:
             params = {**since, **size}
         rows, reply, nxt, high_water = self._comment_page(query.cursor, path, params)
         comments = tuple(
-            mapping.comment(row) for row in rows if not mapping.is_change_request_comment(row)
+            mapping.comment(row, self._location.canonical_url)
+            for row in rows
+            if not mapping.is_change_request_comment(row)
         )
         if query.issue is None:
             cursor = self._cursor(nxt) if nxt else None
@@ -308,7 +314,9 @@ class GitHubTrackerAdapter:
                 sort="created",
             )
             ids = tuple(
-                mapping.issue_key(row).url for row in rows if not mapping.is_change_request(row)
+                mapping.issue_key(row, self._location.canonical_url).url
+                for row in rows
+                if not mapping.is_change_request(row)
             )
             return IdPage(ids, self._cursor(nxt) if nxt else None)
         self._require(Operation.COMMENTS_READ)
@@ -346,7 +354,7 @@ class GitHubTrackerAdapter:
         parsed = self._location.parse_html_url(mapping.issue_key(row).url)
         if parsed is None or not self._location.same_repository(parsed[0], parsed[1]):
             raise OtherProject(f"{key.identifier} was transferred to another repository")
-        return mapping.issue(row)
+        return mapping.issue(row, self._location.canonical_url)
 
     # -- TrackerIdentity -----------------------------------------------------------------------
 

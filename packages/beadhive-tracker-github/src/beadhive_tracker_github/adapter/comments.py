@@ -101,7 +101,7 @@ class CommentCreate:
                 )
             reply = session.send("POST", path, payload)
         try:
-            posted = mapping.comment(reply.body)
+            posted = mapping.comment(reply.body, self._location.canonical_url)
         except mapping.PayloadUnreadable:
             raise WriteOutcomeUnknown(
                 "GitHub accepted the comment but its answer could not be read; it may have applied"
