@@ -38,4 +38,7 @@ PLUGIN_RUNTIME_CATALOG = (
 
 PLUGIN_RUNTIME_MODULES = tuple(entry.module for entry in PLUGIN_RUNTIME_CATALOG)
 
-PLUGIN_CLI_RUNTIME_CATALOG = (RuntimeCliEntry("pants", "beadhive_pants.cli"),)
+PLUGIN_CLI_RUNTIME_CATALOG = (
+    RuntimeCliEntry("pants", "beadhive_pants.cli"),
+    RuntimeCliEntry("tracker-github", "beadhive.tracker_github_plugin"),
+)

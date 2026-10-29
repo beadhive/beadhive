@@ -179,8 +179,8 @@ def test_package_cli_projection_is_absent_when_optional_package_is_not_installed
 
     monkeypatch.setattr(plugins, "import_module", without_pants)
 
-    assert plugins.projected_cli_mounts() == ()
-    assert plugins.projected_cli_commands() == ()
+    assert [m.plugin_id for m in plugins.projected_cli_mounts()] == ["tracker-github"]  # root-owned
+    assert len(plugins.projected_cli_commands()) == 2  # its status and doctor, never pants
 
 
 def test_plugin_lifecycle_delivery_uses_semantic_port_with_bounded_attribution(

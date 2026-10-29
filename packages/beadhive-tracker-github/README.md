@@ -69,6 +69,21 @@ a store binding (`managed_repos[].stores.public.adapter`) never enables it; a hi
 is unaffected. githubkit is declared here, not in the root distribution, so `import beadhive` never
 needs it and never imports it.
 
+## Status and doctor
+
+The verbs live in root (`src/beadhive/tracker_github_plugin.py`, mounted lazily from the plugin CLI
+runtime catalog; a plugin package may not import `beadhive.bootstrap`) and never import this package.
+
+`bh plugin tracker-github status [--json]` and `doctor [--json] [--probe] [--hive provider/org/repo]`
+are read-only and render the plugin state, the credential **source names** that are set or unset
+(`env:GH_TOKEN`, `env:GITHUB_TOKEN`, `gh` on the path; never a value), and the capability
+tri-state. Without `--probe` they are fully offline: no request, no credential read, no `gh` run,
+identity shows `not probed`. `doctor --probe` is the only network path: it builds the one bound
+store's adapter from the configured credential chain and runs its GET-only `whoami` and capability
+probe, and is refused (with the binding rule's message) while the plugin is disabled. Neither verb
+writes, spends a grant or enables anything; `doctor` exits 1 only on an error while the plugin is
+enabled.
+
 ## Rules enforced by this package's tests
 
 * **P1** githubkit is imported only lazily and only under `adapter/`.
