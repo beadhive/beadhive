@@ -11,8 +11,8 @@ composition adds is pinned here, on the public-store fixture of the import compo
   bound, and the byte-fingerprinted public store is identical after each (``SCOPE_PUBLIC`` is never
   resolved);
 * the config keys parse strictly (only a literal ``true`` switches a draft on);
-* the release verb verifies the tag first (an unknown tag records nothing), and the unregistered
-  command body renders the outcome; the Typer function is NOT a catalogued verb.
+* the release verb verifies the tag first (an unknown tag records nothing), and the command
+  body renders the outcome; the Typer function is the catalogued `work delivery release`.
 
 No live GitHub, no clock, no sleep: ``MemoryTracker``, an in-process lock and scripted git only.
 """
@@ -392,7 +392,7 @@ def test_the_composed_sender_closes_the_report_once_its_milestone_comment_is_sen
     assert rig.world.write_requests() == 1  # the operator's one approved send
 
 
-# -- the unregistered command body -------------------------------------------------------------
+# -- the command body -------------------------------------------------------------
 
 
 def _render(result, tag, *, as_json=False, capsys):
@@ -463,12 +463,14 @@ def test_render_json_is_one_stable_document(rig, capsys) -> None:
     assert code == 1 and (refused["ok"], refused["reason"]) == (False, "unknown_tag")
 
 
-def test_the_command_is_implemented_but_not_a_catalogued_verb() -> None:
+def test_the_command_is_the_catalogued_three_token_verb() -> None:
     assert callable(work.delivery_release_cmd) and callable(work_intake.delivery_release)
-    assert not any("delivery" in key for key in work.CLI_HANDLERS)
+    assert list(work.CLI_HANDLERS).count("work.delivery.release") == 1
     from beadhive.kernel import operations
 
-    assert not any("delivery" in spec.name for spec in operations.operations())
+    (spec,) = [s for s in operations.operations() if "delivery" in s.name]
+    assert spec.name == "work.delivery.release"
+    assert spec.surfaces["cli"]["path"] == "work delivery release"
 
 
 def test_on_work_merged_prints_what_it_did_and_never_raises(rig, capsys, monkeypatch) -> None:

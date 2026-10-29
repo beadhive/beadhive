@@ -240,6 +240,59 @@ def test_catalog_allows_only_reviewed_optional_release_provision_inputs(mutation
     assert bool(errors) == (mutation is not None)
 
 
+def _published(version: str) -> dict:
+    return json.loads((WIRE.parent / f"v{version}" / "operation-catalog-v1.json").read_text())
+
+
+def test_wire_2_16_0_is_an_additive_minor_over_2_15_0() -> None:
+    old, new = _published("2.15.0"), _published("2.16.0")
+    assert catalog_compatibility_errors(old, new) == []
+    added = {o["name"] for o in new["operations"]} - {o["name"] for o in old["operations"]}
+    assert added == {
+        "work.delivery.release",
+        "work.discover",
+        "work.import",
+        "work.link",
+        *(
+            f"work.outbox.{verb}"
+            for verb in "approve discard draft reconcile retry send show".split()
+        ),
+    }
+    appended = _operation(new, "work.accept")["parameters"][
+        len(_operation(old, "work.accept")["parameters"]) :
+    ]
+    assert [(p["name"], p["required"]) for p in appended] == [("work", False), ("new_work", False)]
+
+
+@pytest.mark.parametrize("mutation", [None, "required", "type", "other", "operation"])
+def test_catalog_allows_only_the_reviewed_optional_accept_work_inputs(mutation) -> None:
+    old, new = _published("2.15.0"), _published("2.16.0")
+    operation = _operation(new, "work.accept")
+    if mutation == "required":
+        operation["parameters"][-1]["required"] = True
+    elif mutation == "type":
+        operation["parameters"][-1]["schema"] = {"type": "string"}
+    elif mutation == "other":
+        _append_string_param(new, "work.accept", "unreviewed")
+    elif mutation == "operation":
+        _append_string_param(new, "work.reject", "work")
+    assert bool(catalog_compatibility_errors(old, new)) == (mutation is not None)
+
+
+@pytest.mark.parametrize("mutation", [None, "remove", "change", "hide"])
+def test_cli_parent_groups_match_by_path_so_new_groups_may_land_anywhere(mutation) -> None:
+    old, new = _published("2.15.0"), _published("2.16.0")
+    assert len(new["cli_parents"]) == len(old["cli_parents"]) + 2  # work delivery, work outbox
+    parents = new["cli_parents"]
+    if mutation == "remove":
+        parents.remove(next(p for p in parents if p["path"] == "host lease"))
+    elif mutation == "change":
+        next(p for p in parents if p["path"] == "hive hook")["panel"] = "Elsewhere"
+    elif mutation == "hide":
+        next(p for p in parents if p["path"] == "plan")["declared_hidden"] = True
+    assert bool(catalog_compatibility_errors(old, new)) == (mutation is not None)
+
+
 @pytest.mark.parametrize("operation_name", ["worktree.status", "worktree.prune"])
 @pytest.mark.parametrize(
     "mutation",

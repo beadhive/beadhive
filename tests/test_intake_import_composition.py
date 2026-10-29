@@ -561,9 +561,8 @@ def test_the_command_body_outside_a_managed_hive_says_so(rig, monkeypatch, capsy
     assert exit_.value.exit_code == 1 and "pass --hive" in capsys.readouterr().err
 
 
-def test_the_typer_function_delegates_without_being_a_catalogued_verb(rig, monkeypatch) -> None:
-    """``work.import_cmd`` is the command body, ready for registration; until the wire release that
-    registers it (bh-2ef4g) it is deliberately not in the catalog-derived ``CLI_HANDLERS``."""
+def test_the_typer_function_delegates_and_is_a_catalogued_verb(rig, monkeypatch) -> None:
+    """``work.import_cmd`` is the command body, registered by wire 2.16.0 (bh-73td2)."""
     from beadhive import work
 
     seen: list[tuple] = []
@@ -572,4 +571,4 @@ def test_the_typer_function_delegates_without_being_a_catalogued_verb(rig, monke
     work.import_cmd("https://x/y/issues/1", "widget", True, True, "dev/me")
 
     assert seen == [("https://x/y/issues/1", "widget", True, True, "dev/me")]
-    assert "work.import" not in work.CLI_HANDLERS
+    assert "work.import" in work.CLI_HANDLERS and "work import" in work.CLI_PROJECTION.paths

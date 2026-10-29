@@ -12,7 +12,7 @@ binding serves (a real ``TrackerAdapters`` over ``MemoryTracker``), the operatio
   the world sees zero tracker write requests;
 * the checkpoint is a file under ``.bh/intake/checkpoints`` and a later call resumes from it;
   ``--full`` re-pulls closed issues;
-* the command body and renderer, and the Typer function that is NOT a catalogued verb.
+* the command body and renderer, and the Typer function, a catalogued verb since wire 2.16.0.
 
 No live GitHub, no clock, no sleep.
 """
@@ -349,7 +349,7 @@ def test_discovery_settings_are_off_unless_everything_is_explicit(cfg, expected)
     assert (settings.enabled, settings.interval_seconds, settings.full_reconcile_every) == expected
 
 
-# -- the CLI rendering, the command body and the (unregistered) Typer function --
+# -- the CLI rendering, the command body and the (registered) Typer function --
 
 
 def _render(rig, capsys, *, as_json=False, full=False, **kwargs):
@@ -446,9 +446,8 @@ def test_the_command_body_outside_a_managed_hive_says_so(rig, monkeypatch, capsy
     assert exit_.value.exit_code == 1 and "pass --hive" in capsys.readouterr().err
 
 
-def test_the_typer_function_delegates_without_being_a_catalogued_verb(monkeypatch) -> None:
-    """``work.discover_cmd`` is the command body, ready for registration; until the wire release
-    that registers it (bh-df64b) it is deliberately not in the catalog-derived ``CLI_HANDLERS``."""
+def test_the_typer_function_delegates_and_is_a_catalogued_verb(monkeypatch) -> None:
+    """``work.discover_cmd`` is the command body, registered by wire 2.16.0 (bh-73td2)."""
     from beadhive import work
 
     seen: list[tuple] = []
@@ -457,4 +456,4 @@ def test_the_typer_function_delegates_without_being_a_catalogued_verb(monkeypatc
     work.discover_cmd("widget", True, True, "dev/me")
 
     assert seen == [("widget", True, True, "dev/me")]
-    assert "work.discover" not in work.CLI_HANDLERS
+    assert "work.discover" in work.CLI_HANDLERS and "work discover" in work.CLI_PROJECTION.paths

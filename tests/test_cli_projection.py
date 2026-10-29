@@ -80,7 +80,7 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 255
+    assert len(declarations) == 266
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -90,7 +90,7 @@ def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
         next(row for row in declarations if row.operation == "host.eligible").path
         == "host eligible"
     )
-    assert len(parents) == 38
+    assert len(parents) == 40
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
     assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)
@@ -141,8 +141,11 @@ def test_generator_refuses_an_incomplete_handler_map() -> None:
 def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     # These hashes pin the full Click parameter inventory: names, long/short flags, arguments,
     # requiredness, hidden state, passthrough context, command ordering, and parameter types.
+    # the intake verbs (bh-73td2) only ADD: dropping `import`, `discover`, `link`, the `delivery`
+    # and `outbox` groups and accept's `--work` / `--new-work` leaves the pre-2.16.0 digest
+    # 523f92a84e7bb9b61787123ef9918065a04d4b32e81bf3b1ff67be078f47dcb9.
     assert _digest(_click_inventory(work.app)) == (
-        "523f92a84e7bb9b61787123ef9918065a04d4b32e81bf3b1ff67be078f47dcb9"
+        "1ec6138a3f83c91abe367be7f62148ec783f2cd809016a07fa009f8ee5543c5d"
     )
     assert _digest(_click_inventory(plan.app)) == (
         "7156c6aeee559e071428f3e3856586da7500742420cbec3286bbf95db4493f19"
@@ -152,8 +155,9 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     invocation_env = {"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
     expected_help = {
         (): "f29cac19a29f3527cabce08ab78c82700d2887716b7be4653e1b2074d3371fcf",
-        # `work backup` (state/work pairing, bh-cqvj6) joins the command list.
-        ("work",): "43e2a50c2083f6ad77661641faa7a7f5bcc8de8c14f913dbe9a2b81586299fe5",
+        # `work backup` (state/work pairing, bh-cqvj6) joins the command list; the intake verbs
+        # and the `delivery` / `outbox` groups (bh-73td2) join after it.
+        ("work",): "d725b168f0343c2296b31bc0f35e2f1d5d7956037c8aa3e269b577c62afa179f",
         ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
     }
     for path, digest in expected_help.items():
@@ -162,19 +166,42 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
         assert hashlib.sha256(result.stdout.encode()).hexdigest() == digest
 
 
+def _registered(app: typer.Typer, prefix: tuple[str, ...]):
+    for command in app.registered_commands:
+        verb = command.name or command.callback.__name__.rstrip("_")
+        yield (*prefix, verb), command
+    for sub in app.registered_groups:
+        yield from _registered(sub.typer_instance, (*prefix, str(sub.name)))
+
+
 def test_naming_adr_is_a_generator_gate_and_generated_traces_are_exact() -> None:
     validate_catalog_generation_rules()
     for group, module in (("work", work), ("plan", plan)):
-        assert (
-            tuple(
-                f"{group}.{command.name or command.callback.__name__.rstrip('_')}"
-                for command in module.app.registered_commands
-            )
-            == module.CLI_PROJECTION.operations
+        registered = list(_registered(module.app, (group,)))
+        # nested groups (``work delivery release``) register after the group's own leaves, so the
+        # whole tree is compared by operation identity and each leaf's trace marker is exact
+        assert sorted(".".join(path) for path, _ in registered) == sorted(
+            module.CLI_PROJECTION.operations
         )
-        for command in module.app.registered_commands:
-            verb = command.name or command.callback.__name__.rstrip("_")
-            assert getattr(command.callback, "__otel_verb__", None) == f"{group}.{verb}"
+        assert tuple(" ".join(path) for path, _ in registered) != ()
+        for path, command in registered:
+            assert getattr(command.callback, "__otel_verb__", None) == ".".join(path)
+
+
+def test_three_token_paths_mount_on_nested_groups_without_changing_two_token_leaves() -> None:
+    assert "work delivery release" in work.CLI_PROJECTION.paths
+    assert {path for path in work.CLI_PROJECTION.paths if path.startswith("work outbox ")} == {
+        f"work outbox {verb}"
+        for verb in ("approve", "discard", "draft", "reconcile", "retry", "send", "show")
+    }
+    nested = get_command(work.app)
+    assert {"delivery", "outbox"} <= set(nested.commands)
+    assert set(nested.commands["delivery"].commands) == {"release"}
+    # a two-token leaf stays directly under its group; a scratch regeneration agrees
+    scratch = typer.Typer(no_args_is_help=True)
+    report = project_cli_group(scratch, "work", _handlers("work"))
+    assert report.digest == work.CLI_PROJECTION.digest
+    assert set(get_command(scratch).commands) == set(nested.commands)
 
 
 def test_abandon_help_explains_operator_identity_and_safe_cleanup() -> None:
