@@ -2408,12 +2408,18 @@
     },
     "IntakeOutboxConfig": {
       "additionalProperties": false,
-      "description": "``intake.external.outbox`` — the per-hive opt-in for communication records.\n\nEnabling it lets milestones draft records and lets an operator approve them; it never sends\nanything by itself, and the adapter's own write flag and a per-record approval minting a\nsingle-use grant are still required to post.",
+      "description": "``intake.external.outbox`` — the per-hive opt-in for communication records.\n\nEnabling it lets milestones draft records and lets an operator approve them; it never sends\nanything by itself, and the adapter's own write flag and a per-record approval minting a\nsingle-use grant are still required to post. ``labels_enabled`` is the separate switch for\nthe ``labels.change`` operation: without it (and ``enabled``) no label operation can be\napproved or sent, whatever the adapter's labels capability allows.",
       "properties": {
         "enabled": {
           "default": false,
           "description": "Allow outbox records to be drafted and approved (default off).",
           "title": "Enabled",
+          "type": "boolean"
+        },
+        "labels_enabled": {
+          "default": false,
+          "description": "Allow `labels.change` operations to be approved and sent; needs `enabled` too and is separate from the tracker plugin's labels capability (default off).",
+          "title": "Labels Enabled",
           "type": "boolean"
         },
         "mode": {

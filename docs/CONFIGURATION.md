@@ -442,6 +442,7 @@ and no key can enable or pre-approve a tracker write.
 | `milestones.draft_on_release` | `false` | draft a `released` outbox record when `bh work delivery release <tag>` verifies a release |
 | `milestones.append_release_to_closed` | `false` | also draft the `released` record for a report that is already closed |
 | `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
+| `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
@@ -461,7 +462,9 @@ daemon refuses to start otherwise); it never writes a tracker or the public stor
 The milestone and outbox keys only ever **draft**: a merge or a verified release leaves a `drafted`
 record for an operator to render, approve and send; no key sends, approves or mints a grant, and a
 tracker write still needs the adapter's own write flag. With every default, merge and release
-behave exactly as before.
+behave exactly as before. `outbox.labels_enabled` is a new key: `BeadhiveConfig` forbids unknown
+keys, so nothing in a shared config should set it until the schema has rotated to every host
+(`bh-tfko9`).
 
 ## `bh config` commands
 

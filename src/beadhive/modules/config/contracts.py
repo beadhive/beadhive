@@ -2932,11 +2932,20 @@ class IntakeOutboxConfig(_QuietSection):
 
     Enabling it lets milestones draft records and lets an operator approve them; it never sends
     anything by itself, and the adapter's own write flag and a per-record approval minting a
-    single-use grant are still required to post.
+    single-use grant are still required to post. ``labels_enabled`` is the separate switch for
+    the ``labels.change`` operation: without it (and ``enabled``) no label operation can be
+    approved or sent, whatever the adapter's labels capability allows.
     """
 
     enabled: StrictBool = Field(
         False, description="Allow outbox records to be drafted and approved (default off)."
+    )
+    labels_enabled: StrictBool = Field(
+        False,
+        description=(
+            "Allow `labels.change` operations to be approved and sent; needs `enabled` too and "
+            "is separate from the tracker plugin's labels capability (default off)."
+        ),
     )
     mode: Literal["supervised"] = Field(
         "supervised", description="The only accepted mode: every send needs an operator approval."
