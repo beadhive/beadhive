@@ -4,7 +4,11 @@ Ported from the ``bh-gj1hb`` prototype mapping (``github_adapter.py``) onto the 
 githubkit transport returns. Pure: no I/O and no clock.
 
 * An issue's key is ``IssueKey("#<number>", html_url)``; ``id`` and ``node_id`` ride along as
-  the optional internal and global ids (they do not take part in equality).
+  the optional internal and global ids (they do not take part in equality). GitHub spells the
+  owner and repository as the repository is registered, which need not be the bound project's
+  spelling, so each function that builds a key takes an optional ``canonical`` rewrite (the
+  adapter passes :meth:`~.urls.GitHubLocation.canonical_url`): the ONE place the URL's case is
+  settled, so every read of an issue carries the same ``IssueKey.url``.
 * An actor is keyed ``(numeric id, kind)``: ``User`` is human, ``Bot`` is a bot, anything else
   (``Organization``, ``Mannequin``) is unknown. The ``login`` is display only and never
   compared, and an id that is not an integer is refused rather than guessed at.
@@ -22,6 +26,7 @@ the field, never its value.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -54,6 +59,8 @@ __all__ = [
     "parse_time",
     "updated_at",
 ]
+
+Canonical = Callable[[str], str]
 
 _KINDS = {"User": ActorKind.HUMAN, "Bot": ActorKind.BOT}
 _PULL_COMMENT = re.compile(r"/pull/[0-9]+/?(?:#|$)")
@@ -138,10 +145,12 @@ def is_change_request_comment(row: Any) -> bool:
     return isinstance(url, str) and _PULL_COMMENT.search(url) is not None
 
 
-def issue_key(row: Any) -> IssueKey:
+def issue_key(row: Any, canonical: Canonical | None = None) -> IssueKey:
     url = _field(row, "html_url")
     if not isinstance(url, str) or not url:
         raise PayloadUnreadable("GitHub returned an issue without html_url")
+    if canonical is not None:
+        url = canonical(url)
     ident = row.get("id")
     node = row.get("node_id")
     return IssueKey(
@@ -152,8 +161,8 @@ def issue_key(row: Any) -> IssueKey:
     )
 
 
-def issue(row: Any) -> TrackerIssue:
-    key = issue_key(row)
+def issue(row: Any, canonical: Canonical | None = None) -> TrackerIssue:
+    key = issue_key(row, canonical)
     state = _field(row, "state")
     if state not in ("open", "closed"):
         raise PayloadUnreadable("GitHub returned an issue with an unknown state")
@@ -173,7 +182,7 @@ def issue(row: Any) -> TrackerIssue:
     )
 
 
-def parent_issue(row: Any) -> IssueKey:
+def parent_issue(row: Any, canonical: Canonical | None = None) -> IssueKey:
     """The issue a comment belongs to, from the comment's own ``html_url``."""
     url = _field(row, "html_url")
     if not isinstance(url, str):
@@ -182,10 +191,10 @@ def parent_issue(row: Any) -> IssueKey:
     number = parent.rstrip("/").rsplit("/", 1)[-1]
     if not number.isdigit():
         raise PayloadUnreadable("GitHub returned a comment without a parent issue")
-    return IssueKey(f"#{int(number)}", parent)
+    return IssueKey(f"#{int(number)}", canonical(parent) if canonical is not None else parent)
 
 
-def comment(row: Any) -> TrackerComment:
+def comment(row: Any, canonical: Canonical | None = None) -> TrackerComment:
     ident = _field(row, "id")
     if not isinstance(ident, int) or isinstance(ident, bool):
         raise PayloadUnreadable("GitHub returned a comment without a numeric id")
@@ -198,7 +207,7 @@ def comment(row: Any) -> TrackerComment:
     node = row.get("node_id")
     return TrackerComment(
         key=CommentKey(str(ident), global_id=node if isinstance(node, str) else None),
-        issue=parent_issue(row),
+        issue=parent_issue(row, canonical),
         author=actor(row.get("user")),
         body=body,
         created_at=parse_time(row.get("created_at"), "created_at"),
