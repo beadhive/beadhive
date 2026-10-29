@@ -26,8 +26,11 @@ What is composed here:
   process, ``guard.live_epoch`` as the epoch; the store's ``seq`` re-check is the record half), a
   random :class:`RandomIdSource`, the :class:`LeakPolicy` and store posture, and
   :func:`outbox_service_for`. The tracker adapter and its marker codec are INJECTED: building
-  them from the plugin binding and credentials is not this root's yet (``bh-kzs0b``), and the
-  outbox is off unless the caller passes an enabled :class:`OutboxPolicy`.
+  them is not this root's yet (``outbox_wiring`` is empty), and the
+  outbox is off unless the caller passes an enabled :class:`OutboxPolicy`;
+* the process ``TrackerAdapters`` (:func:`process_adapters`), built from the tracker-github plugin
+  and ``run.github_token_source()``, only when ``intake.external.enabled`` and
+  ``plugins.tracker-github.enabled`` are both set (``bh-kzs0b``).
 
 Nothing is cached, so every test and integration patch point stays live for each command.
 """
@@ -270,18 +273,79 @@ def external_intake_settings(cfg: Mapping[str, Any]) -> tuple[bool, str]:
     return section.get("enabled") is True, str(section.get("default_type") or "bug")
 
 
+#: The one tracker plugin this build composes into the process (the only id in
+#: ``KNOWN_TRACKER_ADAPTERS``); its ``plugins.<id>.enabled`` is the adapter-construction switch.
+TRACKER_PLUGIN_ID = "tracker-github"
+
+#: What an operator sets to make a tracker reachable; named in every refusal that needs it.
+TRACKER_CONFIG_HINT = (
+    f"set intake.external.enabled and plugins.{TRACKER_PLUGIN_ID}.enabled to true (both are off "
+    "by default) and bind the hive's managed_repos[].stores.public.adapter"
+)
+
+
+def tracker_plugin_enabled(cfg: Mapping[str, Any]) -> bool:
+    """``plugins.tracker-github.enabled`` is exactly ``true``, its fragment validates and
+    ``plugin_kernel.enabled`` does not turn it off: the same fold the tracker composition root
+    applies, so this never says "on" for a plugin that root would refuse as R6."""
+    from .bootstrap import tracker as tracker_root
+
+    settings = tracker_root.plugin_settings(TRACKER_PLUGIN_ID, cfg.get("plugins"))
+    if not (settings.own_enabled and settings.valid):
+        return False
+    kernel = cfg.get("plugin_kernel") or {}
+    switches = kernel.get("enabled") if isinstance(kernel, Mapping) else None
+    return not (isinstance(switches, Mapping) and switches.get(TRACKER_PLUGIN_ID) is False)
+
+
+def _credential_source_names(cfg: Mapping[str, Any]) -> tuple[str, ...]:
+    """``plugins.tracker-github.credential.sources`` (``env`` and ``gh``, in precedence order;
+    default both; empty means anonymous): names only, never a value."""
+    from .bootstrap import tracker as tracker_root
+
+    values = tracker_root.plugin_settings(TRACKER_PLUGIN_ID, cfg.get("plugins")).values
+    return tuple(((values.get("credential") or {}).get("sources")) or ())
+
+
 def process_adapters(cfg: Mapping[str, Any]) -> Any:
-    """The process's ``TrackerAdapters`` for ``cfg``, or ``None`` while production credential
-    wiring (``bh-kzs0b``) does not exist: then import refuses with a clear R0. This is the one
-    place that wiring lands; tests inject ``adapters=`` or ``tracker=`` instead."""
-    return None
+    """The process's ``TrackerAdapters`` for ``cfg``, or ``None`` unless the tracker is switched on.
+
+    Two host-owned switches, both off by default, must both be ``true``: ``intake.external.enabled``
+    and ``plugins.tracker-github.enabled``. Otherwise ``None``, and the verbs refuse (R0) naming
+    :data:`TRACKER_CONFIG_HINT`. The binding, the per-operation enables and every other tracker
+    rule are still decided per store by ``TrackerAdapters.for_store``.
+
+    Composition reads no credential: the token source is ``run.github_token_source()`` over the
+    configured ``credential.sources`` (default env, then ``gh auth token``), called by the adapter
+    once per operation and never cached, logged or stored here. The result is built fresh per call
+    (nothing is cached at module level), so a command, or the daemon's timer, owns exactly one for
+    its configuration snapshot. This is the one place the production wiring lands; tests inject
+    ``adapters=`` or ``tracker=`` instead."""
+    if not external_intake_settings(cfg)[0] or not tracker_plugin_enabled(cfg):
+        return None
+    from . import run
+    from .bootstrap.tracker import TrackerAdapters
+
+    return TrackerAdapters(
+        plugins=cfg.get("plugins"),
+        plugin_kernel=cfg.get("plugin_kernel"),
+        token_source=run.github_token_source(names=_credential_source_names(cfg)),
+    )
 
 
 def _no_tracker_wiring() -> IntakeRefused:
     return IntakeRefused(
         RefusalReason.INTAKE_DISABLED,
-        "no tracker adapter is wired into this build of bh (production credential wiring is "
-        "bh-kzs0b); bind and enable the hive's tracker, then import",
+        f"no tracker adapter is wired: {TRACKER_CONFIG_HINT}, then run the verb again",
+    )
+
+
+def _no_outbox_wiring() -> IntakeRefused:
+    return IntakeRefused(
+        RefusalReason.INTAKE_DISABLED,
+        "the outbox has no tracker wired in this build: its tracker, identity and marker codec "
+        "are not built from the plugin binding yet (process_adapters serves import and discover "
+        "only), so a verb that needs the tracker cannot run outside a caller that supplies them",
     )
 
 
@@ -334,10 +398,10 @@ def import_issue(
 
     Off unless ``intake.external.enabled`` (R0 ``intake_disabled`` through the null port). The
     tracker is the one the hive's public-store binding serves (``adapters``, an injected
-    ``TrackerAdapters``) or an explicit ``tracker`` port; with neither, import refuses (R0): no
-    production credential wiring exists yet. Import only reads the tracker, holds no write grant,
-    resolves no public store and never writes one. A dry run classifies R0 to R8 and writes
-    nothing."""
+    ``TrackerAdapters``) or an explicit ``tracker`` port; with neither (the process wiring is off:
+    see :func:`process_adapters`), import refuses (R0). Import only reads the tracker, holds no
+    write grant, resolves no public store and never writes one. A dry run classifies R0 to R8 and
+    writes nothing."""
     enabled, default_type = external_intake_settings(cfg)
     if enabled and tracker is None and adapters is None:
         adapters = process_adapters(cfg)
@@ -456,11 +520,11 @@ def discover(
     """Pull-only discovery of ``entry``'s external issues into its OPERATIONAL store, through the
     module (the import upsert), never the adapter or ``bd github sync`` directly.
 
-    Off unless ``intake.external.enabled`` (``intake_disabled`` through the null port). The
-    tracker is the one the hive's public-store binding serves (``adapters``, asked for
-    ``issues.read`` only) or an explicit ``tracker`` port; with neither, discovery refuses (no
-    production credential wiring yet). It holds no write grant, resolves no public store and
-    writes none; checkpoints are the hive's private ``.bh/`` files (``checkpoints`` injects
+    Off unless ``intake.external.enabled`` (``intake_disabled`` through the null port). The tracker
+    is the one the hive's public-store binding serves (``adapters``, asked for ``issues.read`` only)
+    or an explicit ``tracker`` port; with neither (the process wiring is off: see
+    :func:`process_adapters`), discovery refuses. It holds no write grant, resolves no public store
+    and writes none; checkpoints are the hive's private ``.bh/`` files (``checkpoints`` injects
     another :class:`CheckpointStore`). ``full`` is ``--full``: every issue including closed, then
     the id reconcile."""
     enabled, default_type = external_intake_settings(cfg)
@@ -1091,14 +1155,15 @@ class _UnwiredTracker:
     refuses naming the missing credential wiring, so an unwired build can never reach a tracker."""
 
     def __getattr__(self, name: str) -> Any:
-        raise _no_tracker_wiring()
+        raise _no_outbox_wiring()
 
 
 def outbox_wiring(cfg: Mapping[str, Any], entry: Mapping[str, Any]) -> dict[str, Any]:
     """The outbox's tracker wiring for ``entry``: ``tracker``, ``identity``, ``marker_line`` and
-    ``owned_label_prefixes``. Empty while production credential wiring (``bh-kzs0b``) does not
-    exist, so every verb that needs a tracker refuses; this is the one place that wiring lands
-    (tests patch it, or pass the keywords to :func:`outbox_call`)."""
+    ``owned_label_prefixes``. Empty until the sender's identity and marker-codec wiring is built
+    from the plugin binding (``process_adapters`` serves import and discover only), so every verb
+    that needs a tracker refuses; this is the one place that wiring lands (tests patch it, or pass
+    the keywords to :func:`outbox_call`)."""
     return {}
 
 
@@ -1126,15 +1191,15 @@ def _outbox_port(
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
     ``intake_disabled``), ``intake.external.outbox.enabled`` (no sender bound,
     ``outbox_disabled``; the ``labels.change`` gate has no config key yet, so it stays off), then
-    the tracker (``bh-kzs0b``: no production credential wiring exists, so a build that is not
-    handed ``tracker``, ``identity`` and ``marker_line`` refuses)."""
+    the tracker (a build that is not handed ``tracker``, ``identity`` and ``marker_line`` refuses:
+    their production wiring is not built yet, and is not ``process_adapters``')."""
     enabled, _default_type = external_intake_settings(cfg)
 
     def build():
         policy, _milestones = milestone_settings(cfg)
         wired = tracker is not None and identity is not None and marker_line is not None
         if policy.enabled and not wired and needs_tracker:
-            raise _no_tracker_wiring()
+            raise _no_outbox_wiring()
         return outbox_service_for(
             cfg,
             entry,
@@ -1154,7 +1219,7 @@ def _outbox_port(
 
 
 def _unwired_marker(*_args: Any, **_kwargs: Any) -> str:
-    raise _no_tracker_wiring()
+    raise _no_outbox_wiring()
 
 
 def outbox_call(
@@ -1176,7 +1241,8 @@ def outbox_call(
     """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
     failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
     ``intake.external.outbox.enabled``; it never posts without the adapter's own enable and an
-    operator approval. The tracker, identity and marker codec are INJECTED (``bh-kzs0b``)."""
+    operator approval. The tracker, identity and marker codec are INJECTED (``outbox_wiring``
+    supplies none yet)."""
     wiring = outbox_wiring(cfg, entry) if tracker is None else {}
     try:
         port = _outbox_port(

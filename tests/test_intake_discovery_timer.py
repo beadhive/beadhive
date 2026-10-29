@@ -89,9 +89,9 @@ def test_no_timer_is_built_unless_everything_is_explicitly_on(cfg) -> None:
 
 
 def test_enabling_the_timer_without_wired_credentials_refuses_startup_not_silently() -> None:
-    with pytest.raises(DiscoveryRefused, match="bh-kzs0b"):
-        build_loop(ON)  # process_adapters() is None until the credential wiring bead lands
-    with pytest.raises(host_daemon.DaemonError, match="bh-kzs0b"):
+    with pytest.raises(DiscoveryRefused, match=r"plugins\.tracker-github\.enabled"):
+        build_loop(ON)  # process_adapters() is None unless the tracker plugin is switched on
+    with pytest.raises(host_daemon.DaemonError, match=r"plugins\.tracker-github\.enabled"):
         host_daemon._intake_discovery_loop(ON)
 
 

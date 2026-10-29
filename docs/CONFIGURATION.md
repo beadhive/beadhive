@@ -432,7 +432,7 @@ and no key can enable or pre-approve a tracker write.
 
 | Key (under `intake.external`) | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | enable `bh work import <issue-url>` and `bh work discover`; off means the intake port is the null one and they refuse with `intake_disabled` |
+| `enabled` | `false` | enable `bh work import <issue-url>` and `bh work discover`; off means the intake port is the null one and they refuse with `intake_disabled`. They also need `plugins.tracker-github.enabled` (and the hive's `stores.public.adapter` binding and `plugins.tracker-github.read.issues.enabled`): without the plugin on no tracker adapter is built and they refuse naming it. The token comes from `plugins.tracker-github.credential.sources`, read per operation and never stored |
 | `default_type` | `bug` | issue type of an imported report: `bug`, `feature` or `chore` |
 | `discovery.enabled` | `false` | run the opt-in host-daemon discovery timer (needs `enabled` too) |
 | `discovery.interval_seconds` | unset | seconds between timer runs; **required** when `discovery.enabled` is true (there is no default cadence) |

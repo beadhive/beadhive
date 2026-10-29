@@ -12,8 +12,9 @@ scheduling decision (driven directly in tests with an injected clock, no sleep),
 ``run`` loop around it and a lifespan ``component``. One failed run never stops the loop, and a
 hive that is not bound to a tracker, or whose host is not the primary writer, is skipped.
 
-Production credential wiring (bh-kzs0b) does not exist yet, so enabling the timer on a build
-without a ``TrackerAdapters`` refuses daemon startup (:class:`DiscoveryRefused`) instead of
+Enabling the timer without a ``TrackerAdapters`` (``intake_services.process_adapters`` is
+``None`` unless ``intake.external.enabled`` and ``plugins.tracker-github.enabled`` are both set)
+refuses daemon startup (:class:`DiscoveryRefused`) instead of
 running a loop that could only refuse every tick.
 """
 
@@ -182,8 +183,8 @@ def build_loop(
         adapters = intake_services.process_adapters(cfg)
     if adapters is None:
         raise DiscoveryRefused(
-            "intake.external.discovery.enabled needs a wired tracker adapter, and this build has "
-            "no production credential wiring (bh-kzs0b); leave discovery off until it lands"
+            "intake.external.discovery.enabled needs a wired tracker adapter: "
+            f"{intake_services.TRACKER_CONFIG_HINT}, or leave discovery off"
         )
     return DiscoveryTimer(
         _discover_hives(cfg, adapters, discover or intake_services.discover),
