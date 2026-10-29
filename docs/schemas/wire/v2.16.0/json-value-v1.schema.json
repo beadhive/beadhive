@@ -1,0 +1,7 @@
+{
+  "$id": "urn:beadhive:wire-schema:json-value:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A JSON value used where an existing operation has not yet published a narrower result contract.",
+  "title": "JSON value",
+  "type": ["array", "boolean", "integer", "null", "number", "object", "string"]
+}

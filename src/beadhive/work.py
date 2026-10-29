@@ -400,14 +400,15 @@ def accept_cmd(
     priority: str = typer.Option("", "--priority", "-p", help="set priority (0-4 / P0-P4)"),
     as_: str = _AS,
     hive: str = _HIVE,
+    work: str = typer.Option("", "--work", help="also track this existing work bead"),
+    new_work: bool = typer.Option(False, "--new-work", help="also create a work bead and track it"),
 ):
     """Accept an intake report into backlog and clear its intake state.
 
-    `work_intake.accept` also takes `work` / `new_work` (`accept --work <id>` / `--new-work`,
-    bh-v2rr6): those options are NOT on this verb yet, because adding them changes the published
-    catalog and so needs a wire release (see the I5 registration recipe in the external-intake
-    ADR)."""
-    return work_intake.accept(bead, issue_type, priority, as_, hive)
+    `--work <id>` / `--new-work` (external intake, bh-v2rr6) also make the report track a work bead
+    (many reports to one); they are off unless `intake.external.enabled` and are mutually
+    exclusive."""
+    return work_intake.accept(bead, issue_type, priority, as_, hive, work, new_work)
 
 
 def reject_cmd(
@@ -447,9 +448,7 @@ def import_cmd(
 ):
     """Import an external issue as an untriaged, held internal report bead (read-only toward the
     tracker; off unless `intake.external.enabled`). Re-importing the same URL updates its snapshot
-    and never duplicates it or resets triage.
-
-    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-2ef4g)."""
+    and never duplicates it or resets triage."""
     return work_intake.import_issue(url, hive, dry_run, as_json, as_)
 
 
@@ -466,9 +465,7 @@ def discover_cmd(
     """Discover the hive's external issues: opt-in, pull-only, through the import upsert (held,
     untriaged reports; resumes from its checkpoint, so a re-run is a no-op). Off unless
     `intake.external.enabled`; never writes a tracker or the public store. `--full` re-pulls
-    open and closed issues and marks reports whose issue is gone `source_missing`.
-
-    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-df64b)."""
+    open and closed issues and marks reports whose issue is gone `source_missing`."""
     return work_intake.discover(hive, full, as_json, as_)
 
 
@@ -485,9 +482,7 @@ def link_cmd(
 ):
     """Make an imported report track a work bead, many reports to one (`delivery:pending`); the
     report stays held and is never work. `--remove` unlinks it (the delivery value is kept and an
-    `unlinked` fact recorded). Off unless `intake.external.enabled`; never touches a tracker.
-
-    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-v2rr6)."""
+    `unlinked` fact recorded). Off unless `intake.external.enabled`; never touches a tracker."""
     return work_intake.link(bead, to, remove, replace, as_, hive, as_json)
 
 
@@ -501,10 +496,114 @@ def delivery_release_cmd(
     move every report whose merge it contains to `delivery:released`, and draft a `released`
     record when the hive turned that on. A merge the release cannot be shown to contain stays
     `delivery:merged` (reported as not verified). Nothing is sent; off unless
-    `intake.external.enabled`.
-
-    Not yet in `CLI_HANDLERS`: registering the verb publishes the next wire release (bh-56s4l)."""
+    `intake.external.enabled`."""
     return work_intake.delivery_release(tag, as_, hive, as_json)
+
+
+_OUTBOX_ID = typer.Argument(..., metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
+_OUTBOX_ID_OPT = typer.Argument("", metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
+_OUTBOX_KIND = typer.Option(
+    "", "--kind", help="operation: comment (default) or labels (each is its own gate)"
+)
+_JSON = typer.Option(False, "--json", help="emit one JSON document")
+_OUTBOX_OP = typer.Option(
+    ...,
+    "--op",
+    help="<comment|labels>:<digest> reviewed in `outbox show` (full digest or 12-hex prefix); "
+    "repeat to approve several, each as its own gate with its own single-use grant",
+)
+_OUTBOX_PUBLISH = typer.Option(
+    [], "--publish", help="a finding id to publish deliberately (needs exactly one --op)"
+)
+
+
+def outbox_approve_cmd(
+    outbox_id: str = _OUTBOX_ID,
+    op: list[str] = _OUTBOX_OP,
+    publish: list[str] = _OUTBOX_PUBLISH,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Approve the digest of a dry-run render, minting one single-use grant (operator seats only;
+    off unless `intake.external.outbox.enabled`). Approving sends nothing."""
+    return work_intake.outbox_approve(outbox_id, op, publish, as_, hive, as_json)
+
+
+def outbox_discard_cmd(
+    outbox_id: str = _OUTBOX_ID,
+    reason: str = typer.Option(..., "--reason", help="why the operation is abandoned"),
+    accept_unknown: bool = typer.Option(
+        False, "--accept-unknown", help="also abandon an operation whose outcome is unknown"
+    ),
+    kind: str = typer.Option("", "--kind", help="only this operation: comment or labels"),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Abandon an unsent operation of a record (an unknown one needs `--accept-unknown`)."""
+    return work_intake.outbox_discard(outbox_id, reason, accept_unknown, kind, as_, hive, as_json)
+
+
+def outbox_draft_cmd(
+    bead: str = _BEAD,
+    text: str = typer.Option(..., "--text", help="the reply text to post to the report's issue"),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Draft an operator reply to a bound report's issue. Nothing is sent: review it with
+    `outbox show`, then `outbox approve` and `outbox send`."""
+    return work_intake.outbox_draft(bead, text, as_, hive, as_json)
+
+
+def outbox_reconcile_cmd(
+    outbox_id: str = _OUTBOX_ID_OPT,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Settle operations whose outcome is unknown by reading the issue back (one record, or every
+    report with an outbox). Never sends."""
+    return work_intake.outbox_reconcile(outbox_id, as_, hive, as_json)
+
+
+def outbox_retry_cmd(
+    outbox_id: str = _OUTBOX_ID,
+    kind: str = _OUTBOX_KIND,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Return a failed operation to drafted; it needs a new render, digest and approval."""
+    return work_intake.outbox_retry(outbox_id, kind, as_, hive, as_json)
+
+
+def outbox_send_cmd(
+    outbox_id: str = _OUTBOX_ID,
+    kind: str = _OUTBOX_KIND,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Send one approved operation (write-ahead, receipt). Needs the adapter's own enable, an
+    unspent grant and a clean leak check on the exact bytes; off unless
+    `intake.external.outbox.enabled`."""
+    return work_intake.outbox_send(outbox_id, kind, as_, hive, as_json)
+
+
+def outbox_show_cmd(
+    outbox_id: str = _OUTBOX_ID_OPT,
+    bead: str = typer.Option("", "--bead", help="list only this report's records"),
+    open_only: bool = typer.Option(
+        False, "--open", help="list only records with an operation not yet settled"
+    ),
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """The dry-run render of one record exactly as it would be sent, with the digest to approve;
+    without an id, the listing of the hive's records. Reads only; no tracker request."""
+    return work_intake.outbox_show(outbox_id, bead, open_only, hive, as_json)
 
 
 def _refuse_public(verb: str, *values) -> None:
@@ -1849,6 +1948,17 @@ CLI_HANDLERS = {
     "work.reject": reject_cmd,
     "work.reroute": reroute_cmd,
     "work.promote": promote_cmd,
+    "work.import": import_cmd,
+    "work.discover": discover_cmd,
+    "work.link": link_cmd,
+    "work.delivery.release": delivery_release_cmd,
+    "work.outbox.approve": outbox_approve_cmd,
+    "work.outbox.discard": outbox_discard_cmd,
+    "work.outbox.draft": outbox_draft_cmd,
+    "work.outbox.reconcile": outbox_reconcile_cmd,
+    "work.outbox.retry": outbox_retry_cmd,
+    "work.outbox.send": outbox_send_cmd,
+    "work.outbox.show": outbox_show_cmd,
     "work.assign": assign,
     "work.claim": claim,
     "work.next": next_,
@@ -1870,7 +1980,15 @@ CLI_HANDLERS = {
     "work.review": review,
     "work.refine": refine,
 }
-CLI_PROJECTION = _project_cli_group(app, "work", CLI_HANDLERS)
+CLI_PROJECTION = _project_cli_group(
+    app,
+    "work",
+    CLI_HANDLERS,
+    group_help={
+        "work delivery": "Record delivery milestones for imported external reports.",
+        "work outbox": "Supervised replies to external issues: draft, review, approve, send.",
+    },
+)
 _CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
 
 # Preserve the historical public Python surface: these names were trace-decorated before catalog
@@ -1886,6 +2004,17 @@ accept_cmd = _CLI_CALLBACKS["work.accept"]
 reject_cmd = _CLI_CALLBACKS["work.reject"]
 reroute_cmd = _CLI_CALLBACKS["work.reroute"]
 promote_cmd = _CLI_CALLBACKS["work.promote"]
+import_cmd = _CLI_CALLBACKS["work.import"]
+discover_cmd = _CLI_CALLBACKS["work.discover"]
+link_cmd = _CLI_CALLBACKS["work.link"]
+delivery_release_cmd = _CLI_CALLBACKS["work.delivery.release"]
+outbox_approve_cmd = _CLI_CALLBACKS["work.outbox.approve"]
+outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]
+outbox_draft_cmd = _CLI_CALLBACKS["work.outbox.draft"]
+outbox_reconcile_cmd = _CLI_CALLBACKS["work.outbox.reconcile"]
+outbox_retry_cmd = _CLI_CALLBACKS["work.outbox.retry"]
+outbox_send_cmd = _CLI_CALLBACKS["work.outbox.send"]
+outbox_show_cmd = _CLI_CALLBACKS["work.outbox.show"]
 assign = _CLI_CALLBACKS["work.assign"]
 claim = _CLI_CALLBACKS["work.claim"]
 next_ = _CLI_CALLBACKS["work.next"]

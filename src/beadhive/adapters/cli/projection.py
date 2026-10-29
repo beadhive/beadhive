@@ -17,7 +17,7 @@ import hashlib
 import inspect
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any
@@ -265,13 +265,46 @@ def validate_catalog_generation_rules(
             _reject_retired_surface_tokens(value, f"MCP projection {value!r}")
 
 
+def _nested_app(
+    app: typer.Typer, group: str, parents: Sequence[str], group_help: Mapping[str, str]
+) -> typer.Typer:
+    """The sub-group of ``app`` reached through ``parents``, created when absent.
+
+    A three-token (or deeper) path ``<group> <parent>... <verb>`` mounts its leaf on a nested
+    Typer group per intermediate token.  Two-token paths have no intermediate token, so they are
+    registered directly on ``app`` exactly as before."""
+    current = app
+    trail: list[str] = [group]
+    for name in parents:
+        trail.append(name)
+        existing = next((info for info in current.registered_groups if info.name == name), None)
+        if existing is not None:
+            current = existing.typer_instance
+            continue
+        child = typer.Typer(no_args_is_help=True, help=group_help.get(" ".join(trail)))
+        current.add_typer(child, name=name)
+        current = child
+    return current
+
+
+def _command_leaves(
+    command: Any, path: tuple[str, ...] = ()
+) -> Iterator[tuple[tuple[str, ...], Any]]:
+    for name, child in command.commands.items():
+        if getattr(child, "commands", None) is not None:
+            yield from _command_leaves(child, (*path, name))
+        else:
+            yield (*path, name), child
+
+
 def _validate_live_flags(
     app: typer.Typer,
     group: str,
     projected: Mapping[str, tuple[OperationSpec, dict[str, Any]]],
 ) -> None:
     command = get_command(app)
-    for verb, leaf in command.commands.items():
+    for leaf_path, leaf in _command_leaves(command):
+        verb = " ".join(leaf_path)
         operation, projection = projected[verb]
         expected_parameters = projection["parameters"]
         actual_parameters = [parameter.name for parameter in leaf.params]
@@ -341,12 +374,17 @@ def project_cli_group(
     *,
     operation_specs: Sequence[OperationSpec] | None = None,
     trace_verb: TraceVerb,
+    group_help: Mapping[str, str] | None = None,
 ) -> ProjectionReport:
     """Generate ``group``'s Typer leaves from catalog rows and explicit core handlers.
 
     ``handlers`` is keyed by canonical operation identity (for example ``work.claim``), never
     by a second hand-authored command name.  Its order controls help ordering for compatibility;
     every presentation attribute still comes from the catalog projection.
+
+    A path of three or more tokens (``work delivery release``) is mounted on nested Typer groups
+    created per intermediate token; ``group_help`` maps such a group's path (``work delivery``)
+    to its help text.  Two-token paths are projected exactly as before.
     """
     if group not in MIGRATED_CLI_GROUPS:
         raise CatalogProjectionError(f"{group!r} is not declared as a migrated CLI group")
@@ -356,7 +394,7 @@ def project_cli_group(
     expected = {
         name
         for name, (_operation, projection) in rows.items()
-        if projection["path"].split()[:1] == [group] and len(projection["path"].split()) == 2
+        if projection["path"].split()[:1] == [group] and len(projection["path"].split()) >= 2
     }
     supplied = set(handlers)
     if supplied != expected:
@@ -372,7 +410,7 @@ def project_cli_group(
     for operation_name, configured_handler in handlers.items():
         operation, projection = rows[operation_name]
         path = projection["path"]
-        path_group, verb = path.split()
+        path_group, *parents, verb = path.split()
         if path_group != group:
             raise CatalogProjectionError(
                 f"{operation_name!r} projects to {path!r}, outside {group!r}"
@@ -395,13 +433,14 @@ def project_cli_group(
                 "allow_extra_args": passthrough["allow_extra_args"],
                 "ignore_unknown_options": passthrough["ignore_unknown_options"],
             }
-        app.command(
+        target = _nested_app(app, group, parents, group_help or {})
+        target.command(
             verb,
             hidden=projection["declared_hidden"],
             context_settings=context_settings,
         )(traced)
         paths.append(path)
-        projected[verb] = (operation, projection)
+        projected[" ".join((*parents, verb))] = (operation, projection)
 
     _validate_live_flags(app, group, projected)
     material = json.dumps(
@@ -426,6 +465,16 @@ def project_cli_group(
     )
 
 
+def _registered_callbacks(
+    app: typer.Typer, prefix: tuple[str, ...]
+) -> Iterator[tuple[str, Callable[..., Any]]]:
+    for info in app.registered_commands:
+        name = info.name or info.callback.__name__.rstrip("_")
+        yield " ".join((*prefix, name)), info.callback
+    for group in app.registered_groups:
+        yield from _registered_callbacks(group.typer_instance, (*prefix, str(group.name)))
+
+
 def generated_callbacks(
     app: typer.Typer, report: ProjectionReport
 ) -> dict[str, Callable[..., Any]]:
@@ -433,15 +482,19 @@ def generated_callbacks(
 
     Historically the ``work``/``plan`` module functions were themselves trace-decorated.  The
     generator keeps raw handlers in the binding map, then composition roots re-export these
-    callbacks so direct Python callers retain the same tracing behavior as CLI callers.
+    callbacks so direct Python callers retain the same tracing behavior as CLI callers.  Leaves of
+    nested groups (``work delivery release``) are found by their full path.
     """
-    callbacks = tuple(command.callback for command in app.registered_commands)
-    if len(callbacks) != len(report.operations):
+    by_path = dict(_registered_callbacks(app, (report.group,)))
+    if len(by_path) != len(report.operations):
         raise CatalogProjectionError(
             f"{report.group} callback count changed after projection: "
-            f"{len(callbacks)} != {len(report.operations)}"
+            f"{len(by_path)} != {len(report.operations)}"
         )
-    return dict(zip(report.operations, callbacks, strict=True))
+    return {
+        operation: by_path[path]
+        for operation, path in zip(report.operations, report.paths, strict=True)
+    }
 
 
 def validate_migration_inventory(

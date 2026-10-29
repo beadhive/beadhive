@@ -859,6 +859,14 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
         "plan_sha256": {"type": "string"},
         "verb": {"type": "string"},
     },
+    # bh-73td2 (operator-authorised wire 2.16.0 cut, dispatcher instruction 2026-10-29): the
+    # external-intake linking options `accept --work <id>` / `--new-work` append these two
+    # optional inputs to the existing verb (bh-v2rr6). Callers that omit them keep their exact
+    # request and the plain accept it has always been.
+    "work.accept": {
+        "work": {"type": "string"},
+        "new_work": {"type": "boolean"},
+    },
     "worktree.status": {
         "local_safe": {"type": "boolean"},
         "root": {"type": "array", "items": {}},
@@ -933,6 +941,34 @@ def _approved_host_push_file(
     )
 
 
+def _compare_parents_by_path(old: Any, new: Any, errors: list[str]) -> bool:
+    """Match published CLI parent groups by ``path``, like operations by name.
+
+    The parents are listed in path order, so a group added between two published ones (for
+    example ``work outbox``) shifts every later index; a positional comparison would reject that
+    additive change. A removed or changed parent still fails. Returns ``False`` (so the caller
+    falls back to the strict positional comparison) when either side is not a list of uniquely
+    ``path``-keyed objects."""
+
+    def keyed(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, list):
+            return None
+        rows = {item.get("path"): item for item in value if isinstance(item, dict)}
+        paths_ok = all(isinstance(path, str) for path in rows)
+        return rows if paths_ok and len(rows) == len(value) else None
+
+    old_rows, new_rows = keyed(old), keyed(new)
+    if old_rows is None or new_rows is None:
+        return False
+    for path in sorted(set(old_rows) - set(new_rows)):
+        errors.append(f"$.cli_parents[path={path!r}]: published CLI parent was removed")
+    for path in sorted(set(old_rows) & set(new_rows)):
+        _compare_catalog_value(
+            old_rows[path], new_rows[path], f"$.cli_parents[path={path!r}]", errors
+        )
+    return True
+
+
 def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     """Return append-only, same-major compatibility failures for catalog data.
 
@@ -947,6 +983,8 @@ def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> li
     for key in sorted(new_keys - old_keys):
         errors.append(f"$.{key}: top-level field was added to the published catalog shape")
     for key in sorted(old_keys & new_keys):
+        if key == "cli_parents" and _compare_parents_by_path(old[key], new[key], errors):
+            continue
         _compare_catalog_value(old[key], new[key], f"$.{key}", errors)
 
     old_version = str(old.get("catalog_version", ""))
