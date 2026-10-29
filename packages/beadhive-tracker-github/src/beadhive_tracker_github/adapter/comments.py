@@ -14,7 +14,10 @@ own-message marker (:mod:`.marker`). It is a mixin of
    marker cannot be encoded (``ValueError``);
 4. the grant was already presented to this adapter (spent).
 
-The grant is spent the moment those checks pass, whatever happens next (:mod:`.grants`).
+The credential is then resolved; one that does not resolve (anonymous, or a failing source) is
+refused with ``AuthenticationFailed`` and the grant is **kept**, so a missing token never burns an
+operator approval. Only after the credential resolves is the grant spent, immediately before the
+request is sent, and it is never refunded whatever happens next (:mod:`.grants`).
 
 **One request, never retried on an ambiguous outcome.** The write is sent once. GitHub refusing
 it with a rate limit (proof that nothing was written) is retried within the ``RetryBudget`` on
@@ -24,8 +27,7 @@ send, an unconfirmed redirect, or a ``201`` whose body cannot be read raises
 ``WriteOutcomeUnknown`` and is never retried: the comment may exist exactly once, and the
 consumer finds it again by ``OwnMarker.outbox_id`` (``list_comments``).
 
-No credential (anonymous) is refused locally with ``AuthenticationFailed`` after the grant is
-spent and before any request: GitHub never accepts an anonymous comment.
+GitHub never accepts an anonymous comment, so that refusal is local and sends nothing.
 
 **No live GitHub write happens in the test suite.** The first real write is an operator-approved
 step recorded on bead ``bh-03s4w``; until it is exercised, every refusal diagnostic except ``401``
@@ -92,13 +94,14 @@ class CommentCreate:
         checked = ledger.check(grant, _OPERATION, issue)
         number = self._issue_number(issue)
         payload = comment_payload(body, marker)
-        ledger.spend(checked)
+        ledger.refuse_if_spent(checked)  # read-only: spending waits for the credential
         path = f"{self._location.repo_path}/issues/{number}/comments"
         with self._transport.operation(_OPERATION, write=True) as session:
             if session.anonymous:
                 raise AuthenticationFailed(
                     "comment.create needs a credential; none was resolved (anonymous)"
                 )
+            ledger.spend(checked)  # only now: a missing credential never burns the approval
             reply = session.send("POST", path, payload)
         try:
             posted = mapping.comment(reply.body)

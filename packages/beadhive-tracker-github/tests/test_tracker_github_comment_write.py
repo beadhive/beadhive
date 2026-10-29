@@ -219,18 +219,43 @@ def test_a_grant_spent_by_a_refused_write_cannot_be_reused():
     assert world.write_requests() == 1 and world.comment_count(issue) == 0
 
 
-def test_an_anonymous_write_is_refused_locally_and_spends_the_grant():
+def test_an_anonymous_write_is_refused_locally_and_keeps_the_grant():
     world, issue = world_with_issue()
     tokens = CountingTokens(value=None)
     adapter = writer(world, tokens=tokens)
     anon = grant(issue, "g-anon")
 
-    with pytest.raises(AuthenticationFailed, match="anonymous"):
+    for attempt in (1, 2):  # a missing token never burns the approval, however often it recurs
+        with pytest.raises(AuthenticationFailed, match="anonymous"):
+            adapter.post_comment(issue, "hi", marker=MARKER, grant=anon)
+        assert world.requests == [] and tokens.calls == attempt
+
+    tokens.value = FAKE_TOKEN  # the same grant, now credentialed: it still works, exactly once
+    adapter.post_comment(issue, "hi", marker=MARKER, grant=anon)
+    assert world.write_requests() == 1 and world.comment_count(issue) == 1
+    with pytest.raises(OperationNotEnabled, match="already used"):
         adapter.post_comment(issue, "hi", marker=MARKER, grant=anon)
-    assert world.requests == [] and tokens.calls == 1
-    with pytest.raises(OperationNotEnabled):
-        adapter.post_comment(issue, "hi", marker=MARKER, grant=anon)
-    assert world.requests == [] and tokens.calls == 1
+    assert world.write_requests() == 1
+
+
+def test_a_failing_credential_source_is_scrubbed_and_keeps_the_grant():
+    world, issue = world_with_issue()
+    failing = [True]
+
+    def source():
+        if failing[0]:
+            raise RuntimeError(f"vault said {FAKE_TOKEN}")
+        return ResolvedToken(FAKE_TOKEN, "env:GITHUB_TOKEN")
+
+    adapter = writer(world, tokens=source)
+    once = grant(issue, "g-vault")
+    with pytest.raises(AuthenticationFailed) as caught:
+        adapter.post_comment(issue, "hi", marker=MARKER, grant=once)
+    assert FAKE_TOKEN not in str(caught.value) and world.requests == []
+
+    failing[0] = False
+    adapter.post_comment(issue, "hi", marker=MARKER, grant=once)
+    assert world.write_requests() == 1
 
 
 def test_the_spent_grant_set_is_never_shown():

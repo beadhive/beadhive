@@ -45,8 +45,9 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
 * The connect/read timeout is finite (30 s; githubkit's default is none).
 * **`comment.create`** posts the body plus the `bh:v1` marker line. Refused before any request
   (and before the credential is resolved) when the operation is off, the grant is missing, names
-  another operation or issue, or was already presented; the grant is spent by the first call that
-  passes those checks, whatever happens next. A rate-limit refusal is retried within the budget;
+  another operation or issue, or was already presented. A missing credential is refused next and
+  keeps the grant; the grant is spent by the first call that passes those checks and resolves a
+  credential, whatever happens next. A rate-limit refusal is retried within the budget;
   a `5xx`, a timeout or dropped connection after the send, an unconfirmed redirect (a write
   client never follows one) or an unreadable `201` raises `WriteOutcomeUnknown` and is **never
   retried** (the consumer reconciles by the marker's outbox id). Every other refusal carries the

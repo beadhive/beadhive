@@ -219,26 +219,39 @@ def test_no_credential_refuses_before_any_request_and_does_not_spend_the_grant()
     holder: list[ResolvedToken | None] = [None]
     adapter = adapter_for(world, enabled={LABELS}, tokens=lambda: holder[0])
 
-    with pytest.raises(AuthenticationFailed, match="needs a credential"):
-        change(adapter, issue, add=["bh:x"])
-    assert world.requests == []
+    once = grant(issue, "g-anon")
+    for _ in range(2):  # a missing token never burns the approval, however often it recurs
+        with pytest.raises(AuthenticationFailed, match="needs a credential"):
+            change(adapter, issue, add=["bh:x"], the_grant=once)
+        assert world.requests == []
 
     holder[0] = ResolvedToken(world.token, "env:GITHUB_TOKEN")  # the same grant, now credentialed
-    change(adapter, issue, add=["bh:x"])
+    change(adapter, issue, add=["bh:x"], the_grant=once)
+    assert world.write_requests() == 1
+    with pytest.raises(OperationNotEnabled, match="already used"):
+        change(adapter, issue, add=["bh:y"], the_grant=once)
     assert world.write_requests() == 1
 
 
-def test_a_failing_credential_source_is_scrubbed_and_sends_nothing():
+def test_a_failing_credential_source_is_scrubbed_sends_nothing_and_keeps_the_grant():
     world = FakeGitHub()
     issue = world.add_issue("thread", at=EPOCH)
+    failing = [True]
 
-    def boom():
-        raise RuntimeError(f"vault said {FAKE_TOKEN}")
+    def source():
+        if failing[0]:
+            raise RuntimeError(f"vault said {FAKE_TOKEN}")
+        return ResolvedToken(world.token, "env:GITHUB_TOKEN")
 
-    adapter = adapter_for(world, enabled={LABELS}, tokens=boom)
+    adapter = adapter_for(world, enabled={LABELS}, tokens=source)
+    once = grant(issue, "g-vault")
     with pytest.raises(AuthenticationFailed) as caught:
-        change(adapter, issue, add=["bh:x"])
+        change(adapter, issue, add=["bh:x"], the_grant=once)
     assert FAKE_TOKEN not in str(caught.value) and world.requests == []
+
+    failing[0] = False  # the same adapter and grant: the approval was not burned
+    change(adapter, issue, add=["bh:x"], the_grant=once)
+    assert world.write_requests() == 1
 
 
 # ---- the wire form and the receipt -----------------------------------------------------------

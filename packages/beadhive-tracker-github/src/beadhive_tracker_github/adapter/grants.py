@@ -7,11 +7,11 @@ already presented. Durable single use across processes is the consumer's outbox;
 the plugin ADR's in-process layer ("one adapter per (hive, store scope) per process", so the
 spent set lives as long as the cached adapter).
 
-A grant is **spent by the first call that passes its writer's local checks**, whatever happens
-next: a refusal, an unknown outcome or a success; it is never refunded. So a grant can never
-authorise a second attempt, and a consumer that needs one mints a fresh grant through a fresh
-approval. (Whether a missing credential is a local check is the writer's: ``labels.change``
-refuses it before spending, ``comment.create`` after.)
+A grant is **spent by the first call that passes its writer's local checks and resolves a
+credential**, whatever happens next: a refusal, an unknown outcome or a success; it is never
+refunded. So a grant can never authorise a second attempt, and a consumer that needs one mints a
+fresh grant through a fresh approval. Every writer resolves the credential first and spends only
+then, immediately before it sends, so a missing or failing credential never burns an approval.
 
 Messages are static and never repeat a grant id (a grant is an approval artefact, not a secret,
 but nothing here needs to show it).
