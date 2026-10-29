@@ -220,20 +220,22 @@ def test_otel_and_dolt_are_hidden():
 # ---- convention 5: every work/plan verb is traced ---------------------------
 
 
+def _registered_leaves(app, prefix):
+    """Every leaf under ``app``, nested groups included (``work outbox send``)."""
+    for c in app.registered_commands:
+        yield (*prefix, c.name or c.callback.__name__.rstrip("_")), c
+    for group in app.registered_groups:
+        yield from _registered_leaves(group.typer_instance, (*prefix, str(group.name)))
+
+
 def test_every_work_and_plan_verb_is_trace_wrapped():
     for group_name, app in (("work", work.app), ("plan", plan.app)):
         projection = work.CLI_PROJECTION if group_name == "work" else plan.CLI_PROJECTION
-        assert (
-            tuple(
-                f"{group_name}.{c.name or c.callback.__name__.rstrip('_')}"
-                for c in app.registered_commands
-            )
-            == projection.operations
-        )
-        for c in app.registered_commands:
-            verb = c.name or c.callback.__name__
-            assert getattr(c.callback, "__otel_verb__", None) == f"{group_name}.{verb}", (
-                f"`{group_name} {verb}` did not retain its generated trace marker"
+        leaves = list(_registered_leaves(app, (group_name,)))
+        assert sorted(".".join(path) for path, _ in leaves) == sorted(projection.operations)
+        for path, c in leaves:
+            assert getattr(c.callback, "__otel_verb__", None) == ".".join(path), (
+                f"`{' '.join(path)}` did not retain its generated trace marker"
             )
 
 

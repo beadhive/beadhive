@@ -375,22 +375,12 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   byte-fingerprinted public-store fixture and a `resolve_store` spy after every case, the config
   switch, store failures, rendering).
   `MemoryWorld.transfer_issue` is the minimal model of a transfer that R7 needs (`bh-ukesf`).
-- **Not done here.** The verb is **intentionally not registered** in `CLI_HANDLERS` or the
-  operation catalog: registering it needs `just wire-publish`, which cuts the next wire release
-  (v2.16.0), a release step reserved for the operator. `work.import_cmd` and
-  `work_intake.import_issue` are implemented and tested but unreachable from the CLI until then.
-  **Registration recipe**, in order:
-  1. `src/beadhive/kernel/operations/__init__.py`: add the `work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o`
-     row to `_CLI_ROWS` (match the encoding, option names and canonical-name map of the sibling
-     `work accept` / `work promote` rows).
-  2. `src/beadhive/work.py`: add `"work.import": import_cmd` to `CLI_HANDLERS` (no
-     `_bind_cli_handler` rename is needed: the Python parameters are already `url`, `hive`,
-     `dry_run`, `as_json`, `as_`).
-  3. `src/beadhive/work.py`: add `import_cmd = _CLI_CALLBACKS["work.import"]` to the block of
-     callback assignments after `_CLI_CALLBACKS`, as `reject_cmd` and `promote_cmd` have, and
-     drop the "Not yet in `CLI_HANDLERS`" sentence from the `import_cmd` docstring.
-  4. Run `just wire-publish` (operator, release step) to cut v2.16.0 and regenerate the derived
-     artifacts, then the catalog-drift tests and `bh work check`.
+- **Registered (`bh-73td2`, wire 2.16.0).** `bh work import <url> [--hive] [--dry-run] [--json]
+  [--as]` is the catalog row `work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o`
+  (`_CLI_ROWS`), `"work.import": import_cmd` in `CLI_HANDLERS`, and `import_cmd` is the generated
+  callback. It stays off unless `intake.external.enabled`, and with no production credential wiring
+  (`bh-kzs0b`) it refuses `intake_disabled` naming that bead. CLI only: no MCP row was added.
+  Tests: `tests/test_intake_cli_verbs.py` runs it from `cli.app`.
 
 **As built (I6, `bh-df64b`).**
 
@@ -444,20 +434,11 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   `tests/test_intake_checkpoints.py` (the `CheckpointStore` contract on both implementations),
   `tests/test_intake_discovery_timer.py` (the schedule on a **mocked clock**, off by default, the
   daemon component) and `tests/test_config_intake.py`.
-- **Not done here.** The verb is **intentionally not registered** in `CLI_HANDLERS` or the operation
-  catalog: registering it needs `just wire-publish`, an operator-reserved release step.
-  `work.discover_cmd` and `work_intake.discover` are implemented and tested but unreachable from the
-  CLI until then. **Registration recipe**, in order:
-  1. `src/beadhive/kernel/operations/__init__.py`: add the `work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o`
-     row to `_CLI_ROWS` (match the encoding, option names and canonical-name map of the sibling
-     `work accept` / `work promote` rows).
-  2. `src/beadhive/work.py`: add `"work.discover": discover_cmd` to `CLI_HANDLERS`.
-  3. `src/beadhive/work.py`: add `discover_cmd = _CLI_CALLBACKS["work.discover"]` to the callback
-     assignments after `_CLI_CALLBACKS`, and drop the "Not yet in `CLI_HANDLERS`" sentence from the
-     `discover_cmd` docstring.
-  4. Run `just wire-publish` (operator, release step) to cut the next wire release and regenerate
-     the derived artifacts, then the catalog-drift tests and `bh work check`.
-  The timer needs none of this: it is **wired** in `host_daemon.serve` and only waits on `bh-kzs0b`.
+- **Registered (`bh-73td2`, wire 2.16.0).** `bh work discover [--hive] [--full] [--json]
+  [--as]` is the catalog row `work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o`,
+  `"work.discover": discover_cmd` in `CLI_HANDLERS`. Off unless `intake.external.enabled`; without
+  production credential wiring it refuses naming `bh-kzs0b`. CLI only, no MCP row. The timer needed
+  no registration: it is **wired** in `host_daemon.serve` and only waits on `bh-kzs0b`.
 
 ### 6. Link, and a bound report is never work (D1)
 
@@ -548,26 +529,14 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   bd store: two reports to one work, unlink one, nothing held becomes ready, the work is ready
   throughout, `accept --new-work`, a `tracks` edge to an epic), plus the adopt, plan and core
   planning cases.
-- **Not done here.** `bh work link` and the `--work` / `--new-work` options of `accept` are
-  **intentionally not registered**: each changes the published operation catalog and so needs
-  `just wire-publish`, a release step reserved for the operator (as for `import`, I4).
-  `work_intake.link` and `work.link_cmd` are implemented and tested but unreachable from the CLI;
-  `work_intake.accept` already takes `work` and `new_work` but `accept_cmd` does not pass them.
-  **Registration recipe**, in order:
-  1. `src/beadhive/kernel/operations/__init__.py`: add the row
-     `work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o`
-     to `_CLI_ROWS` (keep the rows sorted), and extend the `work accept` row to
-     `work accept|bead:string:r,type_:string:o,priority:string:o,as_:string:o,hive:string:o,work:string:o,new_work:boolean:o`.
-  2. `src/beadhive/work.py`: add `"work.link": link_cmd` to `CLI_HANDLERS` and
-     `link_cmd = _CLI_CALLBACKS["work.link"]` to the callback assignments; drop the "Not yet in
-     `CLI_HANDLERS`" sentence from the `link_cmd` docstring.
-  3. `src/beadhive/work.py`: give `accept_cmd` the two options
-     (`work: str = typer.Option("", "--work", help="track this existing work bead")` and
-     `new_work: bool = typer.Option(False, "--new-work", help="create a work bead and track it")`)
-     and pass them on: `return work_intake.accept(bead, issue_type, priority, as_, hive, work,
-     new_work)`; update its docstring.
-  4. Run `just wire-publish` (operator, release step), then the catalog-drift tests and `bh work
-     check`.
+- **Registered (`bh-73td2`, wire 2.16.0).** `bh work link <report> (--to <work> | --remove) [--replace]
+  [--as] [--hive] [--json]` is the row `work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o`
+  with `"work.link": link_cmd`. `accept` gains the optional `--work <id>` and `--new-work`
+  (`work accept|...,hive:string:o,work:string:o,new_work:boolean:o`), appended after the published
+  parameters and passed to `work_intake.accept`; the plain accept is unchanged. The wire checker
+  lists the two as reviewed appended optional inputs of `work.accept`
+  (`_APPROVED_OPTIONAL_REPAIR_PARAMS`), the same mechanism earlier optional-flag additions used.
+  Both are off unless `intake.external.enabled`. CLI only, no MCP row. `accept` has no `--json`.
 
 ### 7. Report dimensions, the hold gate and field ownership
 
@@ -895,19 +864,40 @@ the epoch) and composes `outbox_service_for` with a `RandomIdSource`, the fleet 
   run shows the posted bytes. The tracker adapter itself is injected: building it from the store
   binding and credentials is `bh-kzs0b`'s, not this bead's.
 
-Not built here, pending an operator decision: the `bh work outbox` verbs (`show`, `approve`,
-`send`, `reconcile`, `discard`, `retry`, `draft`) and the `intake.external.outbox.*` config keys.
-Each verb widens the published operation catalog, which cuts a new wire release (`just
-wire-publish`), so they wait for that release to be authorised; the port operations above are the
-whole behaviour they would call. **Acceptance item 4 is pending:** no real tracker write has been
-made. The first real `comment.create` is an operator-approved step recorded on the bead, and the
-re-verification of assumption A1 (read-after-write visibility on complete listings) and of the
-`tracker-github` refusal diagnostics against recorded real responses happens on that first gated
-write; it has not been performed.
+**The `bh work outbox` verbs (`bh-73td2`, wire 2.16.0).** `show`, `approve`, `send`, `reconcile`,
+`discard`, `retry` and `draft` are registered as `work outbox <verb>` (three tokens, on the nested
+`work outbox` group above), CLI only, no MCP row. The port operations above were the whole
+behaviour; the verbs add only the command bodies (`work_intake.outbox_*`), their renderers and
+`intake_services.outbox_call`, which composes three independent switches, each a distinct refusal
+decided before any write or tracker request: `intake.external.enabled` (`intake_disabled`),
+`intake.external.outbox.enabled` (`outbox_disabled`), then the tracker (`intake_disabled` naming
+`bh-kzs0b`: there is no production credential wiring, so `intake_services.outbox_wiring` returns
+nothing and every verb that needs a tracker refuses; tests patch that one seam). The listing form
+of `show` (no id) makes no tracker request and works without wiring. Interpretations, to be
+confirmed by the operator:
+
+- `show [<outbox-id>] [--bead B] [--open]`: with an id it is the dry run whose digest the operator
+  types; without one it lists records.
+- `approve <id> --op <comment|labels>:<digest>` (repeatable; each op is its own approval and grant)
+  `[--publish <finding-id>]`; `--publish` needs exactly one `--op`, so the finding belongs to that
+  operation. An approval already made stays made when a later `--op` is refused; the result lists
+  those so far. The acting seat must be an operator seat (`--as`); agent seats are refused by the
+  machine, not the CLI.
+- `send` / `retry` take `--kind comment|labels` (default comment); `discard` takes `--reason`,
+  `--accept-unknown` and an optional `--kind`; `reconcile [<id>]` covers every report with an
+  outbox when no id is given; `draft <bead> --text T` drafts an operator reply.
+- The `labels.change` gate (`OutboxPolicy.labels_enabled`) has no config key yet, so the verbs can
+  never enable it; labels stay off in production until a later bead names the key.
+
+**Acceptance item 4 is pending:** no real tracker write has been made. The first real
+`comment.create` is an operator-approved step recorded on the bead, and the re-verification of
+assumption A1 (read-after-write visibility on complete listings) and of the `tracker-github`
+refusal diagnostics against recorded real responses happens on that first gated write; it has not
+been performed.
 
 **As built in I9b (`bh-88vji`; `labels.change`, every case offline).** The same `OutboxService`
 sends and reconciles a label operation with the same receipts; nothing new is registered (no verb,
-no catalog entry, no config key). Interpretations:
+no catalog entry, no config key in that bead). Interpretations:
 
 - A separate gate: `OutboxPolicy.labels_enabled` (default `False`) beside `enabled`. Without it
   `approve`, `send` and the pure `begin_send` refuse a label operation with `LABELS_DISABLED`
@@ -1025,25 +1015,21 @@ started, blocked and deprioritised milestones; revert detection (only an operato
   sends), `tests/test_intake_milestones_composition.py` (the root, the verifier, rendering, the
   public store untouched), `tests/test_work_merge_milestones.py` (the seam and the non-fatal hook)
   and `tests/test_intake_milestones_int.py` (a real bd store, `integration`).
-- **Not done here.** `bh work delivery release <tag>` is **intentionally not registered**: it
-  changes the published operation catalog and so needs `just wire-publish`, a release step
-  reserved for the operator (as for `import`, I4, and `link`, I5). `work_intake.delivery_release`
-  and `work.delivery_release_cmd` are implemented and tested but unreachable from the CLI.
-  **Registration recipe**, in order:
-  1. `src/beadhive/adapters/cli/projection.py` projects a migrated group's verbs as two-token
-     paths only (`<group> <verb>`; `project_cli_group` splits `path` into exactly two parts), so
-     the three-token `work delivery release` needs either a nested-path extension of that
-     projection plus the row below, or the flat spelling `work delivery-release` with the row
-     `work delivery-release|tag:string:r,as_:string:o,hive:string:o,as_json:boolean:o`. Decide
-     the spelling first (the ADR says `work delivery release`).
-  2. `src/beadhive/kernel/operations/__init__.py`: add that row to `_CLI_ROWS` (keep the rows
-     sorted).
-  3. `src/beadhive/work.py`: add `"work.delivery-release": delivery_release_cmd` to
-     `CLI_HANDLERS` (the key is the canonical operation identity), bind the `--json` option name
-     with `_bind_cli_handler(delivery_release_cmd, as_json="json_out")` if the catalog row names it
-     differently, and drop the "Not yet in `CLI_HANDLERS`" sentence from its docstring.
-  4. Run `just wire-publish` (operator, release step), then the catalog-drift tests and `bh work
-     check`.
+- **Registered (`bh-73td2`, wire 2.16.0), spelling `bh work delivery release <tag>`.** The
+  three-token spelling the ADR named is kept. `project_cli_group` used to project a group's verbs as
+  exactly two tokens; it now also mounts a path of three or more tokens on nested Typer groups it
+  creates per intermediate token (`work delivery`, `work outbox`; help text from `group_help`). The
+  change is additive: two-token leaves, the `work` / `plan` digests and every published operation
+  shape are unchanged (the pre-2.16.0 `work` Click inventory digest is reproduced once the new
+  leaves are dropped, pinned in `tests/test_cli_projection.py`). The catalog row is
+  `work delivery release|tag:string:r,as_:string:o,hive:string:o,as_json:boolean:o`, the operation
+  identity `work.delivery.release`, the handler key `"work.delivery.release": delivery_release_cmd`,
+  and the two new parent rows (`work delivery`, `work outbox`) join `_CLI_PARENT_ROWS`. Because the
+  catalog lists parents in path order, a new group lands between two published ones; the wire
+  checker (`scripts/check_wire_schema_compat.py`) now matches `cli_parents` by `path`, like
+  operations by name, so adding a group is compatible while removing or changing one still fails.
+  The flat `work delivery-release` was not needed. Off unless `intake.external.enabled`. CLI only,
+  no MCP row.
 
 ### 13. Leak check and sanitizer seam
 

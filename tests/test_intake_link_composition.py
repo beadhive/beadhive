@@ -10,7 +10,7 @@ composition adds is pinned here, on the same public-store fixture as the import 
   ``SCOPE_PUBLIC`` and the byte-fingerprinted public-store fixture is IDENTICAL after every case,
   refusals included; no edge crosses stores;
 * no tracker is composed or written (the world sees zero write requests);
-* the command bodies render, and the Typer function is NOT a catalogued verb.
+* the command bodies render, and the Typer functions are catalogued verbs since wire 2.16.0.
 
 No live GitHub, no clock, no sleep.
 """
@@ -324,10 +324,9 @@ def test_the_accept_command_body_routes_work_options_and_leaves_a_plain_accept_a
     assert seen and seen[0][1] == {"issue_type": "bug", "priority": "1"}  # the plain path
 
 
-def test_the_typer_functions_delegate_without_being_catalogued_verbs(rig, monkeypatch) -> None:
-    """``work.link_cmd`` is the command body, ready for registration; until the wire release that
-    registers it (bh-v2rr6) it is deliberately not in the catalog-derived ``CLI_HANDLERS``, and
-    ``accept_cmd`` keeps its published parameters."""
+def test_the_typer_functions_delegate_and_are_catalogued_verbs(rig, monkeypatch) -> None:
+    """``work.link_cmd`` is the command body, registered by wire 2.16.0 (bh-73td2), and
+    ``accept_cmd`` keeps its published parameters and appends ``--work`` / ``--new-work``."""
     import inspect
 
     from beadhive import work
@@ -338,11 +337,13 @@ def test_the_typer_functions_delegate_without_being_catalogued_verbs(rig, monkey
     work.link_cmd("w-1", "w-2", False, True, "dev/me", "widget", True)
 
     assert seen == [("w-1", "w-2", False, True, "dev/me", "widget", True)]
-    assert "work.link" not in work.CLI_HANDLERS
+    assert "work.link" in work.CLI_HANDLERS and "work link" in work.CLI_PROJECTION.paths
     assert list(inspect.signature(work.accept_cmd).parameters) == [
         "bead",
         "type_",
         "priority",
         "as_",
         "hive",
+        "work",
+        "new_work",
     ]

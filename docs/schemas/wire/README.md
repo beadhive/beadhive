@@ -21,7 +21,9 @@ requires a new major. `just wire-schema-compat` compares the candidate tree with
 Optional object properties may be added; removing or retyping properties, changing requiredness,
 or changing the members of an enum marked `x-beadhive-closed-union` is rejected within a major.
 Operation-catalog data is matched by operation name, so a new operation may land anywhere in the
-name-sorted list. Removing, renaming, or changing a published operation fails.
+name-sorted list; CLI parent groups (`cli_parents`) are matched by `path` the same way, so a
+new group such as `work outbox` may land anywhere. Removing, renaming, or changing a published
+operation or parent group fails.
 
 ## Add a CLI verb
 

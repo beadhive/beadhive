@@ -1070,6 +1070,314 @@ def delivery_release(
     return MilestoneResult(0, outcome=outcome, tag=tag, commit=commit)
 
 
+# -- the supervised outbox verbs (bh work outbox ...): operator seat, off by default -------------
+
+
+@dataclass(frozen=True)
+class OutboxCall:
+    """The rendering input of one ``bh work outbox`` verb: ``code`` is the exit status, ``reason``
+    the stable refusal code (empty on success, ``store_error`` for a store failure), ``error`` the
+    one-line message naming the fix, ``value`` what the port returned (a result, a tuple of
+    results, a listing or a rendered record)."""
+
+    code: int
+    error: str = ""
+    reason: str = ""
+    value: Any = None
+
+
+class _UnwiredTracker:
+    """Stands in for the tracker on the verbs that make no tracker request (the listing): any use
+    refuses naming the missing credential wiring, so an unwired build can never reach a tracker."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise _no_tracker_wiring()
+
+
+def outbox_wiring(cfg: Mapping[str, Any], entry: Mapping[str, Any]) -> dict[str, Any]:
+    """The outbox's tracker wiring for ``entry``: ``tracker``, ``identity``, ``marker_line`` and
+    ``owned_label_prefixes``. Empty while production credential wiring (``bh-kzs0b``) does not
+    exist, so every verb that needs a tracker refuses; this is the one place that wiring lands
+    (tests patch it, or pass the keywords to :func:`outbox_call`)."""
+    return {}
+
+
+def outbox_message(exc: IntakeStoreError) -> str:
+    """The one-line message for a store failure during an outbox verb."""
+    return f"outbox could not finish {exc.bead or 'a report'} ({exc.operation}): {exc.detail}"
+
+
+def _outbox_port(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    *,
+    hive: str,
+    lock: IntakeLock | None,
+    tracker: Any,
+    identity: OwnIdentity | None,
+    marker_line: Callable[..., str] | None,
+    ids: Any,
+    sanitizer: Any,
+    owned_label_prefixes: tuple[str, ...],
+    needs_tracker: bool,
+):
+    """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
+    before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
+    ``intake_disabled``), ``intake.external.outbox.enabled`` (no sender bound,
+    ``outbox_disabled``; the ``labels.change`` gate has no config key yet, so it stays off), then
+    the tracker (``bh-kzs0b``: no production credential wiring exists, so a build that is not
+    handed ``tracker``, ``identity`` and ``marker_line`` refuses)."""
+    enabled, _default_type = external_intake_settings(cfg)
+
+    def build():
+        policy, _milestones = milestone_settings(cfg)
+        wired = tracker is not None and identity is not None and marker_line is not None
+        if policy.enabled and not wired and needs_tracker:
+            raise _no_tracker_wiring()
+        return outbox_service_for(
+            cfg,
+            entry,
+            directory,
+            tracker=tracker if tracker is not None else _UnwiredTracker(),
+            identity=identity if identity is not None else OwnIdentity("", ""),
+            marker_line=marker_line if marker_line is not None else _unwired_marker,
+            policy=policy,
+            hive=hive,
+            sanitizer=sanitizer,
+            lock=lock,
+            ids=ids,
+            owned_label_prefixes=owned_label_prefixes,
+        )
+
+    return bind_intake(enabled, build)
+
+
+def _unwired_marker(*_args: Any, **_kwargs: Any) -> str:
+    raise _no_tracker_wiring()
+
+
+def outbox_call(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    run: Callable[[Any], Any],
+    *,
+    hive: str = "",
+    needs_tracker: bool = True,
+    lock: IntakeLock | None = None,
+    tracker: Any = None,
+    identity: OwnIdentity | None = None,
+    marker_line: Callable[..., str] | None = None,
+    ids: Any = None,
+    sanitizer: Any = None,
+    owned_label_prefixes: tuple[str, ...] = (),
+) -> OutboxCall:
+    """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
+    failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
+    ``intake.external.outbox.enabled``; it never posts without the adapter's own enable and an
+    operator approval. The tracker, identity and marker codec are INJECTED (``bh-kzs0b``)."""
+    wiring = outbox_wiring(cfg, entry) if tracker is None else {}
+    try:
+        port = _outbox_port(
+            cfg,
+            entry,
+            directory,
+            hive=hive,
+            lock=lock,
+            tracker=tracker if tracker is not None else wiring.get("tracker"),
+            identity=identity if identity is not None else wiring.get("identity"),
+            marker_line=marker_line if marker_line is not None else wiring.get("marker_line"),
+            ids=ids,
+            sanitizer=sanitizer,
+            owned_label_prefixes=owned_label_prefixes
+            or tuple(wiring.get("owned_label_prefixes", ())),
+            needs_tracker=needs_tracker,
+        )
+        value = run(port)
+    except IntakeRefused as exc:
+        return OutboxCall(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return OutboxCall(exc.returncode, outbox_message(exc), "store_error")
+    except store_target.StoreResolutionError as exc:
+        return OutboxCall(1, str(exc), "store_unresolved")
+    return OutboxCall(0, value=value)
+
+
+_OUTBOX_KINDS = {
+    "comment": "comment.create",
+    "comment.create": "comment.create",
+    "labels": "labels.change",
+    "labels.change": "labels.change",
+}
+
+
+def outbox_kind(text: str) -> Any:
+    """The :class:`OpKind` an operator typed (``comment`` | ``labels``, or the full operation
+    name), or ``None`` when it names neither. An empty string is the default, ``comment.create``."""
+    from .modules.intake.domain import OpKind
+
+    name = _OUTBOX_KINDS.get((text or "comment").strip().lower())
+    return OpKind(name) if name else None
+
+
+def _bad_kind(text: str) -> OutboxCall:
+    return OutboxCall(2, f"unknown operation {text!r}: use comment or labels", "bad_argument")
+
+
+def outbox_draft(cfg, entry, directory, report: str, text: str, actor: str, **kwargs) -> OutboxCall:
+    """``bh work outbox draft``: O1 for an operator reply to ``report``'s issue. Never sends."""
+    from .modules.intake.contracts import ReplyDraft
+
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.draft_reply(ReplyDraft(report, text, actor)),
+        **kwargs,
+    )
+
+
+def outbox_show(
+    cfg,
+    entry,
+    directory,
+    outbox_id: str = "",
+    report: str = "",
+    open_only: bool = False,
+    **kwargs,
+) -> OutboxCall:
+    """``bh work outbox show [<id>]``: the dry-run render of one record (its digest is what the
+    operator types), or without an id the listing. Neither makes a tracker request, so the
+    listing runs without tracker wiring."""
+    from .modules.intake.contracts import OutboxQuery
+
+    if outbox_id:
+        return outbox_call(cfg, entry, directory, lambda port: port.render(outbox_id), **kwargs)
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.outbox(OutboxQuery(report, open_only)),
+        needs_tracker=False,
+        **kwargs,
+    )
+
+
+def outbox_approve(
+    cfg,
+    entry,
+    directory,
+    outbox_id: str,
+    ops: Sequence[str],
+    publish: Sequence[str],
+    actor: str,
+    **kwargs,
+) -> OutboxCall:
+    """``bh work outbox approve <id> --op <kind>:<digest> [--op ...] [--publish <finding>]``.
+
+    Each ``--op`` is its own approval and mints its own single-use grant (approving the comment
+    never approves the labels). ``--publish`` names a finding to publish deliberately and is only
+    accepted with exactly one ``--op``, so the finding belongs to that operation. An approval
+    already made stays made when a later one is refused: the result carries those so far."""
+    from .modules.intake.contracts import OutboxApprove
+
+    if not ops:
+        return OutboxCall(2, "pass at least one --op <comment|labels>:<digest>", "bad_argument")
+    if publish and len(ops) != 1:
+        return OutboxCall(2, "--publish needs exactly one --op", "bad_argument")
+    requests = []
+    for op in ops:
+        kind_text, _, digest = op.partition(":")
+        kind = outbox_kind(kind_text)
+        if kind is None:
+            return _bad_kind(kind_text)
+        if not digest:
+            return OutboxCall(
+                2, f"--op {op!r} has no digest: use {kind_text}:<digest>", "bad_argument"
+            )
+        requests.append(OutboxApprove(outbox_id, digest, actor, tuple(publish), kind))
+
+    done: list[Any] = []
+
+    def run(port):
+        for request in requests:
+            done.append(port.approve(request))
+        return tuple(done)
+
+    call = outbox_call(cfg, entry, directory, run, **kwargs)
+    if call.code and done:  # an earlier approval stays made: report it with the refusal
+        return OutboxCall(call.code, call.error, call.reason, tuple(done))
+    return call
+
+
+def outbox_send(
+    cfg, entry, directory, outbox_id: str, kind: str, actor: str, **kwargs
+) -> OutboxCall:
+    """``bh work outbox send <id>``: O9 to O13 for one approved operation (the only verb that can
+    reach a tracker, and only with the adapter's own enable and an unspent grant)."""
+    op = outbox_kind(kind)
+    if op is None:
+        return _bad_kind(kind)
+    return outbox_call(
+        cfg, entry, directory, lambda port: port.send(outbox_id, actor=actor, kind=op), **kwargs
+    )
+
+
+def outbox_reconcile(cfg, entry, directory, outbox_id: str, actor: str, **kwargs) -> OutboxCall:
+    """``bh work outbox reconcile [<id>]``: read the comment listing (or labels) back and settle
+    an unknown outcome by its marker; never sends."""
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.reconcile(outbox_id or None, actor=actor),
+        **kwargs,
+    )
+
+
+def outbox_discard(
+    cfg,
+    entry,
+    directory,
+    outbox_id: str,
+    reason: str,
+    accept_unknown: bool,
+    kind: str,
+    actor: str,
+    **kwargs,
+) -> OutboxCall:
+    """``bh work outbox discard <id> --reason ...``: abandon an unsent operation (O8), or an
+    unknown one when ``accept_unknown`` (O18). ``kind`` empty means every operation."""
+    op = None
+    if kind:
+        op = outbox_kind(kind)
+        if op is None:
+            return _bad_kind(kind)
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.discard(
+            outbox_id, reason=reason, actor=actor, accept_unknown=accept_unknown, kind=op
+        ),
+        **kwargs,
+    )
+
+
+def outbox_retry(
+    cfg, entry, directory, outbox_id: str, kind: str, actor: str, **kwargs
+) -> OutboxCall:
+    """``bh work outbox retry <id>``: O17, a failed operation back to drafted (a new render, a new
+    digest and a new approval are needed before it can be sent again)."""
+    op = outbox_kind(kind)
+    if op is None:
+        return _bad_kind(kind)
+    return outbox_call(
+        cfg, entry, directory, lambda port: port.retry(outbox_id, actor=actor, kind=op), **kwargs
+    )
+
+
 __all__ = [
     "FlockIntakeLock",
     "ImportResult",
@@ -1092,6 +1400,18 @@ __all__ = [
     "link_report",
     "lock_dir",
     "MilestoneResult",
+    "OutboxCall",
+    "outbox_approve",
+    "outbox_discard",
+    "outbox_draft",
+    "outbox_kind",
+    "outbox_reconcile",
+    "outbox_retry",
+    "outbox_send",
+    "outbox_show",
+    "outbox_call",
+    "outbox_message",
+    "outbox_wiring",
     "delivery_release",
     "milestone_message",
     "milestone_settings",

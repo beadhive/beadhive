@@ -437,3 +437,258 @@ def delivery_release(tag: str, as_: str = "", hive: str = "", as_json: bool = Fa
         cfg, entry, Path(registry.hive_dir(entry)), tag, actor, hive=hive
     )
     render_delivery_release(result, tag, as_json)
+
+
+# -- the supervised outbox (bh work outbox ...): operator seat, off by default ------------------
+
+
+def _outbox_result_row(result) -> dict:
+    rendered = result.rendered
+    return {
+        "report": result.report,
+        "outbox_id": result.outbox_id,
+        "kind": result.kind.value,
+        "state": result.state.value if result.state else "",
+        "rules": list(result.rules),
+        "grant_id": result.grant_id,
+        "comment_id": result.comment_id,
+        "notified": result.notified,
+        "complete": result.complete,
+        "detail": result.detail,
+        "digest": rendered.digest if rendered else "",
+    }
+
+
+def _rendered_row(rendered) -> dict:
+    return {
+        "kind": rendered.kind.value,
+        "target_url": rendered.target_url,
+        "digest": rendered.digest,
+        "short_digest": rendered.short_digest,
+        "payload": rendered.payload,
+        "add": sorted(rendered.add),
+        "remove": sorted(rendered.remove),
+        "findings": [
+            {
+                "id": finding.id,
+                "kind": finding.kind.value,
+                "match": finding.match,
+                "overridable": finding.overridable,
+                "warning": finding.warning,
+            }
+            for finding in rendered.findings
+        ],
+    }
+
+
+def _record_row(report: str, record) -> dict:
+    return {
+        "report": report,
+        "outbox_id": record.outbox_id,
+        "event": record.event.value,
+        "group": record.group,
+        "operations": [
+            {"kind": op.kind.value, "state": op.state.value} for op in record.operations
+        ],
+    }
+
+
+def _outbox_payload(call, verb: str) -> dict:
+    value = call.value
+    payload: dict = {"ok": call.code == 0, "verb": verb, "reason": call.reason, "error": call.error}
+    if value is None:
+        return payload
+    if hasattr(value, "renders"):  # a RenderedRecord
+        payload["record"] = _record_row(value.report, value.record)
+        payload["renders"] = [_rendered_row(r) for r in value.renders]
+    elif hasattr(value, "entries"):  # an OutboxListing
+        payload["records"] = [_record_row(e.report, e.record) for e in value.entries]
+    elif isinstance(value, tuple):
+        payload["results"] = [_outbox_result_row(r) for r in value]
+    else:
+        payload["results"] = [_outbox_result_row(value)]
+    return payload
+
+
+def _outbox_result_lines(result) -> list[str]:
+    state = result.state.value if result.state else "?"
+    lines = [f"✓ {result.outbox_id} {result.kind.value}: {state}"]
+    if result.rules:
+        lines.append(f"  rules {', '.join(result.rules)}")
+    if result.grant_id:
+        lines.append(f"  grant {result.grant_id} (single use)")
+    if result.comment_id:
+        lines.append(f"  comment {result.comment_id}")
+    if result.notified:
+        lines.append(f"  notified:{result.notified}")
+    if result.detail:
+        lines.append(f"  → {result.detail}")
+    return lines
+
+
+def _rendered_lines(rendered) -> list[str]:
+    lines = [f"{rendered.kind.value} → {rendered.target_url}", f"  digest {rendered.digest}"]
+    lines += [f"  | {line}" for line in rendered.payload.splitlines() or [""]]
+    for finding in rendered.findings:
+        how = "warning" if finding.warning else ("publishable" if finding.overridable else "blocks")
+        lines.append(f"  finding {finding.id} ({how}): {finding.match}")
+    return lines
+
+
+def render_outbox(call, verb: str, as_json: bool) -> None:
+    """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal."""
+    if as_json:
+        typer.echo(json.dumps(_outbox_payload(call, verb), sort_keys=True))
+        if call.code:
+            raise typer.Exit(call.code)
+        return
+    value = call.value
+    done = value if isinstance(value, tuple) else ((value,) if value is not None else ())
+    if hasattr(value, "renders"):
+        typer.echo(f"{value.record.outbox_id} on {value.report} ({value.record.event.value})")
+        for rendered in value.renders:
+            for line in _rendered_lines(rendered):
+                typer.echo(line)
+    elif hasattr(value, "entries"):
+        if not value.entries:
+            typer.echo("no outbox records")
+        for entry in value.entries:
+            states = ", ".join(
+                f"{op.kind.value}:{op.state.value}" for op in entry.record.operations
+            )
+            typer.echo(
+                f"{entry.record.outbox_id}  {entry.report}  {entry.record.event.value}  {states}"
+            )
+    else:
+        if verb == "reconcile" and not done and not call.code:
+            typer.echo("nothing to reconcile")
+        for result in done:
+            for line in _outbox_result_lines(result):
+                typer.echo(line)
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ outbox {verb} refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+
+
+def _outbox(verb: str, hive: str, as_json: bool, run) -> None:
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    call = run(cfg, entry, Path(registry.hive_dir(entry)))
+    render_outbox(call, verb, as_json)
+
+
+def outbox_draft(bead: str, text: str, as_: str = "", hive: str = "", as_json: bool = False):
+    """Draft an operator reply to a bound report's issue (O1): nothing is sent."""
+    otel.set_bead(bead)
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "draft",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_draft(
+            cfg, entry, directory, bead, text, actor, hive=hive
+        ),
+    )
+
+
+def outbox_show(
+    outbox_id: str = "",
+    bead: str = "",
+    open_only: bool = False,
+    hive: str = "",
+    as_json: bool = False,
+):
+    """The dry-run render of one record (``<id>``), or the listing of the hive's records."""
+    _outbox(
+        "show",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_show(
+            cfg, entry, directory, outbox_id, bead, open_only, hive=hive
+        ),
+    )
+
+
+def outbox_approve(
+    outbox_id: str,
+    op: list[str],
+    publish: list[str],
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Approve the digests the operator reviewed; each ``--op`` mints its own single-use grant."""
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "approve",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_approve(
+            cfg, entry, directory, outbox_id, op, publish, actor, hive=hive
+        ),
+    )
+
+
+def outbox_send(
+    outbox_id: str, kind: str = "", as_: str = "", hive: str = "", as_json: bool = False
+):
+    """Send one approved operation (write-ahead, receipt)."""
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "send",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_send(
+            cfg, entry, directory, outbox_id, kind, actor, hive=hive
+        ),
+    )
+
+
+def outbox_reconcile(outbox_id: str = "", as_: str = "", hive: str = "", as_json: bool = False):
+    """Settle unknown outcomes by reading the issue back (never sends)."""
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "reconcile",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_reconcile(
+            cfg, entry, directory, outbox_id, actor, hive=hive
+        ),
+    )
+
+
+def outbox_discard(
+    outbox_id: str,
+    reason: str,
+    accept_unknown: bool = False,
+    kind: str = "",
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Abandon an unsent operation (or, with ``--accept-unknown``, one whose outcome is unknown)."""
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "discard",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_discard(
+            cfg, entry, directory, outbox_id, reason, accept_unknown, kind, actor, hive=hive
+        ),
+    )
+
+
+def outbox_retry(
+    outbox_id: str, kind: str = "", as_: str = "", hive: str = "", as_json: bool = False
+):
+    """Return a failed operation to drafted (a new render, digest and approval are needed)."""
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "retry",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_retry(
+            cfg, entry, directory, outbox_id, kind, actor, hive=hive
+        ),
+    )
