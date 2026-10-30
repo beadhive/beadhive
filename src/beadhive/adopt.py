@@ -139,14 +139,26 @@ def provenance_of(epic: dict) -> tuple[str, str]:
     )
 
 
+# Mirrors ``beadhive_core.planning.DEFAULT_EPIC_PRIORITY`` (src/beadhive never imports the core
+# package eagerly); tests pin both to P2 via the filed `bd create` and the import record.
+DEFAULT_EPIC_PRIORITY = 2
+
+
 def epic_import_record(epic: dict, labels: list[str]) -> dict:
     """A ``bd import`` JSONL record that BIRTHS the epic carrying native provenance.
 
     ``source_system`` can only be set when a bead is created, so a provenance-carrying epic is
-    imported rather than ``bd create``-d. Carries title/type + description/design + the identity
-    triplet labels + the native ``source_system`` / ``external_ref`` pair.
+    imported rather than ``bd create``-d. Carries title/type + priority + description/design + the
+    identity triplet labels + the native ``source_system`` / ``external_ref`` pair. The priority
+    is the epic's declared one (``0`` honored) or :data:`DEFAULT_EPIC_PRIORITY` when omitted —
+    ``bd import`` would otherwise store the unset zero value, i.e. P0.
     """
-    record: dict = {"title": str(epic.get("title") or ""), "issue_type": "epic"}
+    priority = epic.get("priority")
+    record: dict = {
+        "title": str(epic.get("title") or ""),
+        "issue_type": "epic",
+        "priority": int(priority) if priority not in (None, "") else DEFAULT_EPIC_PRIORITY,
+    }
     for key in ("description", "design"):
         val = str(epic.get(key) or "").strip()
         if val:
