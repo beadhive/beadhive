@@ -827,7 +827,8 @@ packages-check:
     ./scripts/hermetic.sh uv sync --locked --offline --inexact --no-default-groups \
         --package beadhive-package-template --package beadhive-core \
         --package beadhive-plugins --package beadhive-worktrees \
-        --package beadhive-validation-broker
+        --package beadhive-validation-broker --package beadlog \
+        --package beadlog-sources --package beadhive-backfill
     uv run --no-sync python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --no-sync python scripts/pytest_with_report.py -n ${BH_GRANT_CPUS:-auto} $(uv run --no-sync python scripts/native_package_tests.py --relative)
     ./scripts/hermetic.sh uv build --package beadhive-package-template --no-build-isolation
@@ -835,6 +836,9 @@ packages-check:
     ./scripts/hermetic.sh uv build --package beadhive-plugins --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-worktrees --no-build-isolation
     ./scripts/hermetic.sh uv build --package beadhive-validation-broker --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadlog --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadlog-sources --no-build-isolation
+    ./scripts/hermetic.sh uv build --package beadhive-backfill --no-build-isolation
 
 # lint + sandboxed tests for ONLY packages/beadhive-bd-cli (the `bd-cli` attest key, bh-vq34o).
 # Mirrors packages-check's structure, scoped to this one distribution: beadhive-bd-cli

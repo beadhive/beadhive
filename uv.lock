@@ -15,6 +15,7 @@ resolution-markers = [
 [manifest]
 members = [
     "beadhive",
+    "beadhive-backfill",
     "beadhive-bd-cli",
     "beadhive-beads-client",
     "beadhive-core",
@@ -26,6 +27,8 @@ members = [
     "beadhive-tracker-github",
     "beadhive-validation-broker",
     "beadhive-worktrees",
+    "beadlog",
+    "beadlog-sources",
 ]
 
 [[package]]
@@ -280,6 +283,21 @@ validation-broker = [{ name = "beadhive-validation-broker", editable = "packages
 worktrees = [{ name = "beadhive-worktrees", editable = "packages/beadhive-worktrees" }]
 
 [[package]]
+name = "beadhive-backfill"
+version = "0.1.0"
+source = { editable = "packages/beadhive-backfill" }
+dependencies = [
+    { name = "beadlog" },
+    { name = "beadlog-sources" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beadlog", editable = "packages/beadlog" },
+    { name = "beadlog-sources", editable = "packages/beadlog-sources" },
+]
+
+[[package]]
 name = "beadhive-bd-cli"
 version = "0.1.0"
 source = { editable = "packages/beadhive-bd-cli" }
@@ -387,6 +405,22 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "beadhive-plugins", editable = "packages/beadhive-plugins" }]
+
+[[package]]
+name = "beadlog"
+version = "0.1.0"
+source = { editable = "packages/beadlog" }
+
+[[package]]
+name = "beadlog-sources"
+version = "0.1.0"
+source = { editable = "packages/beadlog-sources" }
+dependencies = [
+    { name = "beadlog" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "beadlog", editable = "packages/beadlog" }]
 
 [[package]]
 name = "beartype"
