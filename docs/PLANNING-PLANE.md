@@ -155,6 +155,7 @@ epic:
   title: "Epic title"
   description: "intent + context"
   design: "architecture notes"
+  priority: 2                   # optional 0-4; omitted files at P2 (bd create's default), never P0
   complexity: COMPLEX         # optional explicit route; otherwise inferred before filing
   adopts: [bd-123]              # originating report id(s) — set by `bh plan adopt` (optional)
   source_system: github        # native provenance carried onto the epic (optional)
@@ -178,6 +179,15 @@ issues:
     tag: spike                  # open dim — e.g. the spike-loop's tag:spike / tag:decision
     deps: [b, c]                # local handles this depends on
 ```
+
+### Priority
+
+`epic.priority` and each issue's `priority` take `0`-`4`. An explicit `0` is honored (P0).
+An **omitted** epic priority files at **P2** — the same default `bd create` applies — never the
+store's unset value (P0), which would sort the epic ahead of real P0 work in `bd ready` /
+`bh work schedule`. The same default applies on the adopted-report path, where the epic is born
+via `bd import` (`source_system` set). An omitted *issue* priority is left unset and falls to the
+store's own default; child priorities are never inherited from the epic.
 
 ### Batches (`batch:<group>`)
 
