@@ -4,7 +4,7 @@ HTTP cache switch, the factory's settings, and the planted-token leak check."""
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -235,6 +235,7 @@ def test_the_settings_become_explicit_adapter_arguments():
             "page_size": 7,
         },
         "http_cache": {"enabled": False},
+        "timeout_seconds": 12.5,
         "retry": {"max_retries": 1, "max_single_wait_seconds": 5, "max_total_wait_seconds": 9.5},
         "write": {"comment": {"enabled": True}, "labels": {"enabled": True, "owned_prefixes": []}},
     }
@@ -251,6 +252,7 @@ def test_the_settings_become_explicit_adapter_arguments():
     summary = adapter.settings_summary
     assert summary["include_closed"] is False and summary["page_size"] == 7
     assert summary["retry"] == RetryBudget(1, timedelta(seconds=5), timedelta(seconds=9.5))
+    assert summary["timeout_seconds"] == 12.5
     adapter.list_issues(IssueQuery())
     assert world.requests[0].url.params["per_page"] == "7"
     assert world.requests[0].url.params["state"] == "open"
@@ -262,6 +264,7 @@ def test_default_settings_enable_nothing():
     assert adapter.enabled == frozenset()
     assert adapter.settings_summary["http_cache"] is False
     assert adapter.settings_summary["retry"] == RetryBudget()
+    assert adapter.settings_summary["timeout_seconds"] == 30.0
     with pytest.raises(OperationNotEnabled):
         adapter.list_issues(IssueQuery())
 
@@ -276,6 +279,12 @@ def test_default_settings_enable_nothing():
         {"retry": {"max_single_wait_seconds": 0}},
         {"retry": {"max_single_wait_seconds": 30, "max_total_wait_seconds": 10}},
         {"http_cache": {"enabled": 1}},
+        {"timeout_seconds": 0},
+        {"timeout_seconds": -1},
+        {"timeout_seconds": True},
+        {"timeout_seconds": "30"},
+        {"timeout_seconds": float("inf")},
+        {"timeout_seconds": float("nan")},
         {"base_url": "http://ghe.example/api/v3"},
         {"base_url": "https://ghe.example/api/v3?x=1"},
     ],
@@ -284,6 +293,60 @@ def test_invalid_settings_are_refused_with_a_static_message(settings):
     with pytest.raises(ValueError) as caught:
         build_adapter(settings, lambda: None, project=PROJECT, sleep=lambda _s: None)
     assert "true" not in str(caught.value) and "ghe.example" not in str(caught.value)
+
+
+# ---- the request timeout reaches the githubkit client --------------------------------------------
+
+
+def _record_client_timeouts(monkeypatch) -> list[object]:
+    """Record the ``timeout`` every githubkit client is built with (no sleeping, no network)."""
+    import githubkit
+
+    seen: list[object] = []
+    real = githubkit.GitHub
+
+    def recording(*args, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(githubkit, "GitHub", recording)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [({}, 30.0), ({"timeout_seconds": 7}, 7.0), ({"timeout_seconds": 0.25}, 0.25)],
+)
+def test_the_configured_timeout_is_the_one_the_client_is_built_with(
+    monkeypatch, settings, expected
+):
+    seen = _record_client_timeouts(monkeypatch)
+    world = FakeGitHub()
+    adapter = build_adapter(
+        {"read": {"issues": {"enabled": True}}, **settings},
+        lambda: ResolvedToken(world.token, "env:GH_TOKEN"),
+        project=PROJECT,
+        sleep=world.sleep,
+        clock=world.clock.now,
+        transport=world.transport(),
+    )
+    adapter.list_issues(IssueQuery())
+    assert seen and set(seen) == {expected}
+
+
+@pytest.mark.parametrize("seconds", [0, -1, 0.0, True, float("inf"), float("nan"), None, "30"])
+def test_the_transport_itself_refuses_a_timeout_that_is_not_finite_and_positive(seconds):
+    from beadhive_tracker_github.adapter.transport import Transport
+
+    with pytest.raises(ValueError):
+        Transport(
+            token_source=lambda: None,
+            api_base="https://api.github.com",
+            budget=RetryBudget(),
+            sleep=lambda _s: None,
+            clock=lambda: datetime.now(UTC),
+            timeout_seconds=seconds,
+        )
 
 
 # ---- the planted-token leak check ---------------------------------------------------------------

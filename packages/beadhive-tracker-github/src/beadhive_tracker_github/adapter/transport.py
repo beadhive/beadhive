@@ -41,6 +41,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from math import inf
 from typing import TYPE_CHECKING, Any
 
 from beadhive.modules.tracker.contracts import (
@@ -235,6 +236,16 @@ class Transport:
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     transport: httpx.BaseTransport | None = field(default=None, repr=False)
     _cache_strategy: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # "No timeout" is never a configuration: a hung connection must stay a transient failure.
+        seconds = self.timeout_seconds
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, int | float)
+            or not 0 < seconds < inf
+        ):
+            raise ValueError("timeout_seconds must be a finite number greater than zero")
 
     def _resolve(self) -> ResolvedToken | None:
         try:

@@ -2843,6 +2843,15 @@ class TrackerGithubConfig(_QuietSection):
         default_factory=TrackerGithubFlag,
         description="Conditional requests for the id-reconcile pass (default off).",
     )
+    timeout_seconds: float = Field(
+        30,
+        strict=True,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds before a connect or read is abandoned (finite; default 30). "
+        "A number greater than zero: zero, negative, boolean and non-numeric values are "
+        "refused, and there is no way to disable the timeout.",
+    )
     retry: TrackerGithubRetry = Field(default_factory=TrackerGithubRetry)
     write: TrackerGithubWrite = Field(default_factory=TrackerGithubWrite)
 

@@ -407,6 +407,7 @@ and `import beadhive` never needs or imports its `githubkit` dependency.
 | `read.include_closed` | `true` | scope within a read, not a feature switch |
 | `read.page_size` | unset | listing page size, 1 to 100 |
 | `http_cache.enabled` | `false` | conditional requests for the id-reconcile pass |
+| `timeout_seconds` | `30` | seconds before a connect or read is abandoned; a number greater than zero (an integer or a float), finite by construction: zero, negative, boolean, non-numeric and `inf`/`nan` values are refused, and there is no way to disable the timeout |
 | `retry.max_retries` / `retry.max_single_wait_seconds` / `retry.max_total_wait_seconds` | `3` / `60` / `120` | the retry budget; single wait at most the total |
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |

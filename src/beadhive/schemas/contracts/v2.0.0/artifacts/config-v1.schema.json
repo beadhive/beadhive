@@ -3463,6 +3463,13 @@
         "retry": {
           "$ref": "#/$defs/TrackerGithubRetry"
         },
+        "timeout_seconds": {
+          "default": 30,
+          "description": "Seconds before a connect or read is abandoned (finite; default 30). A number greater than zero: zero, negative, boolean and non-numeric values are refused, and there is no way to disable the timeout.",
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
         "write": {
           "$ref": "#/$defs/TrackerGithubWrite"
         }
@@ -4761,6 +4768,13 @@
             },
             "retry": {
               "$ref": "#/$defs/TrackerGithubRetry"
+            },
+            "timeout_seconds": {
+              "default": 30,
+              "description": "Seconds before a connect or read is abandoned (finite; default 30). A number greater than zero: zero, negative, boolean and non-numeric values are refused, and there is no way to disable the timeout.",
+              "exclusiveMinimum": 0,
+              "title": "Timeout Seconds",
+              "type": "number"
             },
             "write": {
               "$ref": "#/$defs/TrackerGithubWrite"

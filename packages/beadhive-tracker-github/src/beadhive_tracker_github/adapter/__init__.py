@@ -89,6 +89,7 @@ def build_adapter(
         base_url=parsed.base_url,
         http_cache=parsed.http_cache,
         label_prefixes=parsed.label_prefixes,
+        timeout_seconds=parsed.timeout_seconds,
         clock=clock,
         transport=transport,
     )

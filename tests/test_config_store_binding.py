@@ -561,6 +561,7 @@ def test_the_full_documented_plugin_config_validates():
             "page_size": 50,
         },
         "http_cache": {"enabled": True},
+        "timeout_seconds": 12.5,
         "retry": {"max_retries": 0, "max_single_wait_seconds": 1.5, "max_total_wait_seconds": 2},
         "write": {"comment": {"enabled": False}, "labels": {"owned_prefixes": ["bh:"]}},
     }
@@ -574,6 +575,7 @@ def test_the_full_documented_plugin_config_validates():
     assert validate_config(copy.deepcopy(cfg)) == []
     parsed = BeadhiveConfig.model_validate(cfg)
     assert parsed.plugins.tracker_github.read.page_size == 50
+    assert parsed.plugins.tracker_github.timeout_seconds == 12.5
     assert parsed.plugin_kernel.capability_owners == {"tracker.adapter@1": "tracker-github"}
     assert parsed.model_dump(by_alias=True, exclude_none=True)["plugins"]["tracker-github"][
         "enabled"
@@ -623,6 +625,20 @@ def test_the_full_documented_plugin_config_validates():
 def test_tracker_github_values_fail_closed(plugin, message):
     problems = validate_config(_doc(plugins={"tracker-github": plugin}))
     assert [p["message"] for p in problems] == [message]
+
+
+def test_the_request_timeout_defaults_to_thirty_seconds_and_is_finite():
+    assert TrackerGithubConfig().timeout_seconds == 30
+    assert TrackerGithubConfig.model_validate({"timeout_seconds": 5}).timeout_seconds == 5
+
+
+@pytest.mark.parametrize(
+    "value", [0, -1, -0.5, True, False, "30", None, [], float("inf"), float("nan")]
+)
+def test_the_request_timeout_must_be_a_finite_positive_number(value):
+    problems = validate_config(_doc(plugins={"tracker-github": {"timeout_seconds": value}}))
+    assert [p["path"] if "path" in p else p["message"] for p in problems]
+    assert all("timeout_seconds" in p["message"] for p in problems)
 
 
 @pytest.mark.parametrize(

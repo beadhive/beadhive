@@ -42,7 +42,8 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
 * Requests pin `X-GitHub-Api-Version: 2022-11-28` and send `since` in GitHub's ISO 8601 `Z` form
   (githubkit renders a `datetime` with `str()`). A page cursor's `next` URL is followed verbatim
   only on the API origin, so a tampered cursor cannot send the credential elsewhere.
-* The connect/read timeout is finite (30 s; githubkit's default is none).
+* The connect/read timeout is finite (30 s by default, configurable with `timeout_seconds`, a
+  number greater than zero; githubkit's own default is none, and none is never allowed).
 * **`comment.create`** posts the body plus the `bh:v1` marker line. Refused before any request
   (and before the credential is resolved) when the operation is off, the grant is missing, names
   another operation or issue, or was already presented. A missing credential is refused next and
