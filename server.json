@@ -8,13 +8,13 @@
     "source": "github"
   },
   "websiteUrl": "https://beadhive.ai",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "beadhive",
-      "version": "0.31.0",
+      "version": "0.32.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -37,7 +37,7 @@
             "command": "uvx",
             "args": [
               "--from",
-              "beadhive==0.31.0",
+              "beadhive==0.32.0",
               "bh-mcp"
             ]
           }

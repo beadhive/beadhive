@@ -13,6 +13,55 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.32.0 (2026-10-30)
+
+### Feat
+
+- **tracker-github**: make the 30-second request timeout configurable via plugins.tracker-github.timeout_seconds
+- **tracker-github**: add bh plugin tracker-github status and doctor commands
+- **intake**: add intake.external.outbox.labels_enabled, the default-off labels.change gate
+- **intake**: build the process TrackerAdapters from the tracker-github plugin and run.github_token_source
+- **work**: register the external-intake verbs and cut wire 2.16.0
+- **work**: trigger the merge milestone from merge and finish, and add the release body
+- **intake**: draft merge and release milestones through the outbox machine
+- **config**: add the default-off intake milestone, completion-policy and outbox switches
+- **intake**: add the opt-in discovery timer to the host daemon
+- **intake**: compose discover in the root with the unregistered verb body
+- **config**: add the default-off intake.external.discovery section
+- **intake**: discover external issues through the import upsert with a checkpoint
+- **plan**: track a bound report from the adopted epic instead of adopting it
+- **intake**: compose link and accept --work/--new-work in the root
+- **intake**: link many reports to one work bead with delivery:pending
+- **intake**: send and reconcile labels.change on owned labels behind its own gate and grant
+- **intake**: compose import in the root with a file lock and render the result
+- **config**: add the host-owned, default-off intake.external section
+- **intake**: import an external issue as an untriaged held report
+- **intake**: compose the outbox sender with the flock IntakeLock in the root, off by default
+- **intake**: add the supervised comment.create sender behind IntakePort
+- **intake**: store the intake.outbox document with the seq re-check
+- **work**: refuse to claim a held report and sweep holds in bh doctor
+- **intake**: hold bound reports for life with a held create, held close and hold sweep
+- **intake**: implement the Sanitizer port over the shared credential scrub
+- **intake**: add the outbox domain with DraftKey, the O1 to O19 machine and the leak check
+- **intake**: register the delivery and notified report dimensions
+- **guard**: classify the intake-hold gate and let no seat approve it
+- **intake**: store intake.thread in BdReportStore with the seq re-check
+- **intake**: add the tracker-neutral thread model and ThreadService
+- **intake**: add BdReportStore over bd and pass the ReportStore contract
+- **bd-cli**: add the report routes the intake store needs
+- **testing**: add MemoryReportStore and the ReportStore contract cases
+- **intake**: add the modules/intake skeleton and move the intake vocabulary behind the state facade
+
+### Fix
+
+- **tracker-github**: settle IssueKey.url owner/repo case in one place
+- **tracker-github**: resolve the credential before comment.create spends its WriteGrant
+- **operator**: count only blocks, conditional-blocks and waits-for edges as blockers
+
+### Refactor
+
+- **intake**: run bh report and bh escalate through IntakePort
+
 ## v0.31.0 (2026-10-27)
 
 ### Feat
