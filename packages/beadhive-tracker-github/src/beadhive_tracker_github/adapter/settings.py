@@ -23,6 +23,8 @@ from typing import Any
 
 from beadhive.modules.tracker.contracts import Operation, RetryBudget
 
+from .transport import DEFAULT_TIMEOUT_SECONDS
+
 __all__ = ["OPERATION_FLAG_KEYS", "AdapterSettings", "parse_settings"]
 
 #: Where each operation is switched on (mirrors root's ``OPERATION_FLAG_KEYS``).
@@ -46,6 +48,8 @@ class AdapterSettings:
     budget: RetryBudget
     #: ``write.labels.owned_prefixes`` (empty when unset): the labels a write may ever touch.
     label_prefixes: tuple[str, ...] = ()
+    #: ``timeout_seconds``: the finite connect/read timeout (never "none").
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
 
 def _lookup(settings: Mapping[str, Any], dotted: str) -> Any:
@@ -111,4 +115,7 @@ def parse_settings(settings: Mapping[str, Any]) -> AdapterSettings:
         http_cache=_value(settings, "http_cache.enabled", False, _is_bool),
         budget=budget,
         label_prefixes=tuple(prefixes),
+        timeout_seconds=float(
+            _value(settings, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS, _is_seconds)
+        ),
     )

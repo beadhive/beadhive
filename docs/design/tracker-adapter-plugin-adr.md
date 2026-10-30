@@ -193,6 +193,7 @@ explicit, and **`repo` is removed** (the `bh-6bkun` amendment).
 | `read.include_closed` | strict bool | true | Scope within a read, not a feature switch |
 | `read.page_size` | int 1..100 | unset | Listing page size |
 | `http_cache.enabled` | strict bool | **false** | Conditional requests for the id-reconcile pass |
+| `timeout_seconds` | finite number > 0 | 30 | Connect/read timeout; never unbounded |
 | `retry.max_retries` | int >= 0 | 3 | Part of `RetryBudget` |
 | `retry.max_single_wait_seconds` | number > 0 | 60 | Part of `RetryBudget` |
 | `retry.max_total_wait_seconds` | number >= single | 120 | Part of `RetryBudget` |
