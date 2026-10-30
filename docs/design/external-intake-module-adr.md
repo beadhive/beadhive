@@ -907,8 +907,9 @@ Interpretations, to be confirmed by the operator:
 - `send` / `retry` take `--kind comment|labels` (default comment); `discard` takes `--reason`,
   `--accept-unknown` and an optional `--kind`; `reconcile [<id>]` covers every report with an
   outbox when no id is given; `draft <bead> --text T` drafts an operator reply.
-- The `labels.change` gate (`OutboxPolicy.labels_enabled`) has no config key yet, so the verbs can
-  never enable it; labels stay off in production until a later bead names the key.
+- The `labels.change` gate (`OutboxPolicy.labels_enabled`) had no config key when this was built, so
+  the verbs could never enable it; `intake.external.outbox.labels_enabled` (default off) now does,
+  see "The labels gate key" below.
 
 **Acceptance item 4 is pending:** no real tracker write has been made. The first real
 `comment.create` is an operator-approved step recorded on the bead, and the re-verification of
@@ -951,6 +952,15 @@ first real label change is an operator-approved step recorded on the bead, and t
 re-verification against recorded real responses (the label write's diagnostics and the
 read-after-write visibility of the labels read-back) happens on that first gated write; it has not
 been performed.
+
+**The labels gate key (`bh-sbt7y`).** `intake.external.outbox.labels_enabled` (host-owned, strict
+bool, default `false`) is the config switch for `OutboxPolicy.labels_enabled`. It is separate from
+`outbox.enabled` (the comment sender's switch) and from the `tracker-github` labels capability
+(`write.labels`), and is only effective with `outbox.enabled` on: `milestone_settings` builds the
+policy with `labels_enabled = outbox.enabled and outbox.labels_enabled`, so a lone labels flag opens
+nothing. Off, `approve` and `send` of a label operation refuse `labels_disabled` before any tracker
+request. It does not approve, mint a grant or enable the adapter's write. `BeadhiveConfig` is
+`extra=forbid`, so the key must rotate to every host (`bh-tfko9`) before any config sets it.
 
 ### 12. Milestone triggers and the release seam
 

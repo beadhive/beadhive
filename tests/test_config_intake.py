@@ -23,6 +23,7 @@ def test_intake_is_absent_by_default_and_every_switch_is_off() -> None:
     assert external.enabled is False and external.default_type == "bug"
     assert external.completion_policy == "close-on-merge"
     assert external.outbox.enabled is False and external.outbox.mode == "supervised"
+    assert external.outbox.labels_enabled is False  # the labels.change gate has its own switch
     assert not any(vars(external.milestones).values())  # no milestone drafts unless asked
 
 
@@ -96,6 +97,7 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "draft_on_release",
         "append_release_to_closed",
         "outbox",
+        "labels_enabled",
         "mode",
     }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
@@ -187,9 +189,21 @@ def test_the_milestone_and_outbox_switches_validate_strictly_and_stay_off_by_def
     )
     assert external.milestones.append_release_to_closed is False
     assert external.outbox.enabled is True
+    assert external.outbox.labels_enabled is False  # enabling the outbox never enables labels
     for section in (
         {"milestones": {"draft_on_merge": "yes"}},
         {"outbox": {"enabled": 1}},
+        {"outbox": {"labels_enabled": 1}},
+        {"outbox": {"labels_enabled": "true"}},
     ):
         with pytest.raises(ValidationError):
             IntakeExternalConfig.model_validate(section)
+
+
+def test_the_labels_gate_is_its_own_host_owned_strict_switch() -> None:
+    labels = {"intake": {"external": {"outbox": {"enabled": True, "labels_enabled": True}}}}
+    config = BeadhiveConfig.model_validate(labels)
+
+    assert config.intake is not None
+    assert config.intake.external.outbox.labels_enabled is True
+    assert partition.partition_of("intake.external.outbox.labels_enabled") == partition.HOST

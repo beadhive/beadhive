@@ -154,6 +154,20 @@ def test_the_milestone_settings_are_off_by_default_and_strict() -> None:
     assert odd.completion.value == "close-on-release"  # unrecognised: keep the report open
 
 
+def _labels_gate(outbox: dict) -> bool:
+    policy, _ = intake_services.milestone_settings({"intake": {"external": {"outbox": outbox}}})
+    return policy.labels_enabled
+
+
+def test_the_labels_gate_is_off_by_default_and_needs_its_own_literal_true_beside_the_outbox():
+    assert intake_services.milestone_settings({})[0].labels_enabled is False
+    assert _labels_gate({"enabled": True}) is False  # the comment sender's switch never opens it
+    assert _labels_gate({"labels_enabled": True}) is False  # nor does it open without the outbox
+    assert _labels_gate({"enabled": True, "labels_enabled": "yes"}) is False
+    assert _labels_gate({"enabled": True, "labels_enabled": 1}) is False
+    assert _labels_gate({"enabled": True, "labels_enabled": True}) is True
+
+
 # -- off by default ----------------------------------------------------------------------------
 
 

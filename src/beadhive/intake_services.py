@@ -969,8 +969,10 @@ def outbox_service_for(
 def milestone_settings(cfg: Mapping[str, Any]) -> tuple[OutboxPolicy, MilestonePolicy]:
     """The outbox policy and the milestone switches from ``intake.external``: every draft off,
     ``close-on-merge``, and the outbox off, by default. Host-owned like the rest of the section;
-    only a literal ``true`` switches anything on, and an unrecognised completion policy takes
-    the conservative ``close-on-release`` (the report stays open) rather than closing early."""
+    only a literal ``true`` switches anything on (the ``labels.change`` gate,
+    ``outbox.labels_enabled``, additionally needs ``outbox.enabled``), and an unrecognised
+    completion policy takes the conservative ``close-on-release`` (the report stays open) rather
+    than closing early."""
     section = ((cfg.get("intake") or {}).get("external")) or {}
     milestones = section.get("milestones") or {}
     outbox = section.get("outbox") or {}
@@ -979,7 +981,10 @@ def milestone_settings(cfg: Mapping[str, Any]) -> tuple[OutboxPolicy, MilestoneP
     except ValueError:
         completion = CompletionPolicy.CLOSE_ON_RELEASE
     return (
-        OutboxPolicy(enabled=outbox.get("enabled") is True),
+        OutboxPolicy(
+            enabled=outbox.get("enabled") is True,
+            labels_enabled=outbox.get("enabled") is True and outbox.get("labels_enabled") is True,
+        ),
         MilestonePolicy(
             draft_on_merge=milestones.get("draft_on_merge") is True,
             draft_on_release=milestones.get("draft_on_release") is True,
@@ -1190,7 +1195,8 @@ def _outbox_port(
     """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
     ``intake_disabled``), ``intake.external.outbox.enabled`` (no sender bound,
-    ``outbox_disabled``; the ``labels.change`` gate has no config key yet, so it stays off), then
+    ``outbox_disabled``; the ``labels.change`` gate is ``intake.external.outbox.labels_enabled``,
+    off by default and only effective with the outbox on, else ``labels_disabled``), then
     the tracker (a build that is not handed ``tracker``, ``identity`` and ``marker_line`` refuses:
     their production wiring is not built yet, and is not ``process_adapters``')."""
     enabled, _default_type = external_intake_settings(cfg)

@@ -332,6 +332,58 @@ def test_the_outbox_verbs_draft_review_approve_send_discard_and_reconcile(rig, m
     assert rig.world.write_requests() == 1  # exactly the one approved send
 
 
+def _labels_rig(rig, monkeypatch, outbox: dict) -> tuple[str, str]:
+    """A wired, write-capable tracker and an imported report; ``outbox`` is the config."""
+    switch(rig, {"intake": {"external": {"enabled": True, "outbox": outbox}}})
+    tracker = MemoryTracker(rig.world, enabled=READ_OPERATIONS | WRITE_OPERATIONS)
+    monkeypatch.setattr(
+        intake_services,
+        "outbox_wiring",
+        lambda cfg, entry: {"tracker": tracker, "identity": ME, "marker_line": marker_line},
+    )
+    report = doc(bh("import", rig.issue("A bug").url, "--hive", "widget", "--json"))["report"]
+    return report, "ob1_x"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["send", "ob1_x", "--kind", "labels"], ["approve", "ob1_x", "--op", "labels:abc"]],
+)
+@pytest.mark.parametrize("outbox", [{"enabled": True}, {"enabled": True, "labels_enabled": False}])
+def test_the_labels_verbs_refuse_while_only_the_comment_sender_is_on(
+    rig, monkeypatch, argv, outbox
+) -> None:
+    _labels_rig(rig, monkeypatch, outbox)
+    reads = rig.world.read_requests()  # the import's own read
+
+    result = bh("outbox", *argv, "--hive", "widget", "--as", OPERATOR, "--json")
+
+    assert result.exit_code == 1
+    assert (doc(result)["ok"], doc(result)["reason"]) == (False, "labels_disabled")
+    assert rig.world.write_requests() == 0 and rig.world.read_requests() == reads
+
+
+def test_the_labels_gate_opens_only_through_its_own_key(rig, monkeypatch) -> None:
+    _labels_rig(rig, monkeypatch, {"enabled": True, "labels_enabled": True})
+
+    result = bh(
+        "outbox",
+        "send",
+        "ob1_x",
+        "--kind",
+        "labels",
+        "--hive",
+        "widget",
+        "--as",
+        OPERATOR,
+        "--json",
+    )
+
+    assert result.exit_code == 1
+    assert doc(result)["reason"] != "labels_disabled"  # past the gate: the record does not exist
+    assert rig.world.write_requests() == 0
+
+
 def test_an_agent_seat_cannot_approve_or_send(rig, monkeypatch) -> None:
     switch(rig, OUTBOX_ON)
     tracker = MemoryTracker(rig.world, enabled=READ_OPERATIONS | WRITE_OPERATIONS)
