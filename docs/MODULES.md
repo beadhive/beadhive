@@ -138,6 +138,11 @@ the `bh plugin pants` command tree, and keeps legacy `scripts/pants_*.py` paths 
 This extraction is limited to build plugins; the capability modules under
 `src/beadhive/modules/` remain inside the core distribution.
 
+*2026-10-30 amendment (planned, workstream `bh-pu6n6`):* the backfill platform adds three
+library packages rather than a `src/beadhive/modules/backfill` module: `beadlog`,
+`beadlog-sources` and `beadhive-backfill`. Root keeps only the bd loader, `bh backfill` CLI,
+config and health wiring. See [`backfill-platform-adr.md`](design/backfill-platform-adr.md).
+
 > **2026-09-27 amendment.** The direction above (`packages/*` depends on root; root imports
 > package code only lazily) describes **plugin packages** only. A second class, **library
 > packages** (`beadhive-plugins`, `beadhive-worktrees`, `beadhive-beads-client`, and the
@@ -179,6 +184,12 @@ This extraction is limited to build plugins; the capability modules under
    [`package-class-library-vs-plugin-adr.md`](design/package-class-library-vs-plugin-adr.md).
    The principle still holds as a default; it is not overturned, only rebutted for these two
    named cases ahead of the API-first replacement (`bh-bwnys`, `bh-sy36q`).
+   *2026-10-30 amendment:* rebutted a third time, for the backfill platform. It ships as the
+   library packages `beadlog` (format; stdlib only), `beadlog-sources` (BeadHive-free
+   producers) and `beadhive-backfill` (hive apply envelope and policy passes), because the
+   format exists for external bead-store loaders and the producers are useful without
+   BeadHive. See [`backfill-platform-adr.md`](design/backfill-platform-adr.md) (workstream
+   `bh-pu6n6`).
 10. **Test selection follows dependency evidence.** Directory-based selection is insufficient;
     shared contracts, reverse dependencies, and integration seams must participate in closure.
 
