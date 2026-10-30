@@ -1,0 +1,396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/beadlog/v0.1/manifest.schema.json",
+  "title": "BeadLog v0.1 MANIFEST.json",
+  "description": "The manifest of a BeadLog (.bdlg) archive. Normative prose lives in docs/design/beadlog-format-adr.md. A reader MUST refuse an archive whose capabilities.required names a capability it does not implement; this schema encodes the v0.1 vocabulary, so an unknown required capability fails validation. This is an archive schema, not a Beadhive wire-operation schema.",
+  "type": "object",
+  "required": [
+    "format_version",
+    "generator",
+    "groups",
+    "time_semantics",
+    "capabilities",
+    "redaction",
+    "files",
+    "counts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": {
+      "type": "string",
+      "description": "BeadLog format version (semver). v0.1 readers accept any 0.1.PATCH.",
+      "pattern": "^0\\.1\\.(0|[1-9][0-9]*)$"
+    },
+    "generator": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "uri": { "type": "string" }
+      }
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp",
+      "description": "Optional. Reproducible writers set it to the maximum extracted_at, never the wall clock."
+    },
+    "description": { "type": "string" },
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "dir"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Durable group identity used in every event's bead.group."
+          },
+          "dir": {
+            "$ref": "#/$defs/dir_name",
+            "description": "Directory name of this group's parts under events/ and checkpoints/."
+          },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "time_semantics": {
+      "description": "Fixed for v0.1; present so an archive is self-describing.",
+      "const": {
+        "occurred_at": "valid-time",
+        "recorded_at": "source-transaction-time",
+        "extracted_at": "extraction-time",
+        "timezone": "UTC",
+        "order": ["occurred_at", "recorded_at", "id"]
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["required", "optional"],
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "array",
+          "description": "Capabilities a reader must implement to interpret this archive correctly. Closed v0.1 vocabulary.",
+          "items": { "$ref": "#/$defs/known_capability" },
+          "uniqueItems": true
+        },
+        "optional": {
+          "type": "array",
+          "description": "Capabilities a reader may ignore, reporting the loss. Unknown names are allowed here.",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9:._-]*$" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "required": ["applied"],
+      "additionalProperties": false,
+      "properties": {
+        "applied": { "type": "boolean" },
+        "policy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name or URI of the disclosure policy applied at export."
+        },
+        "withheld": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "members": {
+              "type": "array",
+              "description": "JSON Pointers into events that the policy withholds, e.g. /data/body.",
+              "items": { "type": "string", "pattern": "^(/([^~/]|~[01])*)+$" },
+              "uniqueItems": true
+            },
+            "events": { "type": "integer", "minimum": 0 },
+            "beads": { "type": "integer", "minimum": 0 }
+          }
+        }
+      },
+      "if": { "properties": { "applied": { "const": true } } },
+      "then": { "required": ["policy", "withheld"] }
+    },
+    "files": {
+      "type": "array",
+      "description": "Every archive member except mimetype and MANIFEST.json, sorted by path.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/file" }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["events", "beads", "by_kind"],
+      "additionalProperties": false,
+      "properties": {
+        "events": { "type": "integer", "minimum": 0 },
+        "beads": { "type": "integer", "minimum": 0 },
+        "by_kind": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": { "type": "integer", "minimum": 0 },
+            "set": { "type": "integer", "minimum": 0 },
+            "label_add": { "type": "integer", "minimum": 0 },
+            "label_remove": { "type": "integer", "minimum": 0 },
+            "edge_add": { "type": "integer", "minimum": 0 },
+            "edge_remove": { "type": "integer", "minimum": 0 },
+            "comment": { "type": "integer", "minimum": 0 },
+            "phase": { "type": "integer", "minimum": 0 },
+            "retire": { "type": "integer", "minimum": 0 },
+            "delete": { "type": "integer", "minimum": 0 },
+            "tombstone": { "type": "integer", "minimum": 0 },
+            "checkpoint": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "description": "Present when the archive is a backfill plan (capability plan).",
+      "required": ["pass", "schema_version", "corpus_hash", "plan_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "pass": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "string", "minLength": 1 },
+        "corpus_hash": { "$ref": "#/$defs/hash" },
+        "plan_hash": { "$ref": "#/$defs/hash" },
+        "judge": {
+          "type": "object",
+          "required": ["engine", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "engine": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 },
+            "model": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "annotations": {
+      "type": "object",
+      "description": "Ignorable extension object. Keys starting with bdlg. are reserved."
+    }
+  },
+  "allOf": [
+    {
+      "description": "recorded-time-monotone-load is declared iff index/recorded.jsonl is present.",
+      "if": { "$ref": "#/$defs/declares_monotone_load" },
+      "then": {
+        "properties": {
+          "files": {
+            "contains": {
+              "required": ["path", "role", "sorted_by"],
+              "properties": {
+                "path": { "const": "index/recorded.jsonl" },
+                "role": { "const": "index" },
+                "sorted_by": { "const": "recorded_at,id" }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "files": {
+            "not": {
+              "contains": {
+                "required": ["path"],
+                "properties": { "path": { "const": "index/recorded.jsonl" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "An applied redaction makes redaction a required capability.",
+      "if": {
+        "required": ["redaction"],
+        "properties": { "redaction": { "properties": { "applied": { "const": true } } } }
+      },
+      "then": {
+        "properties": {
+          "capabilities": { "properties": { "required": { "contains": { "const": "redaction" } } } }
+        }
+      }
+    },
+    {
+      "description": "Any tombstone makes tombstones a required capability.",
+      "if": { "$ref": "#/$defs/has_kind_tombstone" },
+      "then": {
+        "properties": {
+          "capabilities": { "properties": { "required": { "contains": { "const": "tombstones" } } } }
+        }
+      }
+    },
+    {
+      "description": "Any checkpoint must be declared as checkpoints or checkpoint-seeded.",
+      "if": { "$ref": "#/$defs/has_kind_checkpoint" },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "anyOf": [
+              { "properties": { "required": { "contains": { "enum": ["checkpoints", "checkpoint-seeded"] } } } },
+              { "properties": { "optional": { "contains": { "enum": ["checkpoints", "checkpoint-seeded"] } } } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "description": "Correctness capabilities (tombstones, checkpoint-seeded, redaction) are never optional.",
+      "properties": {
+        "capabilities": {
+          "properties": { "optional": { "not": { "contains": { "enum": ["tombstones", "checkpoint-seeded", "redaction"] } } } }
+        }
+      }
+    },
+    {
+      "description": "A plan section requires the plan capability.",
+      "if": { "required": ["plan"] },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "anyOf": [
+              { "properties": { "required": { "contains": { "const": "plan" } } } },
+              { "properties": { "optional": { "contains": { "const": "plan" } } } }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{0,8}[1-9])?Z$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "dir_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "known_capability": {
+      "description": "The v0.1 capability vocabulary (ADR section 'Capabilities').",
+      "enum": [
+        "tombstones",
+        "checkpoint-seeded",
+        "redaction",
+        "checkpoints",
+        "recorded-time-monotone-load",
+        "lamport",
+        "plan"
+      ]
+    },
+    "declares_monotone_load": {
+      "required": ["capabilities"],
+      "properties": {
+        "capabilities": {
+          "anyOf": [
+            { "properties": { "required": { "contains": { "const": "recorded-time-monotone-load" } } } },
+            { "properties": { "optional": { "contains": { "const": "recorded-time-monotone-load" } } } }
+          ]
+        }
+      }
+    },
+    "has_kind_tombstone": {
+      "required": ["counts"],
+      "properties": {
+        "counts": {
+          "required": ["by_kind"],
+          "properties": {
+            "by_kind": {
+              "required": ["tombstone"],
+              "properties": { "tombstone": { "minimum": 1 } }
+            }
+          }
+        }
+      }
+    },
+    "has_kind_checkpoint": {
+      "required": ["counts"],
+      "properties": {
+        "counts": {
+          "required": ["by_kind"],
+          "properties": {
+            "by_kind": {
+              "required": ["checkpoint"],
+              "properties": { "checkpoint": { "minimum": 1 } }
+            }
+          }
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": ["path", "role", "sha256", "bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Archive member path: relative, forward slashes, no . or .. segments.",
+          "pattern": "^(?!/)(?!.*(^|/)\\.{1,2}(/|$))[A-Za-z0-9._/-]+$"
+        },
+        "role": { "enum": ["schema", "events", "checkpoints", "index"] },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "records": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of JSONL lines (required for events, checkpoints and index members)."
+        },
+        "sorted_by": {
+          "enum": ["bead,occurred_at,recorded_at,id", "recorded_at,id"]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "role": { "const": "schema" } } },
+          "then": { "properties": { "path": { "pattern": "^schema/[a-z0-9._-]+\\.schema\\.json$" } } }
+        },
+        {
+          "if": { "properties": { "role": { "const": "events" } } },
+          "then": {
+            "required": ["records", "sorted_by"],
+            "properties": {
+              "path": { "pattern": "^events/[a-z0-9][a-z0-9._-]*/part-[0-9]{4}\\.jsonl$" },
+              "sorted_by": { "const": "bead,occurred_at,recorded_at,id" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "role": { "const": "checkpoints" } } },
+          "then": {
+            "required": ["records", "sorted_by"],
+            "properties": {
+              "path": { "pattern": "^checkpoints/[a-z0-9][a-z0-9._-]*/part-[0-9]{4}\\.jsonl$" },
+              "sorted_by": { "const": "bead,occurred_at,recorded_at,id" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "role": { "const": "index" } } },
+          "then": {
+            "required": ["records", "sorted_by"],
+            "properties": {
+              "path": { "const": "index/recorded.jsonl" },
+              "sorted_by": { "const": "recorded_at,id" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

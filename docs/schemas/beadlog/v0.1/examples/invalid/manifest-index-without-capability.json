@@ -1,0 +1,97 @@
+{
+  "format_version": "0.1.0",
+  "generator": {
+    "name": "beadlog-adr-example",
+    "version": "0.1.0"
+  },
+  "created_at": "2026-10-30T20:00:00Z",
+  "description": "Worked example archive for docs/design/beadlog-format-adr.md.",
+  "groups": [
+    {
+      "id": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+      "dir": "bh",
+      "aliases": [
+        "beadhive/core"
+      ],
+      "description": "Example group; bead ids use the bh- prefix."
+    }
+  ],
+  "time_semantics": {
+    "occurred_at": "valid-time",
+    "recorded_at": "source-transaction-time",
+    "extracted_at": "extraction-time",
+    "timezone": "UTC",
+    "order": [
+      "occurred_at",
+      "recorded_at",
+      "id"
+    ]
+  },
+  "capabilities": {
+    "required": [
+      "tombstones"
+    ],
+    "optional": [
+      "checkpoints"
+    ]
+  },
+  "redaction": {
+    "applied": false
+  },
+  "files": [
+    {
+      "path": "checkpoints/bh/part-0000.jsonl",
+      "role": "checkpoints",
+      "sha256": "2641e1daf53e63daf8bf9e77c8779a3edc4cbc4e1c2f4bd8caed36ef4594a1da",
+      "bytes": 928,
+      "records": 1,
+      "sorted_by": "bead,occurred_at,recorded_at,id"
+    },
+    {
+      "path": "events/bh/part-0000.jsonl",
+      "role": "events",
+      "sha256": "93c11a1d297d3aded02a296d672d517b23b339b3a0f8c5d70bf47adf18ae0e34",
+      "bytes": 9957,
+      "records": 21,
+      "sorted_by": "bead,occurred_at,recorded_at,id"
+    },
+    {
+      "path": "index/recorded.jsonl",
+      "role": "index",
+      "sha256": "9aedf8422da2ee5847006cc440d347b2f8d1620a0dfcf90d8b340fbc9f8ef1fa",
+      "bytes": 3491,
+      "records": 22,
+      "sorted_by": "recorded_at,id"
+    },
+    {
+      "path": "schema/event.schema.json",
+      "role": "schema",
+      "sha256": "aa8b7293cf842eb7594603b279f41d470e0aad1912414ee84f8049a6d8b0514c",
+      "bytes": 13358
+    },
+    {
+      "path": "schema/manifest.schema.json",
+      "role": "schema",
+      "sha256": "32dc53cb651d61b3ccf43dd0dbb821431845947b9ab28adacae551014641202a",
+      "bytes": 13500
+    }
+  ],
+  "counts": {
+    "events": 22,
+    "beads": 4,
+    "by_kind": {
+      "create": 4,
+      "set": 4,
+      "label_add": 3,
+      "label_remove": 1,
+      "edge_add": 2,
+      "edge_remove": 1,
+      "comment": 1,
+      "phase": 2,
+      "retire": 1,
+      "delete": 1,
+      "tombstone": 1,
+      "checkpoint": 1
+    }
+  }
+}
