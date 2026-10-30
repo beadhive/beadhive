@@ -24,6 +24,7 @@ from beadhive_beads_client import (
 )
 from beadhive_core import (
     BATCH_APPLY_ROUTE,
+    DEFAULT_EPIC_PRIORITY,
     PLANNING_CAPABILITIES,
     PLANNING_GATE_ROUTES,
     FileOutcome,
@@ -88,6 +89,46 @@ def test_compile_molecule_emits_one_request_with_keyed_creates_then_edges() -> N
         "issue:root",
         "blocks",
     )
+
+
+def _epic_create(spec: dict[str, Any]) -> Any:
+    compiled = compile_molecule(spec, dimension_fields=DIMENSIONS, identity_labels=TRIPLET)
+    return next(i.create for i in compiled.items if i.create and i.create.key == "epic")
+
+
+@pytest.mark.parametrize("declared", [0, 1, 2, 3, 4, "3"])
+def test_compile_molecule_carries_the_epics_declared_priority(declared: Any) -> None:
+    """Including the falsy-but-set ``0``: the unset test is None/'' and never falsiness."""
+    spec = _spec()
+    spec["epic"]["priority"] = declared
+    assert _epic_create(spec).priority == int(declared)
+
+
+@pytest.mark.parametrize("omitted", [None, ""])
+def test_compile_molecule_defaults_an_omitted_epic_priority_to_p2_not_p0(omitted: Any) -> None:
+    spec = _spec()
+    if omitted is not None:
+        spec["epic"]["priority"] = omitted
+    assert DEFAULT_EPIC_PRIORITY == 2
+    assert _epic_create(spec).priority == 2
+
+
+def test_compile_molecule_leaves_child_priorities_unchanged() -> None:
+    spec = _spec()
+    spec["epic"]["priority"] = 2
+    spec["issues"][0]["priority"] = 0
+    spec["issues"][1]["priority"] = 3
+    compiled = compile_molecule(spec, dimension_fields=DIMENSIONS, identity_labels=TRIPLET)
+    creates = [i.create for i in compiled.items if i.create]
+    assert [c.priority for c in creates] == [2, 0, 3]
+    # A child that omits priority stays unset (no epic default leaks onto children).
+    del spec["issues"][0]["priority"]
+    creates = [
+        i.create
+        for i in compile_molecule(spec, dimension_fields=DIMENSIONS, identity_labels=TRIPLET).items
+        if i.create
+    ]
+    assert not isinstance(creates[1].priority, int)  # still the UNSET sentinel
 
 
 def test_compile_molecule_carries_dimension_and_identity_labels() -> None:

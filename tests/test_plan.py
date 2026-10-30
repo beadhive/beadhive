@@ -274,6 +274,30 @@ def test_file_creates_full_swarm(hive, fakebd):
     assert fakebd.did("set-state", "mr-1", "kickoff=pending")
 
 
+def _priority_of(args):
+    flag = "--priority" if "--priority" in args else "-p"
+    return args[args.index(flag) + 1] if flag in args else None
+
+
+@pytest.mark.parametrize("declared", ["0", "2", "4"])
+def test_file_carries_the_epics_declared_priority_and_leaves_children(hive, fakebd, declared):
+    """epic.priority reaches `bd create` (P0 included); child priorities are untouched."""
+    spec = _write_spec(hive)
+    spec.write_text(
+        spec.read_text().replace("  design: arch\n", f"  design: arch\n  priority: {declared}\n", 1)
+    )
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+    assert _priority_of(fakebd.create_args(title="Add widgets")) == declared
+    assert _priority_of(fakebd.create_args(title="scaffold")) == "1"
+    assert _priority_of(fakebd.create_args(title="wire it")) is None
+
+
+def test_file_defaults_an_omitted_epic_priority_to_p2_not_p0(hive, fakebd):
+    spec = _write_spec(hive)  # the epic declares no priority
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+    assert _priority_of(fakebd.create_args(title="Add widgets")) == "2"
+
+
 def test_file_preserves_explicit_complexity_label(hive, fakebd):
     spec = _write_spec(hive)
     text = spec.read_text().replace(

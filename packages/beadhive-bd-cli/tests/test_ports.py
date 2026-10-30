@@ -294,7 +294,8 @@ def test_cli_molecule_filer_walks_the_compiled_items_one_bd_call_at_a_time():
     deps = [_argv(c)[1] for c in bd.calls if _argv(c)[1][:2] == ["dep", "add"]]
     assert [args[1] for _actor, args in creates] == ["Epic", "A", "B"]
     assert all(actor == "planner" and args[-1] == "--silent" for actor, args in creates)
-    assert "-p" not in creates[0][1]  # the epic's priority is unset, not a falsy 0
+    e_args = creates[0][1]
+    assert e_args[e_args.index("-p") : e_args.index("-p") + 2] == ["-p", "2"]  # omitted -> P2
     a_args = creates[1][1]
     assert a_args[a_args.index("-p") : a_args.index("-p") + 2] == ["-p", "0"]  # P0 is SET
     assert deps and all(d[2] in {"mr-e", "mr-e.1", "mr-e.2"} for d in deps)
