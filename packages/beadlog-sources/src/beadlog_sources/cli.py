@@ -219,14 +219,20 @@ def _cmd_extract(
     )
     events = list(strategy.extract(request))
     group = Group(args.group, args.group_dir)
+    # A strategy may describe its run (`report()`: what it saw and what it refused to propose);
+    # the report is kept in the archive as an ignorable manifest annotation.
+    report = strategy.report() if callable(getattr(strategy, "report", None)) else None
     manifest = write_archive(
         args.output,
         events,
         groups=[group],
         generator=GENERATOR,
         description=f"extracted by {strategy.name} {strategy.version}",
+        annotations={f"bdlg.{strategy.name}": report} if report else None,
     )
     print(f"extracted {manifest.counts['events']} events with {strategy.name}", file=out)
+    for item in (report or {}).get("drift") or ():
+        print(f"DRIFT {item['bead']}: {item['reason']}; not overwritten", file=out)
     return 0
 
 

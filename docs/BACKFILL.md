@@ -12,7 +12,7 @@ The architecture and packaging are decided in
 | Package | Owns |
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
-| `beadlog-sources` | BeadHive-free producers: source strategies (including the neutral `bd` reader), reconcile, judges, the standalone `beadlog` CLI |
+| `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader and `git-commits`), reconcile, judges, the standalone `beadlog` CLI |
 | `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 
@@ -108,6 +108,29 @@ bh backfill apply plan.bdlg
 The standalone `beadlog` CLI is the `beadlog-sources` distribution's script (in a checkout,
 `uv run beadlog`); the installed `bh` carries the libraries but not that script or its
 `beadlog.sources` entry points.
+
+### `beadlog extract git-commits`
+
+The neutral `git-commits` strategy (`beadlog_sources.commits`) links commits to beads: it scans
+each commit message (subject and body) for ids, keeps only tokens that resolve against the
+baseline's own beads (`bh-infra` and the like are dropped), and proposes one `set` of
+`metadata.git.commits` per bead that **appends** the new shas, oldest first, to the baseline's
+list. Existing entries keep their order and are never removed; once the shas are in the baseline,
+extracting again proposes nothing. A bead whose stored value is not a JSON array of strings is
+reported as DRIFT (in the command output and the archive annotation `bdlg.git-commits`) and gets
+no event, so it is never overwritten. A shallow clone is refused (`git fetch --unshallow`).
+
+```bash
+beadlog extract git-commits --root . --group <group id> --group-dir <prefix> \
+  --extracted-at 2026-10-31T00:00:00Z --baseline baseline.bdlg \
+  --option rev=main --option since=<sha|date> -o proposed.bdlg
+```
+
+Options: `rev` (default `HEAD`), `since` (a commit, or a date for `git log --since`),
+`allow_shallow=true`. Reconcile classes an append as DRIFT (the bead exists and its `git.commits`
+changes), which a neutral `bh backfill apply` reports but does not apply; applying the appends
+needs a pass that marks DRIFT applicable. `scripts/backfill_commit_linkage.py` and
+`scripts/bead_commit_correlation.py` are deprecated shims over the same matcher.
 
 A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
 are off in the bd loader and are reported as dropped.

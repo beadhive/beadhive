@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import subprocess
 from collections import namedtuple
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -34,7 +35,7 @@ from beadhive_backfill import (
     inverse_of,
 )
 from beadlog.testing import conformance_archive, conformance_events
-from beadlog_sources import BdBaselineStrategy, ExtractRequest
+from beadlog_sources import BdBaselineStrategy, ExtractRequest, GitCommitsStrategy
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = json.loads(
@@ -764,3 +765,95 @@ def test_a_bead_scope_tombstone_deletes_only_with_the_opt_in(enabled: bool) -> N
     assert label.id in codes["x-bd.erased"]
     assert ("pr-b1" in store.rows) is not enabled
     assert store.writes == ([("delete", "pr-b1")] if enabled else [])
+
+
+# -- the git-commits strategy through the loader ---------------------------------------------
+
+
+def _commit_repo(tmp_path: Path, subjects: Sequence[str]) -> tuple[Path, list[str]]:
+    repo = tmp_path / "gitrepo"
+    repo.mkdir()
+    shas = []
+    for command in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "T"],
+        ["config", "commit.gpgsign", "false"],
+    ):
+        subprocess.run(["git", "-C", str(repo), *command], check=True, capture_output=True)
+    for subject in subjects:
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "--allow-empty", "-m", subject],
+            check=True,
+            capture_output=True,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        shas.append(head.stdout.strip())
+    return repo, shas
+
+
+def _extract_commits(repo: Path, baseline: Sequence[Any]) -> tuple[Any, ...]:
+    return GitCommitsStrategy().extract(
+        ExtractRequest(
+            root=repo,
+            group=GROUP,
+            extracted_at="2026-10-31T00:00:00Z",
+            baseline=tuple(baseline),
+            options={"rev": "main"},
+        )
+    )
+
+
+def test_git_commits_events_load_as_the_flat_string_metadata_key_and_converge(
+    tmp_path: Path,
+) -> None:
+    """No loader change is needed to carry ``git.commits``: ``metadata.git.commits`` is the flat
+    bd key the contract names, the value stays a JSON array serialized as a string, an existing
+    order is preserved, and re-extracting from the reloaded store proposes nothing."""
+    repo, (c1, c2, c3) = _commit_repo(
+        tmp_path, ["feat: pr-a1 start", "feat: pr-b1 and pr-a1 again", "chore: pr-a1 third"]
+    )
+    existing = json.dumps(["e" * 40])
+    store = FakeBd(
+        [
+            {**LIVE_ROWS[0], "metadata": {"git.commits": existing}},
+            {k: v for k, v in LIVE_ROWS[1].items()},
+        ]
+    )
+    bd_loader = loader(store)
+    baseline = bd_loader.export()
+    events = _extract_commits(repo, baseline)
+    assert {event.bead.id for event in events} == {"pr-a1", "pr-b1"}
+
+    bd_loader.load(events, dry_run=False)
+
+    stored = store.rows["pr-a1"]["metadata"]["git.commits"]
+    assert isinstance(stored, str) and json.loads(stored) == ["e" * 40, c1, c2, c3]
+    assert json.loads(store.rows["pr-b1"]["metadata"]["git.commits"]) == [c2]
+    assert "git" not in store.rows["pr-a1"]["metadata"]  # never the nested shape
+    assert _extract_commits(repo, bd_loader.export()) == ()  # converged: zero events
+
+
+def test_a_malformed_stored_value_is_reported_as_drift_and_left_alone(tmp_path: Path) -> None:
+    repo, _ = _commit_repo(tmp_path, ["feat: pr-a1 start"])
+    store = FakeBd([{**LIVE_ROWS[0], "metadata": {"git.commits": "garbage"}}])
+    bd_loader = loader(store)
+    strategy = GitCommitsStrategy()
+    events = strategy.extract(
+        ExtractRequest(
+            root=repo,
+            group=GROUP,
+            extracted_at="2026-10-31T00:00:00Z",
+            baseline=tuple(bd_loader.export()),
+            options={"rev": "main"},
+        )
+    )
+    assert events == ()
+    report = strategy.report()
+    assert report is not None and [d["bead"] for d in report["drift"]] == ["pr-a1"]
+    assert store.rows["pr-a1"]["metadata"]["git.commits"] == "garbage"

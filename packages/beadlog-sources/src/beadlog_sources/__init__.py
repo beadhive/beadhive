@@ -10,6 +10,9 @@ never imports ``beadhive``. It owns:
   ``backfill.judge`` keys);
 - the neutral ``bd`` baseline strategy (:mod:`beadlog_sources.bd`): one ``bd export`` read as
   current-state events, re-emitting the BeadLog ids a bd loader stored in ``metadata.bdlg``;
+- the neutral ``git-commits`` strategy (:mod:`beadlog_sources.commits`): the two-step bead-id
+  matcher over a repository's git history, proposing append-only ``git.commits`` events for the
+  beads of a baseline;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -19,6 +22,7 @@ never imports ``beadhive``. It owns:
 from __future__ import annotations
 
 from .bd import BdBaselineStrategy, BdReadError, baseline_events
+from .commits import GitCommitsStrategy, ShallowCloneError
 from .contracts import (
     ABSTAIN,
     DEFAULT_FAMILY,
@@ -76,6 +80,7 @@ __all__ = [
     "DeterministicJudge",
     "ExtractRequest",
     "Fallback",
+    "GitCommitsStrategy",
     "JudgeProtocolError",
     "JudgeSettings",
     "Judgment",
@@ -85,6 +90,7 @@ __all__ = [
     "ReconcilePlan",
     "Review",
     "ScoreQuery",
+    "ShallowCloneError",
     "SourceStrategy",
     "Verdict",
     "baseline_events",
