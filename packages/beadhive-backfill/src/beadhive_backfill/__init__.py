@@ -17,6 +17,8 @@ public ``__all__``) and never imports ``beadhive``. It owns the hive apply envel
 - the hive-policy passes, each its own public submodule: :mod:`beadhive_backfill.complexity`
   (pass #1, complexity labels, with the published JSON plan/audit contract of
   ``bh backfill complexity``);
+- the lifecycle timeline pass (:mod:`beadhive_backfill.timeline`, pass #2): AGF conventions over
+  the history readers, proposing ``metadata.lifecycle.*`` keys with their confidence;
 - the AGF history readers, also public submodules: :mod:`beadhive_backfill.merges` (one
   ``git log --first-parent`` -> ``chore(merge): bead|molecule|batch`` lands, refresh merges
   ignored) and :mod:`beadhive_backfill.run_journals` (the optional ``run-journals/<hive>/`` reader,
@@ -47,6 +49,7 @@ from .contracts import (
 from .engine import BackfillEngine, system_clock
 from .plan import ENGINE_ANNOTATION, ENGINE_SCHEMA, Plan
 from .sinks import ArchivePreStateExporter, JsonFileAuditSink
+from .timeline import PathReaders, TimelinePass, TimelineReaders
 
 DISTRIBUTION = "beadhive-backfill"
 
@@ -73,6 +76,7 @@ __all__ = [
     "BackfillError",
     "HivePass",
     "JsonFileAuditSink",
+    "PathReaders",
     "Plan",
     "PreStateExporter",
     "ReportingPass",
@@ -80,6 +84,8 @@ __all__ = [
     "Stamper",
     "StoreLoader",
     "StoreReader",
+    "TimelinePass",
+    "TimelineReaders",
     "VerifyingPass",
     "bead_key",
     "distribution_name",

@@ -26,13 +26,14 @@ ROOT_COMPOSITION = "@root-composition"
 # paths live here, beside the derived dependency resolver, so impact analysis can fail closed
 # before declaring a package change resolved when its root test closure is unknown.
 PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
-    # Root's bd StoreLoader (bh-b8aur), `bh backfill` and the complexity pass wiring (bh-xxmb1)
-    # compose all three BeadLog backfill libraries.
+    # Root's bd StoreLoader (bh-b8aur), `bh backfill` and the complexity pass wiring (bh-xxmb1),
+    # the timeline verb and `export --history` (bh-yk67l) compose all three BeadLog libraries.
     "beadhive-backfill": (
         "tests/test_backfill_bd.py",
         "tests/test_backfill_bd_int.py",
         "tests/test_backfill_cli.py",
         "tests/test_backfill_cli_int.py",
+        "tests/test_backfill_timeline_cli.py",
         "tests/test_complexity_backfill.py",
     ),
     "beadhive-bd-cli": (
@@ -141,6 +142,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_bd_int.py",
         "tests/test_backfill_cli.py",
         "tests/test_backfill_cli_int.py",
+        "tests/test_backfill_timeline_cli.py",
         "tests/test_complexity_backfill.py",
     ),
     "beadlog-sources": (
@@ -148,6 +150,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_bd_int.py",
         "tests/test_backfill_cli.py",
         "tests/test_backfill_cli_int.py",
+        "tests/test_backfill_timeline_cli.py",
         "tests/test_complexity_backfill.py",
     ),
 }

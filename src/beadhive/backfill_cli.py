@@ -7,7 +7,10 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
 
 - ``complexity`` — pass #1, the complexity-label migration (also the flat, published
   ``bh backfill-complexity``; both are the same command);
+- ``timeline`` — pass #2, the lifecycle timeline: derives claimed/committed/submitted/reviewed/
+  merged/reopened facts from the history readers and writes only ``metadata.lifecycle.*``;
 - ``export`` — the hive's current state as a ``.bdlg`` archive, read by the neutral bd strategy;
+  with ``--history`` also every history event of the bd events table (the archival archive);
 - ``inspect`` — an archive's manifest, counts and (for a plan) its classification and verdicts;
 - ``verify`` — an archive's integrity and event ids, and a plan's hash;
 - ``apply`` — a ``.bdlg`` plan through the envelope: one written by ``bh backfill`` or by the
@@ -27,8 +30,25 @@ from typing import Any
 
 import typer
 
-from beadhive_backfill import BackfillEngine, BackfillError, JsonFileAuditSink, Plan
+from beadhive_backfill import (
+    BackfillEngine,
+    BackfillError,
+    JsonFileAuditSink,
+    PathReaders,
+    Plan,
+    TimelinePass,
+    system_clock,
+)
+from beadhive_backfill.timeline import PASS_NAME as TIMELINE_PASS
 from beadlog import ArchiveError, ArchiveReader, Generator, Group, ManifestError, write_archive
+from beadlog_sources import (
+    HISTORY_ANNOTATION,
+    HistoryRead,
+    history_annotation,
+    history_events,
+    read_history,
+    read_store_start,
+)
 
 from . import complexity_backfill, config, registry
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
@@ -96,6 +116,26 @@ def store_loader(cwd: Path, *, group: str, pre_state_path: Path | None = None) -
     return bd_store_loader(cwd, group=group, pre_state_path=pre_state_path)
 
 
+def history_inputs(cwd: Path) -> tuple[HistoryRead, str | None]:
+    """The bulk reads behind ``export --history``: the bd events table (one ``SELECT``) and the
+    store's first commit date (one more). The seam tests replace."""
+    return read_history(cwd), read_store_start(cwd)
+
+
+def timeline_pass(cwd: Path, hive: str) -> TimelinePass:
+    """The lifecycle timeline pass reading the hive at ``cwd`` (the seam tests replace): its
+    first-parent history on the hive's integration branch and its host-local run journals."""
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    ref = str(config.integration_branch(cfg, entry)) if entry is not None else "main"
+    journals = None
+    if entry is not None:
+        from . import run_journal  # lazy: the journal store is only needed for this pass
+
+        journals = run_journal.journal_root_for_hive(registry.hive_key(entry))
+    return TimelinePass(PathReaders(cwd, ref=ref, journals=journals))
+
+
 def _fail(exc: BaseException) -> typer.Exit:
     typer.echo(f"✗ {exc}", err=True)
     return typer.Exit(1)
@@ -105,33 +145,133 @@ def _emit(value: Mapping[str, Any]) -> None:
     typer.echo(json.dumps(value, sort_keys=True, indent=2))
 
 
+def _history_archive(
+    cwd: Path, group: Group, baseline: tuple[Any, ...]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """``baseline`` plus every history event of the hive, and the ``bdlg.history`` annotation."""
+    read, store_start = history_inputs(cwd)
+    history = history_events(read, baseline, group=group.id, extracted_at=system_clock())
+    events = (*baseline, *history.events)
+    return events, history_annotation(events, history, baseline, store_start=store_start)
+
+
+_PLAN_OPTION = typer.Option(
+    None, "--plan", help="write this plan on dry-run; required and read back on --apply"
+)
+
+
+def _render_timeline(plan: Plan) -> None:
+    report = plan.report
+    facts = ", ".join(f"{key}={value}" for key, value in (report.get("facts") or {}).items())
+    typer.echo(
+        f"timeline: {plan.changes} beads would change "
+        f"({len(plan.applicable_events())} events); in scope {plan.totals.get('in_scope', 0)}"
+    )
+    typer.echo(f"facts: {facts or 'none'}")
+    tiers = ", ".join(f"{k}={v}" for k, v in (report.get("confidence") or {}).items())
+    typer.echo(f"confidence: {tiers or 'none'}")
+    typer.echo(f"plan hash: {plan.plan_hash}")
+
+
+@app.command("timeline")
+def timeline_cmd(
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    apply: bool = typer.Option(False, "--apply", help="apply a previously saved --plan"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="explicit preview mode (the default)"),
+    plan_path: Path | None = _PLAN_OPTION,
+    pre_state: Path | None = _PRE_STATE_OPTION,
+    audit: Path | None = _AUDIT_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="emit the plan summary/audit as JSON"),
+) -> None:
+    """Preview or apply the lifecycle timeline (writes only metadata.lifecycle.* keys)."""
+    if apply and dry_run:
+        raise typer.BadParameter("choose either --dry-run or --apply")
+    try:
+        cwd, group = _target(hive)
+        pass_ = timeline_pass(cwd, hive)
+        engine = BackfillEngine(groups=[group], passes=[pass_])
+        if not apply:
+            plan = engine.plan(pass_, store_loader(cwd, group=group.id))
+            if plan_path is not None:
+                plan.write(plan_path)
+            if as_json:
+                _emit(
+                    {
+                        "pass": plan.pass_name,
+                        "plan_hash": plan.plan_hash,
+                        "changes": plan.changes,
+                        "totals": plan.totals,
+                        "report": plan.report,
+                    }
+                )
+                return
+            _render_timeline(plan)
+            if plan_path is not None:
+                typer.echo(f"saved plan: {plan_path}")
+            return
+        if plan_path is None:
+            raise BackfillError("--apply requires --plan from a prior dry-run")
+        plan = Plan.read(plan_path)
+        if plan.pass_name != TIMELINE_PASS:
+            raise BackfillError(f"{plan_path} is a {plan.pass_name!r} plan, not a timeline plan")
+        pre_state = pre_state or default_pre_state_path(plan_path)
+        audit = audit or plan_path.with_name(f"{plan_path.stem}.audit.json")
+        loader = store_loader(cwd, group=group.id, pre_state_path=pre_state)
+        entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    if as_json:
+        _emit(entry.to_json())
+        return
+    typer.echo(
+        f"applied {len(entry.completed)} beads; only metadata.lifecycle.* written; "
+        "second dry-run empty"
+    )
+    typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+    typer.echo(f"audit: {audit}")
+
+
 @app.command("export")
 def export_cmd(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     out: Path | None = _OUT_OPTION,
     as_json: bool = typer.Option(False, "--json", help="emit the export summary as JSON"),
+    history: bool = typer.Option(
+        False,
+        "--history",
+        help="also export every history event of the bd events table (archival archive)",
+    ),
 ) -> None:
     """Export the hive's current state as a BeadLog archive (the neutral bd strategy)."""
     try:
         cwd, group = _target(hive)
         loader = store_loader(cwd, group=group.id)
         events = loader.export()
-        out = out if out is not None else Path(f"{group.dir}.bdlg")
+        annotations: dict[str, Any] | None = None
+        description = f"current state of {loader.target}"
+        if history:
+            events, annotations = _history_archive(cwd, group, tuple(events))
+            description = f"current state and bd event history of {loader.target}"
+        default = f"{group.dir}.history.bdlg" if history else f"{group.dir}.bdlg"
+        out = out if out is not None else Path(default)
         manifest = write_archive(
             out,
             events,
             groups=[group],
             generator=GENERATOR,
-            description=f"current state of {loader.target}",
+            description=description,
+            annotations=annotations,
         )
     except _ERRORS as exc:
         raise _fail(exc) from None
-    summary = {
+    summary: dict[str, Any] = {
         "path": str(out),
         "group": group.to_json(),
         "events": int(manifest.counts.get("events", 0)),
         "beads": int(manifest.counts.get("beads", 0)),
     }
+    if annotations is not None:
+        summary["history"] = annotations[HISTORY_ANNOTATION]
     if as_json:
         _emit(summary)
         return
@@ -139,6 +279,19 @@ def export_cmd(
         f"exported {summary['events']} events across {summary['beads']} beads to {out} "
         f"(group {group.id})"
     )
+    if "history" in summary:
+        _echo_history(summary["history"])
+
+
+def _echo_history(history: Mapping[str, Any]) -> None:
+    sources = ", ".join(f"{key}={value}" for key, value in (history.get("sources") or {}).items())
+    typer.echo(
+        f"history: {history.get('history_events', 0)} events from "
+        f"{history.get('events_table_rows', 0)} bd events-table rows; "
+        f"earliest recorded {history.get('earliest_recorded')}"
+    )
+    typer.echo(f"sources: {sources or 'none'}")
+    typer.echo((history.get("gap") or {}).get("note", ""))
 
 
 def _verdicts(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,6 +328,9 @@ def archive_summary(path: Path) -> dict[str, Any]:
         "counts": data["counts"],
         "description": data.get("description"),
     }
+    history = (data.get("annotations") or {}).get(HISTORY_ANNOTATION)
+    if isinstance(history, Mapping):
+        summary["history"] = history
     plan = data.get("plan")
     if isinstance(plan, Mapping):
         annotations = data.get("annotations") or {}
@@ -216,6 +372,8 @@ def inspect_cmd(
         typer.echo(f"  {kind}: {number}")
     caps = summary["capabilities"]
     typer.echo(f"capabilities: required={caps.get('required')} optional={caps.get('optional')}")
+    if history := summary.get("history"):
+        _echo_history(history)
     if plan := summary.get("plan"):
         classes = ", ".join(f"{key}={value}" for key, value in plan["classes"].items()) or "none"
         verdicts = plan["verdicts"]
@@ -304,7 +462,10 @@ def apply_cmd(
                     f"{summary['applicable_events']} events; losses: {losses}"
                 )
             return
-        engine = BackfillEngine(groups=plan.groups, passes=[complexity_backfill.complexity_pass()])
+        passes: list[Any] = [complexity_backfill.complexity_pass()]
+        if plan.pass_name == TIMELINE_PASS:
+            passes.append(timeline_pass(cwd, hive))
+        engine = BackfillEngine(groups=plan.groups, passes=passes)
         entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
     except _ERRORS as exc:
         raise _fail(exc) from None
@@ -322,5 +483,7 @@ __all__ = [
     "app",
     "archive_summary",
     "hive_group",
+    "history_inputs",
     "store_loader",
+    "timeline_pass",
 ]
