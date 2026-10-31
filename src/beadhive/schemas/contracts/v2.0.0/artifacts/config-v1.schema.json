@@ -370,9 +370,41 @@
         "judge": {
           "$ref": "#/$defs/BackfillJudgeConfig",
           "description": "Opt-in bh-judge/1 command judge for reconcile; deterministic when off."
+        },
+        "timeline": {
+          "$ref": "#/$defs/BackfillTimelineConfig",
+          "description": "History/timeline export settings, including the opt-in dolt_history gap fill."
         }
       },
       "title": "BackfillConfig",
+      "type": "object"
+    },
+    "BackfillGapfillConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.timeline.gapfill`` — the opt-in, bounded ``dolt_history_*`` gap fill for beads\nthat have no ``created`` row in the events table (docs/BACKFILL.md \"Gap fill\"). Off by\ndefault: ``bh backfill export --history`` reads the events table only and no history scan\nruns. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with\n``timeout_seconds`` as its time limit.",
+      "properties": {
+        "batch_size": {
+          "default": 25,
+          "description": "Beads per dolt_history scan. Each scan walks every store commit (~10 s) and returns one row per commit per bead (~3 MB of CSV per bead).",
+          "minimum": 1,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Recover snapshot-level history for beads lacking a created event.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "default": 180.0,
+          "description": "Seconds one gap-fill query may run before the run stops.",
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "BackfillGapfillConfig",
       "type": "object"
     },
     "BackfillJudgeConfig": {
@@ -423,6 +455,18 @@
         }
       },
       "title": "BackfillJudgeConfig",
+      "type": "object"
+    },
+    "BackfillTimelineConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.timeline`` — settings of the history/timeline export (off by default).",
+      "properties": {
+        "gapfill": {
+          "$ref": "#/$defs/BackfillGapfillConfig",
+          "description": "Opt-in dolt_history gap fill for beads that predate the events table."
+        }
+      },
+      "title": "BackfillTimelineConfig",
       "type": "object"
     },
     "BackupConfig": {
