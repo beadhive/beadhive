@@ -9,7 +9,9 @@ Subcommands:
 - ``beadlog inspect ARCHIVE [--json]`` — manifest summary (and plan classification);
 - ``beadlog verify ARCHIVE [--no-ids]`` — full integrity check, event ids included by default;
 - ``beadlog extract <name> ...`` — one subcommand per source strategy registered in the
-  ``beadlog.sources`` entry-point group (discovered at run time).
+  ``beadlog.sources`` entry-point group (discovered at run time); the ``--judge-*`` flags are
+  accepted on each and used only by strategies that judge a residual (``docs``), judge off by
+  default.
 
 Exit codes: 0 success, 1 a failed verification or operation, 2 usage errors.
 """
@@ -198,7 +200,13 @@ def _cmd_verify(args: argparse.Namespace, out: IO[str], **_: Any) -> int:
 
 
 def _cmd_extract(
-    args: argparse.Namespace, out: IO[str], *, strategies: Mapping[str, Any], **_: Any
+    args: argparse.Namespace,
+    out: IO[str],
+    *,
+    strategies: Mapping[str, Any],
+    environ: Mapping[str, str],
+    runner: Runner | None,
+    **_: Any,
 ) -> int:
     strategy = _load_strategy(strategies[args.strategy])
     baseline: tuple[BeadEvent, ...] = ()
@@ -210,12 +218,17 @@ def _cmd_extract(
         if not separator or not key:
             raise CliError(f"--option {item!r} is not key=value")
         options[key] = value
+    # The judge is handed over only when it is enabled (default off): a strategy that resolves a
+    # fuzzy residual (`docs`) then leaves it to a human, and every other strategy ignores it.
+    settings = _settings(args, environ)
+    judge = build_judge(settings, runner=runner) if settings.enabled else None
     request = ExtractRequest(
         root=Path(args.root),
         group=args.group,
         extracted_at=args.extracted_at,
         baseline=baseline,
         options=options,
+        judge=judge,
     )
     events = list(strategy.extract(request))
     group = Group(args.group, args.group_dir)
@@ -233,6 +246,8 @@ def _cmd_extract(
     print(f"extracted {manifest.counts['events']} events with {strategy.name}", file=out)
     for item in (report or {}).get("drift") or ():
         print(f"DRIFT {item['bead']}: {item['reason']}; not overwritten", file=out)
+    for doc in (report or {}).get("residual") or ():
+        print(f"RESIDUAL {doc}: undecided; needs human confirm", file=out)
     return 0
 
 
@@ -299,6 +314,7 @@ def build_parser(strategies: Mapping[str, Any]) -> argparse.ArgumentParser:
         sub.add_argument("--baseline", help="baseline .bdlg for bead-id resolution")
         sub.add_argument("--option", action="append", help="strategy option key=value")
         sub.add_argument("-o", "--output", required=True, help="archive to write")
+        _judge_flags(sub)
     extract.set_defaults(handler=_cmd_extract)
     return parser
 
