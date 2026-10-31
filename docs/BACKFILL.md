@@ -112,6 +112,40 @@ The standalone `beadlog` CLI is the `beadlog-sources` distribution's script (in 
 A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
 are off in the bd loader and are reported as dropped.
 
+## History readers
+
+Bulk, read-only readers over every lifecycle source, for the timeline pass that follows. They
+return plain typed records (not BeadLog events) and none is wired to a verb yet. Each costs a
+fixed number of calls for the whole hive (never per bead, never `bd history`, which takes ~20 s a
+bead and omits labels, edges and metadata); the command runner is injected, so tests assert the
+count with a counting fake.
+
+| Reader | Package | Source | Calls |
+|---|---|---|---|
+| `beadlog_sources.bd_history.read_history` | `beadlog-sources` | the bd `events` table: `bd -C <root> sql --json 'SELECT ... FROM events'` (SELECT only; timeout default 300 s, the real call takes ~13 s for ~36k rows) | 1 |
+| `beadlog_sources.git_dates.commit_dates` | `beadlog-sources` | author and committer date of many shas: `git log --ignore-missing --no-walk=unsorted` | 1 (chunks of 4000 shas) |
+| `beadhive_backfill.merges.read_land_merges` | `beadhive-backfill` | `git log --first-parent <ref>`: `chore(merge): bead\|molecule\|batch <target>` lands | 1 |
+| `beadhive_backfill.run_journals.read_run_journals` | `beadhive-backfill` | `<home>/run-journals/<hive>/*.jsonl` (the caller resolves the directory) | 0 store calls; a missing directory is an empty result |
+
+The `events` rows have mixed shapes (measured on the production store): `claimed`, `updated`,
+`status_changed` and `reopened` carry JSON in `old_value` (the whole prior issue) and `new_value`
+(the changed fields); `closed` and `reopened` put the reason in `new_value` as text;
+`status_changed` by the defer-wake daemon is plain text (`deferred` to `open`); labels are
+`Added label: X` / `Removed label: X` in `comment` (or the bare label in `new_value` /
+`old_value`); `dependency_added` is `Added dependency: <issue> <type> <target>` and
+`dependency_removed` is `Removed dependency on <target>` (no type); `commented` has only
+`comment`; `lease_reclaimed` has the reclaimed-from assignee in `old_value`; `created` has no
+payload. The table `id` is a UUID, not a sequence: events sharing a second order by
+`(created_at, id)`, which is deterministic, not causal.
+
+Defensive by construction: a malformed row is skipped and counted by reason in `skipped`, an
+unknown event type is counted in `unknown_types`, an unparseable log line or journal line is
+counted, and a trailing journal line without its newline is treated as in flight. Only a failed or
+unparseable *query* raises. A land commit's committer date is the bead's occurred `merged_at`;
+refresh merges (`chore(merge): refresh wt/bead/epic/<id> from main`) and `Merge branch 'main' into
+...` are never lands, and the three pre-convention July 2026 subjects are returned with
+`legacy=True`. A `batch` land names its group (`batch group-a`), not its member beads.
+
 ## Pass matrix
 
 | Pass | Verb | Reads | Writes | Plan | DRIFT | Postcondition |
