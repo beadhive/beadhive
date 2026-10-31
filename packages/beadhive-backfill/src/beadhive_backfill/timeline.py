@@ -73,6 +73,11 @@ from beadlog import (
     sort_events,
 )
 from beadlog_sources import (
+    HISTORY_CLAIMED,
+    HISTORY_CLOSED,
+    HISTORY_LABEL_ADDED,
+    HISTORY_LABEL_REMOVED,
+    HISTORY_REOPENED,
     CommitDates,
     HistoryEvent,
     HistoryEvents,
@@ -83,7 +88,6 @@ from beadlog_sources import (
     read_history,
     suppress_artifacts,
 )
-from beadlog_sources.bd_history import CLAIMED, CLOSED, LABEL_ADDED, LABEL_REMOVED, REOPENED
 
 from .merges import DEFAULT_REF, LandKind, LandMerge, MergeScan, read_land_merges
 from .run_journals import RunJournalRead, RunRecord, read_run_journals
@@ -336,7 +340,9 @@ def _land_fact(
 
 
 def _review_fact(rows: Sequence[HistoryEvent]) -> tuple[Fact | None, Fact | None]:
-    submitted = next((e for e in rows if e.kind == LABEL_ADDED and e.label == REVIEW_PENDING), None)
+    submitted = next(
+        (e for e in rows if e.kind == HISTORY_LABEL_ADDED and e.label == REVIEW_PENDING), None
+    )
     if submitted is None:
         return None, None
     outcome = next(
@@ -346,15 +352,15 @@ def _review_fact(rows: Sequence[HistoryEvent]) -> tuple[Fact | None, Fact | None
             if instant(e.at) >= instant(submitted.at)
             and e.row_id != submitted.row_id
             and (
-                (e.kind == LABEL_ADDED and e.label in REVIEW_OUTCOMES)
-                or (e.kind == LABEL_REMOVED and e.label == REVIEW_PENDING)
+                (e.kind == HISTORY_LABEL_ADDED and e.label in REVIEW_OUTCOMES)
+                or (e.kind == HISTORY_LABEL_REMOVED and e.label == REVIEW_PENDING)
             )
         ),
         None,
     )
     reviewed = None
     if outcome is not None:
-        explicit = outcome.kind == LABEL_ADDED and outcome.label == APPROVED
+        explicit = outcome.kind == HISTORY_LABEL_ADDED and outcome.label == APPROVED
         what = f"{outcome.kind} {outcome.label}"
         reviewed = _bd_fact(
             "reviewed_at", outcome, "high" if explicit else "medium", note=f"convention: {what}"
@@ -447,7 +453,7 @@ def build_timeline(
         state = states[bead]
         rows = by_bead.get(bead.id, [])
         facts: list[Fact] = []
-        claim = next((e for e in rows if e.kind == CLAIMED), None)
+        claim = next((e for e in rows if e.kind == HISTORY_CLAIMED), None)
         if claim is not None:
             facts.append(_bd_fact("claimed_at", claim, "high"))
         resolved = [dates.dates[sha] for sha in shas[bead] if sha in dates.dates]
@@ -490,9 +496,9 @@ def build_timeline(
             land, by_group = max(
                 lands, key=lambda item: (instant(item[0].committed_at), item[0].sha)
             )
-            closes = [e for e in rows if e.kind == CLOSED]
+            closes = [e for e in rows if e.kind == HISTORY_CLOSED]
             facts.append(_land_fact(land, closes, by_group=by_group, count=len(lands)))
-        reopened = [e for e in rows if e.kind == REOPENED]
+        reopened = [e for e in rows if e.kind == HISTORY_REOPENED]
         if reopened:
             facts.append(_bd_fact("reopened_at", reopened[-1], "high"))
             facts.append(

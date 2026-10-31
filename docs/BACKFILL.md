@@ -12,8 +12,8 @@ The architecture and packaging are decided in
 | Package | Owns |
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
-| `beadlog-sources` | BeadHive-free producers: source strategies (including the neutral `bd` reader), reconcile, judges, the standalone `beadlog` CLI |
-| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`) |
+| `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader and the `bd-history` events-table conversion), reconcile, judges, the standalone `beadlog` CLI |
+| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 
 Root never holds engine logic; the published wheel vendors the three libraries' import packages
@@ -23,7 +23,8 @@ Root never holds engine logic; the published wheel vendors the three libraries' 
 
 ```text
 bh backfill complexity   [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
-bh backfill export       [--hive H] [--out F.bdlg] [--json]
+bh backfill timeline     [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
+bh backfill export       [--hive H] [--out F.bdlg] [--history] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verify       F.bdlg [--json]
 bh backfill apply        PLAN.bdlg [--hive H] [--dry-run] [--pre-state F] [--audit F] [--json]
@@ -65,6 +66,52 @@ the UNKNOWN→MEDIUM fallbacks, duplicate or invalid labels, preserved `model:` 
 model-versus-score disagreements. Apply runs the saved plan through the engine: the planned
 target labels are recorded decisions and are never re-classified.
 
+### `bh backfill timeline` (pass #2)
+
+Derives each bead's lifecycle facts from the history readers and writes them as
+`metadata.lifecycle.*` keys, which bd lacks. A dry run (the default) reads every source once for
+the whole hive and, with `--plan F`, saves the plan as a `.bdlg`; `--apply --plan F` runs it
+through the safety envelope below. **Nothing else is written:** apply issues one `bd update` per
+bead that changes `metadata.lifecycle.*` and the loader's own `metadata.bdlg` occurrence-time
+bookkeeping, never a field, label, status or edge. A second run proposes zero changes (the
+envelope's idempotency proof): the applied events are stored in `metadata.bdlg`, the next
+baseline re-emits them with their ids, and the pass re-derives the same ids from the same
+sources.
+
+```bash
+bh backfill timeline --dry-run --plan timeline.bdlg      # preview: counts by fact and confidence
+bh backfill inspect timeline.bdlg                        # classes, hashes, the pass report
+bh backfill timeline --apply --plan timeline.bdlg        # pre-state, audit, second dry run
+```
+
+A timeline plan also applies through `bh backfill apply timeline.bdlg`.
+
+**Lifecycle keys.** Every key `K` has a companion `K_confidence` (`high`, `medium` or `low`), so
+the confidence is kept beside the value in bd, which holds current state only.
+
+| Key | Source | Provenance | Confidence |
+|---|---|---|---|
+| `claimed_at` | the first bd `claimed` event | observed | high |
+| `committed_at`, `last_committed_at` | author date of the first and last sha in `metadata.git.commits` (one `git log` for all shas) | derived | medium |
+| `submitted_at` | the first `review:pending` label added | observed | high |
+| `reviewed_at` | the first review outcome after it: `review:approved` or `review:changes-requested` added, or `review:pending` removed | observed | high for `review:approved`, else medium |
+| `merged_at` | committer date of the first-parent `chore(merge): bead\|molecule\|batch` land commit (the latest land when there are several) | derived | high; medium for a legacy subject or a `batch <group>` land matched through the bead's `batch:<group>` label |
+| `reopened_at`, `reopen_count` | bd `reopened` events only | observed, derived | high |
+| `run_started_at`, `run_ended_at` | run journals (`process.spawned` or `run.created`; last `process.harvested`) when present | observed | medium |
+
+**Two times, never one.** Each event the pass proposes keeps `occurred_at` (when it happened)
+apart from `recorded_at` (when the source recorded it). bd records an event as it happens, so
+for bd facts both are the event row's time. A git fact happened at the author date and was
+recorded at the committer date. A land happened at its commit's committer date and bd *recorded*
+the merge when it closed the bead, so `merged_at` has `occurred_at` = the land commit and
+`recorded_at` = the first bd `closed` event at or after it (null when none follows). The ordering
+`merged occurred_at < closed recorded_at` is therefore data, visible in the plan.
+
+**Revert artifacts are not history.** Closes and reopens come from bd events only: a status flip
+that appears only in snapshots (repeated exports, Dolt history) is never a reopen. Rows that
+repeat verbatim collapse, and a phase change undone within the same second cancels. Refresh
+merges (`chore(merge): refresh ...`) and `Merge branch 'main' into ...` are never lands.
+
 ### `bh backfill export`
 
 Writes the hive's current state as a `.bdlg` archive: one `bd export --all` read turned into
@@ -73,6 +120,40 @@ backfill loaded earlier. The archive declares one bead group whose id is a UUIDv
 `provider/org/repo` (the same on every export, so re-exports union-merge) and whose directory is
 the hive prefix; the default file is `<prefix>.bdlg` in the current directory. Use it as the
 baseline a `beadlog reconcile` diffs against.
+
+**`--history`** (off by default; without it the output, flags, JSON keys and exit codes are
+exactly as above) makes the archival archive: the current-state events **plus** every history
+event of the bd `events` table, in one `.bdlg` (default file `<prefix>.history.bdlg`). It costs
+two store reads (`SELECT` on `events`, and the store's first commit date) on top of the export.
+
+- The events table becomes `create`, `phase`, `set`, `label_add/remove`, `edge_add/remove` and
+  `comment` events (`beadlog_sources.bd_timeline`), `observed`, with the stable source
+  `bd` / `bd:events/<row uuid>`, so re-exporting gives the same ids. Their ids differ from the
+  current-state events' (`bd:issues/...`), and the group id is the same, so the two exports
+  union-merge.
+- A bead with no `created` row gets an `inferred` create built from its issues row
+  (`bd:inferred/<id>#create`, `recorded_at` null, confidence 0.3 when the bead predates the
+  table, 0.5 when it was imported without a created event). A `created` row whose time is later
+  than the issues row's `created_at` keeps the row's time as `occurred_at` and its own as
+  `recorded_at`, and says so in the evidence. (On this store that never happens: every `created`
+  row is within a second *before* the issues row and never after it.)
+- **The fold of the union equals the fold of the current state.** History is the past of the
+  export, so any history event that would change a bead's folded current state is dropped and
+  counted (a transient lease holder, a comment since deleted, a value the table never saw
+  change), and so is every row of a bead the export does not hold.
+- The manifest `annotations["bdlg.history"]` reports: `sources` (event count per source family:
+  `bd:issues`, `bd:events`, `bd:inferred`), `events_table_rows`, `history_events`,
+  `earliest_recorded` (the first row of the events table) and `latest_recorded`, what was
+  `skipped_rows`, `suppressed` (revert artifacts and the dropped events above, by reason),
+  `not_modeled`, and the `gap`: the first bead creation, the store's first commit and the first
+  recorded event, computed from the data, with a note on the pre-retention gap. (On `bh`:
+  beads from 2026-06-29, store commits from 2026-07-25, the events table from 2026-08-07.)
+- `bh backfill inspect` prints the same numbers; `bh backfill verify` checks the archive like
+  any other. Checkpoints are not written (the archive is complete without them).
+
+Lifecycle facts (merged, submitted, reviewed, ...) are hive conventions, not events-table rows:
+they enter the archive from the current-state side once `bh backfill timeline --apply` has
+stored them in `metadata.bdlg`.
 
 ### `bh backfill inspect`
 
@@ -114,8 +195,8 @@ are off in the bd loader and are reported as dropped.
 
 ## History readers
 
-Bulk, read-only readers over every lifecycle source, for the timeline pass that follows. They
-return plain typed records (not BeadLog events) and none is wired to a verb yet. Each costs a
+Bulk, read-only readers over every lifecycle source, feeding `bh backfill timeline` and
+`bh backfill export --history`. They return plain typed records (not BeadLog events). Each costs a
 fixed number of calls for the whole hive (never per bead, never `bd history`, which takes ~20 s a
 bead and omits labels, edges and metadata); the command runner is injected, so tests assert the
 count with a counting fake.
@@ -151,11 +232,14 @@ refresh merges (`chore(merge): refresh wt/bead/epic/<id> from main`) and `Merge 
 | Pass | Verb | Reads | Writes | Plan | DRIFT | Postcondition |
 |---|---|---|---|---|---|---|
 | `complexity` | `bh backfill complexity` | `bd list --all --include-infra` | `bd label add/remove`, one label at a time | JSON (`complexity-label-backfill`, schema 1) | applied | one valid `complexity:<TIER>` per routable bead; `model:*` untouched |
+| `timeline` | `bh backfill timeline` | the bd `events` table, `git log --first-parent`, commit dates, run journals | `bd update` of `metadata.lifecycle.*` (and `metadata.bdlg`) only, one bead at a time | `.bdlg` (`timeline`, schema 1) | applied | every lifecycle key well-formed with its confidence; a second dry run proposes nothing |
 | `reconcile` (neutral) | `bh backfill apply` | `bd export --all` | the bd StoreLoader (`bd import`, `bd update`, `bd close`, `bd dep`, `bd comments add`) | `.bdlg` from `beadlog reconcile` | reported only | second reconcile finds no NEW |
 
-Scope: `complexity` governs epics, features, tasks, bugs and chores in `open`, `blocked`,
-`in_progress`, `deferred` or `closed`; the merge-slot record (`gt:slot`) and every other bead are
-counted by reason and never touched, so a change to them never invalidates a plan.
+Scope: `timeline` governs every bead that exists in the hive and proposes only the lifecycle keys
+it has a source for (a bead with no facts is untouched). `complexity` governs epics, features,
+tasks, bugs and chores in `open`, `blocked`, `in_progress`, `deferred` or `closed`; the merge-slot
+record (`gt:slot`) and every other bead are counted by reason and never touched, so a change to
+them never invalidates a plan.
 
 ## Safety envelope
 
@@ -199,4 +283,5 @@ record of when each lifecycle stage happened.
 ## Defaults
 
 Every new behavior is off until asked for: the Haiku judge (`backfill.judge.enabled=false`),
-deletion and erasure in the bd loader, and any write (a pass previews unless `--apply`).
+deletion and erasure in the bd loader, `export --history` (the plain export is the default), and
+any write (a pass, `timeline` included, previews unless `--apply`).

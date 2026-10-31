@@ -311,21 +311,9 @@ def read_history(
 
 
 __all__ = [
-    "CLAIMED",
-    "CLOSED",
     "COLUMNS",
-    "COMMENTED",
-    "CREATED",
-    "DEPENDENCY_ADDED",
-    "DEPENDENCY_REMOVED",
     "EVENT_TYPES",
     "HISTORY_SQL",
-    "LABEL_ADDED",
-    "LABEL_REMOVED",
-    "LEASE_RECLAIMED",
-    "REOPENED",
-    "STATUS_CHANGED",
-    "UPDATED",
     "BdHistoryError",
     "HistoryEvent",
     "HistoryRead",

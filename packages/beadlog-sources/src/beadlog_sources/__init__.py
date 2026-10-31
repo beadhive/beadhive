@@ -27,6 +27,21 @@ from __future__ import annotations
 
 from .bd import BdBaselineStrategy, BdReadError, baseline_events, bd_timestamp
 from .bd_history import (
+    CLAIMED as HISTORY_CLAIMED,
+)
+from .bd_history import (
+    CLOSED as HISTORY_CLOSED,
+)
+from .bd_history import (
+    LABEL_ADDED as HISTORY_LABEL_ADDED,
+)
+from .bd_history import (
+    LABEL_REMOVED as HISTORY_LABEL_REMOVED,
+)
+from .bd_history import (
+    REOPENED as HISTORY_REOPENED,
+)
+from .bd_history import (
     BdHistoryError,
     HistoryEvent,
     HistoryRead,
@@ -103,6 +118,11 @@ __all__ = [
     "DISTRIBUTION",
     "ENTRY_POINT_GROUP",
     "HISTORY_ANNOTATION",
+    "HISTORY_CLAIMED",
+    "HISTORY_CLOSED",
+    "HISTORY_LABEL_ADDED",
+    "HISTORY_LABEL_REMOVED",
+    "HISTORY_REOPENED",
     "BdHistoryStrategy",
     "BeadRow",
     "ChoiceQuery",

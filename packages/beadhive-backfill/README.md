@@ -49,6 +49,16 @@ Store-neutral adapters: `JsonFileAuditSink` (the audit file beside the plan) and
   `apply_plan`, which runs the JSON plan through `BackfillEngine` with row-store adapters. See
   [`docs/BACKFILL.md`](../../docs/BACKFILL.md).
 
-Identity-label and lifecycle-convention passes land in later beads.
+- `beadhive_backfill.timeline` — pass #2: the AGF lifecycle conventions over the history readers
+  (`merges`, `run_journals` and the neutral bd events table in `beadlog_sources`). `TimelinePass`
+  proposes only `metadata.lifecycle.*` `set` events (`claimed_at`, `committed_at`,
+  `last_committed_at`, `submitted_at`, `reviewed_at`, `merged_at`, `reopened_at`, `reopen_count`,
+  `run_started_at`, `run_ended_at`), each with a `<key>_confidence` tier, `occurred_at` kept
+  distinct from `recorded_at` (a land's committer date vs the bd `closed` event). The four bulk
+  reads arrive through the `TimelineReaders` port (`PathReaders` over a checkout); a full read
+  costs a fixed number of calls, never one per bead. `Timeline.of(bead)` returns a bead's whole
+  timeline, history events included.
+
+Identity-label passes land in a later bead.
 
 Tests: `uv run --package beadhive-backfill pytest packages/beadhive-backfill/tests`.

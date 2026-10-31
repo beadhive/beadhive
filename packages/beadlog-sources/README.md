@@ -16,6 +16,15 @@ never imports `beadhive`.
   stored in `metadata.bdlg.<facet>` (`facet_key`, `envelope`) are re-emitted with their original
   ids when their recomputed id matches and they agree with the row; native events cover the
   rest, so the fold always equals the row. Floats in bd metadata travel as decimal strings.
+- **`bd-history` strategy** (`beadlog_sources.bd_timeline`, entry point `bd-history`): the bd
+  `events` table (read by `beadlog_sources.bd_history`) as BeadLog history events — `create`,
+  `phase`, `set`, `label_add/remove`, `edge_add/remove`, `comment` — `observed`, with stable
+  `bd:events/<row uuid>` sources and `occurred_at` kept distinct from `recorded_at`. A bead with
+  no `created` row gets an `inferred` low-confidence create from its issues row; revert artifacts
+  are suppressed; and `consistent_history` drops anything that would change the baseline's folded
+  current state, so `fold(baseline + history) == fold(baseline)`. `history_annotation` builds the
+  `bdlg.history` manifest annotation (per-source counts, earliest recorded date, pre-retention
+  gap). No hive conventions live here: they are `beadhive-backfill`'s timeline pass.
 - **Judges** (`beadlog_sources.judges`): `DeterministicJudge` (lexical; one-hot at 1.0 or
   abstain) and `CommandJudge`, which speaks the versioned `bh-judge/1` JSON envelope
   ([schema](src/beadlog_sources/schemas/bh-judge-v1.schema.json), copied to

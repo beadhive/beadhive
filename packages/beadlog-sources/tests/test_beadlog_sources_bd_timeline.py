@@ -286,7 +286,8 @@ def test_history_never_changes_the_folded_current_state() -> None:
     assert not [e for e in result.events if e.bead.id == "wd-gone"]
     assert result.suppressed["orphan_row"] == 2
     assert result.counts["orphan_beads"] == 1
-    assert result.suppressed["inconsistent:set"] >= 1
+    assert result.suppressed["inconsistent:set:metadata.holder"] == 1
+    assert result.suppressed["inconsistent:set:assignee"] == 1
     assert result.suppressed["inconsistent:edge"] == 1
     assert result.suppressed["inconsistent:comment"] == 1
     # the legitimate history survived, including the integer coercion of "1"
@@ -362,7 +363,8 @@ def test_the_annotation_reports_sources_the_earliest_recording_and_the_gap() -> 
     gap = body["gap"]
     assert gap["first_bead_created"] == "2026-06-29T03:43:46Z"
     assert gap["first_store_commit"] == "2026-07-25T17:02:33Z"
-    assert gap["beads_without_recorded_creation"] == 1
+    assert gap["beads_created_before_events_table"] == 1
+    assert gap["beads_imported_without_created_event"] == 0
     assert (
         "2026-06-29" in gap["note"] and "2026-07-25" in gap["note"] and "2026-08-07" in gap["note"]
     )

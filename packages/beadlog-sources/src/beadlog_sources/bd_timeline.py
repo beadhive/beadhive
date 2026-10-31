@@ -508,8 +508,10 @@ def _facets(event: BeadEvent) -> frozenset[str]:
 
 
 def _family(event: BeadEvent) -> str:
-    """The reason label of a dropped event: its kind, with add/remove pairs folded together."""
-    return str(event.kind).split("_", 1)[0]
+    """The reason label of a dropped event: its kind with add/remove pairs folded together, and
+    for a ``set`` the field (``set:metadata.holder``), so a transient lease is visible as such."""
+    kind = str(event.kind).split("_", 1)[0]
+    return f"{kind}:{event.data['field']}" if event.kind is EventKind.SET else kind
 
 
 def consistent_history(
@@ -689,12 +691,18 @@ def history_annotation(
         if event.kind is EventKind.CREATE and event.occurred_at
     ]
     first_bead = min(created, key=instant) if created else None
-    pre_table = history.counts.get("inferred_create", 0)
+    inferred = [e for e in history.events if e.source.ref.startswith("bd:inferred/")]
+    before = [
+        e
+        for e in inferred
+        if earliest is None or (e.occurred_at and instant(e.occurred_at) < instant(earliest))
+    ]
     gap: dict[str, Any] = {
         "first_bead_created": first_bead,
         "first_store_commit": store_start,
         "first_event_recorded": earliest,
-        "beads_without_recorded_creation": pre_table,
+        "beads_created_before_events_table": len(before),
+        "beads_imported_without_created_event": len(inferred) - len(before),
     }
     parts = []
     if first_bead and earliest and instant(first_bead) < instant(earliest):
@@ -704,11 +712,12 @@ def history_annotation(
     if earliest:
         parts.append(f"the events table from {earliest[:10]}")
     gap["note"] = (
-        (
-            "Pre-retention gap: " + ", ".join(parts) + "; history before the events table is "
-            f"unrecorded, so {pre_table} bead(s) carry an inferred, low-confidence create from "
-            "the issues row and no other recorded history."
-        )
+        "Pre-retention gap: "
+        + ", ".join(parts)
+        + f". {len(before)} bead(s) predate the events table and {len(inferred) - len(before)} "
+        "later one(s) were imported without a created event: each carries an inferred, "
+        "low-confidence create from its issues row (recorded_at null), and what happened to "
+        "it before the table began is not recorded."
         if parts
         else "No history was read."
     )
