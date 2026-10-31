@@ -496,6 +496,24 @@ speaker, such as Jev, needs no code change. `backfill` is a new section: `Beadhi
 unknown keys, so nothing in a shared config should set it until the schema has rotated to every
 host (`bh-tfko9`).
 
+### `backfill.timeline.gapfill` {#backfill-timeline-gapfill}
+
+`backfill.timeline.gapfill` configures the opt-in gap fill of `bh backfill export --history`:
+snapshot-level history from `dolt_history_issues` for the beads that have no `created` row in the
+events table ([BACKFILL.md](BACKFILL.md#gap-fill) has the method, the caveats and the measured
+cost table). It is **off by default**, **host-owned** (part of `backfill`: a fleet push cannot
+switch it on) and read-only: every query is a bounded `SELECT`. With `enabled: false` nothing
+extra runs and the archive and its `bdlg.history` annotation are exactly what they were.
+
+| Key (under `backfill.timeline.gapfill`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | run the gap fill when exporting with `--history` |
+| `batch_size` | `25` | beads per history scan (>= 1). Each scan walks every store commit (~9 s on `bh`) and costs ~1.3 s and ~3 MB of CSV per bead, so the whole `bh` gap takes about an hour at any size >= 25 |
+| `timeout_seconds` | `180` | seconds one gap-fill query may run before the run stops; the cursor `<out>.gapfill.json` lets the next run resume |
+
+`backfill.timeline` is a new subsection and `BeadhiveConfig` forbids unknown keys, so nothing in a
+shared config should set it until the schema has rotated to every host (`bh-tfko9`).
+
 ## `bh config` commands
 
 | Command | Effect |

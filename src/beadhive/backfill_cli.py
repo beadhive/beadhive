@@ -43,15 +43,22 @@ from beadhive_backfill.timeline import PASS_NAME as TIMELINE_PASS
 from beadlog import ArchiveError, ArchiveReader, Generator, Group, ManifestError, write_archive
 from beadlog_sources import (
     HISTORY_ANNOTATION,
+    BdReadError,
+    GapfillReader,
     HistoryRead,
+    JsonCursorFile,
+    gap_events,
+    gapfill_annotation,
     history_annotation,
     history_events,
+    lacking_created,
     read_history,
     read_store_start,
 )
 
 from . import complexity_backfill, config, registry
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
+from .modules.config.contracts import BackfillGapfillConfig
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -77,7 +84,16 @@ _PRE_STATE_OPTION = typer.Option(
     None, "--pre-state", help="JSONL recovery export (default: beside the plan)"
 )
 _AUDIT_OPTION = typer.Option(None, "--audit", help="machine audit JSON (default: beside the plan)")
-_ERRORS = (BackfillError, BdLoadError, ArchiveError, ManifestError, OSError, ValueError)
+_ERRORS = (
+    BackfillError,
+    BdLoadError,
+    BdReadError,
+    ArchiveError,
+    ManifestError,
+    OSError,
+    ValueError,
+)
+GAPFILL_STATE_SUFFIX = ".gapfill.json"
 
 
 def _version() -> str:
@@ -145,14 +161,54 @@ def _emit(value: Mapping[str, Any]) -> None:
     typer.echo(json.dumps(value, sort_keys=True, indent=2))
 
 
+def gapfill_settings(cfg: Mapping[str, Any] | None = None) -> BackfillGapfillConfig:
+    """The ``backfill.timeline.gapfill`` settings (disabled unless the config enables them)."""
+    cfg = config.load() if cfg is None else cfg
+    section = (cfg.get("backfill") or {}).get("timeline") or {}
+    return BackfillGapfillConfig.model_validate(section.get("gapfill") or {})
+
+
+def gapfill_reader(cwd: Path, settings: BackfillGapfillConfig) -> GapfillReader:
+    """The bounded ``dolt_history`` reader for the hive at ``cwd`` (the seam tests replace)."""
+    return GapfillReader(cwd, batch_size=settings.batch_size, timeout=settings.timeout_seconds)
+
+
+def gapfill_state_path(out: Path) -> Path:
+    """Where an interrupted gap fill keeps its cursor: beside the archive being written."""
+    return out.with_name(out.name + GAPFILL_STATE_SUFFIX)
+
+
 def _history_archive(
-    cwd: Path, group: Group, baseline: tuple[Any, ...]
+    cwd: Path,
+    group: Group,
+    baseline: tuple[Any, ...],
+    *,
+    gapfill: BackfillGapfillConfig | None = None,
+    state: Path | None = None,
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    """``baseline`` plus every history event of the hive, and the ``bdlg.history`` annotation."""
+    """``baseline`` plus every history event of the hive, and the ``bdlg.history`` annotation.
+
+    With ``gapfill`` enabled, beads that have no ``created`` row in the events table also get
+    snapshot-level events from ``dolt_history_issues``, resumable through the cursor ``state``."""
     read, store_start = history_inputs(cwd)
-    history = history_events(read, baseline, group=group.id, extracted_at=system_clock())
+    extracted_at = system_clock()
+    history = history_events(read, baseline, group=group.id, extracted_at=extracted_at)
     events = (*baseline, *history.events)
-    return events, history_annotation(events, history, baseline, store_start=store_start)
+    account: dict[str, Any] | None = None
+    if gapfill is not None and gapfill.enabled:
+        ids = lacking_created(history.events)
+        cursor = JsonCursorFile(state) if state is not None else None
+        try:
+            scanned = gapfill_reader(cwd, gapfill).read(ids, cursor)
+        except BdReadError as exc:
+            hint = f"; progress is saved in {state}, re-run to resume" if state is not None else ""
+            raise BdReadError(f"gap fill stopped: {exc}{hint}") from exc
+        gap = gap_events(scanned, events, group=group.id, extracted_at=extracted_at, queried=ids)
+        events = (*events, *gap.events)
+        account = gapfill_annotation(gap, batch_size=gapfill.batch_size)
+    return events, history_annotation(
+        events, history, baseline, store_start=store_start, gapfill=account
+    )
 
 
 _PLAN_OPTION = typer.Option(
@@ -249,11 +305,16 @@ def export_cmd(
         events = loader.export()
         annotations: dict[str, Any] | None = None
         description = f"current state of {loader.target}"
-        if history:
-            events, annotations = _history_archive(cwd, group, tuple(events))
-            description = f"current state and bd event history of {loader.target}"
         default = f"{group.dir}.history.bdlg" if history else f"{group.dir}.bdlg"
         out = out if out is not None else Path(default)
+        state = None
+        if history:
+            settings = gapfill_settings()
+            state = gapfill_state_path(out) if settings.enabled else None
+            events, annotations = _history_archive(
+                cwd, group, tuple(events), gapfill=settings, state=state
+            )
+            description = f"current state and bd event history of {loader.target}"
         manifest = write_archive(
             out,
             events,
@@ -262,6 +323,8 @@ def export_cmd(
             description=description,
             annotations=annotations,
         )
+        if state is not None:
+            state.unlink(missing_ok=True)  # the run is complete: the cursor has done its job
     except _ERRORS as exc:
         raise _fail(exc) from None
     summary: dict[str, Any] = {
@@ -292,6 +355,11 @@ def _echo_history(history: Mapping[str, Any]) -> None:
     )
     typer.echo(f"sources: {sources or 'none'}")
     typer.echo((history.get("gap") or {}).get("note", ""))
+    if gap := history.get("gapfill"):
+        typer.echo(
+            f"gap fill: {gap.get('beads_queried', 0)} beads queried, {gap.get('events', 0)} "
+            f"events (resumed from bead {gap.get('resumed_from', 0)})"
+        )
 
 
 def _verdicts(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -482,6 +550,9 @@ __all__ = [
     "GROUP_NAMESPACE",
     "app",
     "archive_summary",
+    "gapfill_reader",
+    "gapfill_settings",
+    "gapfill_state_path",
     "hive_group",
     "history_inputs",
     "store_loader",
