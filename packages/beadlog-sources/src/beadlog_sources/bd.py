@@ -310,6 +310,22 @@ def same_phase(folded: str | None, status: str) -> bool:
     return folded == status or (folded == RETIRED and status == CLOSED)
 
 
+def bd_filled_defaults(bead: BeadRef) -> dict[str, Any]:
+    """The values ``bd import`` fills in for a row that omits them: ``priority`` 0, and the bead
+    id as the title a loader writes for a create without one. A fold lacking such a field still
+    agrees with a row holding its default, so a loaded create that omitted it is re-emitted."""
+    return {"priority": 0, "title": bead.id}
+
+
+def fields_agree(folded: Mapping[str, Any], row: RowState) -> bool:
+    """Whether folded fields equal the row's, tolerating :func:`bd_filled_defaults`."""
+    plain, actual = _plain(folded), dict(row.fields)
+    for name, default in bd_filled_defaults(row.bead).items():
+        if name not in plain and actual.get(name) == default:
+            del actual[name]
+    return bool(plain == actual)
+
+
 def agrees(state: BeadState | None, row: RowState) -> bool:
     """Whether a fold equals the row's current state (comments compared separately)."""
     return (
@@ -317,7 +333,7 @@ def agrees(state: BeadState | None, row: RowState) -> bool:
         and state.exists
         and state.type == row.type
         and same_phase(state.phase, row.phase)
-        and _plain(state.fields) == row.fields
+        and fields_agree(state.fields, row)
         and frozenset(state.labels) == row.labels
         and frozenset(state.edges) == frozenset(row.edges)
     )
@@ -617,10 +633,12 @@ __all__ = [
     "admissible",
     "agrees",
     "baseline_events",
+    "bd_filled_defaults",
     "bd_timestamp",
     "envelope",
     "export_argv",
     "facet_key",
+    "fields_agree",
     "parse_export",
     "read_rows",
     "row_events",

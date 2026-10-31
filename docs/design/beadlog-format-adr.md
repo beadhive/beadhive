@@ -489,6 +489,33 @@ create and close, pending the open verification that `bd import` honors supplied
 Reading bd back (the baseline BeadLog) uses the bulk `events` table, `dolt_log` and first-parent
 `chore(merge)` commits, as the platform ADR §5 requires, and re-emits stored `event_id`s.
 
+**As implemented (`bh-b8aur`, bd 1.3.0).** The loader is `beadhive.backfill_bd`; the
+current-state reader is the `bd` strategy in `beadlog_sources.bd`. Measured on a scratch store:
+
+- `bd import` honors supplied `created_at`, `closed_at`, `started_at` and the `created_at` of
+  dependencies and comments, so a **new** bead keeps those valid times natively and reports no
+  `valid-time.degraded` for them. `bd update`, `bd close`, `bd dep add` and `bd comments add`
+  stamp the store's own time, so every change to an existing bead degrades to metadata.
+- `metadata.bdlg` is one nested document. `bd update --metadata` replaces a top-level key
+  whole, so the loader always rewrites the full document. Each entry holds the event's whole
+  identity (`event_id`, `kind`, both times, `source`, `provenance`, and `actor`,
+  `occurred_precision`, `lamport` and `prev` when set). Every kind except `set` also stores
+  `data`; a `set` takes the field's current value. The reader re-emits an entry only when its
+  recomputed id matches and it agrees with the row. Comments get their own `comment:<event id>`
+  entries, so they round-trip too.
+- bd keeps current state only. A batch event that decides no facet is reported `dropped` as
+  `x-bd.superseded`. Other bd-specific codes: `x-bd.default-filled` (bd fills `priority` 0),
+  `x-bd.title-required`, `x-bd.labels-added` (`bd import` adds the identity triplet),
+  `x-bd.unknown-status`, `x-bd.missing-bead`, `x-bd.foreign-group`, `x-bd.redacted`,
+  `x-bd.erased`, `x-bd.deleted`, and `x-bd.non-identity` (counted in `summary.by_code` only).
+- `delete`, and bead-scope `tombstone` deletion, run `bd delete --force` only when the loader
+  is built with `delete_enabled=True`. That is off by default; otherwise they are reported
+  dropped (`x-bd.delete-disabled`, or `erasure.incomplete` for tombstones) and nothing is
+  deleted. Undoing a `create` closes the bead with reason `backfill-rollback`.
+- Called with bare events, as the apply envelope calls it, the report's `archive` block carries
+  the SHA-256 of the batch's sorted event ids. `beadlog.load_archive` replaces it with the
+  archive's manifest digest.
+
 #### XTDB v2 (first bi-temporal target, pending `bh-5wu0u`)
 
 Refined by the XTDB spike's verdict if it lands first; unverified behavior is marked.
