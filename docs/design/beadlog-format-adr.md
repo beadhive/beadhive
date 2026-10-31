@@ -1,8 +1,10 @@
 # ADR: BeadLog v0 format — op-log events, content-addressed ids, capabilities and loss reports
 
 - **Status:** Accepted for format version `0.1.0`. The format may still change while the
-  `beadlog` package is `Private :: Do Not Upload` (until the XTDB verdict, `bh-5wu0u`); any
-  change follows [Versioning and compatibility](#11-versioning-and-compatibility).
+  `beadlog` package is `Private :: Do Not Upload` (the XTDB verdict, `bh-5wu0u`, is GO; decision
+  `bh-psu1b`); any change follows [Versioning and compatibility](#11-versioning-and-compatibility).
+  Amended 2026-10-31 with the XTDB spike findings: see
+  [Amendment 2026-10-31](#amendment-2026-10-31-xtdb-spike-findings).
 - **Date:** 2026-10-30
 - **Decision owner:** Beadhive maintainers
 - **Bead:** `bh-65jen`, under epic `bh-ebopn` (BeadLog v0 format and the shared backfill engine)
@@ -13,6 +15,11 @@
 - **Research:** [`beadlog-store-landscape-research.md`](beadlog-store-landscape-research.md)
   (spike `bh-o1x4r`): store survey, measurements and every source consulted. Its full source
   list is reproduced under [References](#references).
+- **XTDB spike evidence (amendment 2026-10-31):**
+  [`bh-o1x4r`](../spikes/bh-o1x4r-beadlog-store-landscape.md),
+  [`bh-w56ts`](../spikes/bh-w56ts-xtdb-bead-shape.md),
+  [`bh-cntr0`](../spikes/bh-cntr0-xtdb-operational-fit.md),
+  [`bh-3jp2g`](../spikes/bh-3jp2g-xtdb-bitemporal-load.md).
 - **Machine contract:** [`docs/schemas/beadlog/v0.1/`](../schemas/beadlog/v0.1/) —
   `manifest.schema.json`, `event.schema.json`, `loss-report.schema.json`, and `examples/`
   (a worked archive, valid and invalid examples, and `id-vectors.json`). Guarded by
@@ -412,6 +419,7 @@ misreading them.
 | `recorded-time-monotone-load` | can set recorded time only by replaying strictly increasing transaction times into a store with no later transaction |
 | `erase` | physically removes content across all history |
 | `metadata-fallback` | can keep degraded values in per-bead metadata |
+| `erase-logical` | *(added 2026-10-31, [A1](#a1-erase-is-logical-in-xtdb))* erased content is absent from every valid-time and system-time read, but its bytes may survive in the store's log and files until the store is rebuilt; mutually exclusive with `erase` |
 
 ### 8. Loader degradation and the loss report
 
@@ -516,9 +524,11 @@ current-state reader is the `bd` strategy in `beadlog_sources.bd`. Measured on a
   the SHA-256 of the batch's sorted event ids. `beadlog.load_archive` replaces it with the
   archive's manifest digest.
 
-#### XTDB v2 (first bi-temporal target, pending `bh-5wu0u`)
+#### XTDB v2 (first bi-temporal target; spike `bh-5wu0u` GO)
 
-Refined by the XTDB spike's verdict if it lands first; unverified behavior is marked.
+*Amended 2026-10-31:* the spike verdict is in. The table below is the pre-spike mapping; where it
+disagrees with the [Amendment 2026-10-31](#amendment-2026-10-31-xtdb-spike-findings), the
+amendment governs (see [A8](#a8-what-this-supersedes-in-8-and-9) for the row-by-row list).
 
 | BeadLog | XTDB v2 | Notes |
 |---|---|---|
@@ -626,6 +636,233 @@ BEAD_GROUPS draws the line: **retention** removal is a per-store fact that does 
 - Erasure leaves the erased events' ids behind in tombstones (see the limitation in §10).
 - Adding a kind (aliases first) needs a new `MINOR`, a schema directory and a required
   capability; v0.1 readers will refuse such archives rather than misread them.
+
+## Amendment 2026-10-31: XTDB spike findings
+
+Spike molecule `bh-5wu0u` returned **GO** and decision `bh-psu1b` adopts XTDB v2 (2.2.x) as the
+first bi-temporal BeadLog loader. This amendment records the spike evidence as decisions before
+the loader is built. It changes **no** envelope member, kind, id rule or schema (see
+[A7](#a7-schema-and-package-impact)); it fixes loader and index semantics that
+[§7](#7-capabilities), [§8](#8-loader-degradation-and-the-loss-report) and
+[§9](#9-worked-loader-mappings) left open. Where this amendment and the XTDB table in §9 or the
+store-class table in §8 disagree, **the amendment governs** ([A8](#a8-what-this-supersedes-in-8-and-9)).
+Each item cites the spike document and section that supports it.
+
+| Spike | Document | Settles |
+|---|---|---|
+| `bh-o1x4r` | [store landscape](../spikes/bh-o1x4r-beadlog-store-landscape.md) | Why XTDB is the only surveyed candidate that natively honors both time axes; bd `import` and Dolt `--date` limits (unchanged) |
+| `bh-w56ts` | [bead shape](../spikes/bh-w56ts-xtdb-bead-shape.md) | Table layout (b), `_id` rule, write and read patterns, type contract |
+| `bh-cntr0` | [operational fit](../spikes/bh-cntr0-xtdb-operational-fit.md) | Footprint, deployment posture, two-package split, `beadlog.store` manifest sketch |
+| `bh-3jp2g` | [bitemporal load](../spikes/bh-3jp2g-xtdb-bitemporal-load.md) | Monotone `SYSTEM_TIME` rules, index grouping, nulls, same-instant writes, `ERASE` |
+
+### A1. ERASE is logical in XTDB
+
+Evidence: [`bh-3jp2g` E7](../spikes/bh-3jp2g-xtdb-bitemporal-load.md) and its recommendation 5.
+One wall-clock transaction ran `ERASE` for a single bead over `beads`, `bead_labels`,
+`bead_edges` and `bead_comments`. The bead then vanished from every valid-time and system-time
+read (default, `FOR VALID_TIME AS OF`, `FOR SYSTEM_TIME AS OF`, both `FOR ALL` axes, and
+`BETWEEN`), and every other bead was intact. The erased title was **still in the transaction
+log** (`log/LOG`, `log/REPLICA_LOG`) and in three block files straight after the `ERASE`, 150 s
+later and at teardown. Compaction and log retention might remove the bytes eventually; neither
+was observed.
+
+Decisions:
+
+1. **A loader declares its erasure kind.** The loader capability `erase` keeps its §7 meaning:
+   physically removes content across all history. A store whose erase is complete only for reads
+   declares the new loader capability **`erase-logical`**: the erased content is absent from
+   every valid-time and system-time read, and its bytes may survive in the store's log and files
+   until the store is rebuilt. A loader declares at most one of the two. The XTDB loader declares
+   `erase-logical`. The loss-report `loader.capabilities` pattern already accepts the name.
+2. **A logical erase is a reported loss.** The XTDB loader reports `erasure.incomplete` for each
+   tombstone it applies, naming the kind in `detail`. The existing conformance rule (a store
+   without `erase` reports `erasure.incomplete` for each tombstone) holds unchanged, and the
+   apply envelope surfaces it for operator acknowledgement as §8 already requires.
+3. **The guarantee is about reads, not bytes.** Nothing in the loader or the report may claim
+   physical removal from an XTDB store.
+4. **Physical purge is rebuild.** XTDB is a rebuildable projection of the BeadLog (`bh-cntr0`
+   E5), so the only way to remove erased bytes is to rebuild the database from a purged BeadLog:
+   1. Make the BeadLog itself purged: the tombstone is merged in and no part, checkpoint or
+      index line carries the erased content ([§10](#10-erasure-retention-and-redaction)).
+   2. Stop the node (the operator owns start and stop; the plugin never does).
+   3. Delete the **whole** data directory, `log/` and `buffers/` both, and every copy of it. A
+      stop-and-copy backup (`bh-cntr0` E5) holds the same bytes; that follows from E5 and from
+      E7's finding that the bytes live in those files.
+   4. Start a fresh node on an empty real-disk data directory (pinned image, `bh-cntr0`).
+   5. Run the initial monotone load of the purged BeadLog ([A2](#a2-recorded-time-monotone-load-semantics)).
+      About 6 minutes at `bh` scale (`bh-3jp2g` E6: 359.6 s; `bh-cntr0` E5).
+   6. Check, as an operator step, that the erased text is absent from the new data directory.
+      The spike did this with `grep` over the log and block files. XTDB does not attest it.
+5. **Open, not decided here.** Whether a tombstone also erases **inbound** edge rows owned by
+   other beads. The spike left 31 dangling `bead_edges` rows pointing at the erased bead, since
+   `ERASE` did exactly what its predicate said (E7, consequence 1). Until decided, the loader
+   reports them as `edge.dangling-target`. When the erased bytes leave the log and block files
+   under compaction or log retention is also unmeasured (`bh-3jp2g` recommendation 5).
+
+### A2. Recorded-time-monotone-load semantics
+
+Evidence: [`bh-3jp2g` E4, E5, E6](../spikes/bh-3jp2g-xtdb-bitemporal-load.md) and recommendation 2.
+In 2.2.0, preserving recorded time is a **one-shot, all-or-nothing property of a fresh
+database**. The loader cannot recover from a mistake in place.
+
+The capability `recorded-time-monotone-load` (§7) means an **initial load** into a **fresh
+database**, with these rules:
+
+- **Fresh database.** A fresh node (empty data directory) or an `ATTACH DATABASE` database on the
+  node (own clock, S13; its storage durability is unverified, so prefer a fresh node).
+- **Shape.** One `BEGIN READ WRITE WITH (SYSTEM_TIME = TIMESTAMP '<recorded_at>')` transaction
+  per distinct `recorded_at` (syntax S1a; `SETTING SYSTEM_TIME` is not valid for writes). Commit
+  SYNC. `COMMIT ASYNC` is allowed only if the loader then checks `xt.txs`, because it returns
+  success even when the transaction aborts (S10).
+- **Strict ordering, client side.** The loader checks that each transaction's `recorded_at` is
+  **strictly greater** than the previous one *before* submitting. A tie or an out-of-order
+  transaction aborts at `COMMIT`, is stamped with wall-clock time, and ends backfill: every later
+  backfill transaction aborts too, even a retry at +1 µs (S2 to S5).
+- **Future-time refusal.** The loader refuses any `recorded_at` later than the wall clock. A
+  future `SYSTEM_TIME` is accepted but hides its rows from default reads until the clock passes
+  it (S11e). Because the replay is ascending, checking the last one suffices.
+- **Target check.** The loader refuses to start when the target has any transaction at or after
+  the first `recorded_at`. That target falls to the second store class in §8 (no `SYSTEM_TIME` at
+  all; `recorded-time.monotone-violation` for every event).
+- **Abort means discard and reload.** On **any** abort, including a non-time abort that XTDB
+  would let the load survive (S12, which silently loses that transaction's data), the loader
+  fails the load, the database is discarded, and the load restarts from an empty one. It never
+  retries in place.
+- **Wall-clock phase last.** A plain wall-clock transaction also ends backfill (S6c, S11d), so
+  everything that needs one runs after the whole replay: the null-`recorded_at` tail
+  ([A4](#a4-null-recorded_at)) and any `ERASE` ([A1](#a1-erase-is-logical-in-xtdb)). The spike ran
+  `ERASE` only as a wall-clock transaction after a complete load; `ERASE` inside a `SYSTEM_TIME`
+  transaction was not tried.
+- **Incremental loads.** Every load after the first uses plain wall-clock transactions. System
+  time is the load time, valid time is still `occurred_at`, and the report declares
+  `recorded-time.reassigned` for those events.
+- **Cost.** One transaction per distinct `recorded_at` is the price of keeping recorded time. At
+  `bh` scale it is 28,402 transactions for 59,387 ops, 359.6 s, a 552 MiB peak and 370 MB of log
+  (E6). It pulls against the "batch several hundred documents" guidance of
+  [`bh-cntr0` E3](../spikes/bh-cntr0-xtdb-operational-fit.md); preserving recorded time wins in
+  the initial load, and batching applies to the incremental loads.
+
+### A3. `index/recorded.jsonl` ordering and grouping rule
+
+Evidence: [`bh-3jp2g` E6 and recommendation 3](../spikes/bh-3jp2g-xtdb-bitemporal-load.md).
+
+- **Order is unchanged.** The index stays sorted by `(recorded_at, id)` with null `recorded_at`
+  last ([§1](#1-archive-layout); the manifest schema pins `sorted_by` to `recorded_at,id`).
+- **Grouping.** Consecutive index lines with **equal** `recorded_at` form one group, and one
+  group is exactly one `SYSTEM_TIME` transaction. Ties across different entities are harmless
+  (28,402 transactions for 59,387 ops in E6).
+- **Order within a group is the loader's job.** The spike orders a group by
+  `(recorded_at, entity causal order, event id)`. The index cannot carry that, because `id` is a
+  hash and not causal. The loader reads each group's events through `part` and `line` and sorts
+  them by `(bead, §6 ordering key)`. Statement order inside one transaction does not matter for
+  writes with distinct `_valid_from` (S7), so this only affects same-instant writes, which
+  [A5](#a5-same-instant-microsecond-split) handles. Ties in the §6 key stay deterministic but not
+  causal. A producer that knows a causal order must express it in distinct timestamps.
+- **No index change is needed.** The sort order and the one-line-per-event rule remain as in §1,
+  so neither the manifest schema nor the `beadlog` index writer changes.
+
+### A4. Null `recorded_at`
+
+Evidence: [`bh-3jp2g` E4 (S6, S11) and recommendation 3](../spikes/bh-3jp2g-xtdb-bitemporal-load.md).
+
+XTDB cannot store "unknown" recorded time: `SYSTEM_TIME = NULL` means wall-clock time, which ends
+backfill (S6). So:
+
+- Events with null `recorded_at` are the **tail** of the index (it sorts them last, §1). The
+  loader stops the `SYSTEM_TIME` replay at the first null and loads the tail afterwards, in
+  wall-clock transactions, reporting `recorded-time.null` (§8) for each. The spike suggested
+  leaving such events out of the index; this ADR keeps them listed, since the tail is trivially
+  detectable and the index contract (one line per event) stays unchanged.
+- Every such write carries an explicit `_valid_to`: the `occurred_at` of the next known version
+  of the same entity, or open-ended when there is none. Without it, a wall-clock write that is
+  earlier in valid time **replaces the later versions** in current system time (S11, the clobber
+  already seen in `bh-w56ts` E7.2). The bound keeps them.
+- The alternative of declaring `recorded_at := occurred_at` with provenance `derived` is a
+  producer-side choice, made by an extractor (as the spike did for snapshot-derived rows). The
+  loader never invents a recorded time.
+
+### A5. Same-instant microsecond split
+
+Evidence: [`bh-3jp2g` S7 and recommendation 3](../spikes/bh-3jp2g-xtdb-bitemporal-load.md); operator
+decision, 2026-10-31.
+
+Within one transaction, two writes to the same entity (same table, same `_id`) with the same
+`_valid_from` leave **only the last**; the earlier one is gone from every read, including
+`FOR ALL SYSTEM_TIME` (S7). `bh` has 136 such cases. The spike offered two options, last-writer-wins
+or a split, and the operator chose the **split**:
+
+- Within a group, after the §6 ordering of [A3](#a3-indexrecordedjsonl-ordering-and-grouping-rule),
+  number each entity's writes that share one `occurred_at` from `k = 0`. Write `0` stays in the
+  group's transaction. Write `k ≥ 1` gets its **own transaction** at
+  `SYSTEM_TIME = recorded_at + k µs` with
+  `_valid_from = occurred_at + k µs`. (Reading "k-th" as zero-based is this amendment's
+  clarification of the decision.)
+- Split transactions follow the group's transaction and stay strictly increasing, so A2 holds.
+  Microsecond values are accepted (S1e).
+- **Precondition.** `recorded_at + k µs` must stay strictly below the next distinct
+  `recorded_at` of the replay, otherwise the loader refuses before submitting. The spike's
+  "cannot reach the next second" relies on `bd` timestamps having one-second resolution; another
+  source may not.
+- **Loss.** The stored times of a split write differ from the event's. The loader reports a loader
+  code `x-xtdb.us-split` (the loss-report pattern allows `x-<name>`), disposition `approximated`,
+  once for `/occurred_at` and once for `/recorded_at`, with `stored_as` holding the shifted
+  value. The event id is unaffected because identity members are not rewritten in the archive.
+- **No new field.** The split is derived from the index group and the events, so neither the
+  index line nor the event envelope gains a marker.
+
+### A6. Two-package XTDB loader and the `beadlog.store` capability
+
+Evidence: [`bh-cntr0` recommendation 2](../spikes/bh-cntr0-xtdb-operational-fit.md); layout from
+[`bh-w56ts`](../spikes/bh-w56ts-xtdb-bead-shape.md).
+
+The XTDB loader is two packages, following
+[`package-class-library-vs-plugin-adr.md`](package-class-library-vs-plugin-adr.md):
+
+| Package | Class | Owns | Depends on |
+|---|---|---|---|
+| `packages/beadlog-xtdb` | Library; never imports `beadhive` | BeadLog events to the layout (b) tables and back as as-of reads; psycopg connection setup; transit writer and reader; single-type column coercion; version gate; dangling-edge report | `beadlog`, `psycopg[binary]>=3.2,<4`, an exactly pinned `transit-python2` (`==0.8.321` in the spike) or an in-package transit writer |
+| `packages/beadhive-beadlog-xtdb` | Plugin (`plugin.json`) | Manifest, config schema, `doctor` and `status`, and binding the loader into `bh backfill` through the capability below | `beadhive`, `beadlog-xtdb` |
+
+- Both are `Private :: Do Not Upload`. The public extra is `beadhive[xtdb]`. Root resolves the
+  plugin lazily, after manifest selection, as `beadhive-tracker-github` does for `tracker.adapter`.
+- **`beadlog.store`, API 1**, is a new plugin capability: the seam through which `bh backfill`
+  obtains a BeadLog store loader. This settles the name that `bh-cntr0` left to this ADR.
+  Namespace `plugins.beadlog-xtdb`, host-owned, `enabled` default **false**. The loader returned
+  through it must pass the `beadlog.testing` loader-conformance kit.
+- **Layout (b)** ([`bh-w56ts`](../spikes/bh-w56ts-xtdb-bead-shape.md)): tables `beads`
+  (`_id` = bead id), `bead_labels` (`"<bead>|<label>"`), `bead_edges` (`"<from>|<type>|<to>"`),
+  `bead_comments` (comment id). More than one group uses `"<group_id>:<bead_id>"`. Each document
+  is one transit parameter; reads use `SET fallback_output_format='transit'`; timestamps go as
+  typed instants; `_type` is renamed `bd_record_type`; every column keeps one type.
+- **Operations** ([`bh-cntr0`](../spikes/bh-cntr0-xtdb-operational-fit.md)): a single node, off
+  unless needed, loopback bind with `XTDB_PASSWORD`, `--memory 2g`, a real-disk data directory
+  (`doctor` refuses `tmpfs` and `ramfs`), a GET-based healthcheck override, a pinned image digest,
+  and version gate `>=2.2.0,<2.3`. The operator owns start, stop and upgrade.
+
+### A7. Schema and package impact
+
+- **JSON Schemas (`docs/schemas/beadlog/v0.1/`): no change.** The erasure kind is a free-form
+  loader capability name (`loader.capabilities` items match `^[a-z][a-z0-9:._-]*$`), the split is
+  derived rather than stored, and `x-xtdb.us-split` is a legal loss code. No field was needed.
+- **`beadlog` package follow-up** (code in merged sub-epic `bh-ebopn`, deliberately not changed
+  here): add `erase-logical` to `LoaderCapability`, and teach the conformance kit that a store
+  declares at most one of `erase` and `erase-logical`. Until then the name works as a plain
+  string in a loss report.
+
+### A8. What this supersedes in §8 and §9
+
+| Where | Was | Now |
+|---|---|---|
+| §8, store class 3, Tombstone and Typical loss codes | `ERASE`; `recorded-time.null` only | `ERASE` (logical, [A1](#a1-erase-is-logical-in-xtdb)); `recorded-time.null`, `erasure.incomplete`, and `x-xtdb.us-split` when it fires |
+| §8, store class 3, Null `recorded_at` | one final transaction at load time | wall-clock transactions after the replay, each with an explicit `_valid_to` ([A4](#a4-null-recorded_at)) |
+| §9 XTDB, bead `_id` and tables | `_id` = JCS of the bead ref; tables `beads`, `labels`, `edges`, `comments` | layout (b), [A6](#a6-two-package-xtdb-loader-and-the-beadlogstore-capability) |
+| §9 XTDB, `create` / `set` / `phase` / `retire` | `UPDATE … FOR PORTION OF VALID_TIME …` | a full `beads` version by `INSERT … RECORDS` with `_valid_from = occurred_at`, because `UPDATE … FOR PORTION OF` creates no row before the first version (`bh-w56ts` E7.4); an out-of-order insert needs `_valid_to` (E7.2); setting a field to null uses `UPDATE`, never `PATCH` (E7.3) |
+| §9 XTDB, `label_*` / `edge_*` / `comment` | JCS ids, tables `labels`, `edges`, `comments` | add = `INSERT` with the composite `_id`; remove = `DELETE … FOR PORTION OF VALID_TIME FROM t TO NULL`; comment = `INSERT` |
+| §9 XTDB, `tombstone` | "removes across all valid and system time" | removes across all **reads** only; bytes remain ([A1](#a1-erase-is-logical-in-xtdb)) |
+| §9 XTDB, `recorded_at` | replay with a null tail "at database time" | [A2](#a2-recorded-time-monotone-load-semantics) to [A5](#a5-same-instant-microsecond-split) |
+| §9 XTDB, "Unverified, for the spike" | open questions | answered: a later `_valid_from` closes the earlier row (`bh-w56ts` E7.1); pgwire fidelity needs transit (`bh-w56ts` E3); load cost in `bh-3jp2g` E6 |
+
+The `checkpoint` row of §9 (seeds an absent bead, otherwise ignored) is unchanged.
 
 ## References
 
