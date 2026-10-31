@@ -10,6 +10,10 @@ never imports ``beadhive``. It owns:
   ``backfill.judge`` keys);
 - the neutral ``bd`` baseline strategy (:mod:`beadlog_sources.bd`): one ``bd export`` read as
   current-state events, re-emitting the BeadLog ids a bd loader stored in ``metadata.bdlg``;
+- the neutral ``bd`` history reader (:mod:`beadlog_sources.bd_history`): the ``events`` table in
+  one bounded ``SELECT``, parsed into typed :class:`HistoryEvent` records with counted skips;
+- commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
+  ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -18,7 +22,15 @@ never imports ``beadhive``. It owns:
 
 from __future__ import annotations
 
-from .bd import BdBaselineStrategy, BdReadError, baseline_events
+from .bd import BdBaselineStrategy, BdReadError, baseline_events, bd_timestamp
+from .bd_history import (
+    BdHistoryError,
+    HistoryEvent,
+    HistoryRead,
+    history_argv,
+    parse_history,
+    read_history,
+)
 from .contracts import (
     ABSTAIN,
     DEFAULT_FAMILY,
@@ -31,6 +43,7 @@ from .contracts import (
     ScoreQuery,
     SourceStrategy,
 )
+from .git_dates import CommitDate, CommitDates, GitReadError, commit_dates
 from .judges import (
     CommandJudge,
     CommandResult,
@@ -54,6 +67,7 @@ from .reconcile import (
     reconcile,
     write_plan,
 )
+from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -66,16 +80,23 @@ def distribution_name() -> str:
 __all__ = [
     "ABSTAIN",
     "BdBaselineStrategy",
+    "BdHistoryError",
     "BdReadError",
     "DEFAULT_FAMILY",
+    "DEFAULT_TIMEOUT_SECONDS",
     "DISTRIBUTION",
     "ENTRY_POINT_GROUP",
     "ChoiceQuery",
     "CommandJudge",
+    "CommitDate",
+    "CommitDates",
     "CommandResult",
     "DeterministicJudge",
     "ExtractRequest",
     "Fallback",
+    "GitReadError",
+    "HistoryEvent",
+    "HistoryRead",
     "JudgeProtocolError",
     "JudgeSettings",
     "Judgment",
@@ -84,18 +105,25 @@ __all__ = [
     "ReconcileClass",
     "ReconcilePlan",
     "Review",
+    "Runner",
     "ScoreQuery",
     "SourceStrategy",
     "Verdict",
     "baseline_events",
+    "bd_timestamp",
     "build_judge",
     "choice_confidence",
+    "commit_dates",
     "distribution_name",
+    "history_argv",
     "judge_schema",
+    "parse_history",
     "plan_entries",
     "prior_verdicts",
+    "read_history",
     "read_plan",
     "reconcile",
     "settings_from",
+    "subprocess_runner",
     "write_plan",
 ]
