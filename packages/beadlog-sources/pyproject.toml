@@ -15,6 +15,11 @@ classifiers = ["Private :: Do Not Upload"]
 # off by default (`backfill.judge.enabled = false`).
 haiku = ["httpx>=0.28,<1"]
 
+# Source strategies shipped with this package (entry-point group `beadlog.sources`); each one is
+# also a `beadlog extract <name>` subcommand.
+[project.entry-points."beadlog.sources"]
+bd = "beadlog_sources.bd:BdBaselineStrategy"
+
 [project.scripts]
 beadlog = "beadlog_sources.cli:main"
 bh-judge-haiku = "beadlog_sources.haiku:main"

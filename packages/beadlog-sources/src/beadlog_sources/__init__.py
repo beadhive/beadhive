@@ -8,6 +8,8 @@ never imports ``beadhive``. It owns:
 - the judgment engines (:mod:`beadlog_sources.judges`): the deterministic lexical judge, the
   ``bh-judge/1`` command judge that fails closed, and :class:`JudgeSettings` (the
   ``backfill.judge`` keys);
+- the neutral ``bd`` baseline strategy (:mod:`beadlog_sources.bd`): one ``bd export`` read as
+  current-state events, re-emitting the BeadLog ids a bd loader stored in ``metadata.bdlg``;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -16,6 +18,7 @@ never imports ``beadhive``. It owns:
 
 from __future__ import annotations
 
+from .bd import BdBaselineStrategy, BdReadError, baseline_events
 from .contracts import (
     ABSTAIN,
     DEFAULT_FAMILY,
@@ -62,6 +65,8 @@ def distribution_name() -> str:
 
 __all__ = [
     "ABSTAIN",
+    "BdBaselineStrategy",
+    "BdReadError",
     "DEFAULT_FAMILY",
     "DISTRIBUTION",
     "ENTRY_POINT_GROUP",
@@ -82,6 +87,7 @@ __all__ = [
     "ScoreQuery",
     "SourceStrategy",
     "Verdict",
+    "baseline_events",
     "build_judge",
     "choice_confidence",
     "distribution_name",
