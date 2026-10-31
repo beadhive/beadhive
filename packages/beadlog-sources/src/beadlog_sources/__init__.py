@@ -16,6 +16,8 @@ never imports ``beadhive``. It owns:
 - the neutral ``docs`` strategy (:mod:`beadlog_sources.docs`): decision and design docs bridged to
   beads (frontmatter ``Beads:``, the first-add commit's bead id, existing ``external_ref``), then a
   lexical shortlist and the judged residual, proposing ``external_ref`` stamps;
+- the neutral ``planning`` strategy (:mod:`beadlog_sources.planning`): a GSD ``.planning`` tree as
+  epics, issues, ``parent-child`` and ``blocks`` edges, idempotent on ``external_ref``;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -50,6 +52,7 @@ from .judges import (
     judge_schema,
     settings_from,
 )
+from .planning import PlanningStrategy
 from .reconcile import (
     PlanEntry,
     ReconcileClass,
@@ -91,6 +94,7 @@ __all__ = [
     "Judgment",
     "JudgmentPort",
     "PlanEntry",
+    "PlanningStrategy",
     "ReconcileClass",
     "ReconcilePlan",
     "Review",

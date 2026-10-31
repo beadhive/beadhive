@@ -21,6 +21,7 @@ haiku = ["httpx>=0.28,<1"]
 bd = "beadlog_sources.bd:BdBaselineStrategy"
 docs = "beadlog_sources.docs:DocsStrategy"
 git-commits = "beadlog_sources.commits:GitCommitsStrategy"
+planning = "beadlog_sources.planning:PlanningStrategy"
 
 [project.scripts]
 beadlog = "beadlog_sources.cli:main"
