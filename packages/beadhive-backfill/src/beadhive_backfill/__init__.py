@@ -16,7 +16,12 @@ public ``__all__``) and never imports ``beadhive``. It owns the hive apply envel
   (:class:`JsonFileAuditSink`, :class:`ArchivePreStateExporter`);
 - the hive-policy passes, each its own public submodule: :mod:`beadhive_backfill.complexity`
   (pass #1, complexity labels, with the published JSON plan/audit contract of
-  ``bh backfill complexity``).
+  ``bh backfill complexity``);
+- the AGF history readers, also public submodules: :mod:`beadhive_backfill.merges` (one
+  ``git log --first-parent`` -> ``chore(merge): bead|molecule|batch`` lands, refresh merges
+  ignored) and :mod:`beadhive_backfill.run_journals` (the optional ``run-journals/<hive>/`` reader,
+  a missing directory being a no-op). The neutral readers (bd events table, commit dates) live
+  in ``beadlog_sources``.
 """
 
 from __future__ import annotations
