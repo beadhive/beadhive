@@ -155,6 +155,9 @@ beadhive-beads-client = { workspace = true }
 beadhive-plugins = { workspace = true }
 beadhive-worktrees = { workspace = true }
 beadhive-validation-broker = { workspace = true }
+beadlog = { workspace = true }
+beadlog-sources = { workspace = true }
+beadhive-backfill = { workspace = true }
 
 # Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
