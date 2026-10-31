@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
+from beadhive.modules.config.application import partition
 from beadhive.modules.config.contracts import (
     CONFIG_SECTION_COMPATIBILITY_ALIASES,
     DEFAULT_JUNK_GLOBS,
@@ -39,3 +43,38 @@ def test_top_level_section_inventory_is_derived_with_explicit_compatibility_alia
     assert CONFIG_SECTION_COMPATIBILITY_ALIASES == frozenset({"beads"})
     assert "beads" in sections
     assert "definitely_not_config" not in sections
+
+
+def test_backfill_judge_section_is_additive_and_every_default_is_off():
+    assert BeadhiveConfig().backfill is None  # absent by default: dumps change for nobody
+    judge = BeadhiveConfig(backfill={}).backfill.judge
+    assert judge.enabled is False
+    assert judge.command == "bh-judge-haiku"
+    assert judge.timeout_seconds == 30.0
+    assert judge.model == "claude-haiku-5-5"
+    assert judge.auto_accept == {}
+    assert judge.max_calls_per_run == 100
+    assert field_default("backfill.judge.enabled") is False
+    assert "backfill" in known_sections()
+    paths = [f.path for f in iter_schema_fields() if f.path.startswith("backfill.")]
+    assert "backfill.judge.enabled" in paths
+    assert {partition.partition_of(path) for path in paths} == {partition.HOST}
+
+    tuned = BeadhiveConfig(backfill={"judge": {"enabled": True, "auto_accept": {"m": 0.9}}})
+    assert tuned.backfill.judge.enabled is True
+    assert tuned.backfill.judge.auto_accept == {"m": 0.9}
+
+
+@pytest.mark.parametrize(
+    "judge",
+    [
+        {"auto_accept": {"m": 1.5}},
+        {"timeout_seconds": 0},
+        {"max_calls_per_run": -1},
+        {"command": ""},
+        {"unknown": True},
+    ],
+)
+def test_backfill_judge_section_refuses_invalid_values(judge):
+    with pytest.raises(ValidationError):
+        BeadhiveConfig(backfill={"judge": judge})

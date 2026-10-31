@@ -2079,6 +2079,57 @@ class ReleaseConfig(_Section):
     )
 
 
+# ---- backfill ----------------------------------------------------------------
+
+
+class BackfillJudgeConfig(_Section):
+    """``backfill.judge`` — the opt-in judge for backfill reconcile's fuzzy residual
+    (docs/design/backfill-platform-adr.md section 4). Off by default: the deterministic lexical
+    engine answers alone and no subprocess is spawned. When enabled, ``command`` speaks the
+    ``bh-judge/1`` envelope on stdin/stdout and any failure falls back to deterministic. The
+    standalone ``beadlog`` CLI takes the same keys as ``--judge-*`` flags and
+    ``BEADLOG_JUDGE_*`` env vars."""
+
+    enabled: bool = Field(False, description="Ask the judge command for the fuzzy residual.")
+    command: str = Field(
+        "bh-judge-haiku",
+        min_length=1,
+        description="bh-judge/1 command line (the bundled reference needs beadlog-sources[haiku] "
+        "and ANTHROPIC_API_KEY in its environment).",
+    )
+    timeout_seconds: float = Field(
+        30.0, gt=0, description="Seconds one judge call may run before it falls back."
+    )
+    model: str = Field(
+        "claude-haiku-5-5", min_length=1, description="Model named in every bh-judge/1 request."
+    )
+    auto_accept: dict[str, float] = Field(
+        default_factory=dict,
+        description="Judgment family -> confidence (0..1) at or above which a judged verdict needs "
+        "no human review. Empty (default): every judged verdict is reviewed.",
+    )
+    max_calls_per_run: int = Field(
+        100, ge=0, description="Judge calls one run may make; past it the judge abstains."
+    )
+
+    @field_validator("auto_accept")
+    @classmethod
+    def _thresholds(cls, value: dict[str, float]) -> dict[str, float]:
+        for family, threshold in value.items():
+            if not family or not 0 <= threshold <= 1:
+                raise ValueError(f"auto_accept[{family!r}] must be a family -> 0..1 threshold")
+        return value
+
+
+class BackfillConfig(_Section):
+    """``backfill`` — shared backfill engine settings (every behavior off by default)."""
+
+    judge: BackfillJudgeConfig = Field(
+        default_factory=BackfillJudgeConfig,
+        description="Opt-in bh-judge/1 command judge for reconcile; deterministic when off.",
+    )
+
+
 # ---- otel / observaloop -------------------------------------------------------
 
 
@@ -3624,6 +3675,11 @@ class BeadhiveConfig(BaseSettings):
     repowise: RepowiseConfig = Field(default_factory=RepowiseConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
     herdr: HerdrConfig = Field(default_factory=HerdrConfig)
+    backfill: BackfillConfig | None = Field(
+        None,
+        description="Backfill engine settings (host-owned, opt-in judge). Absent = deterministic "
+        "only.",
+    )
     intake: IntakeConfig | None = Field(
         None,
         description="External issue intake (host-owned, every switch off). Absent = intake off.",
@@ -3970,6 +4026,8 @@ __all__ = (
     "AttestTrivialConfig",
     "AttestVersionBumpConfig",
     "AttestKeyConfig",
+    "BackfillConfig",
+    "BackfillJudgeConfig",
     "BackupConfig",
     "BeadhiveConfig",
     "BeadsConfig",
