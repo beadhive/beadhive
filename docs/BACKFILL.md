@@ -320,6 +320,47 @@ died at 11.7 s) and get worse as the store grows; `content_hash` is unchanged by
 the modeled columns itself; `commit_hash IN (...)` and `dolt_diff_issues` give no shortcut (still
 the full walk); `EXPLAIN` is not supported through `bd sql --json`.
 
+## First archival export (2026-10-31)
+
+The first archival BeadLog of the `bh` hive was produced on 2026-10-31 with
+`bh backfill export --history`. The gap fill was **not** included (operator decision, 2026-10-31);
+it can be appended later as a separate archive.
+
+**Storage.** The archive is kept in a private host directory, never in a git repo:
+`/data/bees/beadhive/archives/bh/bh.history.2026-10-31.bdlg` (directory 0700, file 0600), sha256
+`052ae24a84538219501484c7d08b706c0dacf4cfa6a2ce2fe65613fb012a0cbd`, 11,270,240 bytes. Archives
+contain private bead content and must never be committed or pushed; only the path and the hash
+are referenced. This is insurance, not a replacement for two-tier history retention (`bh-3vs6c`).
+
+**Manifest.** 88,290 events across 9,147 beads.
+
+- By kind: create 18,293, label_add 35,142, phase 13,813, edge_add 11,578, set 6,370,
+  label_remove 2,356, comment 678, edge_remove 60.
+- By source: `bd:events` 38,440, `bd:issues` 47,322, `bd:inferred` 2,528.
+- Earliest recorded history is 2026-08-07T07:25:10Z (the beads date from 2026-06-29, the store
+  commits from 2026-07-25).
+- The consistency guard suppressed 770 history events (682 of them transient `metadata.holder`
+  leases).
+
+**Round-trip proof.** The full archive was loaded into an empty embedded scratch store (never
+production) and re-exported. The load took 1,941 s; 77,497 events were re-exported.
+
+- 44,108 archive event ids came back unchanged.
+- 31,626 were dropped as `x-bd.superseded` (bd keeps only the latest state per facet).
+- 12,556 were degraded and not returned under their id; 12,551 of them are `create` events
+  re-minted natively (`recorded-time.reassigned`).
+- Zero ids are missing without explanation: every missing id has a loss-report entry.
+- 33,389 native extras (9,147 creates, 24,241 label_add, 1 phase).
+
+Known limitations: create-event ids do not round-trip through the bd loader (bug `bh-pfrag`), and
+a full-hive load needs a longer import timeout than the stock 120 s (bug `bh-f8lcb`).
+
+**Reproduce.** `bh backfill export --history` writes the archive and `bh backfill verify` checks
+it. Create a scratch store with an embedded `bd init` (never the production hive), load the
+archive into it with `bh backfill apply`, then run `bh backfill export --history` against the
+scratch store and compare the two event-id sets: every id missing from the re-export must have a
+loss-report entry.
+
 ## Pass matrix
 
 | Pass | Verb | Reads | Writes | Plan | DRIFT | Postcondition |
