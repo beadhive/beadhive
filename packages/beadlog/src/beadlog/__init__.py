@@ -15,7 +15,11 @@ The bytes are specified by ``docs/design/beadlog-format-adr.md`` and the JSON Sc
 - diff: :func:`diff` (proposed events absent from a baseline plus per-bead deltas);
 - manifest: :class:`Manifest`, :class:`Capabilities` and the capability vocabularies.
 
-Archive I/O (the ``.bdlg`` ZIP) and the loader-conformance kit arrive separately.
+- archive: :func:`write_archive` (reproducible ``.bdlg`` writer), :class:`ArchiveReader`
+  (streaming, untrusted-input reader), :func:`read_archive`, :class:`ReadLimits` and the
+  specific :class:`ArchiveError` family (see ``beadlog.archive``);
+- testing: ``beadlog.testing``, the loader-conformance kit (:func:`conformance_cases`,
+  :class:`InMemoryStore`, :func:`load_archive`).
 """
 
 from __future__ import annotations
@@ -54,6 +58,44 @@ from ._model import (
 )
 from ._order import OrderKey, order_key, ordering_key, part_order, sort_events
 from ._time import TimestampError, check_timestamp, format_timestamp, instant
+from .archive import (
+    DEFAULT_MAX_PART_BYTES,
+    ArchiveError,
+    ArchiveLimitError,
+    ArchiveReader,
+    ArchiveTooLargeError,
+    ArchiveWriteError,
+    CorruptMemberError,
+    EntryTooLargeError,
+    EventIdMismatchError,
+    IndexEntry,
+    IndexMismatchError,
+    IntegrityError,
+    InvalidMimetypeError,
+    MalformedArchiveError,
+    MemberSizeMismatchError,
+    MissingMimetypeError,
+    PartFormatError,
+    PartHashMismatchError,
+    PartOrderError,
+    ReadLimits,
+    RecordCountMismatchError,
+    TooManyEntriesError,
+    UnsafePathError,
+    check_member_name,
+    read_archive,
+    write_archive,
+)
+from .testing import (
+    ConformanceCase,
+    ConformanceFailure,
+    ConformanceStore,
+    InMemoryStore,
+    assert_conformant,
+    conformance_cases,
+    load_archive,
+    run_conformance,
+)
 
 DISTRIBUTION = "beadlog"
 
@@ -64,6 +106,7 @@ def distribution_name() -> str:
 
 
 __all__ = [
+    "DEFAULT_MAX_PART_BYTES",
     "DISTRIBUTION",
     "FILE_EXTENSION",
     "FORMAT_VERSION",
@@ -73,6 +116,11 @@ __all__ = [
     "MEDIA_TYPE",
     "TIME_SEMANTICS",
     "AdmissibleValueError",
+    "ArchiveError",
+    "ArchiveLimitError",
+    "ArchiveReader",
+    "ArchiveTooLargeError",
+    "ArchiveWriteError",
     "BeadDelta",
     "BeadEvent",
     "BeadRef",
@@ -80,30 +128,54 @@ __all__ = [
     "Capabilities",
     "Capability",
     "Comment",
+    "ConformanceCase",
+    "ConformanceFailure",
+    "ConformanceStore",
+    "CorruptMemberError",
     "Edge",
+    "EntryTooLargeError",
     "EventFormatError",
+    "EventIdMismatchError",
     "EventKind",
     "Evidence",
     "Generator",
     "Group",
     "IdCollisionError",
+    "InMemoryStore",
+    "IndexEntry",
+    "IndexMismatchError",
+    "IntegrityError",
+    "InvalidMimetypeError",
     "LoaderCapability",
     "LogDiff",
+    "MalformedArchiveError",
     "Manifest",
     "ManifestError",
+    "MemberSizeMismatchError",
+    "MissingMimetypeError",
     "OrderKey",
+    "PartFormatError",
+    "PartHashMismatchError",
+    "PartOrderError",
     "Precision",
     "Provenance",
+    "ReadLimits",
+    "RecordCountMismatchError",
     "Source",
     "TimestampError",
+    "TooManyEntriesError",
+    "UnsafePathError",
     "UnsupportedCapabilityError",
     "apply_tombstones",
+    "assert_conformant",
     "canonical_bytes",
     "canonical_json",
     "changed_facets",
     "check_format_version",
+    "check_member_name",
     "check_timestamp",
     "checkpoint_key",
+    "conformance_cases",
     "diff",
     "distribution_name",
     "erasure",
@@ -112,10 +184,14 @@ __all__ = [
     "format_timestamp",
     "identity_projection",
     "instant",
+    "load_archive",
     "mint_event",
     "order_key",
     "ordering_key",
     "part_order",
+    "read_archive",
+    "run_conformance",
     "sort_events",
     "union_merge",
+    "write_archive",
 ]

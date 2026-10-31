@@ -1,0 +1,400 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/beadlog/v0.1/event.schema.json",
+  "title": "BeadLog v0.1 event",
+  "description": "One line of a BeadLog (.bdlg) part: an atomic, content-addressed bead history event. Normative prose, including the id canonicalization rule, the ordering key and the fold/merge semantics, lives in docs/design/beadlog-format-adr.md. This is an archive record schema, not a Beadhive wire-operation schema.",
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "bead",
+    "occurred_at",
+    "recorded_at",
+    "extracted_at",
+    "source",
+    "provenance",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/event_id",
+      "description": "\"sha256:\" + lowercase hex SHA-256 of the RFC 8785 (JCS) serialization of the identity projection (ADR section 'Event id')."
+    },
+    "kind": {
+      "enum": [
+        "create",
+        "set",
+        "label_add",
+        "label_remove",
+        "edge_add",
+        "edge_remove",
+        "comment",
+        "phase",
+        "retire",
+        "delete",
+        "tombstone",
+        "checkpoint"
+      ]
+    },
+    "bead": { "$ref": "#/$defs/bead_ref" },
+    "occurred_at": {
+      "$ref": "#/$defs/nullable_timestamp",
+      "description": "Valid time: when the change happened in the world. Null when unknown. Identity."
+    },
+    "occurred_precision": {
+      "enum": ["second", "minute", "hour", "day", "month", "year"],
+      "description": "Precision of occurred_at when coarser than the written value; occurred_at is then the start of the interval. Identity."
+    },
+    "recorded_at": {
+      "$ref": "#/$defs/nullable_timestamp",
+      "description": "Source transaction time: when the source store recorded the change. Null for proposals and lost history. Identity."
+    },
+    "extracted_at": {
+      "$ref": "#/$defs/timestamp",
+      "description": "Extractor clock. Not identity; union-merge keeps the minimum."
+    },
+    "source": {
+      "type": "object",
+      "required": ["system", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "system": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]*$",
+          "description": "Producer family, e.g. bd, git, docs, gsd, operator, beadlog. Identity."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable source-local locator of the fact, e.g. bd:events/102 or git:commit/<sha>. Identity."
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Supporting material. Not identity; union-merge takes the set union.",
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "provenance": {
+      "enum": ["observed", "derived", "inferred"],
+      "description": "observed: read from a system of record; derived: computed deterministically from observed facts; inferred: a judgment. Identity."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Producer confidence. Not identity; union-merge keeps the maximum. Absent means 1 for observed events."
+    },
+    "actor": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Who made the change, as the source names them. Identity."
+    },
+    "lamport": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Lamport clock for clock-ordered sources (capability lamport). Identity."
+    },
+    "prev": {
+      "type": "array",
+      "description": "Causal predecessor event ids, sorted ascending and de-duplicated (capability lamport). Identity.",
+      "items": { "$ref": "#/$defs/event_id" },
+      "uniqueItems": true
+    },
+    "data": {
+      "type": "object",
+      "description": "Per-kind payload; see the kind-specific subschemas. Identity."
+    },
+    "redacted": {
+      "type": "array",
+      "description": "JSON Pointers (RFC 6901) of identity members withheld by a redaction policy. Not identity; the id of a redacted event cannot be re-verified (capability redaction).",
+      "items": { "$ref": "#/$defs/json_pointer" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "annotations": {
+      "type": "object",
+      "description": "The only ignorable extension object. Not identity. Keys starting with bdlg. are reserved for this format."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["occurred_precision"] },
+      "then": { "properties": { "occurred_at": { "type": "string" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "create" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_create" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "set" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_set" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["label_add", "label_remove"] } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_label" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["edge_add", "edge_remove"] } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_edge" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "comment" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_comment" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "phase" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_phase" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "retire" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_retire" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "delete" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_delete" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "tombstone" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/data_tombstone" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "checkpoint" } } },
+      "then": {
+        "properties": {
+          "provenance": { "const": "derived" },
+          "data": { "$ref": "#/$defs/data_checkpoint" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "description": "Canonical RFC 3339 UTC instant: Z suffix, no offset, fractional seconds only when non-zero and without trailing zeros (at most 9 digits).",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{0,8}[1-9])?Z$"
+    },
+    "nullable_timestamp": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{0,8}[1-9])?Z$"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "json_pointer": {
+      "type": "string",
+      "pattern": "^(/([^~/]|~[01])*)+$"
+    },
+    "bead_ref": {
+      "type": "object",
+      "description": "Durable bead identity (group, id); BEAD_GROUPS identity model. group must be declared in MANIFEST.json groups[].",
+      "required": ["group", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "group": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "id_value": {
+      "description": "A JSON value admissible in identity material: no non-integer numbers, integers within the I-JSON safe range.",
+      "anyOf": [
+        { "type": ["string", "boolean", "null"] },
+        {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        { "type": "array", "items": { "$ref": "#/$defs/id_value" } },
+        { "type": "object", "additionalProperties": { "$ref": "#/$defs/id_value" } }
+      ]
+    },
+    "field_name": {
+      "type": "string",
+      "description": "A scalar bead field. Metadata keys are addressed one at a time as metadata.<key>.",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[A-Za-z0-9_-]+)*$",
+      "not": {
+        "enum": [
+          "id",
+          "status",
+          "phase",
+          "labels",
+          "dependencies",
+          "edges",
+          "comments",
+          "metadata",
+          "retired",
+          "deleted"
+        ]
+      }
+    },
+    "fields": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/field_name" },
+      "additionalProperties": { "$ref": "#/$defs/id_value" }
+    },
+    "bead_type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "phase_name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "not": { "enum": ["retired", "deleted"] }
+    },
+    "edge_type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "edge": {
+      "type": "object",
+      "required": ["type", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "$ref": "#/$defs/edge_type" },
+        "target": { "$ref": "#/$defs/bead_ref" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "ref": { "type": "string", "minLength": 1 },
+        "note": { "type": "string" }
+      }
+    },
+    "data_create": {
+      "type": "object",
+      "required": ["type", "fields"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "$ref": "#/$defs/bead_type" },
+        "fields": {
+          "allOf": [
+            { "$ref": "#/$defs/fields" },
+            {
+              "required": ["title"],
+              "properties": { "title": { "type": "string", "minLength": 1 } }
+            }
+          ]
+        }
+      }
+    },
+    "data_set": {
+      "type": "object",
+      "required": ["field", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "field": { "$ref": "#/$defs/field_name" },
+        "value": { "$ref": "#/$defs/id_value" }
+      }
+    },
+    "data_label": {
+      "type": "object",
+      "required": ["label"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "minLength": 1 }
+      }
+    },
+    "data_edge": { "$ref": "#/$defs/edge" },
+    "data_comment": {
+      "type": "object",
+      "required": ["body"],
+      "additionalProperties": false,
+      "properties": {
+        "body": { "type": "string" }
+      }
+    },
+    "data_phase": {
+      "type": "object",
+      "required": ["phase"],
+      "additionalProperties": false,
+      "properties": {
+        "phase": { "$ref": "#/$defs/phase_name" },
+        "reason": { "type": "string" }
+      }
+    },
+    "data_retire": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "successor": { "$ref": "#/$defs/bead_ref" },
+        "reason": { "type": "string" }
+      }
+    },
+    "data_delete": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reason": { "type": "string" }
+      }
+    },
+    "data_tombstone": {
+      "type": "object",
+      "required": ["scope", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "scope": { "enum": ["bead", "events"] },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/event_id" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "reason": { "enum": ["secret", "personal-data", "legal", "abuse", "other"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "scope": { "const": "events" } } },
+          "then": { "required": ["events"] },
+          "else": { "not": { "required": ["events"] } }
+        }
+      ]
+    },
+    "data_checkpoint": {
+      "type": "object",
+      "required": ["state", "covers_through"],
+      "additionalProperties": false,
+      "properties": {
+        "covers_through": {
+          "type": "object",
+          "description": "Ordering key of the last event folded into state.",
+          "required": ["occurred_at", "recorded_at", "id"],
+          "additionalProperties": false,
+          "properties": {
+            "occurred_at": { "$ref": "#/$defs/nullable_timestamp" },
+            "recorded_at": { "$ref": "#/$defs/nullable_timestamp" },
+            "id": { "$ref": "#/$defs/event_id" }
+          }
+        },
+        "state": {
+          "type": "object",
+          "required": ["type", "phase", "fields", "labels", "edges", "deleted"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "$ref": "#/$defs/bead_type" },
+            "phase": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "fields": { "$ref": "#/$defs/fields" },
+            "labels": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "edges": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/edge" },
+              "uniqueItems": true
+            },
+            "retired": { "$ref": "#/$defs/data_retire" },
+            "deleted": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  }
+}
