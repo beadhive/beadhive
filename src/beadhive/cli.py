@@ -23,6 +23,7 @@ from typer.core import TyperGroup
 
 from . import (
     alerts,
+    backfill_cli,
     checkpoint,
     complexity_backfill,
     config,
@@ -128,6 +129,9 @@ app.add_typer(plan.app, name="plan", rich_help_panel=PLANNING_PANEL)
 app.add_typer(release.app, name="release", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(checkpoint.app, name="checkpoint", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(alerts_app, name="alerts", rich_help_panel=FLEET_PANEL)
+app.add_typer(backfill_cli.app, name="backfill", rich_help_panel=HIVE_PANEL)
+# The flat leaf is published wire surface (backfill-platform ADR, Consequences): the same command
+# as `bh backfill complexity`, so both produce identical plans, audits and output.
 app.command(
     "backfill-complexity",
     rich_help_panel=HIVE_PANEL,

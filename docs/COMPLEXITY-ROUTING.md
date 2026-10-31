@@ -78,17 +78,23 @@ telemetry; a harness-specific token is produced only while constructing the fina
 Always create and inspect a plan before changing a hive:
 
 ```bash
-bh backfill-complexity --dry-run --plan complexity-plan.json --json
-bh backfill-complexity --apply --plan complexity-plan.json \
+bh backfill complexity --dry-run --plan complexity-plan.json --json
+bh backfill complexity --apply --plan complexity-plan.json \
   --pre-state complexity-pre-state.jsonl --audit complexity-audit.json
 ```
+
+`bh backfill complexity` is pass #1 of the shared backfill engine
+([`BACKFILL.md`](BACKFILL.md): pass matrix, safety envelope, every verb). The flat
+`bh backfill-complexity` remains a published alias of the same command, with identical options,
+plans, audits and output.
 
 The plan is corpus- and content-hashed. Apply refuses drift, exports the complete pre-state before
 the first mutation, preserves every `model:` label, and verifies exactly one valid complexity
 label on every routable record afterward. A caught failure or interruption rolls mutations back.
 The audit is written atomically as `state=applying` before mutation and checkpoints the current
 and possibly uncertain bead around every write, so a hard termination has an explicit recovery
-point. Retain the plan, JSONL pre-state, and audit together until verification succeeds.
+point. Retain the plan, JSONL pre-state, and audit together until verification succeeds. Apply
+treats the planned target labels as recorded decisions: it never re-classifies a bead.
 
 After apply, require `state=applied`, no post-apply complexity errors, model preservation true,
 and `second_dry_run_changes=0`. If the process died outside its rollback handler, stop writers,

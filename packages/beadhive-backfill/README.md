@@ -37,7 +37,18 @@ or bd specific arriving through a port:
 - `AuditSink` with `AuditEntry`, `AuditProgress`, `AuditRecovery` and `AuditState`.
 
 Store-neutral adapters: `JsonFileAuditSink` (the audit file beside the plan) and
-`ArchivePreStateExporter` (the pre-state as a `.bdlg`). Policy passes (complexity, identity
-labels, lifecycle conventions) land in later beads.
+`ArchivePreStateExporter` (the pre-state as a `.bdlg`).
+
+## Passes
+
+- `beadhive_backfill.complexity` — pass #1: exactly one canonical `complexity:<TIER>` label per
+  routable bead, `model:*` labels never touched. `ComplexityPass` is the engine pass; the tier
+  vocabulary and classifier arrive through the `ComplexityRules` port (root implements it over
+  `beadhive.complexity`). The module also owns the published JSON plan/audit contract of
+  `bh backfill complexity` / `bh backfill-complexity`: `build_plan`, `verify_plan` and
+  `apply_plan`, which runs the JSON plan through `BackfillEngine` with row-store adapters. See
+  [`docs/BACKFILL.md`](../../docs/BACKFILL.md).
+
+Identity-label and lifecycle-convention passes land in later beads.
 
 Tests: `uv run --package beadhive-backfill pytest packages/beadhive-backfill/tests`.

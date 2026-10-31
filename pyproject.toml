@@ -136,6 +136,11 @@ packages = [
     "packages/beadhive-plugins/src/beadhive_plugins",
     "packages/beadhive-worktrees/src/beadhive_worktrees",
     "packages/beadhive-validation-broker/src/beadhive_validation_broker",
+    # The BeadLog backfill libraries (bh-xxmb1): `bh backfill` and `bh backfill-complexity` import
+    # them statically, so the installed shell carries all three (still Private :: Do Not Upload).
+    "packages/beadlog/src/beadlog",
+    "packages/beadlog-sources/src/beadlog_sources",
+    "packages/beadhive-backfill/src/beadhive_backfill",
 ]
 
 # In-repo packages (bh-3fcl0.1): every packages/<name>/ is its own distribution and import name.
@@ -199,9 +204,10 @@ worktrees = ["beadhive-worktrees"]
 # `beadhive.validation_broker_slots` adapts today's host slots to this port.
 validation-broker = ["beadhive-validation-broker"]
 # The BeadLog backfill libraries (docs/design/backfill-platform-adr.md section 2), editable from the
-# workspace for dev/CI: root's bd StoreLoader (`beadhive.backfill_bd`) imports them through their
-# public `__all__`. All three stay `Private :: Do Not Upload`; how the published wheel carries them
-# is decided with the `bh backfill` verbs (bh-xxmb1), the first CLI surface that reaches them.
+# workspace for dev/CI: root's bd StoreLoader (`beadhive.backfill_bd`), `bh backfill` and the
+# complexity command import them statically through their public `__all__`. All three stay
+# `Private :: Do Not Upload`, so the published wheel vendors their import packages (see the wheel
+# packages above) exactly like beadhive-core, rather than hard-requiring unpublished members.
 backfill = ["beadlog", "beadlog-sources", "beadhive-backfill"]
 dev = [
     "editables>=0.5",

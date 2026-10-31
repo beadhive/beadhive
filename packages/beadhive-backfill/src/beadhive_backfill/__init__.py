@@ -13,7 +13,10 @@ public ``__all__``) and never imports ``beadhive``. It owns the hive apply envel
 - plans (:mod:`beadhive_backfill.plan`): :class:`Plan`, a ``.bdlg`` with a manifest ``plan``
   section;
 - per-kind rollback inverses (:func:`inverse_of`) and store-neutral sinks
-  (:class:`JsonFileAuditSink`, :class:`ArchivePreStateExporter`).
+  (:class:`JsonFileAuditSink`, :class:`ArchivePreStateExporter`);
+- the hive-policy passes, each its own public submodule: :mod:`beadhive_backfill.complexity`
+  (pass #1, complexity labels, with the published JSON plan/audit contract of
+  ``bh backfill complexity``).
 """
 
 from __future__ import annotations
