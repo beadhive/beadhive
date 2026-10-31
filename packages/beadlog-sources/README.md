@@ -16,6 +16,10 @@ never imports `beadhive`.
   stored in `metadata.bdlg.<facet>` (`facet_key`, `envelope`) are re-emitted with their original
   ids when their recomputed id matches and they agree with the row; native events cover the
   rest, so the fold always equals the row. Floats in bd metadata travel as decimal strings.
+- **`git-commits` strategy** (`beadlog_sources.commits`, entry point `git-commits`): the two-step
+  bead-id matcher (loose candidates over each commit message, resolved against the baseline's own
+  beads) proposing one append-only `set` of `metadata.git.commits` per bead; a malformed stored
+  value is reported as drift and never overwritten, and a shallow clone is refused.
 - **Judges** (`beadlog_sources.judges`): `DeterministicJudge` (lexical; one-hot at 1.0 or
   abstain) and `CommandJudge`, which speaks the versioned `bh-judge/1` JSON envelope
   ([schema](src/beadlog_sources/schemas/bh-judge-v1.schema.json), copied to
