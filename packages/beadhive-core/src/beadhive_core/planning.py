@@ -86,6 +86,10 @@ _TRACKS_EDGE = "tracks"
 #: The compiled epic's request-local key; issue keys carry an ``issue:`` prefix so a molecule
 #: handle can never collide with it.
 EPIC_KEY = "epic"
+# An epic that declares no ``priority`` files at bd's own create default (P2), never the
+# store's unset value (P0) — which would sort a spec-less epic ahead of real P0 work. An
+# explicit ``priority: 0`` is honored: the unset test is ``None``/``""``, never falsiness.
+DEFAULT_EPIC_PRIORITY = 2
 
 
 def issue_key(handle: str) -> str:
@@ -235,6 +239,12 @@ def _dep_add_item(*, source: Ref, target: Ref, type_: str) -> ApplyItem:
     )
 
 
+def _epic_priority(epic: Mapping[str, Any]) -> int:
+    """The epic's declared priority, or :data:`DEFAULT_EPIC_PRIORITY` when omitted/blank."""
+    priority = epic.get("priority")
+    return int(priority) if priority not in (None, "") else DEFAULT_EPIC_PRIORITY
+
+
 def compile_molecule(
     spec: Mapping[str, Any],
     *,
@@ -277,6 +287,7 @@ def compile_molecule(
                 issue_type="epic",
                 dimension_fields=dimension_fields,
                 identity_labels=identity_labels,
+                priority=_epic_priority(epic),
                 external_ref=epic_external_ref,
             )
         )

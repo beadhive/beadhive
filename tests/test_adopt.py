@@ -96,6 +96,17 @@ def test_epic_import_record_carries_provenance_and_labels():
     assert record["description"] == "why" and record["design"] == "arch"
 
 
+def test_epic_import_record_carries_the_declared_priority_including_p0():
+    for declared in (0, 1, 2, 4, "3"):
+        record = adopt.epic_import_record({"title": "t", "priority": declared}, [])
+        assert record["priority"] == int(declared)
+
+
+def test_epic_import_record_defaults_an_omitted_priority_to_p2_not_p0():
+    for epic in ({"title": "t"}, {"title": "t", "priority": None}, {"title": "t", "priority": ""}):
+        assert adopt.epic_import_record(epic, [])["priority"] == 2
+
+
 # ---- is_origin_report -------------------------------------------------------
 
 
