@@ -6,6 +6,8 @@
 
 # Beads working copy / exports — no issue data on GitHub
 *.jsonl
+# ...except the synthetic BeadLog format examples (docs/design/beadlog-format-adr.md).
+!docs/schemas/beadlog/**/*.jsonl
 backup/
 
 # OS / tooling cruft

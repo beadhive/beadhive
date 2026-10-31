@@ -1,0 +1,68 @@
+{
+  "loss_report_version": "0.1.0",
+  "archive": {
+    "format_version": "0.1.0",
+    "manifest_sha256": "87034f1e9c5d859125722afa8301bc494378d0240187de6191c8287c9f3ef765"
+  },
+  "loader": {
+    "name": "bd",
+    "version": "0.1.0",
+    "capabilities": [
+      "metadata-fallback"
+    ]
+  },
+  "target": "hive:bh",
+  "mode": "dry-run",
+  "summary": {
+    "events": 22,
+    "loaded": 21,
+    "degraded": 4,
+    "dropped": 1,
+    "by_code": {
+      "valid-time.degraded": 2,
+      "recorded-time.reassigned": 1,
+      "phase.approximated": 1,
+      "erasure.incomplete": 1
+    }
+  },
+  "losses": [
+    {
+      "event_id": "sha256:e6d0010ae8dd626441810c710ea6ca59aea7f699fdd91468029144309fd25c13",
+      "code": "valid-time.degraded",
+      "member": "/occurred_at",
+      "disposition": "degraded",
+      "stored_as": "metadata.bdlg.field:title.occurred_at"
+    },
+    {
+      "event_id": "sha256:e6d0010ae8dd626441810c710ea6ca59aea7f699fdd91468029144309fd25c13",
+      "code": "recorded-time.reassigned",
+      "member": "/recorded_at",
+      "disposition": "reassigned",
+      "stored_as": "metadata.bdlg.field:title.recorded_at",
+      "detail": "bd assigns its own commit time"
+    },
+    {
+      "event_id": "sha256:04e0feab060ea7b1eab97f9195bd8c0d321491a5d3a45a6e0b55a1c07896dd8f",
+      "code": "valid-time.degraded",
+      "member": "/occurred_at",
+      "disposition": "degraded",
+      "stored_as": null,
+      "detail": "bd comments carry no metadata"
+    },
+    {
+      "event_id": "sha256:5a2bdeb1c67a646e1b23f340f3e5595cb2248f224419094b9402b6d66320dc4d",
+      "code": "phase.approximated",
+      "member": "/kind",
+      "disposition": "approximated",
+      "stored_as": "status=closed; metadata.bdlg.retired"
+    },
+    {
+      "event_id": "sha256:6132ad24ab86b49122267d27debf6f387debc7fddcac302ab5704c3ab4c6e89a",
+      "code": "erasure.incomplete",
+      "member": "",
+      "disposition": "dropped",
+      "stored_as": null,
+      "detail": "erased content may survive in Dolt history; operator action required"
+    }
+  ]
+}

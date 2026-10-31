@@ -12,7 +12,7 @@ decided ADR: [`design/cli-mcp-naming-conventions-adr.md`](design/cli-mcp-naming-
 |---|---|
 | **Planning plane** | `plan` |
 | **Integration plane** | `work`, `worktree` (alias `wt`) |
-| **Hive** | `hive`, `label` |
+| **Hive** | `hive`, `label`, `backfill` (+ flat `backfill-complexity`) |
 | **Fleet / HQ** | `hq`, `host`, `sync`, `role`, `report`, `report-target`, `escalate` |
 | **Admin / infra** | `doctor`, `backup`, `setup`, `config`, `mcp`, `plugin` |
 | **Passthrough** | `bd`, `git` |
@@ -115,6 +115,8 @@ bh worktree local-reclaim   HQ-independent, fail-closed space reclaim (partial d
 bh hive init|add|rm|retire|onboard|list|status|migrate|ready|survey|classify|prefix|enable|disable|policy
                               onboard/inspect hives (HIVES.md); archive list|prune
 bh label validate|sync|report|allowed|docs   registry ops (LABELS.md)
+bh backfill complexity|export|inspect|verify|apply   BeadLog backfill passes, archives and
+                              plan apply (BACKFILL.md); backfill-complexity is the flat alias
 bh hq init|bd|intake          Factory HQ store + cross-hive views (HUB.md)
 bh host init|identity|list|show|remove|adopt|release|packup
                               this host's manifest + the host lease in Factory HQ

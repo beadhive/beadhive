@@ -467,6 +467,35 @@ behave exactly as before. `outbox.labels_enabled` is a new key: `BeadhiveConfig`
 keys, so nothing in a shared config should set it until the schema has rotated to every host
 (`bh-tfko9`).
 
+### `backfill.judge` {#backfill-judge}
+
+`backfill.judge` configures the opt-in judge that backfill reconcile asks about its fuzzy
+residual ([backfill-platform-adr.md](design/backfill-platform-adr.md) section 4). The section is
+**host-owned** (a fleet push cannot switch it on: the judge runs a host command that may spend
+API credit) and absent by default, and every default is off: with `enabled: false` the
+deterministic lexical engine answers alone and no subprocess is ever spawned. When enabled,
+`command` receives one `bh-judge/1` JSON request on stdin and must print one `bh-judge/1`
+response (schema:
+[`bh-judge-v1.schema.json`](schemas/bh-judge-v1.schema.json)). A timeout, a non-zero exit, or
+malformed or wrong-version output falls back to the deterministic engine, and the plan records
+the fallback. Verdicts are recorded in the plan and never asked again at apply time.
+
+| Key (under `backfill.judge`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | ask `command` when the deterministic engine abstains |
+| `command` | `bh-judge-haiku` | the judge command line; the bundled reference needs `beadlog-sources[haiku]` and reads `ANTHROPIC_API_KEY` from its environment only (never config, never logged) |
+| `timeout_seconds` | `30` | seconds one call may run before it falls back |
+| `model` | `claude-haiku-5-5` | the model named in every request |
+| `auto_accept` | `{}` | judgment family (for reconcile, `reconcile.match`) → confidence `0..1` at or above which a judged verdict needs no review; empty means every judged verdict is reviewed |
+| `max_calls_per_run` | `100` | judge calls one run may make; past it the judge abstains |
+
+The standalone `beadlog` CLI (package `beadlog-sources`, no BeadHive needed) takes the same keys
+as `--judge-<key>` flags (`--judge-auto-accept family=threshold,...`) and `BEADLOG_JUDGE_<KEY>`
+env vars; flags win over env, env over defaults. Pointing `command` at another `bh-judge/1`
+speaker, such as Jev, needs no code change. `backfill` is a new section: `BeadhiveConfig` forbids
+unknown keys, so nothing in a shared config should set it until the schema has rotated to every
+host (`bh-tfko9`).
+
 ## `bh config` commands
 
 | Command | Effect |

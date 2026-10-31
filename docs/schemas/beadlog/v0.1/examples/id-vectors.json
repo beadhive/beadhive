@@ -1,0 +1,148 @@
+{
+  "format_version": "0.1.0",
+  "vectors": [
+    {
+      "name": "phase-observed",
+      "why": "Minimal observed event: every identity member present, no optional members.",
+      "event": {
+        "id": "sha256:5c23babf711db4ba84779147b3da5bf9926e5e39b5a9bcb37f42fc64eb87a0a2",
+        "kind": "phase",
+        "bead": {
+          "group": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+          "id": "bh-ex1"
+        },
+        "occurred_at": "2026-08-07T09:15:00Z",
+        "recorded_at": "2026-08-07T09:15:02Z",
+        "extracted_at": "2026-10-30T20:00:00Z",
+        "source": {
+          "system": "bd",
+          "ref": "bd:events/102"
+        },
+        "provenance": "observed",
+        "actor": "dev/alice",
+        "data": {
+          "phase": "in_progress"
+        }
+      },
+      "projection_jcs": "{\"actor\":\"dev/alice\",\"bead\":{\"group\":\"urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60\",\"id\":\"bh-ex1\"},\"data\":{\"phase\":\"in_progress\"},\"kind\":\"phase\",\"occurred_at\":\"2026-08-07T09:15:00Z\",\"provenance\":\"observed\",\"recorded_at\":\"2026-08-07T09:15:02Z\",\"source\":{\"ref\":\"bd:events/102\",\"system\":\"bd\"}}",
+      "id": "sha256:5c23babf711db4ba84779147b3da5bf9926e5e39b5a9bcb37f42fc64eb87a0a2"
+    },
+    {
+      "name": "create-day-precision",
+      "why": "Null recorded_at and absent actor are dropped; confidence and evidence are excluded.",
+      "event": {
+        "id": "sha256:f7519bd9c6cce36e7b8dbbbc48244f974824a9258bf3850368b5043efc595c89",
+        "kind": "create",
+        "bead": {
+          "group": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+          "id": "bh-ex1"
+        },
+        "occurred_at": "2026-07-03T00:00:00Z",
+        "occurred_precision": "day",
+        "recorded_at": null,
+        "extracted_at": "2026-10-30T20:00:00Z",
+        "source": {
+          "system": "docs",
+          "ref": "docs:docs/plans/beadlog.md#L1",
+          "evidence": [
+            {
+              "type": "file",
+              "ref": "docs/plans/beadlog.md"
+            }
+          ]
+        },
+        "provenance": "inferred",
+        "confidence": 0.75,
+        "data": {
+          "type": "task",
+          "fields": {
+            "title": "Draft the BeadLog ADR",
+            "priority": 2
+          }
+        }
+      },
+      "projection_jcs": "{\"bead\":{\"group\":\"urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60\",\"id\":\"bh-ex1\"},\"data\":{\"fields\":{\"priority\":2,\"title\":\"Draft the BeadLog ADR\"},\"type\":\"task\"},\"kind\":\"create\",\"occurred_at\":\"2026-07-03T00:00:00Z\",\"occurred_precision\":\"day\",\"provenance\":\"inferred\",\"source\":{\"ref\":\"docs:docs/plans/beadlog.md#L1\",\"system\":\"docs\"}}",
+      "id": "sha256:f7519bd9c6cce36e7b8dbbbc48244f974824a9258bf3850368b5043efc595c89"
+    },
+    {
+      "name": "comment-escaping",
+      "why": "Newline escaped as \\n; non-ASCII emitted as raw UTF-8, never \\u-escaped.",
+      "event": {
+        "id": "sha256:04e0feab060ea7b1eab97f9195bd8c0d321491a5d3a45a6e0b55a1c07896dd8f",
+        "kind": "comment",
+        "bead": {
+          "group": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+          "id": "bh-ex1"
+        },
+        "occurred_at": "2026-08-09T08:00:00Z",
+        "recorded_at": "2026-08-09T08:00:00Z",
+        "extracted_at": "2026-10-30T20:00:00Z",
+        "source": {
+          "system": "bd",
+          "ref": "bd:events/151"
+        },
+        "provenance": "observed",
+        "actor": "dev/alice",
+        "data": {
+          "body": "Schemas live under docs/schemas/beadlog/v0.1.\nNaïve café check: ✓"
+        }
+      },
+      "projection_jcs": "{\"actor\":\"dev/alice\",\"bead\":{\"group\":\"urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60\",\"id\":\"bh-ex1\"},\"data\":{\"body\":\"Schemas live under docs/schemas/beadlog/v0.1.\\nNaïve café check: ✓\"},\"kind\":\"comment\",\"occurred_at\":\"2026-08-09T08:00:00Z\",\"provenance\":\"observed\",\"recorded_at\":\"2026-08-09T08:00:00Z\",\"source\":{\"ref\":\"bd:events/151\",\"system\":\"bd\"}}",
+      "id": "sha256:04e0feab060ea7b1eab97f9195bd8c0d321491a5d3a45a6e0b55a1c07896dd8f"
+    },
+    {
+      "name": "set-metadata-integer",
+      "why": "Integer value in a dotted metadata field; fractional occurred_at elsewhere stays verbatim.",
+      "event": {
+        "id": "sha256:43967e8c8b23f20557485c32929c1c65557b21b811ee0de0c63ca5aa857a29af",
+        "kind": "set",
+        "bead": {
+          "group": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+          "id": "bh-ex1"
+        },
+        "occurred_at": "2026-08-11T09:30:00Z",
+        "recorded_at": "2026-08-11T09:30:01Z",
+        "extracted_at": "2026-10-30T20:00:00Z",
+        "source": {
+          "system": "bd",
+          "ref": "bd:events/172"
+        },
+        "provenance": "observed",
+        "actor": "dev/alice",
+        "data": {
+          "field": "metadata.estimate_minutes",
+          "value": 90
+        }
+      },
+      "projection_jcs": "{\"actor\":\"dev/alice\",\"bead\":{\"group\":\"urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60\",\"id\":\"bh-ex1\"},\"data\":{\"field\":\"metadata.estimate_minutes\",\"value\":90},\"kind\":\"set\",\"occurred_at\":\"2026-08-11T09:30:00Z\",\"provenance\":\"observed\",\"recorded_at\":\"2026-08-11T09:30:01Z\",\"source\":{\"ref\":\"bd:events/172\",\"system\":\"bd\"}}",
+      "id": "sha256:43967e8c8b23f20557485c32929c1c65557b21b811ee0de0c63ca5aa857a29af"
+    },
+    {
+      "name": "set-clear-null",
+      "why": "A null inside data is significant (clears the field) and is kept, unlike top-level nulls.",
+      "event": {
+        "id": "sha256:f2e7dd23ba7d1b59c5bc6e3e5a9b7c5c5c9c380bfc565a7560708a84326d9c0f",
+        "kind": "set",
+        "bead": {
+          "group": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+          "id": "bh-ex1"
+        },
+        "occurred_at": "2026-10-30T21:40:00Z",
+        "recorded_at": "2026-10-30T21:40:03Z",
+        "extracted_at": "2026-10-30T20:00:00Z",
+        "source": {
+          "system": "bd",
+          "ref": "bd:events/301"
+        },
+        "provenance": "observed",
+        "actor": "dev/alice",
+        "data": {
+          "field": "assignee",
+          "value": null
+        }
+      },
+      "projection_jcs": "{\"actor\":\"dev/alice\",\"bead\":{\"group\":\"urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60\",\"id\":\"bh-ex1\"},\"data\":{\"field\":\"assignee\",\"value\":null},\"kind\":\"set\",\"occurred_at\":\"2026-10-30T21:40:00Z\",\"provenance\":\"observed\",\"recorded_at\":\"2026-10-30T21:40:03Z\",\"source\":{\"ref\":\"bd:events/301\",\"system\":\"bd\"}}",
+      "id": "sha256:f2e7dd23ba7d1b59c5bc6e3e5a9b7c5c5c9c380bfc565a7560708a84326d9c0f"
+    }
+  ]
+}

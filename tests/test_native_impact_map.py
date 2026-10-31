@@ -373,6 +373,7 @@ def test_real_root_composition_maps_all_consumed_workspace_packages() -> None:
 
     assert set(root_composition_package_patterns(root)) == expected
     assert expected == {
+        "packages/beadhive-backfill/*",
         "packages/beadhive-bd-cli/*",
         "packages/beadhive-beads-client/*",
         "packages/beadhive-core/*",
@@ -383,6 +384,8 @@ def test_real_root_composition_maps_all_consumed_workspace_packages() -> None:
         "packages/beadhive-tracker-github/*",
         "packages/beadhive-validation-broker/*",
         "packages/beadhive-worktrees/*",
+        "packages/beadlog-sources/*",
+        "packages/beadlog/*",
     }
     key = AttestKey(
         "root-composition",

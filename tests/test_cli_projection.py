@@ -80,7 +80,7 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 266
+    assert len(declarations) == 271
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -90,7 +90,7 @@ def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
         next(row for row in declarations if row.operation == "host.eligible").path
         == "host eligible"
     )
-    assert len(parents) == 40
+    assert len(parents) == 41
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
     assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)
@@ -154,7 +154,8 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     runner = CliRunner()
     invocation_env = {"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
     expected_help = {
-        (): "f29cac19a29f3527cabce08ab78c82700d2887716b7be4653e1b2074d3371fcf",
+        # The `backfill` group (bh-xxmb1) joins the Hive panel beside `backfill-complexity`.
+        (): "9252c456cb560e585f93551b32452e5adef4e924b964937bc415d2faae5da8ab",
         # `work backup` (state/work pairing, bh-cqvj6) joins the command list; the intake verbs
         # and the `delivery` / `outbox` groups (bh-73td2) join after it.
         ("work",): "d725b168f0343c2296b31bc0f35e2f1d5d7956037c8aa3e269b577c62afa179f",

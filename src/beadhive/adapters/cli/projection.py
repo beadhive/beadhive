@@ -31,6 +31,7 @@ from ...kernel.telemetry import TraceVerb
 MIGRATED_CLI_GROUPS: tuple[str, ...] = (
     "<root>",
     "alerts",
+    "backfill",
     "backup",
     "checkpoint",
     "config",

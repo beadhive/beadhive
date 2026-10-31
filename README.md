@@ -127,6 +127,8 @@ One line each, and who it's for:
   troubleshoot the loopback-only, unauthenticated, read-only profile.
 - [`docs/COMPLEXITY-ROUTING.md`](docs/COMPLEXITY-ROUTING.md) — **capability-first dispatch.**
   Complexity labels, late-bound model selection, availability, and migration recovery.
+- [`docs/BACKFILL.md`](docs/BACKFILL.md) — **backfill.** `bh backfill` passes, BeadLog
+  export/inspect/verify, plan apply, the safety envelope and recovery.
 - [`docs/HIVES.md`](docs/HIVES.md) and the
   [multi-host ADR](docs/design/multi-host-model-adr.md) — **more than one host.** Hive kinds,
   leases, and host roles.

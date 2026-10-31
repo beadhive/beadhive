@@ -1,0 +1,19 @@
+{
+  "kind": "phase",
+  "bead": {
+    "group": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+    "id": "bh-ex1"
+  },
+  "occurred_at": "2026-08-07T09:15:00Z",
+  "recorded_at": "2026-08-07T09:15:02Z",
+  "extracted_at": "2026-10-30T20:00:00Z",
+  "source": {
+    "system": "bd",
+    "ref": "bd:events/102"
+  },
+  "provenance": "observed",
+  "actor": "dev/alice",
+  "data": {
+    "phase": "in_progress"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "sha256:43967e8c8b23f20557485c32929c1c65557b21b811ee0de0c63ca5aa857a29af",
+  "kind": "set",
+  "bead": {
+    "group": "urn:uuid:5f0c9a52-8a43-4f0e-9a5e-1c7d2b3e4f60",
+    "id": "bh-ex1"
+  },
+  "occurred_at": "2026-08-11T09:30:00Z",
+  "recorded_at": "2026-08-11T09:30:01Z",
+  "extracted_at": "2026-10-30T20:00:00Z",
+  "source": {
+    "system": "bd",
+    "ref": "bd:events/172"
+  },
+  "provenance": "observed",
+  "actor": "dev/alice",
+  "data": {
+    "field": "metadata.ratio",
+    "value": 0.5
+  }
+}

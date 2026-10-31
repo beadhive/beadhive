@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/beadlog/v0.1/loss-report.schema.json",
+  "title": "BeadLog v0.1 loader loss report",
+  "description": "What a BeadLog loader emits for every load (dry run or apply): each event member it could not keep as written, and what it did instead. Normative prose lives in docs/design/beadlog-format-adr.md, section 'Loader degradation and the loss report'.",
+  "type": "object",
+  "required": ["loss_report_version", "archive", "loader", "target", "mode", "summary", "losses"],
+  "additionalProperties": false,
+  "properties": {
+    "loss_report_version": { "type": "string", "pattern": "^0\\.1\\.(0|[1-9][0-9]*)$" },
+    "archive": {
+      "type": "object",
+      "required": ["format_version", "manifest_sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "format_version": { "type": "string" },
+        "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "loader": {
+      "type": "object",
+      "required": ["name", "version", "capabilities"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "capabilities": {
+          "type": "array",
+          "description": "Loader capabilities (ADR table 'Loader capabilities'), e.g. valid-time, recorded-time-monotone-load, erase.",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9:._-]*$" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "target": { "type": "string", "minLength": 1 },
+    "mode": { "enum": ["dry-run", "apply"] },
+    "summary": {
+      "type": "object",
+      "required": ["events", "loaded", "degraded", "dropped"],
+      "additionalProperties": false,
+      "properties": {
+        "events": { "type": "integer", "minimum": 0 },
+        "loaded": { "type": "integer", "minimum": 0 },
+        "degraded": { "type": "integer", "minimum": 0 },
+        "dropped": { "type": "integer", "minimum": 0 },
+        "by_code": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "losses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["event_id", "code", "member", "disposition"],
+        "additionalProperties": false,
+        "properties": {
+          "event_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "code": {
+            "type": "string",
+            "description": "Core codes are listed in the ADR; loaders may add x-<name> codes.",
+            "pattern": "^([a-z][a-z-]*\\.[a-z][a-z-]*|x-[a-z0-9.-]+)$"
+          },
+          "member": {
+            "type": "string",
+            "description": "JSON Pointer of the affected event member, or empty string for the whole event.",
+            "pattern": "^(/([^~/]|~[01])*)*$"
+          },
+          "disposition": { "enum": ["degraded", "reassigned", "approximated", "dropped"] },
+          "stored_as": {
+            "type": ["string", "null"],
+            "description": "Where the value went instead, e.g. metadata.bdlg.field:title.occurred_at; null when nowhere."
+          },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

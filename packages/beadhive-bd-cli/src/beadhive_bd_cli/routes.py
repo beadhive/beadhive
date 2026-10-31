@@ -294,11 +294,88 @@ class CliRoutes:
             text_input=json.dumps({key: document}, sort_keys=True),
         )
 
-    def dependency_add(self, source: str, target: str, type_: str, *, actor: str = "") -> Any:
-        return self._bd.run(["dep", "add", source, target, "-t", type_], self._cwd, actor=actor)
+    def issue_export_jsonl(self, *, all_: bool = False, output: Path | None = None) -> Any:
+        """Captured ``bd export``: the one bulk read of every issue row as JSONL (stdout, or
+        ``output``). ``all_`` adds infra, templates, gates and memories; a reader skips the
+        non-issue ``_type`` lines itself."""
+        args = ["export"]
+        if output is not None:
+            args += ["-o", str(output)]
+        if all_:
+            args.append("--all")
+        return self._bd.run(args, self._cwd, capture=True)
 
-    def dependency_remove(self, source: str, target: str, *, actor: str = "") -> Any:
-        return self._bd.run(["dep", "remove", source, target], self._cwd, actor=actor)
+    def issue_apply_changes(
+        self,
+        bead: str,
+        *,
+        fields: Mapping[str, str] | None = None,
+        add_labels: Iterable[str] = (),
+        remove_labels: Iterable[str] = (),
+        status: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        force: bool = False,
+        actor: str = "",
+    ) -> Any:
+        """ONE captured ``bd update`` carrying a batch of changes to one bead: field flags
+        (``fields`` maps a ``bd update`` flag name such as ``title`` or ``acceptance`` to its
+        value), label adds/removes, a non-closing status, and a top-level-merge metadata document
+        on stdin. ``force`` lets an assignee change override a live claim."""
+        args = ["update", bead]
+        for flag, value in (fields or {}).items():
+            args.append(f"--{flag}={value}")  # one token: a value may begin with "-"
+        for label in add_labels:
+            args += ["--add-label", label]
+        for label in remove_labels:
+            args += ["--remove-label", label]
+        if status:
+            args += ["--status", status]
+        if force:
+            args.append("--force")
+        if metadata:
+            args += ["--metadata", _STDIN_JSON]
+            return self._bd.run(
+                args,
+                self._cwd,
+                actor=actor,
+                capture=True,
+                text_input=json.dumps(dict(metadata), sort_keys=True),
+            )
+        return self._bd.run(args, self._cwd, actor=actor, capture=True)
+
+    def issue_unset_metadata(self, bead: str, keys: Iterable[str], *, actor: str = "") -> Any:
+        """Remove top-level metadata keys (``bd`` refuses to combine this with ``--metadata``)."""
+        args = ["update", bead]
+        for key in keys:
+            args += ["--unset-metadata", key]
+        return self._bd.run(args, self._cwd, actor=actor, capture=True)
+
+    def issue_delete(self, bead: str, *, actor: str = "") -> Any:
+        """``bd delete --force``: permanent removal of one bead (its dependents are orphaned)."""
+        return self._bd.run(["delete", bead, "--force"], self._cwd, actor=actor, capture=True)
+
+    def comment_add_authored(self, bead: str, body: str, *, author: str, actor: str = "") -> Any:
+        """Captured ``bd comments add`` crediting ``author`` (not the audit actor)."""
+        return self._bd.run(
+            ["comments", "add", bead, body, "--author", author],
+            self._cwd,
+            actor=actor,
+            capture=True,
+        )
+
+    def dependency_add(
+        self, source: str, target: str, type_: str, *, actor: str = "", capture: bool = False
+    ) -> Any:
+        return self._bd.run(
+            ["dep", "add", source, target, "-t", type_], self._cwd, actor=actor, capture=capture
+        )
+
+    def dependency_remove(
+        self, source: str, target: str, *, actor: str = "", capture: bool = False
+    ) -> Any:
+        return self._bd.run(
+            ["dep", "remove", source, target], self._cwd, actor=actor, capture=capture
+        )
 
     def dependency_list(self, bead: str, *, direction: str, type_: str) -> Any:
         return self._bd.json(

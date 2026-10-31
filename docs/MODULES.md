@@ -142,6 +142,8 @@ This extraction is limited to build plugins; the capability modules under
 library packages rather than a `src/beadhive/modules/backfill` module: `beadlog`,
 `beadlog-sources` and `beadhive-backfill`. Root keeps only the bd loader, `bh backfill` CLI,
 config and health wiring. See [`backfill-platform-adr.md`](design/backfill-platform-adr.md).
+The three packages are scaffolded (`bh-lycrj`): `beadlog` carries the format domain (ids, merge,
+fold, diff, manifest); the other two carry contracts only so far.
 
 > **2026-09-27 amendment.** The direction above (`packages/*` depends on root; root imports
 > package code only lazily) describes **plugin packages** only. A second class, **library

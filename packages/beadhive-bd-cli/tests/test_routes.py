@@ -413,3 +413,62 @@ def test_intake_report_routes_own_their_argv_and_carry_documents_on_stdin() -> N
     created_with_metadata = bd.calls[6]
     assert created_with_metadata[5] == '{"intake.source": {"schema": 1}}'
     assert bd.calls[7][3] == "dev/a" and bd.calls[8][3] == "dev/a"
+
+
+def test_backfill_loader_routes_batch_one_bead_and_carry_documents_on_stdin() -> None:
+    """The routes the bd BeadLog loader writes through (bh-b8aur): one bulk export, one batched
+    update per bead (field flags as single tokens so a value may begin with ``-``), metadata on
+    stdin, the separate unset, the permanent delete and an authored comment."""
+    bd = RecordingBd()
+    routes = CliRoutes(bd, "/hive")
+
+    routes.issue_export_jsonl(all_=True)
+    routes.issue_export_jsonl(output=Path("/tmp/pre.jsonl"), all_=True)
+    routes.issue_apply_changes(
+        "bh-1",
+        fields={"title": "-T", "acceptance": "A"},
+        add_labels=["x:1"],
+        remove_labels=["y:2"],
+        status="in_progress",
+        metadata={"bdlg": {"created": {"event_id": "sha256:0"}}},
+        force=True,
+        actor="dev/a",
+    )
+    routes.issue_apply_changes("bh-1", fields={"notes": ""})
+    routes.issue_unset_metadata("bh-1", ["team", "x.y"], actor="dev/a")
+    routes.issue_delete("bh-1", actor="dev/a")
+    routes.comment_add_authored("bh-1", "hello", author="dev/b", actor="dev/a")
+    routes.dependency_add("bh-1", "bh-2", "blocks", actor="dev/a", capture=True)
+    routes.dependency_remove("bh-1", "bh-2", actor="dev/a", capture=True)
+
+    assert [call[1] for call in bd.calls] == [
+        ["export", "--all"],
+        ["export", "-o", "/tmp/pre.jsonl", "--all"],
+        [
+            "update",
+            "bh-1",
+            "--title=-T",
+            "--acceptance=A",
+            "--add-label",
+            "x:1",
+            "--remove-label",
+            "y:2",
+            "--status",
+            "in_progress",
+            "--force",
+            "--metadata",
+            "@/dev/stdin",
+        ],
+        ["update", "bh-1", "--notes="],
+        ["update", "bh-1", "--unset-metadata", "team", "--unset-metadata", "x.y"],
+        ["delete", "bh-1", "--force"],
+        ["comments", "add", "bh-1", "hello", "--author", "dev/b"],
+        ["dep", "add", "bh-1", "bh-2", "-t", "blocks"],
+        ["dep", "remove", "bh-1", "bh-2"],
+    ]
+    assert bd.calls[2][3:] == (
+        "dev/a",
+        True,
+        '{"bdlg": {"created": {"event_id": "sha256:0"}}}',
+    )
+    assert all(call[4] is True for call in bd.calls)

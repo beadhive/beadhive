@@ -1,7 +1,8 @@
 # ADR: Backfill platform — BeadLog interchange, three library packages, neutral production vs hive import
 
 - **Status:** Accepted (architecture and packaging). The BeadLog v0 wire details are decided in
-  `bh-65jen`; the first bi-temporal store target is gated on spike molecule `bh-5wu0u`.
+  `bh-65jen` ([`beadlog-format-adr.md`](beadlog-format-adr.md)); the first bi-temporal store
+  target is gated on spike molecule `bh-5wu0u`.
 - **Date:** 2026-10-30
 - **Decision owner:** Beadhive maintainers (operator-approved planning session)
 - **Related work:** workstream `bh-pu6n6`; sub-epics `bh-ebopn` (BeadLog format and engine),

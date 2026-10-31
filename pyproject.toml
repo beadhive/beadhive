@@ -136,6 +136,11 @@ packages = [
     "packages/beadhive-plugins/src/beadhive_plugins",
     "packages/beadhive-worktrees/src/beadhive_worktrees",
     "packages/beadhive-validation-broker/src/beadhive_validation_broker",
+    # The BeadLog backfill libraries (bh-xxmb1): `bh backfill` and `bh backfill-complexity` import
+    # them statically, so the installed shell carries all three (still Private :: Do Not Upload).
+    "packages/beadlog/src/beadlog",
+    "packages/beadlog-sources/src/beadlog_sources",
+    "packages/beadhive-backfill/src/beadhive_backfill",
 ]
 
 # In-repo packages (bh-3fcl0.1): every packages/<name>/ is its own distribution and import name.
@@ -155,12 +160,15 @@ beadhive-beads-client = { workspace = true }
 beadhive-plugins = { workspace = true }
 beadhive-worktrees = { workspace = true }
 beadhive-validation-broker = { workspace = true }
+beadlog = { workspace = true }
+beadlog-sources = { workspace = true }
+beadhive-backfill = { workspace = true }
 
 # Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
 # bead — only the PUBLISHED wheel's hard-dependency graph changed.
 [tool.uv]
-default-groups = ["dev", "pants", "github", "core", "plugins", "worktrees", "hq-storage", "validation-broker"]
+default-groups = ["dev", "pants", "github", "core", "plugins", "worktrees", "hq-storage", "validation-broker", "backfill"]
 
 [dependency-groups]
 # The workspace member, for dev/CI only (bh-mxjoy): kept OUT of [project.optional-dependencies]'s
@@ -195,6 +203,12 @@ worktrees = ["beadhive-worktrees"]
 # published wheel vendors the import package (see the wheel packages above) because
 # `beadhive.validation_broker_slots` adapts today's host slots to this port.
 validation-broker = ["beadhive-validation-broker"]
+# The BeadLog backfill libraries (docs/design/backfill-platform-adr.md section 2), editable from the
+# workspace for dev/CI: root's bd StoreLoader (`beadhive.backfill_bd`), `bh backfill` and the
+# complexity command import them statically through their public `__all__`. All three stay
+# `Private :: Do Not Upload`, so the published wheel vendors their import packages (see the wheel
+# packages above) exactly like beadhive-core, rather than hard-requiring unpublished members.
+backfill = ["beadlog", "beadlog-sources", "beadhive-backfill"]
 dev = [
     "editables>=0.5",
     # Exact offline-capable generator for the checked-in Beads v1.3 SDK.

@@ -2,8 +2,9 @@
 
 > **Status:** planning research, 2026-10-30 · **Decision record:**
 > [`backfill-platform-adr.md`](backfill-platform-adr.md) · **Feeds:** BeadLog v0 format ADR
-> (`bh-65jen`) and the XTDB first-target spike (`bh-5wu0u`; open verifications are closed by
-> `bh-o1x4r`) · **Evidence levels** are marked per store.
+> ([`beadlog-format-adr.md`](beadlog-format-adr.md), `bh-65jen`) and the XTDB first-target
+> spike (`bh-5wu0u`; open verifications are closed by `bh-o1x4r`) · **Evidence levels** are
+> marked per store.
 
 ## Question
 

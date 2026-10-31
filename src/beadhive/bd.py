@@ -774,6 +774,19 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     return _rc_error(result)
 
 
+def export_jsonl(cwd, *, all_=True, output=None):
+    """The ONE bulk read of a hive's issue rows: ``bd export [--all]`` as JSONL text.
+
+    Never a per-bead loop (``bd history`` costs ~20 s per bead; backfill-platform-adr.md section
+    5). With ``output`` the rows go to that file and the text is ``""``. Returns ``None`` when bd
+    fails, like :func:`json`; callers that must not proceed on a failed read raise themselves."""
+    res = routes(cwd).issue_export_jsonl(all_=all_, output=output)
+    if res.returncode != 0:
+        _warn_missing_binary(res, cwd)
+        return None
+    return res.stdout or ""
+
+
 def _import(import_args, cwd):
     """CLI wrapper over `import_labeled`: echo the error to stderr, return the exit code."""
     code, error = import_labeled(import_args, cwd)
