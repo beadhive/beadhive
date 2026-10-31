@@ -1,22 +1,44 @@
 """BeadHive-specific backfill (``docs/design/backfill-platform-adr.md`` section 2).
 
 A **library** package: it depends only on ``beadlog`` and ``beadlog-sources`` (each through its
-public ``__all__``) and never imports ``beadhive``. It will own the hive apply envelope lifted
-from ``complexity_backfill`` and the hive-policy passes. This scaffold carries the contracts
-only: see :mod:`beadhive_backfill.contracts`.
+public ``__all__``) and never imports ``beadhive``. It owns the hive apply envelope lifted from
+``complexity_backfill``:
+
+- contracts (:mod:`beadhive_backfill.contracts`): :class:`HivePass` and its optional hooks,
+  the store ports (:class:`StoreReader`, :class:`StoreLoader`, :class:`PreStateExporter`) and
+  the audit (:class:`AuditSink`, :class:`AuditEntry`, ...);
+- the engine (:mod:`beadhive_backfill.engine`): :class:`BackfillEngine` ``plan`` / ``apply``
+  with plan hash, corpus-drift refusal, pre-state export, checkpointed audit, rollback through
+  loader inverses and the recorded-judgments-only idempotency proof;
+- plans (:mod:`beadhive_backfill.plan`): :class:`Plan`, a ``.bdlg`` with a manifest ``plan``
+  section;
+- per-kind rollback inverses (:func:`inverse_of`) and store-neutral sinks
+  (:class:`JsonFileAuditSink`, :class:`ArchivePreStateExporter`).
 """
 
 from __future__ import annotations
 
+from ._errors import BackfillError
+from ._inverse import ROLLBACK_REASON, Stamper, has_inverse, inverse_of
+from ._projection import ALL_FACETS, bead_key, projection, projection_hash
 from .contracts import (
+    RECOVERY_INSTRUCTION,
     AuditEntry,
     AuditProgress,
     AuditRecovery,
     AuditSink,
     AuditState,
     HivePass,
+    PreStateExporter,
+    ReportingPass,
+    ScopedPass,
     StoreLoader,
+    StoreReader,
+    VerifyingPass,
 )
+from .engine import BackfillEngine, system_clock
+from .plan import ENGINE_ANNOTATION, ENGINE_SCHEMA, Plan
+from .sinks import ArchivePreStateExporter, JsonFileAuditSink
 
 DISTRIBUTION = "beadhive-backfill"
 
@@ -27,13 +49,35 @@ def distribution_name() -> str:
 
 
 __all__ = [
+    "ALL_FACETS",
     "DISTRIBUTION",
+    "ENGINE_ANNOTATION",
+    "ENGINE_SCHEMA",
+    "RECOVERY_INSTRUCTION",
+    "ROLLBACK_REASON",
+    "ArchivePreStateExporter",
     "AuditEntry",
     "AuditProgress",
     "AuditRecovery",
     "AuditSink",
     "AuditState",
+    "BackfillEngine",
+    "BackfillError",
     "HivePass",
+    "JsonFileAuditSink",
+    "Plan",
+    "PreStateExporter",
+    "ReportingPass",
+    "ScopedPass",
+    "Stamper",
     "StoreLoader",
+    "StoreReader",
+    "VerifyingPass",
+    "bead_key",
     "distribution_name",
+    "has_inverse",
+    "inverse_of",
+    "projection",
+    "projection_hash",
+    "system_clock",
 ]
