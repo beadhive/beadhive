@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -21,10 +22,18 @@ from typer.testing import CliRunner
 import beadlog
 from beadhive import backfill_cli, cli
 from beadhive.backfill_bd import BdStoreLoader
+from beadhive.modules.config.contracts import BackfillGapfillConfig
 from beadhive_backfill import PathReaders, Plan, TimelinePass
 from beadhive_backfill.merges import parse_first_parent
 from beadhive_backfill.run_journals import RunJournalRead
-from beadlog_sources import CommitDate, CommitDates, HistoryEvent, HistoryRead
+from beadlog_sources import (
+    BdGapfillError,
+    CommitDate,
+    CommitDates,
+    GapfillReader,
+    HistoryEvent,
+    HistoryRead,
+)
 
 ENV = {"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
 ENTRY = {"provider": "github", "org": "acme", "repo": "widgets", "prefix": "wd"}
@@ -341,3 +350,167 @@ def test_export_history_defaults_to_its_own_file_name(hive, tmp_path, monkeypatc
     _invoke("backfill", "export", "--history")
     _invoke("backfill", "export")
     assert (tmp_path / "wd.history.bdlg").is_file() and (tmp_path / "wd.bdlg").is_file()
+
+
+# -- bh backfill export --history with the opt-in gap fill --------------------------------------
+
+
+def _version(commit: str, when: str, **extra: Any) -> tuple[str, str, dict[str, Any]]:
+    row = {"title": "Bead", "status": "open", "priority": 2, "issue_type": "task", **extra}
+    return commit, when, row
+
+
+# wd-2 changes (open -> closed); wd-old never does. Both lack a created row in HISTORY.
+DOLT = {
+    "wd-2": [
+        _version("c" * 32, "2026-07-26T09:00:00.000000Z", title="Bead wd-2"),
+        _version("d" * 32, "2026-08-13T10:00:00.000000Z", title="Bead wd-2", status="closed"),
+    ],
+    "wd-old": [
+        _version("e" * 32, "2026-07-26T09:00:00.000000Z", title="Bead wd-old"),
+        _version("f" * 32, "2026-07-27T09:00:00.000000Z", title="Bead wd-old"),
+    ],
+}
+
+
+class Dolt:
+    """The gap fill's two statement shapes over :data:`DOLT`; counts scans, can break one."""
+
+    def __init__(self, fail_on_scan: int | None = None) -> None:
+        self.scans: list[list[str]] = []
+        self.fail_on_scan = fail_on_scan
+        self.statements: list[str] = []
+
+    def __call__(self, argv: Sequence[str]) -> str:
+        mode, sql = argv[4], argv[5]
+        self.statements.append(sql)
+        if mode == "--csv":
+            ids = re.findall(r"'([^']+)'", sql[sql.index(" IN (") :])
+            self.scans.append(ids)
+            if self.fail_on_scan == len(self.scans):
+                raise BdGapfillError("bd sql timed out after 180s")
+            lines = ["id,commit_hash,d,h"]
+            for bead in ids:
+                for commit, when, row in DOLT.get(bead, ()):
+                    lines.append(f"{bead},{commit},{when},{row['status']}")
+            return "\n".join(lines) + "\n"
+        points = re.findall(r"AS OF '([A-Za-z0-9]+)' WHERE id = '([^']+)'", sql)
+        found = [
+            {"commit_hash": c, "id": b, **row}
+            for c, b in points
+            for commit, _, row in DOLT[b]
+            if commit == c
+        ]
+        return json.dumps(found)
+
+
+@pytest.fixture
+def gapfill(hive, monkeypatch):
+    """Enable the gap fill with one-bead batches over the fake Dolt; returns the fake."""
+    dolt = Dolt()
+    settings = BackfillGapfillConfig(enabled=True, batch_size=1, timeout_seconds=5)
+    monkeypatch.setattr(backfill_cli, "gapfill_settings", lambda cfg=None: settings)
+
+    def reader(cwd: Path, settings: BackfillGapfillConfig) -> GapfillReader:
+        return GapfillReader(cwd, batch_size=settings.batch_size, runner=dolt)
+
+    monkeypatch.setattr(backfill_cli, "gapfill_reader", reader)
+    return dolt
+
+
+def test_the_gap_fill_is_off_by_default_and_asks_the_store_nothing(
+    hive, tmp_path, monkeypatch
+) -> None:
+    def boom(cwd, settings):
+        raise AssertionError("the gap fill ran although it is disabled")
+
+    monkeypatch.setattr(backfill_cli, "gapfill_reader", boom)
+    assert backfill_cli.gapfill_settings({}).enabled is False  # nothing configured
+    out = tmp_path / "off.bdlg"
+    summary = json.loads(
+        _invoke("backfill", "export", "--history", "--out", str(out), "--json").stdout
+    )
+    assert "gapfill" not in summary["history"]
+    assert "dolt:history" not in summary["history"]["sources"]
+    assert not (tmp_path / "off.bdlg.gapfill.json").exists()
+
+
+def test_the_gap_fill_settings_come_from_backfill_timeline_gapfill() -> None:
+    assert backfill_cli.gapfill_settings({"backfill": {}}).enabled is False
+    cfg = {"backfill": {"timeline": {"gapfill": {"enabled": True, "batch_size": 7}}}}
+    tuned = backfill_cli.gapfill_settings(cfg)
+    assert (tuned.enabled, tuned.batch_size, tuned.timeout_seconds) == (True, 7, 180.0)
+    reader = backfill_cli.gapfill_reader(Path("/hive"), tuned)
+    assert reader.batch_size == 7
+
+
+def test_the_enabled_gap_fill_adds_snapshot_events_only_for_beads_without_a_created_row(
+    hive, gapfill, tmp_path
+) -> None:
+    store, group, _ = hive
+    plain, filled = tmp_path / "plain.bdlg", tmp_path / "filled.bdlg"
+    _invoke("backfill", "export", "--out", str(plain))
+    summary = json.loads(
+        _invoke("backfill", "export", "--history", "--out", str(filled), "--json").stdout
+    )
+    assert store.writes == []
+    assert gapfill.scans == [
+        ["wd-2"],
+        ["wd-old"],
+    ]  # wd-1 and wd-gone have created rows: never asked
+    assert all(sql.startswith("SELECT ") for sql in gapfill.statements)
+    account = summary["history"]["gapfill"]
+    assert account["beads_queried"] == 2 and account["events"] > 0
+    assert account["counts"]["beads_changed"] == 1  # wd-2; wd-old never changed
+    assert summary["history"]["sources"]["dolt:history"] == account["events"]
+    assert not (tmp_path / "filled.bdlg.gapfill.json").exists()  # complete: the cursor is gone
+
+    _, events = beadlog.read_archive(filled)
+    gap = [e for e in events if e.source.system == "dolt"]
+    assert {e.bead.id for e in gap} == {"wd-2"} and len(gap) == account["events"]
+    assert {e.provenance for e in gap} == {"derived"}
+    assert all(e.occurred_at == e.recorded_at for e in gap)
+    assert any(e.kind is beadlog.EventKind.PHASE and e.data["phase"] == "closed" for e in gap)
+    _, plain_events = beadlog.read_archive(plain)
+    assert beadlog.fold(events) == beadlog.fold(plain_events)  # the current state is untouched
+
+    verified = json.loads(_invoke("backfill", "verify", str(filled), "--json").stdout)
+    assert verified["ok"] is True
+    text = _invoke("backfill", "inspect", str(filled)).stdout
+    assert "gap fill: 2 beads queried" in text
+
+
+def test_an_interrupted_export_resumes_from_the_cursor_and_matches_an_uninterrupted_one(
+    hive, gapfill, tmp_path, monkeypatch
+) -> None:
+    clean = tmp_path / "clean.bdlg"
+    _invoke("backfill", "export", "--history", "--out", str(clean))
+    expected = [e.id for e in beadlog.read_archive(clean)[1]]
+
+    broken = Dolt(fail_on_scan=2)  # the second one-bead batch times out
+    monkeypatch.setattr(
+        backfill_cli,
+        "gapfill_reader",
+        lambda cwd, settings: GapfillReader(cwd, batch_size=1, runner=broken),
+    )
+    out = tmp_path / "resumed.bdlg"
+    result = CliRunner().invoke(
+        cli.app, ["backfill", "export", "--history", "--out", str(out)], env=ENV
+    )
+    assert result.exit_code == 1 and "gap fill stopped" in result.output
+    assert "re-run to resume" in result.output
+    assert not out.exists()  # no half archive
+    cursor = tmp_path / "resumed.bdlg.gapfill.json"
+    assert json.loads(cursor.read_text())["done"] == 1
+
+    healthy = Dolt()
+    monkeypatch.setattr(
+        backfill_cli,
+        "gapfill_reader",
+        lambda cwd, settings: GapfillReader(cwd, batch_size=1, runner=healthy),
+    )
+    _invoke("backfill", "export", "--history", "--out", str(out))
+    assert healthy.scans == [["wd-old"]]  # only the unfinished bead is read again
+    got = [e.id for e in beadlog.read_archive(out)[1]]
+    assert got == expected and len(got) == len(set(got))  # same events, no duplicates
+    assert not cursor.exists()

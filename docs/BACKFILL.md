@@ -150,6 +150,9 @@ two store reads (`SELECT` on `events`, and the store's first commit date) on top
   beads from 2026-06-29, store commits from 2026-07-25, the events table from 2026-08-07.)
 - `bh backfill inspect` prints the same numbers; `bh backfill verify` checks the archive like
   any other. Checkpoints are not written (the archive is complete without them).
+- With `backfill.timeline.gapfill.enabled` the beads that have no `created` row also get
+  snapshot-level events from `dolt_history_issues`; see [Gap fill](#gap-fill). Off by default:
+  without it no history scan runs and the annotation has no `gapfill` member.
 
 Lifecycle facts (merged, submitted, reviewed, ...) are hive conventions, not events-table rows:
 they enter the archive from the current-state side once `bh backfill timeline --apply` has
@@ -227,6 +230,96 @@ refresh merges (`chore(merge): refresh wt/bead/epic/<id> from main`) and `Merge 
 ...` are never lands, and the three pre-convention July 2026 subjects are returned with
 `legacy=True`. A `batch` land names its group (`batch group-a`), not its member beads.
 
+## Gap fill
+
+The events table cannot say anything about the ~2,500 of ~9,100 `bh` beads that predate it
+(created before 2026-08-07) or were imported without a `created` row: they carry only an
+inferred, low-confidence create. Dolt versions every `issues` row at every store commit, so their
+*snapshots* can be recovered from `dolt_history_issues`. This is the opt-in, bounded gap fill
+(`beadlog_sources.bd_gapfill`; [backfill-platform-adr.md](design/backfill-platform-adr.md)
+section 6, "Dolt-history gap fill"). **It is slow (about an hour for the whole `bh` gap) and off
+by default.**
+
+```yaml
+backfill:
+  timeline:
+    gapfill:
+      enabled: false      # the default; true makes `export --history` run the gap fill
+      batch_size: 25      # beads per history scan
+      timeout_seconds: 180  # per query; a query past it stops the run (resumable)
+```
+
+The section is host-owned like the rest of `backfill` (a fleet push cannot switch it on). No CLI
+flag was added: `bh backfill export --history` reads the config. See
+[CONFIGURATION.md](CONFIGURATION.md#backfill-timeline-gapfill).
+
+**What it reads.** Only `SELECT`s, through the injected command seam
+(`bd -C <root> sql ...`), each with the configured timeout, restricted to `id IN (...)` batches of
+`batch_size` beads, and only for beads with no `created` row in the events table; a bead that has
+one is not even queried. Per batch:
+
+1. a streaming **scan** of `dolt_history_issues` returning, per commit, the bead id, the commit
+   hash, the commit date and a short server-side digest of exactly the columns BeadLog models
+   (title, description, design, acceptance criteria, notes, priority, assignee, owner, external
+   ref, due/defer times, estimate, spec id, type, status, close reason; never `updated_at` and
+   the other volatile columns). The rows are ordered here by `(commit_date, commit_hash)`,
+   **never DAG order** (commit dates are not monotone) and consecutive equal digests collapse.
+2. a **fetch** of the full columns of only the commits where the digest changed, as `issues AS
+   OF '<commit>'` point lookups, collapsed again on the projected values. A 30,000-version bead
+   with four distinct states yields four states and four point lookups.
+
+A bead with a single state is done after the scan. `dolt_history_labels`,
+`dolt_history_dependencies` and `metadata` are **not** read (see the table: labels alone return
+2.5x the rows of issues for the same walk), so a gap-filled bead has no label, edge or metadata
+history before the events table; the annotation says so.
+
+**Events.** For distinct states S1..Sk (k >= 2): a `set` per modeled field and a `phase` for the
+status wherever a value changes between consecutive states, and the value of S1 for every field
+that changes later. `occurred_at` is not known better than the commit date, so
+`occurred_at == recorded_at ==` the dolt commit date, `provenance` is `derived`, confidence is
+0.7 for a change between two snapshots and 0.3 for the first snapshot (the value existed *by*
+that commit; when it was set is not recorded), and the evidence names the commit. The source is
+`dolt` / `dolt:history/<commit>#<bead>`, so re-extraction gives identical event ids, and the
+fold guard of the history export drops anything that would change a bead's current state. The
+store's history only begins at its first commit (2026-07-25 on `bh`), so a bead that was never
+edited since then yields no events at all (about 61 of 100 sampled).
+
+**Resumable.** The collapsed states are saved after every batch to `<out>.gapfill.json` (beside
+the archive, written atomically, removed when the archive is written). A timeout or interrupt
+exits with `gap fill stopped: ... progress is saved in <path>, re-run to resume`; re-running the
+same command continues at the next batch and produces the same events with no duplicates. A
+cursor from a different bead list or batch size is ignored.
+
+**Measured cost** (production `bh` store, 37,200 store commits, 9,145 issues, 2,529 of them
+without a `created` row; read-only, one query at a time; the sample is ids 1000-1099 of the 2,529
+sorted ids; seconds are wall clock for the scan plus the fetch):
+
+| Batch size | Seconds | Scan rows | Digest states | Distinct states |
+|---:|---:|---:|---:|---:|
+| 1 | 11.9 | 9,248 | 15 | 15 |
+| 5 | 15.0 | 157,514 | 20 | 17 |
+| 10 | 18.3 | 337,143 | 29 | 23 |
+| 25 | 34.8 | 860,381 | 54 | 37 |
+| 50 | 70.1 | 1,754,249 | 109 | 82 |
+| 100 | 141.1 | 3,551,982 | 204 | 143 |
+
+A scan costs about 9 s fixed (every store commit is walked, whatever the batch) plus about 1.3 s
+per bead; the fetch is 2-3 s per 40 changed commits. The full run of 2,529 beads is therefore
+about **59 minutes at any batch size of 25 or more** (101 x 34.8 s, 51 x 70.1 s, 26 x 141.1 s),
+and hours below that (batch 1 would be ~8 h). It returns about 34,000 rows per bead, so memory
+grows with `batch_size` (the default 25 holds ~0.9 M small tuples). Roughly four in ten sampled
+beads changed, with ~1.4 distinct states each, so the whole gap yields on the order of a thousand
+changed beads and a few thousand events.
+
+What measuring ruled out, kept so nobody retries it: `bd history <id>` is ~20 s per bead;
+`bd sql` drops a query whose first result byte takes more than ~10 s (`i/o timeout`;
+`dolt.pool-read-timeout`, `BEADS_DOLT_POOL_READ_TIMEOUT` and `BD_` equivalents had no effect), so
+`GROUP BY`, window-function and `ORDER BY` shapes failed from 5 beads up (the 10-bead `GROUP BY`
+died at 11.7 s) and get worse as the store grows; `content_hash` is unchanged by a status change
+(`bh-9wpd.1` went open to closed under one `content_hash` on every commit), so the scan digests
+the modeled columns itself; `commit_hash IN (...)` and `dolt_diff_issues` give no shortcut (still
+the full walk); `EXPLAIN` is not supported through `bd sql --json`.
+
 ## Pass matrix
 
 | Pass | Verb | Reads | Writes | Plan | DRIFT | Postcondition |
@@ -283,5 +376,6 @@ record of when each lifecycle stage happened.
 ## Defaults
 
 Every new behavior is off until asked for: the Haiku judge (`backfill.judge.enabled=false`),
-deletion and erasure in the bd loader, `export --history` (the plain export is the default), and
-any write (a pass, `timeline` included, previews unless `--apply`).
+the dolt_history gap fill (`backfill.timeline.gapfill.enabled=false`), deletion and erasure in
+the bd loader, `export --history` (the plain export is the default), and any write (a pass,
+`timeline` included, previews unless `--apply`).

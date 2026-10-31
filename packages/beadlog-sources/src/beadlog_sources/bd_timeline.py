@@ -675,13 +675,16 @@ def history_annotation(
     baseline: Sequence[BeadEvent],
     *,
     store_start: str | None = None,
+    gapfill: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The manifest annotation (:data:`HISTORY_ANNOTATION`) of an archive with history.
 
     Reports the event count of each source family, what the conversion read, skipped and
     suppressed, the earliest recorded history date, and the pre-retention gap computed from the
     data: beads created before the events table's first row (or the store's first commit) have
-    no recorded history, only the inferred create and the exported current state.
+    no recorded history, only the inferred create and the exported current state. ``gapfill`` is
+    the account of the opt-in dolt_history gap fill (:mod:`bd_gapfill`) when it ran: it is
+    recorded as the ``gapfill`` member and the note says those beads carry snapshot-level history.
     """
     families = Counter(source_family(event) for event in events)
     earliest = history.earliest_recorded()
@@ -721,7 +724,13 @@ def history_annotation(
         if parts
         else "No history was read."
     )
-    return {
+    if gapfill is not None and gapfill.get("enabled"):
+        gap["note"] += (
+            f" The opt-in dolt_history gap fill queried {gapfill.get('beads_queried', 0)} of them "
+            f"and added {gapfill.get('events', 0)} snapshot-level event(s) (derived, "
+            "commit-date times, reduced confidence)."
+        )
+    annotation: dict[str, Any] = {
         HISTORY_ANNOTATION: {
             "schema_version": HISTORY_SCHEMA,
             "time_semantics": (
@@ -743,6 +752,9 @@ def history_annotation(
             "gap": gap,
         }
     }
+    if gapfill is not None:
+        annotation[HISTORY_ANNOTATION]["gapfill"] = dict(gapfill)
+    return annotation
 
 
 # -- the strategy ----------------------------------------------------------------------------

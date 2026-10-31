@@ -78,3 +78,36 @@ def test_backfill_judge_section_is_additive_and_every_default_is_off():
 def test_backfill_judge_section_refuses_invalid_values(judge):
     with pytest.raises(ValidationError):
         BeadhiveConfig(backfill={"judge": judge})
+
+
+def test_backfill_timeline_gapfill_is_additive_and_off_by_default():
+    assert BeadhiveConfig().backfill is None  # still absent unless configured
+    gap = BeadhiveConfig(backfill={}).backfill.timeline.gapfill
+    assert (gap.enabled, gap.batch_size, gap.timeout_seconds) == (False, 25, 180.0)
+    assert field_default("backfill.timeline.gapfill.enabled") is False
+    assert field_default("backfill.timeline.gapfill.batch_size") == 25
+    paths = {f.path for f in iter_schema_fields() if f.path.startswith("backfill.timeline.")}
+    assert paths >= {
+        "backfill.timeline.gapfill.enabled",
+        "backfill.timeline.gapfill.batch_size",
+        "backfill.timeline.gapfill.timeout_seconds",
+    }
+    assert {partition.partition_of(path) for path in paths} == {partition.HOST}
+
+    tuned = BeadhiveConfig(
+        backfill={
+            "timeline": {"gapfill": {"enabled": True, "batch_size": 5, "timeout_seconds": 60}}
+        }
+    )
+    assert tuned.backfill.timeline.gapfill.enabled is True
+    assert tuned.backfill.timeline.gapfill.batch_size == 5
+    assert tuned.backfill.judge.enabled is False  # the sibling section is untouched
+
+
+@pytest.mark.parametrize(
+    "gapfill",
+    [{"batch_size": 0}, {"timeout_seconds": 0}, {"timeout_seconds": -1}, {"unknown": True}],
+)
+def test_backfill_timeline_gapfill_refuses_invalid_values(gapfill):
+    with pytest.raises(ValidationError):
+        BeadhiveConfig(backfill={"timeline": {"gapfill": gapfill}})

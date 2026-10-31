@@ -15,6 +15,9 @@ never imports ``beadhive``. It owns:
 - the neutral history conversion (:mod:`beadlog_sources.bd_timeline`): those records as BeadLog
   history events (create, phase, set, labels, edges, comments) with bi-temporal stamps,
   revert-artifact suppression and a guard that history never changes the exported current state;
+- the opt-in, bounded ``dolt_history_issues`` gap fill (:mod:`beadlog_sources.bd_gapfill`):
+  snapshot-level history for beads with no ``created`` event, read in chunked ``SELECT`` batches
+  with a resumable cursor and emitted as derived, commit-dated, reduced-confidence events;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
@@ -26,6 +29,15 @@ never imports ``beadhive``. It owns:
 from __future__ import annotations
 
 from .bd import BdBaselineStrategy, BdReadError, baseline_events, bd_timestamp
+from .bd_gapfill import (
+    BdGapfillError,
+    GapfillEvents,
+    GapfillReader,
+    JsonCursorFile,
+    gap_events,
+    gapfill_annotation,
+    lacking_created,
+)
 from .bd_history import (
     CLAIMED as HISTORY_CLAIMED,
 )
@@ -111,6 +123,7 @@ def distribution_name() -> str:
 __all__ = [
     "ABSTAIN",
     "BdBaselineStrategy",
+    "BdGapfillError",
     "BdHistoryError",
     "BdReadError",
     "DEFAULT_FAMILY",
@@ -133,11 +146,14 @@ __all__ = [
     "DeterministicJudge",
     "ExtractRequest",
     "Fallback",
+    "GapfillEvents",
+    "GapfillReader",
     "GitReadError",
     "HistoryEvent",
     "HistoryEvents",
     "HistoryRead",
     "JudgeProtocolError",
+    "JsonCursorFile",
     "JudgeSettings",
     "Judgment",
     "JudgmentPort",
@@ -157,10 +173,13 @@ __all__ = [
     "commit_dates",
     "consistent_history",
     "distribution_name",
+    "gap_events",
+    "gapfill_annotation",
     "history_annotation",
     "history_argv",
     "history_events",
     "judge_schema",
+    "lacking_created",
     "parse_history",
     "plan_entries",
     "prior_verdicts",
