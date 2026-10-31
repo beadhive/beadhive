@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:wire-schema:factory.hive-info:1",
+  "title": "Factory HiveInfo v1",
+  "type": "object",
+  "required": ["prefix", "provider", "org", "repo", "kind"],
+  "additionalProperties": true,
+  "properties": {
+    "prefix": {"type": "string"},
+    "provider": {"type": "string"},
+    "org": {"type": "string"},
+    "repo": {"type": "string"},
+    "kind": {"type": "string"}
+  }
+}

@@ -47,6 +47,11 @@ class OperationSpec:
 # leaf without changing this declaration fails tests/test_operation_catalog.py.
 _CLI_ROWS = """
 alerts show|as_json:boolean:o
+backfill apply|plan_path:string:r,hive:string:o,dry_run:boolean:o,pre_state:string:o,audit:string:o,as_json:boolean:o
+backfill complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
+backfill export|hive:string:o,out:string:o,as_json:boolean:o
+backfill inspect|path:string:r,as_json:boolean:o
+backfill verify|path:string:r,as_json:boolean:o
 backfill-complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backup export|dest:string:o
 backup list|hive:string:o,as_json:boolean:o
@@ -305,6 +310,8 @@ worktree status|hive:string:o,as_json:boolean:o,local_safe:boolean:o,root:array:
 
 _READ_PATHS = {
     "alerts show",
+    "backfill inspect",
+    "backfill verify",
     "backup list",
     "backup usage",
     "config get",
@@ -398,6 +405,7 @@ _HIDDEN_PATHS = {
 # published document also materializes the nearest inherited panel.
 _CLI_PARENT_ROWS = """
 alerts|false|Fleet / HQ
+backfill|false|Hive
 backup|false|Admin / infra
 checkpoint|false|Integration plane
 config|false|Admin / infra
@@ -476,7 +484,10 @@ _CLI_ALIAS_TARGETS: dict[str, tuple[str, dict[str, Any], str]] = {
     },
 }
 
+# ``backfill.complexity`` is the nested presentation of the published flat operation; the flat
+# identity keeps its published declaration unchanged (an additive minor, never a rename).
 _SEMANTIC_ALIASES = {
+    "backfill.complexity": "backfill-complexity",
     "work.finish": "work.merge",
     "work.start": "work.claim",
 }
