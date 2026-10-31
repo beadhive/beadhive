@@ -12,7 +12,7 @@ The architecture and packaging are decided in
 | Package | Owns |
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
-| `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader and `git-commits`), reconcile, judges, the standalone `beadlog` CLI |
+| `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader, `git-commits`, `docs` and `planning`), reconcile, judges, the standalone `beadlog` CLI |
 | `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 
@@ -131,6 +131,47 @@ Options: `rev` (default `HEAD`), `since` (a commit, or a date for `git log --sin
 changes), which a neutral `bh backfill apply` reports but does not apply; applying the appends
 needs a pass that marks DRIFT applicable. `scripts/backfill_commit_linkage.py` and
 `scripts/bead_commit_correlation.py` are deprecated shims over the same matcher.
+
+### `beadlog extract docs`
+
+The neutral `docs` strategy (`beadlog_sources.docs`) links decision and design docs to beads, the
+port of `reconcile.sh`'s docs mode (`bh-skls-svo`: it silently stopped at 37 of 120 docs; this
+one processes every doc, reads git once and makes no per-doc store call). Per doc, deterministic
+before fuzzy: a bead already carrying the doc as `external_ref` is `PRESENT-in-sync`; else the
+first `Beads:` line of the doc, then the bead id in the commit that first added it, names the
+bead (`PRESENT-needs-stamp`: a `set` of `external_ref`; `DRIFTED-ref`: the bead points elsewhere;
+`DANGLING`: no such bead; the last two are reported, never written). What is left is
+`UNMATCHED`: a token-overlap shortlist (`top_k`, default 3) over every baseline bead is put to the
+judge as one choice (`present:N` / `noise:N` / `new` / `abstain`) and each verdict, confidence
+included, is recorded in the archive annotation `bdlg.docs`. **The judge is off by default**
+(`--judge-enabled true` turns it on, same `--judge-*` flags as `beadlog reconcile`): then every
+unmatched doc is an abstain residual, listed as `RESIDUAL <doc>` for a human to confirm.
+
+```bash
+beadlog extract docs --root . --group <group id> --group-dir <prefix> \
+  --extracted-at 2026-10-31T00:00:00Z --baseline baseline.bdlg \
+  --option docs=docs/decisions,docs/design -o proposed.bdlg
+```
+
+Options: `docs` (directories, recursive; default `docs/decisions` and `docs/design`, their `*.md`
+only), `top_k`, `id_prefix`, `new_type`, `labels` (extra labels for a judged-NEW bead, such as the
+hive identity triplet), `prior` (an earlier extract whose verdicts are reused, never re-asked),
+`allow_shallow`. Stamps are DRIFT to reconcile (the bead exists), which the neutral `bh backfill
+apply` does not apply; load them through the bd StoreLoader. Applying them and extracting again
+reports every doc `PRESENT-in-sync` and proposes nothing.
+
+### `beadlog extract planning`
+
+The neutral `planning` strategy (`beadlog_sources.planning`) turns a GSD `.planning` tree into
+beads in one reviewed plan: `phases/NN-<name>/` becomes an epic, each `NN-MM-PLAN.md` an issue with
+a `parent-child` edge to its phase, `depends_on` (inline `[..]` or a block list) `blocks` edges, a
+plan with an `NN-MM-SUMMARY.md` is closed (a phase when all its plans are), and `occurred_at` is the
+git add date of the plan or summary. `external_ref` is the doc path, so extracting again after the
+apply proposes nothing (a summary that appears later proposes only its close). Created beads carry
+`origin:backfill` and `source:planning`; `bh label validate` also wants one `complexity:<TIER>` on
+every routable bead, which is hive policy: name it through `--option labels=complexity:MEDIUM` or run
+`bh backfill complexity` afterwards. Options: `planning` (the tree, default `.planning`),
+`id_prefix` (required with an empty baseline), `labels`, `issue_type`, `allow_shallow`.
 
 A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
 are off in the bd loader and are reported as dropped.
