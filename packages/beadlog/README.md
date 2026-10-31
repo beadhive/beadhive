@@ -33,8 +33,27 @@ library only, no runtime dependencies, never imports `beadhive`. Import it only 
 - **Manifest** — `Manifest`, `Capabilities` (`require()` refuses unknown required
   capabilities), `Capability`, `LoaderCapability`, `FORMAT_VERSION`, `MEDIA_TYPE`.
 
-Archive I/O (the ZIP container) and the loader-conformance kit (`beadlog.testing`) are later
-work.
+- **Archive** — `write_archive(dest, events, groups=..., generator=...)` writes a reproducible
+  `.bdlg` (same events, same bytes: `mimetype` first and STORED, sorted entries, fixed mtime and
+  mode, size-partitioned parts, manifest digests computed while streaming, ZIP64 only when a
+  member needs it). `ArchiveReader` is the streaming, untrusted-input reader: it verifies
+  `mimetype`, the manifest and every part's size, SHA-256 and record count (before any event of
+  the part is yielded), refuses unknown `capabilities.required`, zip-slip names, oversized
+  entries and entry floods (`ReadLimits`), and supports ZIP64. Each refusal has its own error
+  type under `ArchiveError`. `read_archive(source)` loads a small archive in one call.
+- **Conformance kit** — `beadlog.testing`: `conformance_cases()` (export, load, re-export
+  equivalence; idempotent reload; refusal of unknown required capabilities and of tampered
+  archives; loss-report completeness), the `InMemoryStore` reference store and the
+  `load_archive` driver. A store-loader package runs the cases against its own store:
+
+  ```python
+  @pytest.mark.parametrize("case", beadlog.conformance_cases(), ids=lambda c: c.name)
+  def test_conformance(case):
+      case.run(make_empty_store)
+  ```
+
+The two published schemas an archive embeds are byte copies under
+`src/beadlog/archive/schemas/`; a test pins them to `docs/schemas/beadlog/v0.1/`.
 
 ## Tests
 
