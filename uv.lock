@@ -419,8 +419,17 @@ dependencies = [
     { name = "beadlog" },
 ]
 
+[package.optional-dependencies]
+haiku = [
+    { name = "httpx" },
+]
+
 [package.metadata]
-requires-dist = [{ name = "beadlog", editable = "packages/beadlog" }]
+requires-dist = [
+    { name = "beadlog", editable = "packages/beadlog" },
+    { name = "httpx", marker = "extra == 'haiku'", specifier = ">=0.28,<1" },
+]
+provides-extras = ["haiku"]
 
 [[package]]
 name = "beartype"

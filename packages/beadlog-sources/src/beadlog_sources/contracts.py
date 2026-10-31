@@ -65,28 +65,53 @@ class SourceStrategy(Protocol):
         ...
 
 
+# The judgment family a query belongs to when the caller names none. Families key the
+# per-family auto-accept thresholds: confidence depends on the option count, so thresholds are
+# never shared between families.
+DEFAULT_FAMILY = "default"
+
+
 @dataclass(frozen=True)
 class ChoiceQuery:
-    """Pick one option. ``options`` maps option key to text and may include :data:`ABSTAIN`."""
+    """Pick one option. ``options`` maps option key to text and may include :data:`ABSTAIN`.
+    ``family`` names the question set (the auto-accept threshold key)."""
 
     question: str
     options: Mapping[str, str]
     context: str = ""
+    family: str = DEFAULT_FAMILY
 
 
 @dataclass(frozen=True)
 class ScoreQuery:
-    """Score against ordered criteria (two to ten, best first)."""
+    """Score against ordered criteria (two to ten, best first). ``family`` as for a choice."""
 
     question: str
     criteria: tuple[str, ...]
     context: str = ""
+    family: str = DEFAULT_FAMILY
+
+
+@dataclass(frozen=True)
+class Fallback:
+    """Why a judge's answer came from somewhere other than the configured engine.
+
+    ``engine`` is what answered instead (``deterministic-lexical``, or ``abstain`` when a call
+    budget is spent); ``reason`` is a stable code (``timeout``, ``exit``, ``malformed``,
+    ``version``, ``spawn``, ``max-calls``); ``detail`` is a short human note that never carries
+    command output or credentials.
+    """
+
+    engine: str
+    reason: str
+    detail: str = ""
 
 
 @dataclass(frozen=True)
 class Judgment:
     """A judge's verdict: ``outcome`` is the chosen option or criterion key, or ``None`` to
-    abstain. Verdicts are recorded in a plan and never re-queried at apply time."""
+    abstain. Verdicts are recorded in a plan and never re-queried at apply time. ``fallback``
+    is set when the configured engine did not answer (fallback provenance)."""
 
     outcome: str | None
     probabilities: Mapping[str, float]
@@ -96,6 +121,7 @@ class Judgment:
     engine: str
     engine_version: str
     model: str | None = None
+    fallback: Fallback | None = None
 
 
 @runtime_checkable
@@ -113,9 +139,11 @@ class JudgmentPort(Protocol):
 
 __all__ = [
     "ABSTAIN",
+    "DEFAULT_FAMILY",
     "ENTRY_POINT_GROUP",
     "ChoiceQuery",
     "ExtractRequest",
+    "Fallback",
     "Judgment",
     "JudgmentPort",
     "ScoreQuery",

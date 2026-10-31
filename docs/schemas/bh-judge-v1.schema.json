@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:schema:bh-judge:1",
+  "title": "bh-judge/1 command judge envelope",
+  "description": "One JSON request on a judge command's stdin and one JSON response on its stdout (docs/design/backfill-platform-adr.md section 4). Shaped like Jev's Choice/Score primitives: a choice picks one option key, a score places the subject on ordered criteria (best first). outcome null means abstain. Any other exit status, output or version makes the caller fall back to its deterministic engine.",
+  "oneOf": [
+    {"$ref": "#/$defs/choice_request"},
+    {"$ref": "#/$defs/score_request"},
+    {"$ref": "#/$defs/response"}
+  ],
+  "$defs": {
+    "schema_tag": {"const": "bh-judge/1"},
+    "text": {"type": "string", "maxLength": 65536},
+    "model": {"type": ["string", "null"], "maxLength": 256},
+    "choice_request": {
+      "type": "object",
+      "required": ["schema", "type", "kind", "family", "question", "options", "context", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {"$ref": "#/$defs/schema_tag"},
+        "type": {"const": "request"},
+        "kind": {"const": "choice"},
+        "family": {"type": "string", "minLength": 1, "maxLength": 128},
+        "question": {"$ref": "#/$defs/text"},
+        "options": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 255,
+          "propertyNames": {"minLength": 1, "maxLength": 128},
+          "additionalProperties": {"$ref": "#/$defs/text"}
+        },
+        "context": {"$ref": "#/$defs/text"},
+        "model": {"$ref": "#/$defs/model"}
+      }
+    },
+    "score_request": {
+      "type": "object",
+      "required": ["schema", "type", "kind", "family", "question", "criteria", "context", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {"$ref": "#/$defs/schema_tag"},
+        "type": {"const": "request"},
+        "kind": {"const": "score"},
+        "family": {"type": "string", "minLength": 1, "maxLength": 128},
+        "question": {"$ref": "#/$defs/text"},
+        "criteria": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+        },
+        "context": {"$ref": "#/$defs/text"},
+        "model": {"$ref": "#/$defs/model"}
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["schema", "type", "outcome", "probabilities", "rationale", "engine", "engine_version", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {"$ref": "#/$defs/schema_tag"},
+        "type": {"const": "response"},
+        "outcome": {"type": ["string", "null"], "maxLength": 4096},
+        "probabilities": {
+          "type": "object",
+          "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}
+        },
+        "rationale": {"type": "string", "maxLength": 4096},
+        "engine": {"type": "string", "minLength": 1, "maxLength": 128},
+        "engine_version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "model": {"$ref": "#/$defs/model"}
+      }
+    }
+  }
+}

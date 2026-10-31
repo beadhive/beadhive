@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 import sys
 import tomllib
 from collections.abc import Iterable
@@ -24,6 +25,8 @@ from beadlog_sources import (
 
 SOURCE = Path(beadlog_sources.__file__).parent
 STDLIB = set(sys.stdlib_module_names) | {"__future__"}
+# The one third-party import: httpx, the `[haiku]` extra, only in the reference judge command.
+OPTIONAL = {"haiku.py": {"httpx"}}
 GROUP = "urn:uuid:00000000-0000-4000-8000-000000000003"
 
 
@@ -86,7 +89,8 @@ def test_imports_only_stdlib_and_beadlogs_public_surface() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 roots = {alias.name.split(".", 1)[0] for alias in node.names}
-                assert roots <= STDLIB, f"{path.name}: import {sorted(roots - STDLIB)}"
+                allowed = STDLIB | OPTIONAL.get(path.name, set())
+                assert roots <= allowed, f"{path.name}: import {sorted(roots - allowed)}"
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 root = node.module.split(".", 1)[0]
                 if root == "beadlog":
@@ -97,9 +101,36 @@ def test_imports_only_stdlib_and_beadlogs_public_surface() -> None:
                     assert root in STDLIB | {"beadlog_sources"}, f"{path.name}: {node.module}"
 
 
+def test_httpx_is_imported_lazily_inside_a_function() -> None:
+    tree = ast.parse((SOURCE / "haiku.py").read_text(encoding="utf-8"))
+    top_level = {
+        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
+    }
+    assert "httpx" not in top_level
+    probe = (
+        "import sys, beadlog_sources, beadlog_sources.cli, beadlog_sources.haiku; "
+        "sys.exit(1 if 'httpx' in sys.modules else 0)"
+    )
+    assert subprocess.run([sys.executable, "-I", "-c", probe], check=False).returncode == 0
+
+
 def test_declares_only_beadlog_and_is_a_library() -> None:
     pyproject = tomllib.loads((SOURCE.parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["dependencies"] == ["beadlog"]
+    assert pyproject["project"]["optional-dependencies"] == {"haiku": ["httpx>=0.28,<1"]}
+    assert pyproject["project"]["scripts"] == {
+        "beadlog": "beadlog_sources.cli:main",
+        "bh-judge-haiku": "beadlog_sources.haiku:main",
+    }
     assert "Private :: Do Not Upload" in pyproject["project"]["classifiers"]
     assert not (SOURCE / "plugin.json").exists()
     assert (resources.files(beadlog_sources) / "py.typed").is_file()
+
+
+def test_tool_versions_match_the_distribution_version() -> None:
+    from beadlog_sources import cli, haiku
+
+    pyproject = tomllib.loads((SOURCE.parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    version = pyproject["project"]["version"]
+    assert cli.VERSION == haiku.ENGINE_VERSION == version
+    assert cli.GENERATOR.name == "beadlog-sources"

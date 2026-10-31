@@ -363,6 +363,68 @@
       "title": "AttestVersionBumpConfig",
       "type": "object"
     },
+    "BackfillConfig": {
+      "additionalProperties": false,
+      "description": "``backfill`` — shared backfill engine settings (every behavior off by default).",
+      "properties": {
+        "judge": {
+          "$ref": "#/$defs/BackfillJudgeConfig",
+          "description": "Opt-in bh-judge/1 command judge for reconcile; deterministic when off."
+        }
+      },
+      "title": "BackfillConfig",
+      "type": "object"
+    },
+    "BackfillJudgeConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.judge`` — the opt-in judge for backfill reconcile's fuzzy residual\n(docs/design/backfill-platform-adr.md section 4). Off by default: the deterministic lexical\nengine answers alone and no subprocess is spawned. When enabled, ``command`` speaks the\n``bh-judge/1`` envelope on stdin/stdout and any failure falls back to deterministic. The\nstandalone ``beadlog`` CLI takes the same keys as ``--judge-*`` flags and\n``BEADLOG_JUDGE_*`` env vars.",
+      "properties": {
+        "auto_accept": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Judgment family -> confidence (0..1) at or above which a judged verdict needs no human review. Empty (default): every judged verdict is reviewed.",
+          "title": "Auto Accept",
+          "type": "object"
+        },
+        "command": {
+          "default": "bh-judge-haiku",
+          "description": "bh-judge/1 command line (the bundled reference needs beadlog-sources[haiku] and ANTHROPIC_API_KEY in its environment).",
+          "minLength": 1,
+          "title": "Command",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Ask the judge command for the fuzzy residual.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_calls_per_run": {
+          "default": 100,
+          "description": "Judge calls one run may make; past it the judge abstains.",
+          "minimum": 0,
+          "title": "Max Calls Per Run",
+          "type": "integer"
+        },
+        "model": {
+          "default": "claude-haiku-5-5",
+          "description": "Model named in every bh-judge/1 request.",
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 30.0,
+          "description": "Seconds one judge call may run before it falls back.",
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "BackfillJudgeConfig",
+      "type": "object"
+    },
     "BackupConfig": {
       "additionalProperties": false,
       "description": "Retention policy for the four backup roots (``bh backup``, bh-cmqp.2 / bh-5009a — see\n``docs/design/backup-retention-boundary-adr.md`` for the boundary between them). Host-scoped:\nhow much of THIS host's disk each root may keep is a local tuning knob, not fleet policy.",
@@ -4276,6 +4338,18 @@
     },
     "archive": {
       "$ref": "#/$defs/ArchiveConfig"
+    },
+    "backfill": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BackfillConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Backfill engine settings (host-owned, opt-in judge). Absent = deterministic only."
     },
     "backup": {
       "$ref": "#/$defs/BackupConfig"
