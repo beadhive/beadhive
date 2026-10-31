@@ -19,6 +19,7 @@ haiku = ["httpx>=0.28,<1"]
 # also a `beadlog extract <name>` subcommand.
 [project.entry-points."beadlog.sources"]
 bd = "beadlog_sources.bd:BdBaselineStrategy"
+docs = "beadlog_sources.docs:DocsStrategy"
 git-commits = "beadlog_sources.commits:GitCommitsStrategy"
 
 [project.scripts]

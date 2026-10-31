@@ -13,6 +13,9 @@ never imports ``beadhive``. It owns:
 - the neutral ``git-commits`` strategy (:mod:`beadlog_sources.commits`): the two-step bead-id
   matcher over a repository's git history, proposing append-only ``git.commits`` events for the
   beads of a baseline;
+- the neutral ``docs`` strategy (:mod:`beadlog_sources.docs`): decision and design docs bridged to
+  beads (frontmatter ``Beads:``, the first-add commit's bead id, existing ``external_ref``), then a
+  lexical shortlist and the judged residual, proposing ``external_ref`` stamps;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -35,6 +38,7 @@ from .contracts import (
     ScoreQuery,
     SourceStrategy,
 )
+from .docs import DocsStrategy
 from .judges import (
     CommandJudge,
     CommandResult,
@@ -78,6 +82,7 @@ __all__ = [
     "CommandJudge",
     "CommandResult",
     "DeterministicJudge",
+    "DocsStrategy",
     "ExtractRequest",
     "Fallback",
     "GitCommitsStrategy",
