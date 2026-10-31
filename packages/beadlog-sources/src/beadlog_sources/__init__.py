@@ -10,6 +10,14 @@ never imports ``beadhive``. It owns:
   ``backfill.judge`` keys);
 - the neutral ``bd`` baseline strategy (:mod:`beadlog_sources.bd`): one ``bd export`` read as
   current-state events, re-emitting the BeadLog ids a bd loader stored in ``metadata.bdlg``;
+- the neutral ``git-commits`` strategy (:mod:`beadlog_sources.commits`): the two-step bead-id
+  matcher over a repository's git history, proposing append-only ``git.commits`` events for the
+  beads of a baseline;
+- the neutral ``docs`` strategy (:mod:`beadlog_sources.docs`): decision and design docs bridged to
+  beads (frontmatter ``Beads:``, the first-add commit's bead id, existing ``external_ref``), then a
+  lexical shortlist and the judged residual, proposing ``external_ref`` stamps;
+- the neutral ``planning`` strategy (:mod:`beadlog_sources.planning`): a GSD ``.planning`` tree as
+  epics, issues, ``parent-child`` and ``blocks`` edges, idempotent on ``external_ref``;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -19,6 +27,7 @@ never imports ``beadhive``. It owns:
 from __future__ import annotations
 
 from .bd import BdBaselineStrategy, BdReadError, baseline_events
+from .commits import GitCommitsStrategy, ShallowCloneError
 from .contracts import (
     ABSTAIN,
     DEFAULT_FAMILY,
@@ -31,6 +40,7 @@ from .contracts import (
     ScoreQuery,
     SourceStrategy,
 )
+from .docs import DocsStrategy
 from .judges import (
     CommandJudge,
     CommandResult,
@@ -42,6 +52,7 @@ from .judges import (
     judge_schema,
     settings_from,
 )
+from .planning import PlanningStrategy
 from .reconcile import (
     PlanEntry,
     ReconcileClass,
@@ -74,17 +85,21 @@ __all__ = [
     "CommandJudge",
     "CommandResult",
     "DeterministicJudge",
+    "DocsStrategy",
     "ExtractRequest",
     "Fallback",
+    "GitCommitsStrategy",
     "JudgeProtocolError",
     "JudgeSettings",
     "Judgment",
     "JudgmentPort",
     "PlanEntry",
+    "PlanningStrategy",
     "ReconcileClass",
     "ReconcilePlan",
     "Review",
     "ScoreQuery",
+    "ShallowCloneError",
     "SourceStrategy",
     "Verdict",
     "baseline_events",

@@ -33,6 +33,8 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_bd_int.py",
         "tests/test_backfill_cli.py",
         "tests/test_backfill_cli_int.py",
+        "tests/test_backfill_commit_linkage.py",
+        "tests/test_backfill_reconcile_docs.py",
         "tests/test_complexity_backfill.py",
     ),
     "beadhive-bd-cli": (
@@ -141,6 +143,8 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_bd_int.py",
         "tests/test_backfill_cli.py",
         "tests/test_backfill_cli_int.py",
+        "tests/test_backfill_commit_linkage.py",
+        "tests/test_backfill_reconcile_docs.py",
         "tests/test_complexity_backfill.py",
     ),
     "beadlog-sources": (
@@ -148,6 +152,8 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_bd_int.py",
         "tests/test_backfill_cli.py",
         "tests/test_backfill_cli_int.py",
+        "tests/test_backfill_commit_linkage.py",
+        "tests/test_backfill_reconcile_docs.py",
         "tests/test_complexity_backfill.py",
     ),
 }

@@ -32,7 +32,10 @@ class ExtractRequest:
     ``root`` is the repository to read; ``group`` the durable bead group id every emitted
     ``bead.group`` uses; ``extracted_at`` the extractor clock stamped on every event (never part
     of an id); ``baseline`` the target's existing events, which strategies use to resolve bead ids
-    (never to decide what is new: that is reconcile's job); ``options`` strategy settings.
+    (never to decide what is new: that is reconcile's job); ``options`` strategy settings;
+    ``judge`` the configured :class:`JudgmentPort` for strategies that resolve a fuzzy residual
+    (``None``: no judging, the residual is reported for a human; strategies that never judge
+    ignore it).
     """
 
     root: Path
@@ -40,6 +43,7 @@ class ExtractRequest:
     extracted_at: str
     baseline: tuple[BeadEvent, ...] = ()
     options: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    judge: JudgmentPort | None = field(default=None, hash=False, compare=False)
 
 
 @runtime_checkable
