@@ -8,6 +8,14 @@ never imports `beadhive`.
 - **Contracts** (`beadlog_sources.contracts`): `SourceStrategy` and `ExtractRequest` (producers
   registered in the `beadlog.sources` entry-point group); `JudgmentPort` with `ChoiceQuery`,
   `ScoreQuery`, `Judgment` and `Fallback`, shaped like Jev's Choice/Score primitives.
+- **`bd` baseline strategy** (`beadlog_sources.bd`, entry point `bd`): one `bd -C <root> export
+  --all` read (never a `bd history` loop) turned into current-state events per issue row — a
+  `create` snapshot, a `phase` when not open, `label_add` / `edge_add` per label and dependency,
+  a `comment` per comment — with `occurred_at` from `created_at` / `closed_at` / `started_at` /
+  dependency and comment `created_at` and `recorded_at` from `updated_at`. Events a bd loader
+  stored in `metadata.bdlg.<facet>` (`facet_key`, `envelope`) are re-emitted with their original
+  ids when their recomputed id matches and they agree with the row; native events cover the
+  rest, so the fold always equals the row. Floats in bd metadata travel as decimal strings.
 - **Judges** (`beadlog_sources.judges`): `DeterministicJudge` (lexical; one-hot at 1.0 or
   abstain) and `CommandJudge`, which speaks the versioned `bh-judge/1` JSON envelope
   ([schema](src/beadlog_sources/schemas/bh-judge-v1.schema.json), copied to

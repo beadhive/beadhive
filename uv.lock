@@ -186,6 +186,11 @@ release-verify = [
 ]
 
 [package.dev-dependencies]
+backfill = [
+    { name = "beadhive-backfill" },
+    { name = "beadlog" },
+    { name = "beadlog-sources" },
+]
 core = [
     { name = "beadhive-bd-cli" },
     { name = "beadhive-beads-client" },
@@ -252,6 +257,11 @@ requires-dist = [
 provides-extras = ["mcp", "otel", "release-verify", "pants", "github"]
 
 [package.metadata.requires-dev]
+backfill = [
+    { name = "beadhive-backfill", editable = "packages/beadhive-backfill" },
+    { name = "beadlog", editable = "packages/beadlog" },
+    { name = "beadlog-sources", editable = "packages/beadlog-sources" },
+]
 core = [
     { name = "beadhive-bd-cli", editable = "packages/beadhive-bd-cli" },
     { name = "beadhive-beads-client", editable = "packages/beadhive-beads-client" },
