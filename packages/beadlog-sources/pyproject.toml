@@ -1,13 +1,23 @@
 [project]
 name = "beadlog-sources"
 version = "0.1.0"
-description = "BeadHive-free BeadLog producers: source strategy and judgment contracts (library)"
+description = "BeadHive-free BeadLog producers: reconcile, judgment engines and the beadlog CLI (library)"
 requires-python = ">=3.11"
 # A LIBRARY package (docs/design/package-class-library-vs-plugin-adr.md): no plugin.json. It
 # depends only on `beadlog`, imported through beadlog's public __all__ surface, and never imports
 # root `beadhive` (docs/design/backfill-platform-adr.md section 2).
 dependencies = ["beadlog"]
 classifiers = ["Private :: Do Not Upload"]
+
+[project.optional-dependencies]
+# `beadlog-sources[haiku]` — HTTP for the opt-in reference judge command `bh-judge-haiku`. Never a
+# base dependency: httpx is imported lazily, only by beadlog_sources/haiku.py, and the judge is
+# off by default (`backfill.judge.enabled = false`).
+haiku = ["httpx>=0.28,<1"]
+
+[project.scripts]
+beadlog = "beadlog_sources.cli:main"
+bh-judge-haiku = "beadlog_sources.haiku:main"
 
 [tool.uv.sources]
 beadlog = { workspace = true }
