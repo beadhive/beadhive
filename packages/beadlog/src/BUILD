@@ -10,6 +10,6 @@ python_sources(
 
 resources(
     name="resources",
-    sources=["**/py.typed"],
+    sources=["**/py.typed", "**/*.schema.json"],
     tags=["category:code", "attest:packages"],
 )
