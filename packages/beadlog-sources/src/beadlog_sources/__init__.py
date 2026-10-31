@@ -12,6 +12,9 @@ never imports ``beadhive``. It owns:
   current-state events, re-emitting the BeadLog ids a bd loader stored in ``metadata.bdlg``;
 - the neutral ``bd`` history reader (:mod:`beadlog_sources.bd_history`): the ``events`` table in
   one bounded ``SELECT``, parsed into typed :class:`HistoryEvent` records with counted skips;
+- the neutral history conversion (:mod:`beadlog_sources.bd_timeline`): those records as BeadLog
+  history events (create, phase, set, labels, edges, comments) with bi-temporal stamps,
+  revert-artifact suppression and a guard that history never changes the exported current state;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
@@ -30,6 +33,19 @@ from .bd_history import (
     history_argv,
     parse_history,
     read_history,
+)
+from .bd_timeline import (
+    HISTORY_ANNOTATION,
+    BdHistoryStrategy,
+    BeadRow,
+    HistoryEvents,
+    bead_rows,
+    consistent_history,
+    history_annotation,
+    history_events,
+    read_store_start,
+    source_family,
+    suppress_artifacts,
 )
 from .contracts import (
     ABSTAIN,
@@ -86,6 +102,9 @@ __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "DISTRIBUTION",
     "ENTRY_POINT_GROUP",
+    "HISTORY_ANNOTATION",
+    "BdHistoryStrategy",
+    "BeadRow",
     "ChoiceQuery",
     "CommandJudge",
     "CommitDate",
@@ -96,6 +115,7 @@ __all__ = [
     "Fallback",
     "GitReadError",
     "HistoryEvent",
+    "HistoryEvents",
     "HistoryRead",
     "JudgeProtocolError",
     "JudgeSettings",
@@ -111,19 +131,26 @@ __all__ = [
     "Verdict",
     "baseline_events",
     "bd_timestamp",
+    "bead_rows",
     "build_judge",
     "choice_confidence",
     "commit_dates",
+    "consistent_history",
     "distribution_name",
+    "history_annotation",
     "history_argv",
+    "history_events",
     "judge_schema",
     "parse_history",
     "plan_entries",
     "prior_verdicts",
     "read_history",
     "read_plan",
+    "read_store_start",
     "reconcile",
     "settings_from",
+    "source_family",
     "subprocess_runner",
+    "suppress_artifacts",
     "write_plan",
 ]
