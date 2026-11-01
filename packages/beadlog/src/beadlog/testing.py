@@ -119,11 +119,15 @@ LoadDriver = Callable[..., Mapping[str, Any]]
 
 class InMemoryStore:
     """The lossless reference store: keeps every event as written, merges on load, applies
-    tombstones, reports no losses. Declares every loader capability."""
+    tombstones, reports no losses. Declares every loader capability except the metadata fallback
+    and ``erase-logical`` (it erases physically, so it declares ``erase``)."""
 
     name = "in-memory"
     version = "0.1.0"
-    capabilities = frozenset(str(item) for item in LoaderCapability) - {"metadata-fallback"}
+    capabilities = frozenset(str(item) for item in LoaderCapability) - {
+        "metadata-fallback",
+        "erase-logical",
+    }
 
     def __init__(self) -> None:
         self._events: dict[str, BeadEvent] = {}
@@ -524,6 +528,10 @@ def _check_report_shape(
     )
     declared = list(loader.get("capabilities", ()))
     _require(
+        not {"erase", "erase-logical"} <= set(declared) | set(store.capabilities),
+        "a loader declares at most one of 'erase' and 'erase-logical'",
+    )
+    _require(
         set(declared) == set(store.capabilities)
         and len(declared) == len(set(declared))
         and all(_LOADER_CAPABILITY.fullmatch(item) for item in declared),
@@ -618,13 +626,15 @@ def _check_loss_report(factory: StoreFactory, driver: LoadDriver) -> None:
             "a store that cannot keep recorded time must report recorded-time losses",
         )
     tombstones = {event.id for event in loaded if event.kind is EventKind.TOMBSTONE} - dropped
+    # `erase-logical` (format ADR A1) keeps bytes in the store's history, so like a store with no
+    # erase at all it must flag each tombstone; only a physical `erase` may stay silent.
     if tombstones and "erase" not in caps:
         flagged = {
             loss["event_id"] for loss in _losses(report) if loss["code"] == "erasure.incomplete"
         }
         _require(
             tombstones <= flagged,
-            "a store without erase must report erasure.incomplete for each tombstone",
+            "a store without a physical erase must report erasure.incomplete for each tombstone",
         )
 
 

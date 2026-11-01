@@ -96,6 +96,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadlog",
         "beadlog-sources",
         "beadhive-backfill",
+        "beadlog-xtdb",
     ):
         assert f"uv build --package {package}" in package_gate
     assert "uv build --package beadhive-bd-cli" not in package_gate
@@ -161,6 +162,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadlog",
         "beadlog-sources",
         "beadhive-backfill",
+        "beadlog-xtdb",
     ):
         assert complete_gate.count(f"uv build --package {package} ") == 1, package
 
@@ -174,6 +176,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
         "beadlog",
         "beadlog-sources",
         "beadhive-backfill",
+        "beadlog-xtdb",
     }
 
 

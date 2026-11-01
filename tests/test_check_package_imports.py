@@ -397,7 +397,7 @@ def test_real_repository_packages_classify_and_pass() -> None:
     assert packages["beadhive-hq-storage"].is_plugin is False
     assert packages["beadhive-hq-storage-dolt"].is_plugin is False
     # The backfill platform's three library packages (backfill-platform-adr.md section 2).
-    for name in ("beadlog", "beadlog-sources", "beadhive-backfill"):
+    for name in ("beadlog", "beadlog-sources", "beadhive-backfill", "beadlog-xtdb"):
         assert packages[name].is_plugin is False, name
 
     assert MODULE.check(MODULE.ROOT) == ()

@@ -163,6 +163,7 @@ beadhive-validation-broker = { workspace = true }
 beadlog = { workspace = true }
 beadlog-sources = { workspace = true }
 beadhive-backfill = { workspace = true }
+beadlog-xtdb = { workspace = true }
 
 # Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
@@ -247,6 +248,12 @@ dev = [
     # operator-approved as DEV-ONLY (2026-10-17); MinIO is end-of-life and is not used. The
     # tests that need it are `integration`-marked and skip (never fail) when it is absent.
     "moto[server]>=5.1",
+    # The XTDB BeadLog loader library (beadlog-format-adr.md amendment A6), editable from the
+    # workspace for DEV/CI ONLY, so the offline package gate finds its psycopg wheels in the uv
+    # cache. psycopg is LGPL-3.0, outside `license_allow`: `--no-dev` keeps it out of the license
+    # SBOM, and nothing shipped depends on it (root never imports it, the wheel does not vendor
+    # it). The opt-in plugin that binds the loader needs an explicit licence decision first.
+    "beadlog-xtdb",
 ]
 
 [tool.commitizen]

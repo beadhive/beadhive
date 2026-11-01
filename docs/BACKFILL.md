@@ -13,6 +13,7 @@ The architecture and packaging are decided in
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
 | `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader, the `bd-history` events-table conversion, `git-commits`, `docs` and `planning`), reconcile, judges, the standalone `beadlog` CLI |
+| `beadlog-xtdb` | BeadHive-free XTDB loader foundation (not vendored into root; the opt-in plugin binds it): pgwire connection, layout (b) row builders, an in-package transit codec, single-type column coercion, the `>=2.2.0,<2.3` version gate and the dangling-edge report |
 | `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 
