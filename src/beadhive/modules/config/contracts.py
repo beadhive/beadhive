@@ -2174,6 +2174,13 @@ class BackfillCoverageConfig(_Section):
     example_limit: int = Field(
         5, ge=0, description="Top unlinked examples kept per ratio in the cached state."
     )
+    warn_below: float = Field(
+        0.60,
+        ge=0.0,
+        le=1.0,
+        description="Advisory threshold applied to each cached coverage ratio by bh doctor and "
+        "bh hive ready (when enabled): a ratio below it renders a warning, never a failure.",
+    )
 
 
 class BackfillConfig(_Section):

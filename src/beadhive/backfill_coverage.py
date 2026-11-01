@@ -20,9 +20,11 @@ from beadhive_backfill.coverage import (
     CommitRecord,
     CoverageReport,
     CoverageSettings,
+    check_cache,
     measure,
     write_coverage_cache,
 )
+from beadhive_backfill.coverage_advisory import CoverageAdvisory, evaluate
 from beadlog import BeadEvent
 from beadlog_sources.commits import read_commits, require_full_history
 from beadlog_sources.docs import discover_docs
@@ -63,6 +65,29 @@ def state_path(entry: Mapping[str, Any] | None, cwd: Path, home: Path) -> Path:
     no registered hive keys on its resolved path, so two such directories never share a cache."""
     key = registry.hive_key(entry) if entry is not None else f"path/{Path(cwd).resolve()}"
     return Path(home).joinpath(*_STATE_DIRS, registry.sanitize(key), CACHE_FILE)
+
+
+def warn_below(cfg: Mapping[str, Any]) -> float:
+    """The per-ratio advisory threshold (``backfill.coverage.warn_below``, 0.60 when unset)."""
+    return BackfillCoverageConfig.model_validate(dict(coverage_section(cfg))).warn_below
+
+
+def advisory_for(
+    cfg: Mapping[str, Any], entry: Mapping[str, Any] | None, cwd: Path, home: Path
+) -> CoverageAdvisory | None:
+    """The cheap advisory reading behind ``bh doctor`` and ``bh hive ready``.
+
+    ``None`` without touching the cache when ``backfill.coverage.enabled`` is off. Otherwise one
+    read of the cache file and nothing else: no bd export, no ``git log``, no doc walk (whether
+    the inputs moved is what only ``bh backfill coverage`` can compare). The caller passes
+    ``home`` (``config.home()``) so this module stays out of the config import fan-in."""
+    if not refresh_enabled(cfg):
+        return None
+    return evaluate(
+        check_cache(state_path(entry, cwd, home)),
+        warn_below=warn_below(cfg),
+        settings=coverage_settings(cfg),
+    )
 
 
 class HiveReaders:
@@ -130,6 +155,7 @@ def refresh_cache(
 __all__ = [
     "CACHE_FILE",
     "HiveReaders",
+    "advisory_for",
     "coverage_section",
     "coverage_settings",
     "hive_readers",
@@ -137,4 +163,5 @@ __all__ = [
     "refresh_cache",
     "refresh_enabled",
     "state_path",
+    "warn_below",
 ]

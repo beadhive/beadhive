@@ -416,6 +416,14 @@
           "minimum": 0,
           "title": "Example Limit",
           "type": "integer"
+        },
+        "warn_below": {
+          "default": 0.6,
+          "description": "Advisory threshold applied to each cached coverage ratio by bh doctor and bh hive ready (when enabled): a ratio below it renders a warning, never a failure.",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Warn Below",
+          "type": "number"
         }
       },
       "title": "BackfillCoverageConfig",

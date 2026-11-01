@@ -297,6 +297,25 @@ The cache is rewritten atomically by `coverage --refresh`, and, when `backfill.c
 is true (off by default), after every applied pass: `complexity`, `timeline` and the neutral
 `apply`. A failed refresh only warns on stderr; the apply has already landed and is audited.
 
+**Advisory surfaces.** With `backfill.coverage.enabled` (off by default) `bh doctor` (a
+`link_coverage` section, one row per hive) and `bh hive ready` (one optional `link coverage` line)
+show the cached ratios. They read the cache file once with `check_cache(path)` and no inputs: no bd
+export, no `git log`, no doc walk, so they stay cheap, and with the check disabled they do not open
+the cache at all. A ratio below `backfill.coverage.warn_below` (default `0.60`, judged per ratio;
+an empty ratio never warns) renders a warning and is marked `!`; it never fails `hive ready`, whose
+coverage line is optional. States:
+
+| State | Shown when | Rendered |
+|---|---|---|
+| ok / warn | the cache is readable and was measured with the configured `code_types` and `doc_roots` | the three ratios, `!` on those below the threshold |
+| never computed | there is no cache file | a hint to run `bh backfill coverage --refresh` |
+| stale | the file is unreadable, corrupt or of a version this build does not read, or it was measured with other `code_types` / `doc_roots` than configured | no figures (they would not be current) and the same hint |
+
+`stale` here is narrower than the `stale` of `bh backfill coverage`: whether the beads, commits or
+docs changed since the cache was written is exactly what the cheap read cannot know, so a cache
+that merely aged shows its ratios with their `[cached <time>]` stamp. Run `coverage` to compare the
+inputs. The verdict logic is `beadhive_backfill.coverage_advisory.evaluate`.
+
 **For later passes.** The seam is one call. A new applied pass ends with
 `backfill_cli.refresh_coverage_after_apply(hive, quiet=as_json)`, or, from a module that
 `backfill_cli` imports (as `complexity_backfill` is), appends to its own `APPLIED_HOOKS` list. A
