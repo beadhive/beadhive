@@ -14,7 +14,9 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
 - ``inspect`` — an archive's manifest, counts and (for a plan) its classification and verdicts;
 - ``verify`` — an archive's integrity and event ids, and a plan's hash;
 - ``apply`` — a ``.bdlg`` plan through the envelope: one written by ``bh backfill`` or by the
-  standalone ``beadlog reconcile``.
+  standalone ``beadlog reconcile``;
+- ``coverage`` — the three link-coverage ratios from a cached state (``--refresh`` recomputes it;
+  an enabled ``backfill.coverage`` also refreshes it after every applied pass).
 """
 
 from __future__ import annotations
@@ -39,6 +41,16 @@ from beadhive_backfill import (
     TimelinePass,
     system_clock,
 )
+from beadhive_backfill.coverage import (
+    RATIO_BEADS,
+    RATIO_COMMITS,
+    RATIO_DOCS,
+    CacheState,
+    CoverageError,
+    CoverageReport,
+    check_cache,
+    write_coverage_cache,
+)
 from beadhive_backfill.timeline import PASS_NAME as TIMELINE_PASS
 from beadlog import ArchiveError, ArchiveReader, Generator, Group, ManifestError, write_archive
 from beadlog_sources import (
@@ -56,7 +68,7 @@ from beadlog_sources import (
     read_store_start,
 )
 
-from . import complexity_backfill, config, registry
+from . import backfill_coverage, complexity_backfill, config, registry
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
 from .modules.config.contracts import BackfillGapfillConfig
 
@@ -86,6 +98,7 @@ _PRE_STATE_OPTION = typer.Option(
 _AUDIT_OPTION = typer.Option(None, "--audit", help="machine audit JSON (default: beside the plan)")
 _ERRORS = (
     BackfillError,
+    CoverageError,
     BdLoadError,
     BdReadError,
     ArchiveError,
@@ -159,6 +172,47 @@ def _fail(exc: BaseException) -> typer.Exit:
 
 def _emit(value: Mapping[str, Any]) -> None:
     typer.echo(json.dumps(value, sort_keys=True, indent=2))
+
+
+def _coverage_target(cfg: Mapping[str, Any], hive: str, cwd: Path) -> tuple[Path, str]:
+    """Where the hive's coverage cache lives and which branch's commits are counted."""
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    ref = str(config.integration_branch(cfg, entry)) if entry is not None else "main"
+    return backfill_coverage.state_path(entry, cwd, config.home()), ref
+
+
+def refresh_coverage_after_apply(hive: str, quiet: bool = False) -> None:
+    """Rewrite the hive's cached coverage state after an applied pass, when
+    ``backfill.coverage.enabled``.
+
+    The seam every applied pass ends with (``complexity``, ``timeline``, the neutral ``apply``;
+    later passes call it too). The apply has already succeeded and is audited, so a refresh
+    that fails only warns on stderr. ``quiet`` keeps stdout pure JSON."""
+    try:
+        cfg = config.load()
+        if not backfill_coverage.refresh_enabled(cfg):
+            return
+        cwd, group = _target(hive)
+        path, ref = _coverage_target(cfg, hive, cwd)
+        backfill_coverage.refresh_cache(
+            cwd,
+            reader=store_loader(cwd, group=group.id),
+            ref=ref,
+            settings=backfill_coverage.coverage_settings(cfg),
+            group=group.id,
+            path=path,
+        )
+    except Exception as exc:  # noqa: BLE001 - advisory: never fail an apply that already landed
+        typer.echo(f"! coverage cache not refreshed: {exc}", err=True)
+        return
+    if not quiet:
+        typer.echo(f"coverage: cache refreshed ({path})")
+
+
+# The complexity pass is its own module (and the flat published ``backfill-complexity``); it
+# calls the registered hooks after an applied run.
+if refresh_coverage_after_apply not in complexity_backfill.APPLIED_HOOKS:
+    complexity_backfill.APPLIED_HOOKS.append(refresh_coverage_after_apply)
 
 
 def gapfill_settings(cfg: Mapping[str, Any] | None = None) -> BackfillGapfillConfig:
@@ -278,13 +332,14 @@ def timeline_cmd(
         raise _fail(exc) from None
     if as_json:
         _emit(entry.to_json())
-        return
-    typer.echo(
-        f"applied {len(entry.completed)} beads; only metadata.lifecycle.* written; "
-        "second dry-run empty"
-    )
-    typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
-    typer.echo(f"audit: {audit}")
+    else:
+        typer.echo(
+            f"applied {len(entry.completed)} beads; only metadata.lifecycle.* written; "
+            "second dry-run empty"
+        )
+        typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+        typer.echo(f"audit: {audit}")
+    refresh_coverage_after_apply(hive, as_json)
 
 
 @app.command("export")
@@ -539,10 +594,100 @@ def apply_cmd(
         raise _fail(exc) from None
     if as_json:
         _emit(entry.to_json())
+    else:
+        typer.echo(
+            f"applied {len(entry.completed)} beads; verification clean; second dry-run empty"
+        )
+        typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+        typer.echo(f"audit: {audit}")
+    refresh_coverage_after_apply(hive, as_json)
+
+
+_RATIO_LABELS = (
+    (RATIO_BEADS, "closed code beads with recorded commits", "beads"),
+    (RATIO_COMMITS, "commits resolving to a bead", "commits"),
+    (RATIO_DOCS, "docs linked to a bead", "docs"),
+)
+_REFRESH_HINT = "run `bh backfill coverage --refresh`"
+
+
+def _percent(ratio: Any) -> str:
+    value = ratio.value
+    return "n/a" if value is None else f"{value * 100:.1f}%"
+
+
+def _example_text(kind: str, item: Mapping[str, str]) -> str:
+    if kind == "beads":
+        return f"{item.get('id')}  {item.get('title', '')}".rstrip()
+    if kind == "commits":
+        return f"{item.get('sha', '')[:12]}  {item.get('subject', '')}".rstrip()
+    return str(item.get("path", ""))
+
+
+def _render_coverage(report: CoverageReport, state: CacheState, detail: str) -> None:
+    stale = state is CacheState.STALE
+    heading = "STALE cache (not current)" if stale else f"cache {state.value}"
+    typer.echo(f"coverage: {heading}, computed {report.computed_at}")
+    for key, label, _kind in _RATIO_LABELS:
+        ratio = report.ratios[key]
+        typer.echo(f"  {label}: {ratio.linked}/{ratio.total} ({_percent(ratio)})")
+    examples = report.examples.to_json()
+    for key, _label, kind in _RATIO_LABELS:
+        if items := examples[key]:
+            typer.echo(f"unlinked {kind} (top {len(items)}):")
+            for item in items:
+                typer.echo(f"  {_example_text(kind, item)}")
+    if stale:
+        typer.echo(f"! stale: {detail}; {_REFRESH_HINT}")
+
+
+@app.command("coverage")
+def coverage_cmd(
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="recompute from the hive and rewrite the cached state"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the coverage state as JSON"),
+) -> None:
+    """Show link coverage: closed beads with commits, commits with beads, docs with beads.
+
+    Reads the cached state and compares its inputs hash with the hive's current inputs: a cache
+    computed from different inputs is reported stale and its figures are marked as such. With
+    --refresh the ratios are recomputed (one bd export, one git log, one doc walk) and the cache
+    is rewritten."""
+    try:
+        cwd, group = _target(hive)
+        cfg = config.load()
+        path, ref = _coverage_target(cfg, hive, cwd)
+        settings = backfill_coverage.coverage_settings(cfg)
+        current = backfill_coverage.measure_hive(
+            cwd,
+            reader=store_loader(cwd, group=group.id),
+            ref=ref,
+            settings=settings,
+            group=group.id,
+        )
+        if refresh:
+            write_coverage_cache(path, current)
+        check = check_cache(path, current.inputs_hash)
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    envelope: dict[str, Any] = {
+        "status": check.state.value,
+        "cache_path": str(path),
+        "detail": check.detail,
+        "refreshed": refresh,
+        "current_inputs_hash": current.inputs_hash,
+        "cache": None if check.report is None else check.report.to_json(),
+    }
+    if as_json:
+        _emit(envelope)
         return
-    typer.echo(f"applied {len(entry.completed)} beads; verification clean; second dry-run empty")
-    typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
-    typer.echo(f"audit: {audit}")
+    if check.report is None:
+        reason = "unusable" if check.state is CacheState.INVALID else "missing"
+        typer.echo(f"coverage: cache {reason} ({check.detail}); {_REFRESH_HINT}")
+        return
+    _render_coverage(check.report, check.state, check.detail)
 
 
 __all__ = [
@@ -555,6 +700,7 @@ __all__ = [
     "gapfill_state_path",
     "hive_group",
     "history_inputs",
+    "refresh_coverage_after_apply",
     "store_loader",
     "timeline_pass",
 ]

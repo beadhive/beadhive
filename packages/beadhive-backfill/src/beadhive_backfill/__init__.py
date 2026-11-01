@@ -19,6 +19,8 @@ public ``__all__``) and never imports ``beadhive``. It owns the hive apply envel
   ``bh backfill complexity``);
 - the lifecycle timeline pass (:mod:`beadhive_backfill.timeline`, pass #2): AGF conventions over
   the history readers, proposing ``metadata.lifecycle.*`` keys with their confidence;
+- link-coverage metrics and their cached state (:mod:`beadhive_backfill.coverage`): the three
+  ratios over injected reads, the inputs hash and the versioned cache file;
 - the AGF history readers, also public submodules: :mod:`beadhive_backfill.merges` (one
   ``git log --first-parent`` -> ``chore(merge): bead|molecule|batch`` lands, refresh merges
   ignored) and :mod:`beadhive_backfill.run_journals` (the optional ``run-journals/<hive>/`` reader,

@@ -183,6 +183,12 @@ def _render_report(plan: Mapping[str, Any]) -> None:
     typer.echo(f"plan hash: {plan['plan_hash']}")
 
 
+# Called as ``hook(hive, quiet)`` after every successfully applied complexity run. The seam of
+# ``bh backfill coverage``: ``backfill_cli`` registers the cache refresh here (it cannot be
+# imported from this module without a cycle), so a later hook costs one line.
+APPLIED_HOOKS: list[Callable[[str, bool], None]] = []
+
+
 def command(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     apply: bool = typer.Option(False, "--apply", help="apply a previously saved --plan"),
@@ -247,12 +253,15 @@ def command(
             )
             typer.echo(f"pre-state: {pre_state}")
             typer.echo(f"audit: {audit}")
+        for hook in APPLIED_HOOKS:
+            hook(hive, as_json)
     except BackfillError as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
 
 
 __all__ = [
+    "APPLIED_HOOKS",
     "MIGRATION",
     "ROUTABLE_STATUSES",
     "SCHEMA_VERSION",

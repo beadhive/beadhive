@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:backfill:coverage:1",
+  "title": "bh backfill coverage --json",
+  "description": "The output of `bh backfill coverage --json`. `cache` is the versioned cache document ($defs/cache) that `coverage --refresh` and every enabled applied pass write to the hive's bh state dir.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "cache_path", "detail", "refreshed", "cache"],
+  "properties": {
+    "status": {
+      "description": "fresh: the cache matches the current inputs. stale: it was computed from different inputs and must not be relied on. missing / invalid: there is no usable cache. Right after --refresh the status is fresh.",
+      "enum": ["fresh", "stale", "missing", "invalid"]
+    },
+    "cache_path": {"type": "string", "minLength": 1},
+    "detail": {"type": "string"},
+    "refreshed": {"description": "Whether this invocation rewrote the cache.", "type": "boolean"},
+    "current_inputs_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "cache": {
+      "description": "The cached report; null when missing or invalid. Present for a stale cache, whose figures describe older inputs.",
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/cache"}]
+    }
+  },
+  "$defs": {
+    "ratio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["linked", "total", "ratio"],
+      "properties": {
+        "linked": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0},
+        "ratio": {"description": "linked / total; null when total is 0.", "type": ["number", "null"], "minimum": 0, "maximum": 1}
+      }
+    },
+    "example": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "version", "computed_at", "inputs_hash", "group", "settings", "ratios", "examples"],
+      "properties": {
+        "schema": {"const": "beadhive.backfill.coverage"},
+        "version": {"const": 1},
+        "computed_at": {"type": "string", "minLength": 1},
+        "inputs_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "group": {"type": ["string", "null"]},
+        "settings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code_types", "doc_roots"],
+          "properties": {
+            "code_types": {"type": "array", "items": {"type": "string"}},
+            "doc_roots": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "ratios": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["closed_beads_with_commits", "commits_resolving_to_bead", "docs_linked_to_bead"],
+          "properties": {
+            "closed_beads_with_commits": {"$ref": "#/$defs/ratio"},
+            "commits_resolving_to_bead": {"$ref": "#/$defs/ratio"},
+            "docs_linked_to_bead": {"$ref": "#/$defs/ratio"}
+          }
+        },
+        "examples": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["closed_beads_with_commits", "commits_resolving_to_bead", "docs_linked_to_bead"],
+          "properties": {
+            "closed_beads_with_commits": {"type": "array", "items": {"$ref": "#/$defs/example"}},
+            "commits_resolving_to_bead": {"type": "array", "items": {"$ref": "#/$defs/example"}},
+            "docs_linked_to_bead": {"type": "array", "items": {"$ref": "#/$defs/example"}}
+          }
+        }
+      }
+    }
+  }
+}

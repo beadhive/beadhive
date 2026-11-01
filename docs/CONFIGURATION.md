@@ -514,6 +514,25 @@ extra runs and the archive and its `bdlg.history` annotation are exactly what th
 `backfill.timeline` is a new subsection and `BeadhiveConfig` forbids unknown keys, so nothing in a
 shared config should set it until the schema has rotated to every host (`bh-tfko9`).
 
+### `backfill.coverage` {#backfill-coverage}
+
+`backfill.coverage` configures the link-coverage metrics of `bh backfill coverage`
+([BACKFILL.md](BACKFILL.md#coverage) has the three ratios and the cache). It is **off by
+default** and **host-owned** (part of `backfill`). The command itself always works when run by
+hand; `enabled` governs the unattended part: whether an applied backfill pass refreshes the cached
+state. The refresh is read-only toward the hive (one bd export, one `git log`, one doc walk) and
+writes only the cache file; a failure warns and never fails the apply.
+
+| Key (under `backfill.coverage`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | rewrite the cached state after every applied backfill pass |
+| `code_types` | `[bug, chore, feature, task]` | bead types that count as code-bearing in the closed-beads-with-commits ratio; `event`, `gate` and `molecule` never count, whatever is listed |
+| `doc_roots` | `[docs]` | directories whose `*.md` files (recursively) are the set of docs measured (at least one) |
+| `example_limit` | `5` | top unlinked examples kept per ratio (0 keeps none) |
+
+`code_types` and `doc_roots` are part of the cache's inputs hash, so changing either marks the
+cache stale until the next refresh.
+
 ## `bh config` commands
 
 | Command | Effect |

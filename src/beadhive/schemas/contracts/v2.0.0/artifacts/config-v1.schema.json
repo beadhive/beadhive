@@ -367,6 +367,10 @@
       "additionalProperties": false,
       "description": "``backfill`` — shared backfill engine settings (every behavior off by default).",
       "properties": {
+        "coverage": {
+          "$ref": "#/$defs/BackfillCoverageConfig",
+          "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
+        },
         "judge": {
           "$ref": "#/$defs/BackfillJudgeConfig",
           "description": "Opt-in bh-judge/1 command judge for reconcile; deterministic when off."
@@ -377,6 +381,44 @@
         }
       },
       "title": "BackfillConfig",
+      "type": "object"
+    },
+    "BackfillCoverageConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.coverage`` — link-coverage metrics (docs/BACKFILL.md \"Coverage\"). Off by\ndefault: ``bh backfill coverage`` always works when run by hand, but an applied backfill pass\nrefreshes the cached state only when ``enabled`` (and the advisory ``doctor`` / ``hive ready``\nchecks read it only then). ``code_types`` and ``doc_roots`` define what is measured.",
+      "properties": {
+        "code_types": {
+          "description": "Bead types that count as code-bearing in the closed-beads-with-commits ratio. event, gate and molecule never count, whatever is listed.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Code Types",
+          "type": "array"
+        },
+        "doc_roots": {
+          "description": "Repo-relative directories whose *.md files are the docs-linked-to-a-bead set.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Doc Roots",
+          "type": "array"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Refresh the cached coverage state after every applied backfill pass.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "example_limit": {
+          "default": 5,
+          "description": "Top unlinked examples kept per ratio in the cached state.",
+          "minimum": 0,
+          "title": "Example Limit",
+          "type": "integer"
+        }
+      },
+      "title": "BackfillCoverageConfig",
       "type": "object"
     },
     "BackfillGapfillConfig": {

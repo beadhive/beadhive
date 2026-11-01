@@ -2151,6 +2151,31 @@ class BackfillTimelineConfig(_Section):
     )
 
 
+class BackfillCoverageConfig(_Section):
+    """``backfill.coverage`` — link-coverage metrics (docs/BACKFILL.md "Coverage"). Off by
+    default: ``bh backfill coverage`` always works when run by hand, but an applied backfill pass
+    refreshes the cached state only when ``enabled`` (and the advisory ``doctor`` / ``hive ready``
+    checks read it only then). ``code_types`` and ``doc_roots`` define what is measured."""
+
+    enabled: bool = Field(
+        False,
+        description="Refresh the cached coverage state after every applied backfill pass.",
+    )
+    code_types: list[str] = Field(
+        default_factory=lambda: ["bug", "chore", "feature", "task"],
+        description="Bead types that count as code-bearing in the closed-beads-with-commits "
+        "ratio. event, gate and molecule never count, whatever is listed.",
+    )
+    doc_roots: list[str] = Field(
+        default_factory=lambda: ["docs"],
+        min_length=1,
+        description="Repo-relative directories whose *.md files are the docs-linked-to-a-bead set.",
+    )
+    example_limit: int = Field(
+        5, ge=0, description="Top unlinked examples kept per ratio in the cached state."
+    )
+
+
 class BackfillConfig(_Section):
     """``backfill`` — shared backfill engine settings (every behavior off by default)."""
 
@@ -2161,6 +2186,10 @@ class BackfillConfig(_Section):
     timeline: BackfillTimelineConfig = Field(
         default_factory=BackfillTimelineConfig,
         description="History/timeline export settings, including the opt-in dolt_history gap fill.",
+    )
+    coverage: BackfillCoverageConfig = Field(
+        default_factory=BackfillCoverageConfig,
+        description="Link-coverage metrics: what is measured and the opt-in cache refresh.",
     )
 
 
@@ -4061,6 +4090,7 @@ __all__ = (
     "AttestVersionBumpConfig",
     "AttestKeyConfig",
     "BackfillConfig",
+    "BackfillCoverageConfig",
     "BackfillJudgeConfig",
     "BackupConfig",
     "BeadhiveConfig",
