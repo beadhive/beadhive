@@ -14,7 +14,9 @@ uses; the op mapping, the monotone initial load and the as-of reader are built o
 - layout (b): :class:`Layout`, :func:`bead_row`, :func:`label_row`, :func:`edge_row`,
   :func:`comment_row`, :func:`state_rows`, :func:`record_rows`, :func:`decode_bead_row`;
 - type discipline: :class:`ColumnTypes` (one type per column, coercion or refusal);
-- operations: :func:`check_version` (``>=2.2.0,<2.3``), :func:`find_dangling_edges`.
+- operations: :func:`check_version` (``>=2.2.0,<2.3``), :func:`find_dangling_edges`;
+- as-of reader: :func:`read_state` / :func:`read_history` (events with ``provenance: observed``,
+  ``source.system: xtdb``) and :func:`write_baseline` (a ``.bdlg`` for ``reconcile``).
 """
 
 from __future__ import annotations
@@ -69,6 +71,17 @@ from ._layout import (
     split_key,
     state_rows,
 )
+from ._reader import (
+    GENERATOR_NAME,
+    SOURCE_SYSTEM,
+    ReaderError,
+    ReadNote,
+    ReadResult,
+    group_dirs,
+    read_history,
+    read_state,
+    write_baseline,
+)
 from ._transit import (
     Instant,
     Keyword,
@@ -114,6 +127,7 @@ __all__ = [
     "DISTRIBUTION",
     "EXCLUSIVE_MAXIMUM",
     "EXTERNAL_PREFIX",
+    "GENERATOR_NAME",
     "GROUP_SEPARATOR",
     "ID_SEPARATOR",
     "KNOWN_COLUMNS",
@@ -121,6 +135,7 @@ __all__ = [
     "READ_FORMAT_SQL",
     "RECORD_TYPE_COLUMN",
     "RENAMED_COLUMNS",
+    "SOURCE_SYSTEM",
     "SUPPORTED_RANGE",
     "TABLES",
     "TRANSIT_OID",
@@ -136,6 +151,9 @@ __all__ = [
     "Keyword",
     "Layout",
     "LayoutError",
+    "ReadNote",
+    "ReadResult",
+    "ReaderError",
     "ReservedColumnError",
     "Symbol",
     "Tagged",
@@ -161,11 +179,14 @@ __all__ = [
     "encode_bytes",
     "escape_string",
     "find_dangling_edges",
+    "group_dirs",
     "insert_records",
     "insert_statement",
     "kind_of",
     "label_row",
     "parse_version",
+    "read_history",
+    "read_state",
     "record_rows",
     "rename_reserved",
     "require_supported_version",
@@ -173,4 +194,5 @@ __all__ = [
     "state_rows",
     "transit_params",
     "unescape_string",
+    "write_baseline",
 ]
