@@ -13,7 +13,7 @@ The architecture and packaging are decided in
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
 | `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader, the `bd-history` events-table conversion, `git-commits`, `docs` and `planning`), reconcile, judges, the standalone `beadlog` CLI |
-| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`) and the link-coverage metrics (`beadhive_backfill.coverage`) |
+| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`, `beadhive_backfill.source_passes`) and the link-coverage metrics (`beadhive_backfill.coverage`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 
 Root never holds engine logic; the published wheel vendors the three libraries' import packages
@@ -24,6 +24,9 @@ Root never holds engine logic; the published wheel vendors the three libraries' 
 ```text
 bh backfill complexity   [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
 bh backfill timeline     [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
+bh backfill commits      [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--option K=V]... [--json]
+bh backfill docs         (the same options as commits)
+bh backfill planning     (the same options as commits)
 bh backfill coverage     [--hive H] [--refresh] [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--json]
 bh backfill inspect      F.bdlg [--json]
@@ -204,7 +207,8 @@ beadlog extract git-commits --root . --group <group id> --group-dir <prefix> \
 
 Options: `rev` (default `HEAD`), `since` (a commit, or a date for `git log --since`),
 `allow_shallow=true`. Reconcile classes an append as DRIFT (the bead exists and its `git.commits`
-changes); see [Known limitation](#known-limitation-drift-is-not-applied-by-the-neutral-apply).
+changes); `bh backfill commits` applies it (see
+[the hive passes](#bh-backfill-commits-docs-and-planning-passes-3-to-5)).
 
 ### `beadlog extract docs`
 
@@ -363,17 +367,50 @@ Run the extract from the repository the history lives in, with the baseline expo
 hive you are going to apply to. After the apply, export again and extract again: the second
 extract must propose nothing (the postcondition column of the matrix).
 
-### Known limitation: DRIFT is not applied by the neutral apply
+### `bh backfill commits`, `docs` and `planning` (passes #3 to #5)
 
-`bh backfill apply` applies the NEW proposals of a neutral plan and reports DRIFT. Three things
-are DRIFT to reconcile because the bead already exists: the `git-commits` appends, the `docs`
-`external_ref` stamps, and a close that arrives after the bead was created. The neutral apply
-therefore does not apply them. Applying them needs a registered hive pass that declares
-`drift_applicable` (as `complexity` does for its labels). Those passes, `bh backfill commits`,
-`docs` and `planning`, are the hive apply passes tracked in `bh-yvg41.3` (sub-epic D); they are
-not registered yet. Until they are, only `planning`, and the NEW beads a judge adds from `docs`,
-are written by the flow above, and the stamps and appends are produced, reviewed and left in the
-plan.
+Reconcile classes most of what these strategies propose as DRIFT, because the bead already exists:
+the `git-commits` appends, the `docs` `external_ref` stamps and a close that arrives after the
+bead was created. The neutral `bh backfill apply` applies NEW only. Each of these hive passes wraps
+its strategy, declares `drift_applicable`, and so applies DRIFT and NEW alike through the full
+envelope (plan hash, drift gate, pre-state, applying audit, verification, rollback). They read the
+repository at the hive checkout and the bd store through the StoreLoader; no `beadlog` CLI,
+baseline export or reconcile step is needed.
+
+```bash
+bh backfill commits --plan commits.bdlg                  # preview: writes nothing
+bh backfill commits --apply --plan commits.bdlg          # apply the saved plan
+bh backfill docs --option docs=docs/decisions,docs/design --plan docs.bdlg
+bh backfill planning --option labels=complexity:MEDIUM --plan planning.bdlg
+bh backfill planning --apply --plan planning.bdlg
+```
+
+| Pass | Proposes | DRIFT (applied) | NEW (applied) | `--option` keys |
+|---|---|---|---|---|
+| `commits` | `set` of `metadata.git.commits` appending shas | the append to a bead that exists | none | `rev`, `since`, `allow_shallow`, `git` |
+| `docs` | `set` of `external_ref`; a judged NEW doc | the stamp on a bead that exists | `create` plus `origin:backfill` and `source:docs` for a judged NEW doc | `docs`, `top_k`, `id_prefix`, `new_type`, `labels`, `allow_shallow`, `git` |
+| `planning` | `create` of epics and issues, edges, closes | a close that arrives after the bead exists | the epics, issues and edges of the tree | `planning`, `id_prefix`, `labels`, `issue_type`, `allow_shallow`, `git` |
+
+`--option K=V` is repeatable and takes the same keys as `beadlog extract` (an unknown key is
+refused). The options are recorded in the plan, and `--apply` rebuilds the pass from the plan, so
+it takes no `--option`. `commits` pins `rev` to the commit it names at plan time, so the apply and
+its proof read the planned history even when the branch moved in between. The plan fails to apply
+if the hive changed after planning (the drift gate), and if the pass settings differ from the
+ones recorded.
+
+The judge is off by default. Without `backfill.judge.enabled` the `docs` pass hands the strategy no
+judge: every unmatched doc stays an abstain residual, printed as `RESIDUAL <doc>: undecided; needs
+human confirm`, and nothing is created for it. With the judge configured, each verdict is recorded
+in the plan and the apply replays the recorded verdicts only. Strategy-level drift (a bead that
+points at another doc, a malformed `git.commits`) is printed as `DRIFT <bead>: <reason>; not
+overwritten` and never written.
+
+Created `planning` beads carry `origin:backfill` and `source:planning`; name a routing tier with
+`--option labels=complexity:<TIER>` or run `bh backfill complexity` afterwards. Idempotent: once a
+plan is applied the next preview reports `0 beads would change`, and the engine proves that on
+the fresh store before it reports the apply as done. An applied pass also refreshes the coverage
+cache when `backfill.coverage.enabled`. A plan from these passes also applies through
+`bh backfill apply PLAN.bdlg`.
 
 ## History readers
 
@@ -547,9 +584,9 @@ loss-report entry.
 | `complexity` | `bh backfill complexity` | `bd list --all --include-infra` | `bd label add/remove`, one label at a time | JSON (`complexity-label-backfill`, schema 1) | applied | one valid `complexity:<TIER>` per routable bead; `model:*` untouched |
 | `timeline` | `bh backfill timeline` | the bd `events` table, `git log --first-parent`, commit dates, run journals | `bd update` of `metadata.lifecycle.*` (and `metadata.bdlg`) only, one bead at a time | `.bdlg` (`timeline`, schema 1) | applied | every lifecycle key well-formed with its confidence; a second dry run proposes nothing |
 | `reconcile` (neutral) | `bh backfill apply` | `bd export --all` | the bd StoreLoader (`bd import`, `bd update`, `bd close`, `bd dep`, `bd comments add`) | `.bdlg` from `beadlog reconcile` | reported only | second reconcile finds no NEW |
-| `git-commits` | `beadlog extract git-commits` | `git log` (`rev`, `since`) and the baseline's bead ids | one `set` of `metadata.git.commits` per bead, appending shas | `.bdlg` (extract, then reconcile) | appends are DRIFT; reported, not applied | a second extract proposes nothing |
-| `docs` | `beadlog extract docs` | the doc dirs, the first-add commit of each doc and the baseline | `set` of `external_ref` (DRIFT); `create` plus `origin:backfill` and `source:docs` for a judged NEW | `.bdlg` (extract, then reconcile) | stamps are DRIFT; reported, not applied | a second extract finds every doc `PRESENT-in-sync` |
-| `planning` | `beadlog extract planning` | the `.planning` tree and the git add date of each plan and summary | `create` of epics and issues, `parent-child` and `blocks` edges, closes | `.bdlg` (extract, then reconcile) | a later close is DRIFT; reported, not applied | a second extract proposes nothing |
+| `commits` (`git-commits`) | `bh backfill commits` (neutral: `beadlog extract git-commits`) | `git log` (`rev`, `since`) and the bd store's bead ids | one `set` of `metadata.git.commits` per bead, appending shas | `.bdlg` (`commits`, schema 1) | appends are DRIFT; applied | a second plan proposes nothing |
+| `docs` | `bh backfill docs` (neutral: `beadlog extract docs`) | the doc dirs, the first-add commit of each doc and the bd store | `set` of `external_ref` (DRIFT); `create` plus `origin:backfill` and `source:docs` for a judged NEW | `.bdlg` (`docs`, schema 1) | stamps are DRIFT; applied | a second plan finds every doc `PRESENT-in-sync` |
+| `planning` | `bh backfill planning` (neutral: `beadlog extract planning`) | the `.planning` tree and the git add date of each plan and summary | `create` of epics and issues, `parent-child` and `blocks` edges, closes | `.bdlg` (`planning`, schema 1) | a later close is DRIFT; applied | a second plan proposes nothing |
 
 Scope: `timeline` governs every bead that exists in the hive and proposes only the lifecycle keys
 it has a source for (a bead with no facts is untouched). `complexity` governs epics, features,

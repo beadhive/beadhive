@@ -24,7 +24,10 @@ or bd specific arriving through a port:
   expected post-state, the pass postcondition holds, and a second dry run proposes nothing
   using the plan's recorded judgments only (no judge is invoked). Any failure or interruption
   replays the loader inverses of the touched units in reverse and is audited.
-- DRIFT proposals are reported but applied only when the pass sets `drift_applicable`.
+- DRIFT proposals are reported but applied only when the pass sets `drift_applicable`; the
+  `commits`, `docs` and `planning` passes (`beadhive_backfill.source_passes`, wrapping the neutral
+  `git-commits`, `docs` and `planning` strategies) set it, so their appends, stamps and later
+  closes are applied as well as their NEW beads.
 - Inverses follow the format ADR's per-kind table: a `create` is undone by a `retire` with
   reason `backfill-rollback`, never a delete; `comment` and `tombstone` have none and are
   audited as rollback residue.

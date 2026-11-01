@@ -9,6 +9,9 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
   ``bh backfill-complexity``; both are the same command);
 - ``timeline`` — pass #2, the lifecycle timeline: derives claimed/committed/submitted/reviewed/
   merged/reopened facts from the history readers and writes only ``metadata.lifecycle.*``;
+- ``commits`` / ``docs`` / ``planning`` — the hive passes over the neutral ``git-commits``,
+  ``docs`` and ``planning`` strategies: they apply DRIFT (``git.commits`` appends,
+  ``external_ref`` stamps, a later close) as well as NEW through the same envelope;
 - ``export`` — the hive's current state as a ``.bdlg`` archive, read by the neutral bd strategy;
   with ``--history`` also every history event of the bd events table (the archival archive);
 - ``inspect`` — an archive's manifest, counts and (for a plan) its classification and verdicts;
@@ -26,7 +29,7 @@ import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -38,7 +41,10 @@ from beadhive_backfill import (
     JsonFileAuditSink,
     PathReaders,
     Plan,
+    SourcePass,
     TimelinePass,
+    source_pass,
+    source_pass_for_plan,
     system_clock,
 )
 from beadhive_backfill.coverage import (
@@ -51,6 +57,7 @@ from beadhive_backfill.coverage import (
     check_cache,
     write_coverage_cache,
 )
+from beadhive_backfill.source_passes import SOURCE_PASS_NAMES, parse_options
 from beadhive_backfill.timeline import PASS_NAME as TIMELINE_PASS
 from beadlog import ArchiveError, ArchiveReader, Generator, Group, ManifestError, write_archive
 from beadlog_sources import (
@@ -59,6 +66,8 @@ from beadlog_sources import (
     GapfillReader,
     HistoryRead,
     JsonCursorFile,
+    JudgeSettings,
+    build_judge,
     gap_events,
     gapfill_annotation,
     history_annotation,
@@ -70,7 +79,7 @@ from beadlog_sources import (
 
 from . import backfill_coverage, complexity_backfill, config, registry
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
-from .modules.config.contracts import BackfillGapfillConfig
+from .modules.config.contracts import BackfillGapfillConfig, BackfillJudgeConfig
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -342,6 +351,131 @@ def timeline_cmd(
     refresh_coverage_after_apply(hive, as_json)
 
 
+# -- the source-strategy passes: commits, docs, planning ---------------------------------------
+
+_SOURCE_PASS_HELP = {
+    "commits": "preview/apply git.commits appends from git log (DRIFT and NEW)",
+    "docs": "preview/apply external_ref stamps linking decision/design docs to beads",
+    "planning": "preview/apply epics, issues, edges and closes from a .planning tree",
+}
+_OPTION_OPTION = typer.Option(
+    None,
+    "--option",
+    help="strategy option key=value (repeatable): rev, since, docs, planning, labels, id_prefix",
+)
+
+
+def judge_settings(cfg: Mapping[str, Any] | None = None) -> JudgeSettings:
+    """The ``backfill.judge`` settings (disabled unless the config enables them)."""
+    cfg = config.load() if cfg is None else cfg
+    section = BackfillJudgeConfig.model_validate((cfg.get("backfill") or {}).get("judge") or {})
+    return JudgeSettings(**section.model_dump())
+
+
+def source_pass_for(
+    name: str, cwd: Path, group: Group, options: Mapping[str, str], *, judging: bool
+) -> SourcePass:
+    """The hive pass ``name`` reading the checkout at ``cwd`` (the seam tests replace)."""
+    return source_pass(name, cwd, group.id, options=options, judging=judging)
+
+
+def _plan_counts(plan: Plan) -> str:
+    return ", ".join(f"{key}={value}" for key, value in plan.totals.get("by_class", {}).items())
+
+
+def _render_source_plan(name: str, plan: Plan) -> None:
+    report = plan.report
+    typer.echo(
+        f"{name}: {plan.changes} beads would change "
+        f"({len(plan.applicable_events())} events); classes: {_plan_counts(plan) or 'none'}"
+    )
+    judge = "on" if report.get("judging") else "off"
+    typer.echo(f"judge: {judge}; judge calls: {plan.totals.get('judge_calls', 0)}")
+    if plan.drift_reported():
+        typer.echo(f"drift reported, not applied: {len(plan.drift_reported())}")
+    for item in report.get("drift") or ():
+        typer.echo(f"DRIFT {item.get('bead')}: {item.get('reason')}; not overwritten")
+    for doc in report.get("residual") or ():
+        typer.echo(f"RESIDUAL {doc}: undecided; needs human confirm")
+    typer.echo(f"plan hash: {plan.plan_hash}")
+
+
+def _source_command(name: str) -> Callable[..., None]:
+    def command(
+        hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+        apply: bool = typer.Option(False, "--apply", help="apply a previously saved --plan"),
+        dry_run: bool = typer.Option(
+            False, "--dry-run", help="explicit preview mode (the default)"
+        ),
+        plan_path: Path | None = _PLAN_OPTION,
+        pre_state: Path | None = _PRE_STATE_OPTION,
+        audit: Path | None = _AUDIT_OPTION,
+        option: list[str] | None = _OPTION_OPTION,
+        as_json: bool = typer.Option(False, "--json", help="emit the plan summary/audit as JSON"),
+    ) -> None:
+        if apply and dry_run:
+            raise typer.BadParameter("choose either --dry-run or --apply")
+        try:
+            cwd, group = _target(hive)
+            if not apply:
+                settings = judge_settings()
+                pass_ = source_pass_for(
+                    name, cwd, group, parse_options(option or ()), judging=settings.enabled
+                )
+                engine = BackfillEngine(groups=[group], passes=[pass_])
+                judge = build_judge(settings) if settings.enabled else None
+                plan = engine.plan(pass_, store_loader(cwd, group=group.id), judge)
+                if plan_path is not None:
+                    plan.write(plan_path)
+                if as_json:
+                    _emit(
+                        {
+                            "pass": plan.pass_name,
+                            "plan_hash": plan.plan_hash,
+                            "changes": plan.changes,
+                            "totals": plan.totals,
+                            "report": plan.report,
+                        }
+                    )
+                    return
+                _render_source_plan(name, plan)
+                if plan_path is not None:
+                    typer.echo(f"saved plan: {plan_path}")
+                return
+            if plan_path is None:
+                raise BackfillError("--apply requires --plan from a prior dry-run")
+            if option:
+                raise BackfillError("--option applies to the dry-run; the plan records its options")
+            plan = Plan.read(plan_path)
+            if plan.pass_name != name:
+                raise BackfillError(f"{plan_path} is a {plan.pass_name!r} plan, not a {name} plan")
+            pass_ = source_pass_for_plan(name, cwd, group.id, plan.report)
+            engine = BackfillEngine(groups=[group], passes=[pass_])
+            pre_state = pre_state or default_pre_state_path(plan_path)
+            audit = audit or plan_path.with_name(f"{plan_path.stem}.audit.json")
+            loader = store_loader(cwd, group=group.id, pre_state_path=pre_state)
+            entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
+        except _ERRORS as exc:
+            raise _fail(exc) from None
+        if as_json:
+            _emit(entry.to_json())
+        else:
+            typer.echo(
+                f"applied {len(entry.completed)} beads; verification clean; second dry-run empty"
+            )
+            typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+            typer.echo(f"audit: {audit}")
+        refresh_coverage_after_apply(hive, as_json)
+
+    command.__name__ = f"{name}_cmd"
+    command.__doc__ = _SOURCE_PASS_HELP[name].capitalize() + "."
+    return command
+
+
+for _name in SOURCE_PASS_NAMES:
+    app.command(_name, help=_SOURCE_PASS_HELP[_name])(_source_command(_name))
+
+
 @app.command("export")
 def export_cmd(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
@@ -588,6 +722,8 @@ def apply_cmd(
         passes: list[Any] = [complexity_backfill.complexity_pass()]
         if plan.pass_name == TIMELINE_PASS:
             passes.append(timeline_pass(cwd, hive))
+        elif plan.pass_name in SOURCE_PASS_NAMES:
+            passes.append(source_pass_for_plan(plan.pass_name, cwd, group.id, plan.report))
         engine = BackfillEngine(groups=plan.groups, passes=passes)
         entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
     except _ERRORS as exc:
@@ -700,7 +836,9 @@ __all__ = [
     "gapfill_state_path",
     "hive_group",
     "history_inputs",
+    "judge_settings",
     "refresh_coverage_after_apply",
+    "source_pass_for",
     "store_loader",
     "timeline_pass",
 ]

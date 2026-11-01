@@ -19,6 +19,9 @@ public ``__all__``) and never imports ``beadhive``. It owns the hive apply envel
   ``bh backfill complexity``);
 - the lifecycle timeline pass (:mod:`beadhive_backfill.timeline`, pass #2): AGF conventions over
   the history readers, proposing ``metadata.lifecycle.*`` keys with their confidence;
+- the source-strategy passes (:mod:`beadhive_backfill.source_passes`): ``commits``, ``docs`` and
+  ``planning`` wrap the neutral strategies and apply their DRIFT (``git.commits`` appends,
+  ``external_ref`` stamps, a later close) as well as NEW through the envelope;
 - link-coverage metrics and their cached state (:mod:`beadhive_backfill.coverage`): the three
   ratios over injected reads, the inputs hash and the versioned cache file;
 - the AGF history readers, also public submodules: :mod:`beadhive_backfill.merges` (one
@@ -51,6 +54,15 @@ from .contracts import (
 from .engine import BackfillEngine, system_clock
 from .plan import ENGINE_ANNOTATION, ENGINE_SCHEMA, Plan
 from .sinks import ArchivePreStateExporter, JsonFileAuditSink
+from .source_passes import (
+    SOURCE_PASS_NAMES,
+    CommitsPass,
+    DocsPass,
+    PlanningPass,
+    SourcePass,
+    source_pass,
+    source_pass_for_plan,
+)
 from .timeline import PathReaders, TimelinePass, TimelineReaders
 
 DISTRIBUTION = "beadhive-backfill"
@@ -68,6 +80,7 @@ __all__ = [
     "ENGINE_SCHEMA",
     "RECOVERY_INSTRUCTION",
     "ROLLBACK_REASON",
+    "SOURCE_PASS_NAMES",
     "ArchivePreStateExporter",
     "AuditEntry",
     "AuditProgress",
@@ -76,13 +89,17 @@ __all__ = [
     "AuditState",
     "BackfillEngine",
     "BackfillError",
+    "CommitsPass",
+    "DocsPass",
     "HivePass",
     "JsonFileAuditSink",
     "PathReaders",
     "Plan",
+    "PlanningPass",
     "PreStateExporter",
     "ReportingPass",
     "ScopedPass",
+    "SourcePass",
     "Stamper",
     "StoreLoader",
     "StoreReader",
@@ -95,5 +112,7 @@ __all__ = [
     "inverse_of",
     "projection",
     "projection_hash",
+    "source_pass",
+    "source_pass_for_plan",
     "system_clock",
 ]
