@@ -43,10 +43,33 @@ Evidence for every rule below is in the spikes:
   what to do. XTDB has no foreign keys, so `find_dangling_edges` runs the anti-join over
   `bead_edges` and `beads` and splits `external:` targets from unresolved ones; the loader reports
   them and does not refuse the load.
+- **As-of reader** (`read_state`, `read_history`, `write_baseline`): the inverse of the loader.
+  `read_state(conn, extracted_at=..., valid_at=..., system_at=...)` reads the four tables
+  `FOR SYSTEM_TIME AS OF` / `FOR VALID_TIME AS OF` (the current belief when no cut is given) and
+  emits events that fold to that state: a `create` per bead plus the `phase` / `retire` /
+  `delete` its document implies, and a `label_add`, `edge_add` or `comment` per held row.
+  `read_history(conn, extracted_at=...)` reads `FOR ALL SYSTEM_TIME FOR ALL VALID_TIME`, keeps the
+  store's belief (now, or as of `system_at`) and diffs each bead's document versions into
+  `create` / `set` / `phase` / `retire` / `delete`, and each label or edge period into an add and,
+  once ended, a remove. Every event is `provenance: observed`, `source.system: xtdb`,
+  `occurred_at` = `_valid_from`, `recorded_at` = `_system_from` (a removal's is the
+  `_system_to` of the `[_valid_to, inf)` rectangle it closed; a time XTDB does not hold stays
+  `null`). `extracted_at` is a parameter, so the same store reads to the same ids and bytes.
+  `checkpoints=True` adds a derived `checkpoint` per bead; `groups=[...]` keeps only those
+  groups. `write_baseline(path, result)` writes a `.bdlg` that passes `beadlog verify` and
+  serves as the `baseline` of `beadlog_sources.reconcile`. A `create` and the `phase` / `retire`
+  / `delete` of the same version share an instant and a facet, so the reader moves the latter
+  one microsecond later (`annotations.xtdb` keeps the stored time). Whatever a read cannot give
+  back is in `ReadResult.notes`: a re-read comment has a new event id (the stored one is in
+  `annotations.xtdb.comment_id`), a comment without a body, a field BeadLog cannot hold, an
+  edge's `metadata`, and rows whose bead is not in the read. A state read has no history, so
+  its `create` is dated at the version in force at the cut.
 
 ## Tests
 
 `uv run --inexact --package beadlog-xtdb pytest packages/beadlog-xtdb/tests` runs the unit tests,
-which use fakes and need no XTDB. `tests/test_beadlog_xtdb_int.py` is integration-marked and is
-skipped unless `BEADLOG_XTDB_TEST_DSN` names a node (a single-node `ghcr.io/xtdb/xtdb` 2.2.x
+which use fakes and need no XTDB. `tests/test_beadlog_xtdb_int.py` and
+`tests/test_beadlog_xtdb_reader_int.py` (which writes a fixture log with plain statements and checks
+that the reader folds to the same state at three valid-time cuts and at system-time cuts) are
+integration-marked and are skipped unless `BEADLOG_XTDB_TEST_DSN` names a node (a single-node `ghcr.io/xtdb/xtdb` 2.2.x
 container bound to `127.0.0.1`, `--memory 2g`, data directory on real disk, pinned digest).
