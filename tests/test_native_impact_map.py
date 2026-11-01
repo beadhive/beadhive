@@ -385,6 +385,7 @@ def test_real_root_composition_maps_all_consumed_workspace_packages() -> None:
         "packages/beadhive-validation-broker/*",
         "packages/beadhive-worktrees/*",
         "packages/beadlog-sources/*",
+        "packages/beadlog-xtdb/*",
         "packages/beadlog/*",
     }
     key = AttestKey(

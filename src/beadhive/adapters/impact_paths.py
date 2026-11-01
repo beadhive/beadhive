@@ -159,6 +159,10 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_timeline_cli.py",
         "tests/test_complexity_backfill.py",
     ),
+    # The XTDB loader library is a dev/CI group only (no root test imports it yet); the entry keeps
+    # root-composition invalidation fail-closed for it until the plugin that binds it registers its
+    # root tests.
+    "beadlog-xtdb": (),
 }
 
 
