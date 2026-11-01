@@ -7,7 +7,10 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
 
 - ``complexity`` — pass #1, the complexity-label migration (also the flat, published
   ``bh backfill-complexity``; both are the same command);
+- ``timeline`` — pass #2, the lifecycle timeline: derives claimed/committed/submitted/reviewed/
+  merged/reopened facts from the history readers and writes only ``metadata.lifecycle.*``;
 - ``export`` — the hive's current state as a ``.bdlg`` archive, read by the neutral bd strategy;
+  with ``--history`` also every history event of the bd events table (the archival archive);
 - ``inspect`` — an archive's manifest, counts and (for a plan) its classification and verdicts;
 - ``verify`` — an archive's integrity and event ids, and a plan's hash;
 - ``apply`` — a ``.bdlg`` plan through the envelope: one written by ``bh backfill`` or by the
@@ -27,11 +30,35 @@ from typing import Any
 
 import typer
 
-from beadhive_backfill import BackfillEngine, BackfillError, JsonFileAuditSink, Plan
+from beadhive_backfill import (
+    BackfillEngine,
+    BackfillError,
+    JsonFileAuditSink,
+    PathReaders,
+    Plan,
+    TimelinePass,
+    system_clock,
+)
+from beadhive_backfill.timeline import PASS_NAME as TIMELINE_PASS
 from beadlog import ArchiveError, ArchiveReader, Generator, Group, ManifestError, write_archive
+from beadlog_sources import (
+    HISTORY_ANNOTATION,
+    BdReadError,
+    GapfillReader,
+    HistoryRead,
+    JsonCursorFile,
+    gap_events,
+    gapfill_annotation,
+    history_annotation,
+    history_events,
+    lacking_created,
+    read_history,
+    read_store_start,
+)
 
 from . import complexity_backfill, config, registry
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
+from .modules.config.contracts import BackfillGapfillConfig
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -57,7 +84,16 @@ _PRE_STATE_OPTION = typer.Option(
     None, "--pre-state", help="JSONL recovery export (default: beside the plan)"
 )
 _AUDIT_OPTION = typer.Option(None, "--audit", help="machine audit JSON (default: beside the plan)")
-_ERRORS = (BackfillError, BdLoadError, ArchiveError, ManifestError, OSError, ValueError)
+_ERRORS = (
+    BackfillError,
+    BdLoadError,
+    BdReadError,
+    ArchiveError,
+    ManifestError,
+    OSError,
+    ValueError,
+)
+GAPFILL_STATE_SUFFIX = ".gapfill.json"
 
 
 def _version() -> str:
@@ -96,6 +132,26 @@ def store_loader(cwd: Path, *, group: str, pre_state_path: Path | None = None) -
     return bd_store_loader(cwd, group=group, pre_state_path=pre_state_path)
 
 
+def history_inputs(cwd: Path) -> tuple[HistoryRead, str | None]:
+    """The bulk reads behind ``export --history``: the bd events table (one ``SELECT``) and the
+    store's first commit date (one more). The seam tests replace."""
+    return read_history(cwd), read_store_start(cwd)
+
+
+def timeline_pass(cwd: Path, hive: str) -> TimelinePass:
+    """The lifecycle timeline pass reading the hive at ``cwd`` (the seam tests replace): its
+    first-parent history on the hive's integration branch and its host-local run journals."""
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    ref = str(config.integration_branch(cfg, entry)) if entry is not None else "main"
+    journals = None
+    if entry is not None:
+        from . import run_journal  # lazy: the journal store is only needed for this pass
+
+        journals = run_journal.journal_root_for_hive(registry.hive_key(entry))
+    return TimelinePass(PathReaders(cwd, ref=ref, journals=journals))
+
+
 def _fail(exc: BaseException) -> typer.Exit:
     typer.echo(f"✗ {exc}", err=True)
     return typer.Exit(1)
@@ -105,33 +161,180 @@ def _emit(value: Mapping[str, Any]) -> None:
     typer.echo(json.dumps(value, sort_keys=True, indent=2))
 
 
+def gapfill_settings(cfg: Mapping[str, Any] | None = None) -> BackfillGapfillConfig:
+    """The ``backfill.timeline.gapfill`` settings (disabled unless the config enables them)."""
+    cfg = config.load() if cfg is None else cfg
+    section = (cfg.get("backfill") or {}).get("timeline") or {}
+    return BackfillGapfillConfig.model_validate(section.get("gapfill") or {})
+
+
+def gapfill_reader(cwd: Path, settings: BackfillGapfillConfig) -> GapfillReader:
+    """The bounded ``dolt_history`` reader for the hive at ``cwd`` (the seam tests replace)."""
+    return GapfillReader(cwd, batch_size=settings.batch_size, timeout=settings.timeout_seconds)
+
+
+def gapfill_state_path(out: Path) -> Path:
+    """Where an interrupted gap fill keeps its cursor: beside the archive being written."""
+    return out.with_name(out.name + GAPFILL_STATE_SUFFIX)
+
+
+def _history_archive(
+    cwd: Path,
+    group: Group,
+    baseline: tuple[Any, ...],
+    *,
+    gapfill: BackfillGapfillConfig | None = None,
+    state: Path | None = None,
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """``baseline`` plus every history event of the hive, and the ``bdlg.history`` annotation.
+
+    With ``gapfill`` enabled, beads that have no ``created`` row in the events table also get
+    snapshot-level events from ``dolt_history_issues``, resumable through the cursor ``state``."""
+    read, store_start = history_inputs(cwd)
+    extracted_at = system_clock()
+    history = history_events(read, baseline, group=group.id, extracted_at=extracted_at)
+    events = (*baseline, *history.events)
+    account: dict[str, Any] | None = None
+    if gapfill is not None and gapfill.enabled:
+        ids = lacking_created(history.events)
+        cursor = JsonCursorFile(state) if state is not None else None
+        try:
+            scanned = gapfill_reader(cwd, gapfill).read(ids, cursor)
+        except BdReadError as exc:
+            hint = f"; progress is saved in {state}, re-run to resume" if state is not None else ""
+            raise BdReadError(f"gap fill stopped: {exc}{hint}") from exc
+        gap = gap_events(scanned, events, group=group.id, extracted_at=extracted_at, queried=ids)
+        events = (*events, *gap.events)
+        account = gapfill_annotation(gap, batch_size=gapfill.batch_size)
+    return events, history_annotation(
+        events, history, baseline, store_start=store_start, gapfill=account
+    )
+
+
+_PLAN_OPTION = typer.Option(
+    None, "--plan", help="write this plan on dry-run; required and read back on --apply"
+)
+
+
+def _render_timeline(plan: Plan) -> None:
+    report = plan.report
+    facts = ", ".join(f"{key}={value}" for key, value in (report.get("facts") or {}).items())
+    typer.echo(
+        f"timeline: {plan.changes} beads would change "
+        f"({len(plan.applicable_events())} events); in scope {plan.totals.get('in_scope', 0)}"
+    )
+    typer.echo(f"facts: {facts or 'none'}")
+    tiers = ", ".join(f"{k}={v}" for k, v in (report.get("confidence") or {}).items())
+    typer.echo(f"confidence: {tiers or 'none'}")
+    typer.echo(f"plan hash: {plan.plan_hash}")
+
+
+@app.command("timeline")
+def timeline_cmd(
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    apply: bool = typer.Option(False, "--apply", help="apply a previously saved --plan"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="explicit preview mode (the default)"),
+    plan_path: Path | None = _PLAN_OPTION,
+    pre_state: Path | None = _PRE_STATE_OPTION,
+    audit: Path | None = _AUDIT_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="emit the plan summary/audit as JSON"),
+) -> None:
+    """Preview or apply the lifecycle timeline (writes only metadata.lifecycle.* keys)."""
+    if apply and dry_run:
+        raise typer.BadParameter("choose either --dry-run or --apply")
+    try:
+        cwd, group = _target(hive)
+        pass_ = timeline_pass(cwd, hive)
+        engine = BackfillEngine(groups=[group], passes=[pass_])
+        if not apply:
+            plan = engine.plan(pass_, store_loader(cwd, group=group.id))
+            if plan_path is not None:
+                plan.write(plan_path)
+            if as_json:
+                _emit(
+                    {
+                        "pass": plan.pass_name,
+                        "plan_hash": plan.plan_hash,
+                        "changes": plan.changes,
+                        "totals": plan.totals,
+                        "report": plan.report,
+                    }
+                )
+                return
+            _render_timeline(plan)
+            if plan_path is not None:
+                typer.echo(f"saved plan: {plan_path}")
+            return
+        if plan_path is None:
+            raise BackfillError("--apply requires --plan from a prior dry-run")
+        plan = Plan.read(plan_path)
+        if plan.pass_name != TIMELINE_PASS:
+            raise BackfillError(f"{plan_path} is a {plan.pass_name!r} plan, not a timeline plan")
+        pre_state = pre_state or default_pre_state_path(plan_path)
+        audit = audit or plan_path.with_name(f"{plan_path.stem}.audit.json")
+        loader = store_loader(cwd, group=group.id, pre_state_path=pre_state)
+        entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    if as_json:
+        _emit(entry.to_json())
+        return
+    typer.echo(
+        f"applied {len(entry.completed)} beads; only metadata.lifecycle.* written; "
+        "second dry-run empty"
+    )
+    typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+    typer.echo(f"audit: {audit}")
+
+
 @app.command("export")
 def export_cmd(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     out: Path | None = _OUT_OPTION,
     as_json: bool = typer.Option(False, "--json", help="emit the export summary as JSON"),
+    history: bool = typer.Option(
+        False,
+        "--history",
+        help="also export every history event of the bd events table (archival archive)",
+    ),
 ) -> None:
     """Export the hive's current state as a BeadLog archive (the neutral bd strategy)."""
     try:
         cwd, group = _target(hive)
         loader = store_loader(cwd, group=group.id)
         events = loader.export()
-        out = out if out is not None else Path(f"{group.dir}.bdlg")
+        annotations: dict[str, Any] | None = None
+        description = f"current state of {loader.target}"
+        default = f"{group.dir}.history.bdlg" if history else f"{group.dir}.bdlg"
+        out = out if out is not None else Path(default)
+        state = None
+        if history:
+            settings = gapfill_settings()
+            state = gapfill_state_path(out) if settings.enabled else None
+            events, annotations = _history_archive(
+                cwd, group, tuple(events), gapfill=settings, state=state
+            )
+            description = f"current state and bd event history of {loader.target}"
         manifest = write_archive(
             out,
             events,
             groups=[group],
             generator=GENERATOR,
-            description=f"current state of {loader.target}",
+            description=description,
+            annotations=annotations,
         )
+        if state is not None:
+            state.unlink(missing_ok=True)  # the run is complete: the cursor has done its job
     except _ERRORS as exc:
         raise _fail(exc) from None
-    summary = {
+    summary: dict[str, Any] = {
         "path": str(out),
         "group": group.to_json(),
         "events": int(manifest.counts.get("events", 0)),
         "beads": int(manifest.counts.get("beads", 0)),
     }
+    if annotations is not None:
+        summary["history"] = annotations[HISTORY_ANNOTATION]
     if as_json:
         _emit(summary)
         return
@@ -139,6 +342,24 @@ def export_cmd(
         f"exported {summary['events']} events across {summary['beads']} beads to {out} "
         f"(group {group.id})"
     )
+    if "history" in summary:
+        _echo_history(summary["history"])
+
+
+def _echo_history(history: Mapping[str, Any]) -> None:
+    sources = ", ".join(f"{key}={value}" for key, value in (history.get("sources") or {}).items())
+    typer.echo(
+        f"history: {history.get('history_events', 0)} events from "
+        f"{history.get('events_table_rows', 0)} bd events-table rows; "
+        f"earliest recorded {history.get('earliest_recorded')}"
+    )
+    typer.echo(f"sources: {sources or 'none'}")
+    typer.echo((history.get("gap") or {}).get("note", ""))
+    if gap := history.get("gapfill"):
+        typer.echo(
+            f"gap fill: {gap.get('beads_queried', 0)} beads queried, {gap.get('events', 0)} "
+            f"events (resumed from bead {gap.get('resumed_from', 0)})"
+        )
 
 
 def _verdicts(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,6 +396,9 @@ def archive_summary(path: Path) -> dict[str, Any]:
         "counts": data["counts"],
         "description": data.get("description"),
     }
+    history = (data.get("annotations") or {}).get(HISTORY_ANNOTATION)
+    if isinstance(history, Mapping):
+        summary["history"] = history
     plan = data.get("plan")
     if isinstance(plan, Mapping):
         annotations = data.get("annotations") or {}
@@ -216,6 +440,8 @@ def inspect_cmd(
         typer.echo(f"  {kind}: {number}")
     caps = summary["capabilities"]
     typer.echo(f"capabilities: required={caps.get('required')} optional={caps.get('optional')}")
+    if history := summary.get("history"):
+        _echo_history(history)
     if plan := summary.get("plan"):
         classes = ", ".join(f"{key}={value}" for key, value in plan["classes"].items()) or "none"
         verdicts = plan["verdicts"]
@@ -304,7 +530,10 @@ def apply_cmd(
                     f"{summary['applicable_events']} events; losses: {losses}"
                 )
             return
-        engine = BackfillEngine(groups=plan.groups, passes=[complexity_backfill.complexity_pass()])
+        passes: list[Any] = [complexity_backfill.complexity_pass()]
+        if plan.pass_name == TIMELINE_PASS:
+            passes.append(timeline_pass(cwd, hive))
+        engine = BackfillEngine(groups=plan.groups, passes=passes)
         entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
     except _ERRORS as exc:
         raise _fail(exc) from None
@@ -321,6 +550,11 @@ __all__ = [
     "GROUP_NAMESPACE",
     "app",
     "archive_summary",
+    "gapfill_reader",
+    "gapfill_settings",
+    "gapfill_state_path",
     "hive_group",
+    "history_inputs",
     "store_loader",
+    "timeline_pass",
 ]

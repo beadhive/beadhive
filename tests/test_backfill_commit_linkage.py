@@ -1,5 +1,10 @@
-"""Unit tests for `scripts.backfill_commit_linkage` -- the idempotent full-history backfill of
-`git.commits` (bh-1b0rc.3, docs/design/bead-commit-linkage-contract.md).
+"""Unit tests for `scripts.backfill_commit_linkage` -- the deprecated shim over the idempotent
+full-history backfill of `git.commits` (bh-1b0rc.3, docs/design/bead-commit-linkage-contract.md).
+
+The matcher itself moved to `beadlog_sources.commits` (the `git-commits` strategy, tested in
+`packages/beadlog-sources/tests/test_beadlog_sources_commits.py`); the shim tests below pin that
+the old script keeps working on the moved matcher, warns about its deprecation, refuses shallow
+clones, and writes exactly the shas the strategy proposes (parity).
 
 Two seams are mocked, same pattern as `test_git_linkage.py` / `test_bd_json_seam.py`:
 
@@ -26,6 +31,7 @@ import pytest
 
 from beadhive import bd as bd_mod
 from beadhive import git_linkage
+from beadlog_sources import ShallowCloneError
 
 # `scripts/` is a namespace package (no `__init__.py`) rooted at the repo root, which pytest's
 # default "prepend" import mode does NOT put on sys.path for a test module living under
@@ -300,3 +306,99 @@ def test_main_json_output(repo, live_ids, store, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["beads_updated"] == 1
+
+
+# ---- deprecation shim ------------------------------------------------------------------------
+
+
+def test_main_prints_a_deprecation_naming_the_replacement(repo, live_ids, store, capsys):
+    _commit(repo, "feat(a): start (bh-100)")
+    assert backfill.main(["--repo", str(repo), "--rev", "main", "--dry-run"]) == 0
+    err = capsys.readouterr().err
+    assert "deprecated" in err
+    assert "beadlog extract git-commits" in err and "bh backfill apply" in err
+
+
+def test_the_correlation_script_is_deprecated_too(repo, live_ids, capsys, monkeypatch):
+    from scripts import bead_commit_correlation as correlation
+
+    monkeypatch.setattr(correlation, "load_live_ids", lambda repo: _LIVE_IDS)
+    _commit(repo, "feat(a): start (bh-100)")
+    assert correlation.main(["--repo", str(repo), "--rev", "main"]) == 0
+    captured = capsys.readouterr()
+    assert "beadlog extract git-commits" in captured.err
+    assert "linked (tightened):   1/1" in captured.out
+
+
+def test_the_shim_reexports_the_moved_matcher():
+    from scripts import bead_commit_correlation as correlation
+
+    from beadlog_sources import commits
+
+    assert correlation.candidate_pattern is commits.candidate_pattern
+    assert correlation.extract_candidates is commits.extract_candidates
+    assert correlation.resolve_candidates is commits.resolve_candidates
+
+
+def test_the_shim_refuses_a_shallow_clone_unless_allowed(repo, live_ids, store, tmp_path, capsys):
+    _commit(repo, "feat(a): start (bh-100)")
+    _commit(repo, "feat(a): more (bh-100)")
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", f"file://{repo}", str(shallow)],
+        check=True,
+        capture_output=True,
+    )
+    with pytest.raises(ShallowCloneError, match=r"git fetch --unshallow"):
+        backfill.main(["--repo", str(shallow), "--dry-run"])
+    assert backfill.main(["--repo", str(shallow), "--dry-run", "--allow-shallow"]) == 0
+
+
+# ---- parity with the strategy ------------------------------------------------------------------
+
+
+def test_the_shim_writes_exactly_the_shas_the_strategy_proposes(repo, live_ids, store):
+    """The `git-commits` strategy and the old script agree on the fixture history: the shas the
+    script wrote per bead are exactly the shas the strategy proposes for the same beads."""
+    import beadlog
+    from beadlog_sources import ExtractRequest, GitCommitsStrategy
+
+    _commit(repo, "feat(a): start (bh-100)")
+    _commit(repo, "feat(b): more (bh-200)")
+    _commit(repo, "chore(merge): batch bh-100, bh-200")
+    _commit(repo, "fix(x): tweak bh-infra config")  # noise: never linked
+    _commit(repo, "fix(x): patch", body="Fixes bh-300, see bh-300")
+    _commit(repo, "bump: version 0.1.0 -> 0.2.0")
+
+    group = "urn:uuid:00000000-0000-4000-8000-0000000000c1"
+    baseline = [
+        beadlog.mint_event(
+            "create",
+            beadlog.BeadRef(group, bead_id),
+            {"type": "task", "fields": {"title": bead_id}},
+            occurred_at="2026-09-01T00:00:00Z",
+            recorded_at="2026-09-01T00:00:00Z",
+            extracted_at="2026-10-31T00:00:00Z",
+            source=("bd", bead_id),
+            provenance="observed",
+        )
+        for bead_id in sorted(_LIVE_IDS)
+    ]
+    proposed = GitCommitsStrategy().extract(
+        ExtractRequest(
+            root=repo,
+            group=group,
+            extracted_at="2026-10-31T00:00:00Z",
+            baseline=tuple(baseline),
+            options={"rev": "main"},
+        )
+    )
+    from_strategy = {event.bead.id: json.loads(event.data["value"]) for event in proposed}
+
+    backfill.run_backfill(str(repo), rev="main", dry_run=False)
+    from_script = {
+        bead_id: git_linkage.read_commits(bead_id, Path(str(repo))) for bead_id in sorted(_LIVE_IDS)
+    }
+
+    assert from_strategy == from_script
+    assert set(from_strategy) == {"bh-100", "bh-200", "bh-300"}

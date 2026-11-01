@@ -49,8 +49,9 @@ _CLI_ROWS = """
 alerts show|as_json:boolean:o
 backfill apply|plan_path:string:r,hive:string:o,dry_run:boolean:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backfill complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
-backfill export|hive:string:o,out:string:o,as_json:boolean:o
+backfill export|hive:string:o,out:string:o,as_json:boolean:o,history:boolean:o
 backfill inspect|path:string:r,as_json:boolean:o
+backfill timeline|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backfill verify|path:string:r,as_json:boolean:o
 backfill-complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backup export|dest:string:o

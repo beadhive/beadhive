@@ -867,6 +867,10 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
         "work": {"type": "string"},
         "new_work": {"type": "boolean"},
     },
+    # bh-yk67l (operator approval 2026-10-31, sub-epic bh-b3xhd):
+    # `bh backfill export --history` appends one optional boolean to the 2.17.0 verb. The default
+    # export keeps its exact request, output, exit codes and JSON keys; only the flag is new.
+    "backfill.export": {"history": {"type": "boolean"}},
     "worktree.status": {
         "local_safe": {"type": "boolean"},
         "root": {"type": "array", "items": {}},
