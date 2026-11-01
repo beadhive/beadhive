@@ -10,6 +10,14 @@ never imports ``beadhive``. It owns:
   ``backfill.judge`` keys);
 - the neutral ``bd`` baseline strategy (:mod:`beadlog_sources.bd`): one ``bd export`` read as
   current-state events, re-emitting the BeadLog ids a bd loader stored in ``metadata.bdlg``;
+- the neutral ``git-commits`` strategy (:mod:`beadlog_sources.commits`): the two-step bead-id
+  matcher over a repository's git history, proposing append-only ``git.commits`` events for the
+  beads of a baseline;
+- the neutral ``docs`` strategy (:mod:`beadlog_sources.docs`): decision and design docs bridged to
+  beads (frontmatter ``Beads:``, the first-add commit's bead id, existing ``external_ref``), then a
+  lexical shortlist and the judged residual, proposing ``external_ref`` stamps;
+- the neutral ``planning`` strategy (:mod:`beadlog_sources.planning`): a GSD ``.planning`` tree as
+  epics, issues, ``parent-child`` and ``blocks`` edges, idempotent on ``external_ref``;
 - the neutral ``bd`` history reader (:mod:`beadlog_sources.bd_history`): the ``events`` table in
   one bounded ``SELECT``, parsed into typed :class:`HistoryEvent` records with counted skips;
 - the neutral history conversion (:mod:`beadlog_sources.bd_timeline`): those records as BeadLog
@@ -74,6 +82,7 @@ from .bd_timeline import (
     source_family,
     suppress_artifacts,
 )
+from .commits import GitCommitsStrategy, ShallowCloneError
 from .contracts import (
     ABSTAIN,
     DEFAULT_FAMILY,
@@ -86,6 +95,7 @@ from .contracts import (
     ScoreQuery,
     SourceStrategy,
 )
+from .docs import DocsStrategy
 from .git_dates import CommitDate, CommitDates, GitReadError, commit_dates
 from .judges import (
     CommandJudge,
@@ -98,6 +108,7 @@ from .judges import (
     judge_schema,
     settings_from,
 )
+from .planning import PlanningStrategy
 from .reconcile import (
     PlanEntry,
     ReconcileClass,
@@ -144,6 +155,7 @@ __all__ = [
     "CommitDates",
     "CommandResult",
     "DeterministicJudge",
+    "DocsStrategy",
     "ExtractRequest",
     "Fallback",
     "GapfillEvents",
@@ -152,17 +164,20 @@ __all__ = [
     "HistoryEvent",
     "HistoryEvents",
     "HistoryRead",
+    "GitCommitsStrategy",
     "JudgeProtocolError",
     "JsonCursorFile",
     "JudgeSettings",
     "Judgment",
     "JudgmentPort",
     "PlanEntry",
+    "PlanningStrategy",
     "ReconcileClass",
     "ReconcilePlan",
     "Review",
     "Runner",
     "ScoreQuery",
+    "ShallowCloneError",
     "SourceStrategy",
     "Verdict",
     "baseline_events",

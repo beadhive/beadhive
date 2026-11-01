@@ -12,7 +12,7 @@ The architecture and packaging are decided in
 | Package | Owns |
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
-| `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader and the `bd-history` events-table conversion), reconcile, judges, the standalone `beadlog` CLI |
+| `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader, the `bd-history` events-table conversion, `git-commits`, `docs` and `planning`), reconcile, judges, the standalone `beadlog` CLI |
 | `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 
@@ -178,23 +178,150 @@ plan from the standalone `beadlog reconcile` (whose NEW proposals are applicable
 declare exactly one bead group; the bd loader loads that group into the hive. `--dry-run` runs
 the loader's assessment only and prints its loss report (every field bd cannot keep).
 
+The whole sequence, from the baseline export to the apply, is under [End to end](#end-to-end).
+
+The standalone `beadlog` CLI is the `beadlog-sources` distribution's script (in a checkout,
+`uv run beadlog`); the installed `bh` carries the libraries but not that script or its
+`beadlog.sources` entry points.
+
+### `beadlog extract git-commits`
+
+The neutral `git-commits` strategy (`beadlog_sources.commits`) links commits to beads: it scans
+each commit message (subject and body) for ids, keeps only tokens that resolve against the
+baseline's own beads (`bh-infra` and the like are dropped), and proposes one `set` of
+`metadata.git.commits` per bead that **appends** the new shas, oldest first, to the baseline's
+list. Existing entries keep their order and are never removed; once the shas are in the baseline,
+extracting again proposes nothing. A bead whose stored value is not a JSON array of strings is
+reported as DRIFT (in the command output and the archive annotation `bdlg.git-commits`) and gets
+no event, so it is never overwritten. A shallow clone is refused (`git fetch --unshallow`).
+
+```bash
+beadlog extract git-commits --root . --group <group id> --group-dir <prefix> \
+  --extracted-at 2026-10-31T00:00:00Z --baseline baseline.bdlg \
+  --option rev=main --option since=<sha|date> -o proposed.bdlg
+```
+
+Options: `rev` (default `HEAD`), `since` (a commit, or a date for `git log --since`),
+`allow_shallow=true`. Reconcile classes an append as DRIFT (the bead exists and its `git.commits`
+changes); see [Known limitation](#known-limitation-drift-is-not-applied-by-the-neutral-apply).
+
+### `beadlog extract docs`
+
+The neutral `docs` strategy (`beadlog_sources.docs`) links decision and design docs to beads, the
+port of `reconcile.sh`'s docs mode (`bh-skls-svo`: it silently stopped at 37 of 120 docs; this
+one processes every doc, reads git once and makes no per-doc store call). Per doc, deterministic
+before fuzzy: a bead already carrying the doc as `external_ref` is `PRESENT-in-sync`; else the
+first `Beads:` line of the doc, then the bead id in the commit that first added it, names the
+bead (`PRESENT-needs-stamp`: a `set` of `external_ref`; `DRIFTED-ref`: the bead points elsewhere;
+`DANGLING`: no such bead; the last two are reported, never written). What is left is
+`UNMATCHED`: a token-overlap shortlist (`top_k`, default 3) over every baseline bead is put to the
+judge as one choice (`present:N` / `noise:N` / `new` / `abstain`) and each verdict, confidence
+included, is recorded in the archive annotation `bdlg.docs`. **The judge is off by default**
+(`--judge-enabled true` turns it on, same `--judge-*` flags as `beadlog reconcile`): then every
+unmatched doc is an abstain residual, listed as `RESIDUAL <doc>` for a human to confirm.
+
+```bash
+beadlog extract docs --root . --group <group id> --group-dir <prefix> \
+  --extracted-at 2026-10-31T00:00:00Z --baseline baseline.bdlg \
+  --option docs=docs/decisions,docs/design -o proposed.bdlg
+```
+
+Options: `docs` (directories, recursive; default `docs/decisions` and `docs/design`, their `*.md`
+only), `top_k`, `id_prefix`, `new_type`, `labels` (extra labels for a judged-NEW bead, such as the
+hive identity triplet), `prior` (an earlier extract whose verdicts are reused, never re-asked),
+`allow_shallow`. Once the stamps are in the baseline, extracting again reports every doc
+`PRESENT-in-sync` and proposes nothing. The status table and the residual workflow are under
+[Reconcile statuses](#reconcile-statuses) and [Judged residuals](#judged-residuals).
+
+### `beadlog extract planning`
+
+The neutral `planning` strategy (`beadlog_sources.planning`) turns a GSD `.planning` tree into
+beads in one reviewed plan: `phases/NN-<name>/` becomes an epic, each `NN-MM-PLAN.md` an issue with
+a `parent-child` edge to its phase, `depends_on` (inline `[..]` or a block list) `blocks` edges, a
+plan with an `NN-MM-SUMMARY.md` is closed (a phase when all its plans are), and `occurred_at` is the
+git add date of the plan or summary. `external_ref` is the doc path, so extracting again after the
+apply proposes nothing (a summary that appears later proposes only its close). Created beads carry
+`origin:backfill` and `source:planning`; `bh label validate` also wants one `complexity:<TIER>` on
+every routable bead, which is hive policy: name it through `--option labels=complexity:MEDIUM` or run
+`bh backfill complexity` afterwards. Options: `planning` (the tree, default `.planning`),
+`id_prefix` (required with an empty baseline), `labels`, `issue_type`, `allow_shallow`.
+
+A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
+are off in the bd loader and are reported as dropped.
+
+## Reconcile statuses
+
+`beadlog reconcile` classes every proposed bead as NEW, PRESENT, NOISE or DRIFT against the
+baseline. The skill's `reconcile.sh` printed five statuses per doc; the `docs` strategy keeps the
+same five names (they appear in its report) and maps each to an engine class and event:
+
+| `reconcile.sh` status | Meaning | Engine class | Event |
+|---|---|---|---|
+| `PRESENT-in-sync` | a bead already carries the doc as `external_ref` | PRESENT | none |
+| `PRESENT-needs-stamp` | the doc names a bead that has no `external_ref` | DRIFT | `set` of `external_ref` |
+| `DRIFTED-ref` | the named bead points at a different doc | DRIFT | none; reported, never overwritten |
+| `DANGLING` | the named bead is not in the baseline | DRIFT | none; reported |
+| `UNMATCHED` | no bridge resolved the doc | NEW, PRESENT or NOISE once judged | `create` for NEW, `set` of `external_ref` for PRESENT, none for NOISE; an abstain is a residual |
+
+The planning rows of `reconcile.sh --planning` map the same way: `NEW-epic` and `NEW-issue` are
+NEW (a `create`, its `parent-child` and `blocks` edges, and a close when the plan has a summary),
+and `PRESENT-in-sync` is PRESENT. For `git-commits` there is no per-doc status: a bead whose
+`git.commits` gains shas is DRIFT, and a stored value that is not a JSON array of strings is
+reported as DRIFT with no event.
+
+## Judged residuals
+
+Only the `docs` pass has a residual: the docs left after the deterministic bridges (reverse
+`external_ref`, the `Beads:` line, the bead id in the commit that first added the doc).
+
+1. **The judge is off by default.** Every `UNMATCHED` doc is then an abstain residual. The extract
+   prints one `RESIDUAL <doc>` line each, and the archive annotation `bdlg.docs` lists them. A
+   doc with no shortlisted candidate at all is NEW without a question.
+2. **A human confirms the residual list.** Read each doc, then either stamp the bead you choose
+   (`bd update <id> --external-ref <doc>`, or a `Beads:` line in the doc) and extract again, or
+   leave it for a later pass. Nothing is written for a residual.
+3. **Opt in to the judge** with `--judge-enabled true` (and the `--judge-command`,
+   `--judge-model`, `--judge-timeout-seconds`, `--judge-max-calls-per-run` and
+   `--judge-auto-accept` flags, or `BEADLOG_JUDGE_*` environment). Each doc is one choice among
+   `present:N`, `noise:N`, `new` and `abstain` over the token-overlap shortlist. An answer
+   outside the offered options becomes an abstain.
+4. **Verdicts are recorded and reused.** Every verdict, with its confidence, engine and model, is
+   stored in the archive, and `--option prior=<earlier extract>` (for `reconcile`, `--prior
+   <earlier plan>`) reuses a recorded verdict by its query hash, so nothing is asked twice.
+   `beadlog reconcile` marks a judged entry as needing review unless its confidence reaches the
+   `--judge-auto-accept` threshold for its family; `bh backfill inspect plan.bdlg` shows the count.
+
+## End to end
+
+The flow is export, extract, reconcile, inspect, apply. The strategy name is `git-commits`,
+`docs` or `planning`.
+
 ```bash
 bh backfill export --out baseline.bdlg
 bh backfill inspect baseline.bdlg            # note the group id and directory
 beadlog extract <strategy> --root . --group <group id> --group-dir <prefix> \
   --extracted-at 2026-10-31T00:00:00Z --baseline baseline.bdlg -o proposed.bdlg
 beadlog reconcile proposed.bdlg baseline.bdlg -o plan.bdlg
-bh backfill inspect plan.bdlg
-bh backfill apply plan.bdlg --dry-run
+bh backfill inspect plan.bdlg                # classes, review count, verdicts
+bh backfill apply plan.bdlg --dry-run        # the loader's loss report
 bh backfill apply plan.bdlg
 ```
 
-The standalone `beadlog` CLI is the `beadlog-sources` distribution's script (in a checkout,
-`uv run beadlog`); the installed `bh` carries the libraries but not that script or its
-`beadlog.sources` entry points.
+Run the extract from the repository the history lives in, with the baseline exported from the
+hive you are going to apply to. After the apply, export again and extract again: the second
+extract must propose nothing (the postcondition column of the matrix).
 
-A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
-are off in the bd loader and are reported as dropped.
+### Known limitation: DRIFT is not applied by the neutral apply
+
+`bh backfill apply` applies the NEW proposals of a neutral plan and reports DRIFT. Three things
+are DRIFT to reconcile because the bead already exists: the `git-commits` appends, the `docs`
+`external_ref` stamps, and a close that arrives after the bead was created. The neutral apply
+therefore does not apply them. Applying them needs a registered hive pass that declares
+`drift_applicable` (as `complexity` does for its labels). Those passes, `bh backfill commits`,
+`docs` and `planning`, are the hive apply passes tracked in `bh-yvg41.3` (sub-epic D); they are
+not registered yet. Until they are, only `planning`, and the NEW beads a judge adds from `docs`,
+are written by the flow above, and the stamps and appends are produced, reviewed and left in the
+plan.
 
 ## History readers
 
@@ -368,6 +495,9 @@ loss-report entry.
 | `complexity` | `bh backfill complexity` | `bd list --all --include-infra` | `bd label add/remove`, one label at a time | JSON (`complexity-label-backfill`, schema 1) | applied | one valid `complexity:<TIER>` per routable bead; `model:*` untouched |
 | `timeline` | `bh backfill timeline` | the bd `events` table, `git log --first-parent`, commit dates, run journals | `bd update` of `metadata.lifecycle.*` (and `metadata.bdlg`) only, one bead at a time | `.bdlg` (`timeline`, schema 1) | applied | every lifecycle key well-formed with its confidence; a second dry run proposes nothing |
 | `reconcile` (neutral) | `bh backfill apply` | `bd export --all` | the bd StoreLoader (`bd import`, `bd update`, `bd close`, `bd dep`, `bd comments add`) | `.bdlg` from `beadlog reconcile` | reported only | second reconcile finds no NEW |
+| `git-commits` | `beadlog extract git-commits` | `git log` (`rev`, `since`) and the baseline's bead ids | one `set` of `metadata.git.commits` per bead, appending shas | `.bdlg` (extract, then reconcile) | appends are DRIFT; reported, not applied | a second extract proposes nothing |
+| `docs` | `beadlog extract docs` | the doc dirs, the first-add commit of each doc and the baseline | `set` of `external_ref` (DRIFT); `create` plus `origin:backfill` and `source:docs` for a judged NEW | `.bdlg` (extract, then reconcile) | stamps are DRIFT; reported, not applied | a second extract finds every doc `PRESENT-in-sync` |
+| `planning` | `beadlog extract planning` | the `.planning` tree and the git add date of each plan and summary | `create` of epics and issues, `parent-child` and `blocks` edges, closes | `.bdlg` (extract, then reconcile) | a later close is DRIFT; reported, not applied | a second extract proposes nothing |
 
 Scope: `timeline` governs every bead that exists in the hive and proposes only the lifecycle keys
 it has a source for (a bead with no facts is untouched). `complexity` governs epics, features,
@@ -413,6 +543,29 @@ Keep the plan, the pre-state and the audit together until the audit says `state=
 
 Never run `bd compact`, `bd flatten` or Dolt GC as part of a recovery: bead history is the only
 record of when each lifecycle stage happened.
+
+## Retired entry points
+
+The strategies replace three older entry points:
+
+- `scripts/backfill_commit_linkage.py` and `scripts/bead_commit_correlation.py` are deprecation
+  shims. Each prints a warning on stderr that names `beadlog extract git-commits` (the first
+  also names `beadlog reconcile` and `bh backfill apply`). They are removed in the
+  release after next. The shim of `backfill_commit_linkage.py` still writes through
+  `beadhive.git_linkage`, which the neutral flow does not.
+- `scripts/reconcile.sh` of the `bh:backfill` skill is retired by the skills hive, where it
+  lives. The follow-up is `bh-skls-nzz`: rewrite `bh:backfill` as the BeadLog-import layer and
+  retire `reconcile.sh`.
+
+## The `bh:backfill` skill
+
+With the strategies in `beadlog-sources`, the `bh:backfill` skill becomes the BeadLog-import
+layer: it takes a BeadLog and brings it into a hive through this CLI (export a baseline,
+reconcile, preview with `bh backfill inspect` and `apply --dry-run`, apply through the safety
+envelope, and prove idempotency with a second extract). Building a BeadLog from a repository's
+history is the producing half, which the strategies above do on their own, with no hive. The
+neutral skill that builds a BeadLog from a repository's history lives in `beadhive/skills` as its
+own BeadHive-free skill directory, tracked as `bh-skls-8vr`.
 
 ## Defaults
 

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Idempotent full-history backfill of `metadata.git.commits` (bh-1b0rc.3).
+"""DEPRECATED: use `beadlog extract git-commits` (then `beadlog reconcile` and `bh backfill apply`).
+
+This script is now a thin shim: it keeps working for one release, but the matcher it used lives in
+``beadlog_sources.commits`` (the neutral ``git-commits`` strategy, which resolves bead ids against
+a baseline BeadLog, never writes, refuses shallow clones and reports drift instead of
+overwriting). The shim prints a deprecation notice when run and refuses a shallow clone unless
+``--allow-shallow`` is given. Original description follows.
+
+Idempotent full-history backfill of `metadata.git.commits` (bh-1b0rc.3).
 
 Walks ONE hive's (repo's) full git history, oldest-first, and writes durable bead<->commit
 linkage (`docs/design/bead-commit-linkage-contract.md`) for beads that closed before
@@ -8,10 +16,9 @@ one-time recovery mechanism for that pre-adoption gap -- not a replacement for t
 
 Reuses, rather than reimplements, the two pieces the epic already validated:
 
-  * The CANONICAL matcher from the correlation-yield spike (bh-rwryq) --
-    `scripts/bead_commit_correlation.py`'s `extract_candidates` / `resolve_candidates` (plus
-    the supporting `candidate_pattern` / `derive_namespaces` / `load_live_ids` machinery), used
-    HERE VERBATIM. Do not weaken or reimplement candidate extraction or resolve-backed
+  * The CANONICAL matcher from the correlation-yield spike (bh-rwryq), now
+    `beadlog_sources.commits` (`match_commits` over `extract_candidates` / `resolve_candidates`),
+    used HERE VERBATIM. Do not weaken or reimplement candidate extraction or resolve-backed
     filtering in this module -- a candidate that does not resolve against the hive's own live
     bead ID set is never written, full stop.
   * The write-side accumulate/idempotent-write algorithm -- `beadhive.git_linkage.record_commits`
@@ -37,6 +44,14 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from beadlog_sources.commits import (
+    candidate_pattern,
+    derive_namespaces,
+    match_commits,
+    read_commits,
+    require_full_history,
+)
+
 # `scripts/` has no `__init__.py` (a namespace package); when this file is invoked directly
 # (`python scripts/backfill_commit_linkage.py`), sys.path[0] is `scripts/` itself, not the repo
 # root, so `from scripts.bead_commit_correlation import ...` would otherwise fail. Make the
@@ -46,20 +61,16 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# CANONICAL matcher (bh-rwryq spike) -- imported verbatim, per
-# docs/design/bead-commit-linkage-contract.md and the bh-1b0rc.3 brief. `read_commits` isn't
-# marked CANONICAL but is reused as-is too: it's just a `git log` field-wrapper, and a second,
-# slightly-different one here would be exactly the kind of drift this epic exists to avoid.
-from scripts.bead_commit_correlation import (  # noqa: E402
-    candidate_pattern,
-    derive_namespaces,
-    extract_candidates,
-    load_live_ids,
-    read_commits,
-    resolve_candidates,
-)
+from scripts.bead_commit_correlation import load_live_ids  # noqa: E402
 
 from beadhive import git_linkage  # noqa: E402
+
+DEPRECATION = (
+    "backfill_commit_linkage.py is deprecated and will be removed: use "
+    "`beadlog extract git-commits` (propose), `beadlog reconcile` and `bh backfill apply` "
+    "(the strategy resolves bead ids against a baseline from `bh backfill export`, never "
+    "writes, and reports drift instead of overwriting)."
+)
 
 __all__ = [
     "BackfillReport",
@@ -104,22 +115,14 @@ def collect_bead_commits(
     namespaces = derive_namespaces(live_ids)
     pattern = candidate_pattern(namespaces)
 
-    commits = read_commits(repo, None, rev)  # newest-first, no window -- the whole history
+    commits = read_commits(repo, rev)  # newest-first, no window -- the whole history
     commits.reverse()  # oldest-first, per the linkage contract's append order
 
-    bead_to_shas: dict[str, list[str]] = {}
-    examined = 0
-    unmatched = 0
-    for commit in commits:
-        examined += 1
-        candidates = extract_candidates(commit.message, pattern)
-        resolved, _dropped = resolve_candidates(candidates, live_ids)
-        beads_hit = set(resolved)  # dedupe repeat mentions of the same bead within one commit
-        if not beads_hit:
-            unmatched += 1
-            continue
-        for bead_id in beads_hit:
-            bead_to_shas.setdefault(bead_id, []).append(commit.sha)
+    matches = match_commits(commits, live_ids, pattern)
+    bead_to_shas = {
+        bead_id: [commit.sha for commit in found] for bead_id, found in matches.by_bead.items()
+    }
+    examined, unmatched = matches.examined, matches.unmatched
 
     return bead_to_shas, examined, unmatched, live_ids, sorted(namespaces)
 
@@ -211,12 +214,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="report what would be written, without calling record_commits at all",
     )
+    ap.add_argument(
+        "--allow-shallow",
+        action="store_true",
+        help="walk a shallow clone's truncated history instead of refusing it",
+    )
     ap.add_argument("--json", action="store_true", help="machine-readable summary")
     return ap.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    print(f"warning: {DEPRECATION}", file=sys.stderr)
+    if not args.allow_shallow:
+        require_full_history(args.repo)
     rep = run_backfill(args.repo, rev=args.rev, dry_run=args.dry_run)
     if args.json:
         print(json.dumps(asdict(rep), indent=2, sort_keys=True))
