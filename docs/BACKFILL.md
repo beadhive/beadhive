@@ -24,9 +24,9 @@ Root never holds engine logic; the published wheel vendors the three libraries' 
 ```text
 bh backfill complexity   [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
 bh backfill timeline     [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
-bh backfill commits      [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--option K=V]... [--json]
-bh backfill docs         (the same options as commits)
-bh backfill planning     (the same options as commits)
+bh backfill commits      [--hive H] [--dry-run | --apply] [--since-cursor] [--plan F] [--pre-state F] [--audit F] [--option K=V]... [--json]
+bh backfill docs         (the same options as commits, without --since-cursor)
+bh backfill planning     (the same options as commits, without --since-cursor)
 bh backfill coverage     [--hive H] [--refresh] [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--json]
 bh backfill inspect      F.bdlg [--json]
@@ -431,6 +431,62 @@ the fresh store before it reports the apply as done. An applied pass also refres
 cache when `backfill.coverage.enabled`. A plan from these passes also applies through
 `bh backfill apply PLAN.bdlg`.
 
+## Incremental and continuous backfill
+
+Linkage and timeline stay current with small runs instead of full re-scans.
+
+**Cursors.** Each incremental pass keeps a cursor: the first-parent head it last read to
+(`land_sha`) and, for `timeline`, the newest bd `events` row it saw (`events_at`, `events_row_id`).
+They live in one small versioned JSON file per hive, beside the coverage cache
+(`<state>/backfill/<hive>/cursors.json`), with a digest. A cursor moves only when an **applied**
+incremental plan names it (the entry records the `plan_hash` and the `audit` of the run it came
+from); a dry run never moves one. The `events` table's row id is a UUID and its `created_at` has
+second resolution, so "after the cursor" is `created_at >= events_at` (inclusive: a row from the
+cursor's own second is seen again, which is harmless because every proposal is content-addressed).
+
+**`bh backfill commits --since-cursor`** (a dry-run option; the saved plan records its range)
+reads only the commits after the cursor, and the `timeline` pass has the same incremental form
+(`TimelinePass(incremental=True)`), which `backfill.continuous` runs; the published
+`bh backfill timeline` verb is unchanged. What each pass reads when it runs incrementally:
+
+| Pass | What moved | How it is read |
+|---|---|---|
+| `commits` | the commits after `land_sha` | `git log <land_sha>..<rev>` (the plan pins `since` and `rev`) |
+| `timeline` | beads with an `events` row at or after `events_at`, and the targets of the lands after `land_sha` (a batch land: every bead carrying its `batch:` label) | a `WHERE created_at >= ...` read, then the `events` rows of just those beads |
+
+A moved bead's facts come from the same sources and rules as a full run, so a run proposes
+**exactly the events a full run would add for those beads, and nothing else**. The plan report
+gains an `incremental` section (`mode`, the `scope`, the `cursor_in`, the `cursor_next` and any
+`warnings`); a run without `--since-cursor` is unchanged. What a cursor cannot see: a commit that
+names a bead created after it, and run journals (host-local files): a periodic full run catches
+both.
+
+A cursor is a hint, never an authority. With no cursor the first `--since-cursor` run is a full
+run (and, once applied, records the cursor). A cursor file that cannot be trusted (not JSON,
+another schema, a failed digest, a malformed entry), or a cursor whose commit left the branch
+history, is a warning on stderr and a full run.
+
+**Continuous backfill** (`backfill.continuous`, off by default) runs the same passes after
+`bh work merge` / `finish` lands on the integration branch (trigger `post-merge`) and after
+`bh hive sync` pulls a hive (trigger `sync`). It is best effort: a failing loader, a corrupt cursor
+or any pass error is one warning on stderr and the merge or sync carries on. It runs after the
+merge slot is released and is bounded:
+
+- `timeline` is scoped to the merged beads plus whatever moved since the cursor; `commits` reads
+  from the cursor, or, with none, from the integration tip before the merge. A hook never starts a
+  full run: with nothing to bound it, it says so and waits for one `--since-cursor` run.
+- With no cursor the hook is scoped to the merged beads and records none, so it cannot skip commits
+  an earlier run never read; with a cursor it follows and moves it. Today the CLI earns a cursor for
+  `commits` only (`--since-cursor`); a `timeline` hook therefore stays scoped to the merged beads,
+  and the `sync` trigger has nothing to follow for `timeline` until the published `timeline` verb
+  gains the same flag (an additive wire change that needs operator approval).
+- Each run is the ordinary plan/apply envelope (plan hash, drift gate, applying audit,
+  verification, rollback). Its recovery export holds only the beads it changes (a `.bdlg`, never a
+  corpus archive) and its audit and recovery files replace the previous run's
+  (`<state>/backfill/<hive>/continuous/`); the bd rows are read through a per-run read cache.
+- When anything was applied the coverage cache is refreshed through the same seam as the other
+  passes (when `backfill.coverage.enabled`).
+
 ## History readers
 
 Bulk, read-only readers over every lifecycle source, feeding `bh backfill timeline` and
@@ -679,6 +735,7 @@ own BeadHive-free skill directory, tracked as `bh-skls-8vr`.
 
 Every new behavior is off until asked for: the Haiku judge (`backfill.judge.enabled=false`),
 the dolt_history gap fill (`backfill.timeline.gapfill.enabled=false`), the coverage cache refresh
-after an applied pass (`backfill.coverage.enabled=false`), deletion and erasure in
+after an applied pass (`backfill.coverage.enabled=false`), continuous backfill after merges and
+syncs (`backfill.continuous.enabled=false`), deletion and erasure in
 the bd loader, `export --history` (the plain export is the default), and any write (a pass,
 `timeline` included, previews unless `--apply`).

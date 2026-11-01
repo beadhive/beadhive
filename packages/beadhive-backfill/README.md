@@ -62,6 +62,14 @@ Store-neutral adapters: `JsonFileAuditSink` (the audit file beside the plan) and
   costs a fixed number of calls, never one per bead. `Timeline.of(bead)` returns a bead's whole
   timeline, history events included.
 
+- `beadhive_backfill.incremental` — per-pass cursors (`PassCursor`, a small digest-checked JSON
+  file; a corrupt or stale one reads as no cursor with a warning) and the `IncrementalReaders`
+  port. `TimelinePass(incremental=True, cursor=...)` and `source_pass("commits", incremental=True,
+  cursor=...)` read only what moved since the cursor and propose exactly the events a full run
+  would add for it; the report's `incremental` section records the mode, scope and the cursor an
+  applied plan earns (`cursor_to_record`). Cursor and pass logic live here; the file location, the
+  CLI and the post-merge trigger are root wiring.
+
 Identity-label passes land in a later bead.
 
 Tests: `uv run --package beadhive-backfill pytest packages/beadhive-backfill/tests`.

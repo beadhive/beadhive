@@ -77,6 +77,7 @@ work_settings = CapabilitySettings(
         "gate_model",
         "integration_branch",
         "harness_name",
+        "home",
         "ledger_ttl",
         "load",
         "max_commits",

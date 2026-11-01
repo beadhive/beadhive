@@ -40,6 +40,7 @@ Nothing here imports ``beadhive``: the root hive wires the StoreLoader and the C
 
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -55,6 +56,14 @@ from beadlog_sources import (
 )
 
 from ._errors import BackfillError
+from .incremental import (
+    INCREMENTAL_KEY,
+    MODE_FULL,
+    MODE_INCREMENTAL,
+    MODE_SCOPED,
+    PassCursor,
+    incremental_info,
+)
 
 PASS_SCHEMA_VERSION = "1"
 PASS_COMMITS = "commits"
@@ -68,6 +77,7 @@ _BEAD_FACETS = frozenset({"exists", "deleted", "erased"})
 # only when the pass judges.
 _JUDGE_FACETS = frozenset({"type", "fields.title", "fields.description"})
 _COMMON_OPTIONS = frozenset({"allow_shallow", "git"})
+_SHA = re.compile(r"^[0-9a-f]{7,64}$")
 
 
 def parse_options(items: Iterable[str]) -> dict[str, str]:
@@ -172,34 +182,113 @@ class SourcePass:
 
 
 class CommitsPass(SourcePass):
-    """``git.commits`` appends from ``git log`` (strategy ``git-commits``)."""
+    """``git.commits`` appends from ``git log`` (strategy ``git-commits``).
+
+    **Incremental** (``incremental=True``, ``bh backfill commits --since-cursor``): the strategy
+    already reads ``since..rev``, so the cursor is one sha. With a ``cursor`` whose commit is an
+    ancestor of ``rev`` the pass reads only the commits after it and so proposes exactly the
+    appends a full run would add for them. A cursor that no longer reaches ``rev`` (history was
+    rewritten) or is incomplete is a warning and the pass reads in full (``full_ok=False``
+    refuses instead, for triggers that must stay small). ``since`` (a sha) bounds
+    the run instead when there is no usable cursor (``mode=scoped``: a merge's own commits; no
+    cursor moves). ``since`` resolves into the pinned options, so the apply re-reads the same
+    range."""
 
     name = PASS_COMMITS
     allowed_options = frozenset({"rev", "since"}) | _COMMON_OPTIONS
     facets = _BEAD_FACETS | {"fields.metadata.git.commits"}
 
+    def __init__(
+        self,
+        root: Path | str,
+        group: str,
+        *,
+        options: Mapping[str, str] | None = None,
+        judging: bool = False,
+        incremental: bool = False,
+        cursor: PassCursor | None = None,
+        since: str | None = None,
+        full_ok: bool = True,
+    ) -> None:
+        self.incremental = bool(incremental)
+        self.full_ok = full_ok
+        self.cursor = cursor
+        self.since = since
+        self.info: dict[str, Any] | None = None
+        super().__init__(root, group, options=options, judging=judging)
+
     def strategy(self) -> GitCommitsStrategy:
         return GitCommitsStrategy()
 
-    def pin(self, options: dict[str, str]) -> dict[str, str]:
-        """``rev`` becomes the commit sha it names: a branch that moves between the plan and
-        the apply must not change what the second dry run reads."""
-        rev = options.get("rev") or "HEAD"
-        binary = options.get("git") or "git"
+    def _git(self, *args: str, binary: str = "git") -> subprocess.CompletedProcess[str]:
         try:
-            done = subprocess.run(
-                [binary, "-C", str(self.root), "rev-parse", "--verify", "--quiet"]
-                + [f"{rev}^{{commit}}"],
+            return subprocess.run(
+                [binary, "-C", str(self.root), *args],
                 capture_output=True,
                 text=True,
                 check=False,
             )
         except OSError as exc:
             raise BackfillError(f"commits: cannot run {binary}: {exc}") from exc
+
+    def _reaches(self, sha: str, rev: str, binary: str) -> bool:
+        if not _SHA.match(sha):
+            return False
+        return self._git("merge-base", "--is-ancestor", sha, rev, binary=binary).returncode == 0
+
+    def pin(self, options: dict[str, str]) -> dict[str, str]:
+        """``rev`` becomes the commit sha it names: a branch that moves between the plan and
+        the apply must not change what the second dry run reads. An incremental run also pins
+        ``since`` to the commit it resumes from."""
+        rev = options.get("rev") or "HEAD"
+        binary = options.get("git") or "git"
+        done = self._git("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}", binary=binary)
         sha = done.stdout.strip()
         if done.returncode != 0 or not sha:
             raise BackfillError(f"commits: {rev!r} does not name a commit in {self.root}")
-        return {**options, "rev": sha}
+        pinned = {**options, "rev": sha}
+        if self.incremental:
+            pinned = self._resume(pinned, sha, binary)
+        return pinned
+
+    def _resume(self, options: dict[str, str], rev: str, binary: str) -> dict[str, str]:
+        if options.get("since"):
+            raise BackfillError("commits: --since-cursor cannot be combined with --option since")
+        warnings: list[str] = []
+        resume = self.cursor.land_sha if self.cursor is not None else None
+        mode = MODE_INCREMENTAL
+        if self.cursor is not None and resume is None:
+            warnings.append("the commits cursor is incomplete")
+        if resume is not None and not self._reaches(resume, rev, binary):
+            warnings.append(f"cursor commit {resume[:12]} is not in the history of {rev[:12]}")
+            resume = None
+        if resume is None:
+            mode = MODE_FULL
+            if self.since and self._reaches(self.since, rev, binary):
+                resume, mode = self.since, MODE_SCOPED
+        if mode == MODE_FULL and not self.full_ok:
+            raise BackfillError(
+                "commits: no usable cursor and no starting commit; "
+                "run `bh backfill commits --since-cursor` once to start one"
+            )
+        chosen = dict(options)
+        if resume is not None:
+            chosen["since"] = resume
+        self.info = incremental_info(
+            mode,
+            cursor_in=self.cursor,
+            cursor_next=None if mode == MODE_SCOPED else PassCursor(PASS_COMMITS, rev),
+            warnings=warnings,
+        )
+        return chosen
+
+    def report(
+        self, states: Mapping[BeadRef, BeadState], proposed: Sequence[BeadEvent]
+    ) -> dict[str, Any]:
+        report = super().report(states, proposed)
+        if self.info is not None:
+            report[INCREMENTAL_KEY] = self.info
+        return report
 
 
 class DocsPass(SourcePass):
@@ -241,15 +330,35 @@ def source_pass(
     *,
     options: Mapping[str, str] | None = None,
     judging: bool = False,
+    incremental: bool = False,
+    cursor: PassCursor | None = None,
+    since: str | None = None,
+    full_ok: bool = True,
 ) -> SourcePass:
-    """The hive pass named ``name`` (one of :data:`SOURCE_PASS_NAMES`)."""
+    """The hive pass named ``name`` (one of :data:`SOURCE_PASS_NAMES`).
+
+    ``incremental`` / ``cursor`` / ``since`` make a ``commits`` run incremental
+    (:class:`CommitsPass`); the other passes have no incremental form and refuse it."""
     try:
         cls = _PASSES[name]
     except KeyError:
         raise BackfillError(
             f"unknown source pass {name!r}; known: {', '.join(SOURCE_PASS_NAMES)}"
         ) from None
-    return cls(root, group, options=options, judging=judging)
+    if not incremental:
+        return cls(root, group, options=options, judging=judging)
+    if cls is not CommitsPass:
+        raise BackfillError(f"{name}: --since-cursor applies to the commits and timeline passes")
+    return CommitsPass(
+        root,
+        group,
+        options=options,
+        judging=judging,
+        incremental=True,
+        cursor=cursor,
+        since=since,
+        full_ok=full_ok,
+    )
 
 
 def source_pass_for_plan(

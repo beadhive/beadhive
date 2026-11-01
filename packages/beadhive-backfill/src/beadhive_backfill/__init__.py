@@ -22,6 +22,9 @@ public ``__all__``) and never imports ``beadhive``. It owns the hive apply envel
 - the source-strategy passes (:mod:`beadhive_backfill.source_passes`): ``commits``, ``docs`` and
   ``planning`` wrap the neutral strategies and apply their DRIFT (``git.commits`` appends,
   ``external_ref`` stamps, a later close) as well as NEW through the envelope;
+- per-pass cursors and incremental runs (:mod:`beadhive_backfill.incremental`): the versioned
+  cursor file, the incremental-readers protocol and the ``incremental`` report section behind
+  ``--since-cursor`` (``commits`` and ``timeline``) and continuous backfill;
 - link-coverage metrics and their cached state (:mod:`beadhive_backfill.coverage`): the three
   ratios over injected reads, the inputs hash and the versioned cache file;
 - the AGF history readers, also public submodules: :mod:`beadhive_backfill.merges` (one
@@ -52,6 +55,14 @@ from .contracts import (
     VerifyingPass,
 )
 from .engine import BackfillEngine, system_clock
+from .incremental import (
+    CURSOR_FILE,
+    IncrementalReaders,
+    PassCursor,
+    cursor_to_record,
+    read_cursor,
+    write_cursor,
+)
 from .plan import ENGINE_ANNOTATION, ENGINE_SCHEMA, Plan
 from .sinks import ArchivePreStateExporter, JsonFileAuditSink
 from .source_passes import (
@@ -75,6 +86,7 @@ def distribution_name() -> str:
 
 __all__ = [
     "ALL_FACETS",
+    "CURSOR_FILE",
     "DISTRIBUTION",
     "ENGINE_ANNOTATION",
     "ENGINE_SCHEMA",
@@ -92,7 +104,9 @@ __all__ = [
     "CommitsPass",
     "DocsPass",
     "HivePass",
+    "IncrementalReaders",
     "JsonFileAuditSink",
+    "PassCursor",
     "PathReaders",
     "Plan",
     "PlanningPass",
@@ -107,12 +121,15 @@ __all__ = [
     "TimelineReaders",
     "VerifyingPass",
     "bead_key",
+    "cursor_to_record",
     "distribution_name",
     "has_inverse",
     "inverse_of",
     "projection",
     "projection_hash",
+    "read_cursor",
     "source_pass",
     "source_pass_for_plan",
     "system_clock",
+    "write_cursor",
 ]
