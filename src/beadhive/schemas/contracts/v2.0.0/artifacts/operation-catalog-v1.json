@@ -786,6 +786,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "history",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -810,7 +818,8 @@
           "parameters": [
             "hive",
             "out",
-            "as_json"
+            "as_json",
+            "history"
           ],
           "path": "backfill export",
           "progress": {
@@ -873,6 +882,111 @@
             "as_json"
           ],
           "path": "backfill inspect",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "backfill.timeline",
+      "parameters": [
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "apply",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "dry_run",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "plan_path",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "pre_state",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "audit",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "hive",
+            "apply",
+            "dry_run",
+            "plan_path",
+            "pre_state",
+            "audit",
+            "as_json"
+          ],
+          "path": "backfill timeline",
           "progress": {
             "mode": "structured",
             "notification_uris": [],

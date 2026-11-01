@@ -2121,12 +2121,46 @@ class BackfillJudgeConfig(_Section):
         return value
 
 
+class BackfillGapfillConfig(_Section):
+    """``backfill.timeline.gapfill`` — the opt-in, bounded ``dolt_history_*`` gap fill for beads
+    that have no ``created`` row in the events table (docs/BACKFILL.md "Gap fill"). Off by
+    default: ``bh backfill export --history`` reads the events table only and no history scan
+    runs. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with
+    ``timeout_seconds`` as its time limit."""
+
+    enabled: bool = Field(
+        False, description="Recover snapshot-level history for beads lacking a created event."
+    )
+    batch_size: int = Field(
+        25,
+        ge=1,
+        description="Beads per dolt_history scan. Each scan walks every store commit "
+        "(~10 s) and returns one row per commit per bead (~3 MB of CSV per bead).",
+    )
+    timeout_seconds: float = Field(
+        180.0, gt=0, description="Seconds one gap-fill query may run before the run stops."
+    )
+
+
+class BackfillTimelineConfig(_Section):
+    """``backfill.timeline`` — settings of the history/timeline export (off by default)."""
+
+    gapfill: BackfillGapfillConfig = Field(
+        default_factory=BackfillGapfillConfig,
+        description="Opt-in dolt_history gap fill for beads that predate the events table.",
+    )
+
+
 class BackfillConfig(_Section):
     """``backfill`` — shared backfill engine settings (every behavior off by default)."""
 
     judge: BackfillJudgeConfig = Field(
         default_factory=BackfillJudgeConfig,
         description="Opt-in bh-judge/1 command judge for reconcile; deterministic when off.",
+    )
+    timeline: BackfillTimelineConfig = Field(
+        default_factory=BackfillTimelineConfig,
+        description="History/timeline export settings, including the opt-in dolt_history gap fill.",
     )
 
 
