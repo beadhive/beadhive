@@ -163,6 +163,44 @@ class HonestlyLossy(testing.InMemoryStore):
         return report
 
 
+class LogicalErase(testing.InMemoryStore):
+    """An XTDB-shaped store: erased content leaves every read but the bytes stay in the store's
+    history, so it declares ``erase-logical`` (never ``erase``) and flags each tombstone."""
+
+    name = "logical-erase"
+    capabilities = (testing.InMemoryStore.capabilities - {"erase"}) | {"erase-logical"}
+    flag_tombstones = True
+
+    def load(self, events: Sequence[beadlog.BeadEvent], *, dry_run: bool) -> Mapping[str, Any]:
+        batch = tuple(events)
+        report = dict(super().load(batch, dry_run=dry_run))
+        losses = [
+            _loss(event, "erasure.incomplete", "", "degraded")
+            for event in batch
+            if event.kind is beadlog.EventKind.TOMBSTONE and self.flag_tombstones
+        ]
+        report["loader"] = dict(report["loader"], name=self.name)
+        report["losses"] = losses
+        report["summary"] = dict(
+            report["summary"],
+            degraded=len(losses),
+            by_code={"erasure.incomplete": len(losses)} if losses else {},
+        )
+        return report
+
+
+class SilentLogicalErase(LogicalErase):
+    """Declares ``erase-logical`` but does not flag the surviving bytes."""
+
+    flag_tombstones = False
+
+
+class DeclaresBothErasures(testing.InMemoryStore):
+    """Declares ``erase`` and ``erase-logical`` at once, which the format forbids."""
+
+    capabilities = testing.InMemoryStore.capabilities | {"erase-logical"}
+
+
 def _loss(event: beadlog.BeadEvent, code: str, member: str, disposition: str) -> dict[str, Any]:
     return {
         "event_id": event.id,
@@ -251,3 +289,24 @@ def test_the_factory_must_return_an_empty_store() -> None:
 
     with pytest.raises(testing.ConformanceFailure, match="empty"):
         testing.CASES[0].run(used)
+
+
+def test_erase_logical_is_a_loader_capability_the_reference_store_does_not_declare() -> None:
+    assert beadlog.LoaderCapability.ERASE_LOGICAL == "erase-logical"
+    assert "erase-logical" not in testing.InMemoryStore.capabilities
+    assert "erase" in testing.InMemoryStore.capabilities
+
+
+def test_a_logical_erase_store_that_flags_each_tombstone_conforms() -> None:
+    assert "erase" not in LogicalErase.capabilities
+    assert _failing(LogicalErase) == set()
+
+
+def test_a_logical_erase_store_must_report_erasure_incomplete() -> None:
+    assert _failing(SilentLogicalErase) == {"loss_report_completeness"}
+
+
+def test_a_store_declaring_both_erasure_kinds_is_caught() -> None:
+    assert _failing(DeclaresBothErasures) == {"loss_report_completeness"}
+    with pytest.raises(testing.ConformanceFailure, match="at most one"):
+        testing.assert_conformant(DeclaresBothErasures)

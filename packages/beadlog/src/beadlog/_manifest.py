@@ -51,6 +51,9 @@ class LoaderCapability(StrEnum):
     RECORDED_TIME = "recorded-time"
     RECORDED_TIME_MONOTONE_LOAD = "recorded-time-monotone-load"
     ERASE = "erase"
+    # Added 2026-10-31 (format ADR amendment A1): erased content is absent from every read but its
+    # bytes may survive in the store's log and files. A loader declares at most one of the two.
+    ERASE_LOGICAL = "erase-logical"
     METADATA_FALLBACK = "metadata-fallback"
 
 
