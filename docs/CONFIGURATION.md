@@ -525,10 +525,11 @@ writes only the cache file; a failure warns and never fails the apply.
 
 | Key (under `backfill.coverage`) | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | rewrite the cached state after every applied backfill pass |
+| `enabled` | `false` | rewrite the cached state after every applied backfill pass, and show the cached ratios in `bh doctor` and `bh hive ready` (advisory) |
 | `code_types` | `[bug, chore, feature, task]` | bead types that count as code-bearing in the closed-beads-with-commits ratio; `event`, `gate` and `molecule` never count, whatever is listed |
 | `doc_roots` | `[docs]` | directories whose `*.md` files (recursively) are the set of docs measured (at least one) |
 | `example_limit` | `5` | top unlinked examples kept per ratio (0 keeps none) |
+| `warn_below` | `0.60` | advisory threshold, per ratio (0 to 1): a cached ratio below it renders a warning in `bh doctor` and `bh hive ready`, never a failure |
 
 `code_types` and `doc_roots` are part of the cache's inputs hash, so changing either marks the
 cache stale until the next refresh.

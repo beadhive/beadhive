@@ -182,6 +182,23 @@ def _tracker_adapter_checks(cfg, entry) -> list[Check]:
     ]
 
 
+def _link_coverage_check(cfg, entry) -> list[Check]:
+    """One INFORMATIONAL line with the cached link-coverage ratios (``docs/BACKFILL.md``
+    "Coverage"). Opt-in: nothing, and the cache is not even opened, unless
+    ``backfill.coverage.enabled``. Never required, so a low or missing figure is a ``warn`` /
+    ``off`` line and can never fail readiness. One small file read: no bd export, no git log."""
+    from . import backfill_coverage  # lazy: only an enabled check pays for the import
+
+    try:
+        advisory = backfill_coverage.advisory_for(cfg, entry, Path.cwd(), config.home())
+    except Exception as exc:  # noqa: BLE001 - advisory: an unreadable config never fails readiness
+        return [Check("link coverage", False, "warn", f"unavailable: {exc}")]
+    if advisory is None:
+        return []
+    state = {"ok": "ok", "warn": "warn", "never": "off", "stale": "warn"}[advisory.state.value]
+    return [Check("link coverage", False, state, advisory.summary())]
+
+
 def _build_verify_checks(cfg, entry, root: Path) -> list[Check]:
     """Project plugin diagnostics; errors fail readiness because impact would be unsound."""
     if not (root / "pants.toml").is_file():
@@ -630,6 +647,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.append(_git_workspace_check(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.extend(_tracker_adapter_checks(cfg, entry))
+    checks.extend(_link_coverage_check(cfg, entry))
     checks.extend(_build_verify_checks(cfg, entry, root))
     checks.append(_grant_check(cfg, root, provider, org, repo))
     checks.append(_codex_sandbox_check(cfg, root, provider, org, repo))

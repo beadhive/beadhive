@@ -12,7 +12,14 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-from beadhive import config, daemon_supervisor, hive, hive_ready
+from beadhive import config, daemon_supervisor, hive, hive_ready, registry
+from beadhive.backfill_coverage import state_path
+from beadhive_backfill.coverage import (
+    CoverageReport,
+    CoverageSettings,
+    Ratio,
+    write_coverage_cache,
+)
 from harness.world import git
 
 
@@ -903,3 +910,63 @@ def test_the_tracker_row_carries_no_credential(world, monkeypatch, capsys):
     assert _TRACKER_TOKEN not in out
     payload = hive_ready.ready_payload(True)
     assert _TRACKER_TOKEN not in json.dumps(payload)
+
+
+# -- advisory link coverage (docs/BACKFILL.md "Coverage"): warns, never fails -------------------
+
+_COV_REFRESH = "bh backfill coverage --refresh"
+
+
+def _enable_coverage(world, main, ratios=None):
+    cfg = config.load()
+    cfg["backfill"] = {"coverage": {"enabled": True}}
+    config.save(cfg)
+    if ratios is None:
+        return
+    entry = registry.find_entry(config.load(), "github", "myorg", "myrepo")
+    write_coverage_cache(
+        state_path(entry, main, config.home()),
+        CoverageReport(
+            computed_at="2026-11-01T00:00:00Z",
+            inputs_hash="sha256:" + "0" * 64,
+            group=None,
+            settings=CoverageSettings(),
+            beads=Ratio(*ratios),
+            commits=Ratio(*ratios),
+            docs=Ratio(*ratios),
+        ),
+    )
+
+
+def _checks():
+    result = hive_ready.probe_readiness()
+    return result, {c.label: c for c in result.checks}
+
+
+def test_coverage_check_off_by_default_adds_no_line(world) -> None:
+    _make_ready(world)
+    result, checks = _checks()
+    assert result.ready and "link coverage" not in checks
+
+
+def test_low_coverage_ratios_warn_but_never_fail_readiness(world) -> None:
+    main = _make_ready(world)
+    _enable_coverage(world, main, ratios=(1, 10))
+
+    result, checks = _checks()
+
+    assert result.ready is True
+    assert (checks["link coverage"].required, checks["link coverage"].state) == (False, "warn")
+    assert "10.0% (1/10) !" in checks["link coverage"].detail
+
+
+def test_missing_coverage_cache_hints_at_refresh_and_never_fails_readiness(world) -> None:
+    main = _make_ready(world)
+    _enable_coverage(world, main)
+
+    result, checks = _checks()
+
+    assert result.ready is True
+    assert checks["link coverage"].state == "off"
+    assert "never computed" in checks["link coverage"].detail
+    assert _COV_REFRESH in checks["link coverage"].detail
