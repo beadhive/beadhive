@@ -13,7 +13,7 @@ The architecture and packaging are decided in
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
 | `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader, the `bd-history` events-table conversion, `git-commits`, `docs` and `planning`), reconcile, judges, the standalone `beadlog` CLI |
-| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`) |
+| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`) and the link-coverage metrics (`beadhive_backfill.coverage`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 
 Root never holds engine logic; the published wheel vendors the three libraries' import packages
@@ -24,6 +24,7 @@ Root never holds engine logic; the published wheel vendors the three libraries' 
 ```text
 bh backfill complexity   [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
 bh backfill timeline     [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
+bh backfill coverage     [--hive H] [--refresh] [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verify       F.bdlg [--json]
@@ -32,8 +33,8 @@ bh backfill-complexity   (the flat alias of `bh backfill complexity`; published 
 ```
 
 Nothing writes to a hive unless asked: a pass previews by default and writes only with
-`--apply`, and `apply` writes only without `--dry-run`. `export`, `inspect` and `verify` never
-write to a hive.
+`--apply`, and `apply` writes only without `--dry-run`. `export`, `inspect`, `verify` and
+`coverage` never write to a hive.
 
 ### Shared options
 
@@ -248,6 +249,57 @@ every routable bead, which is hive policy: name it through `--option labels=comp
 
 A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
 are off in the bd loader and are reported as dropped.
+
+## Coverage
+
+`bh backfill coverage` measures how well a hive's work is linked, so that backfill becomes a drift
+detector and not a one-time chore. Three ratios, the baselines of the
+[ADR](design/backfill-platform-adr.md#context) measured the same way:
+
+| Ratio (JSON key) | Numerator | Denominator |
+|---|---|---|
+| `closed_beads_with_commits` | closed code-bearing beads that record a commit in `metadata.git.commits` | closed (or retired) beads of a `code_types` type |
+| `commits_resolving_to_bead` | commits whose message (subject and body) names a bead of the hive | every commit of the integration branch |
+| `docs_linked_to_bead` | docs under `doc_roots` that some bead carries as its `external_ref` | every `*.md` under `doc_roots` |
+
+The code-bearing types are `backfill.coverage.code_types` (default `bug`, `chore`, `feature`,
+`task`); `event`, `gate` and `molecule` records are infrastructure and never enter the first ratio,
+whatever is configured. Commits are matched with the same two-step matcher as `git-commits` (a loose
+namespace-anchored token, kept only when it resolves in the hive's own id set), so `bh-infra` is
+not a link. A ratio over an empty denominator is `null`, never 0 or 1. A shallow clone is refused,
+as in `git-commits`: truncated history would understate the commit ratio.
+
+```bash
+bh backfill coverage --refresh   # one bd export, one git log, one doc walk; rewrites the cache
+bh backfill coverage             # the cached state, checked against the hive's current inputs
+bh backfill coverage --json      # the same as JSON (schema: `packages/beadhive-backfill/src/beadhive_backfill/schemas/coverage-v1.schema.json`)
+```
+
+**Cached state.** The ratios are cached as a versioned JSON file in the bh state dir,
+`<bh home>/state/backfill/<hive key>/coverage.json`: `computed_at`, an `inputs_hash`, the settings,
+the ratios and the top unlinked examples of each (most recently closed beads, newest commits, doc
+paths). The `inputs_hash` is a SHA-256 over exactly what the ratios depend on: the settings, each
+bead's type, closedness, recorded commits and `external_ref`, each commit's sha and message, and
+the doc paths. A plain `coverage` reads the inputs once to compare, and reports the cache as one of:
+
+| `status` | Meaning |
+|---|---|
+| `fresh` | the cache matches the hive's current inputs |
+| `stale` | the cache was computed from different inputs: its figures are shown marked **STALE** (text) or with `status: stale` (JSON) and are never presented as current; run `--refresh` |
+| `missing` | no cache yet; run `--refresh` |
+| `invalid` | the file is corrupt or of a version this build does not read; `--refresh` replaces it |
+
+The cache is rewritten atomically by `coverage --refresh`, and, when `backfill.coverage.enabled`
+is true (off by default), after every applied pass: `complexity`, `timeline` and the neutral
+`apply`. A failed refresh only warns on stderr; the apply has already landed and is audited.
+
+**For later passes.** The seam is one call. A new applied pass ends with
+`backfill_cli.refresh_coverage_after_apply(hive, quiet=as_json)`, or, from a module that
+`backfill_cli` imports (as `complexity_backfill` is), appends to its own `APPLIED_HOOKS` list. A
+caller that has the inputs without a full export (an incremental run) builds a
+`beadhive_backfill.coverage.CoverageReport` with `compute_coverage` and persists it with
+`write_coverage_cache`; a cheap advisory check reads the cache with `check_cache(path)` and no
+inputs, and gets `unverified` instead of a freshness claim.
 
 ## Reconcile statuses
 
@@ -570,6 +622,7 @@ own BeadHive-free skill directory, tracked as `bh-skls-8vr`.
 ## Defaults
 
 Every new behavior is off until asked for: the Haiku judge (`backfill.judge.enabled=false`),
-the dolt_history gap fill (`backfill.timeline.gapfill.enabled=false`), deletion and erasure in
+the dolt_history gap fill (`backfill.timeline.gapfill.enabled=false`), the coverage cache refresh
+after an applied pass (`backfill.coverage.enabled=false`), deletion and erasure in
 the bd loader, `export --history` (the plain export is the default), and any write (a pass,
 `timeline` included, previews unless `--apply`).

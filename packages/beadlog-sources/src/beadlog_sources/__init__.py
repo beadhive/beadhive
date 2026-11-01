@@ -12,7 +12,8 @@ never imports ``beadhive``. It owns:
   current-state events, re-emitting the BeadLog ids a bd loader stored in ``metadata.bdlg``;
 - the neutral ``git-commits`` strategy (:mod:`beadlog_sources.commits`): the two-step bead-id
   matcher over a repository's git history, proposing append-only ``git.commits`` events for the
-  beads of a baseline;
+  beads of a baseline (its matcher primitives and the ``git.commits`` value parser are public, so
+  other libraries measure linkage with the same matcher);
 - the neutral ``docs`` strategy (:mod:`beadlog_sources.docs`): decision and design docs bridged to
   beads (frontmatter ``Beads:``, the first-add commit's bead id, existing ``external_ref``), then a
   lexical shortlist and the judged residual, proposing ``external_ref`` stamps;
@@ -82,7 +83,15 @@ from .bd_timeline import (
     source_family,
     suppress_artifacts,
 )
-from .commits import GitCommitsStrategy, ShallowCloneError
+from .commits import (
+    GitCommitsStrategy,
+    ShallowCloneError,
+    candidate_pattern,
+    derive_namespaces,
+    extract_candidates,
+    parse_linkage,
+    resolve_candidates,
+)
 from .contracts import (
     ABSTAIN,
     DEFAULT_FAMILY,
@@ -183,10 +192,13 @@ __all__ = [
     "baseline_events",
     "bd_timestamp",
     "bead_rows",
+    "candidate_pattern",
     "build_judge",
     "choice_confidence",
     "commit_dates",
     "consistent_history",
+    "derive_namespaces",
+    "extract_candidates",
     "distribution_name",
     "gap_events",
     "gapfill_annotation",
@@ -196,12 +208,14 @@ __all__ = [
     "judge_schema",
     "lacking_created",
     "parse_history",
+    "parse_linkage",
     "plan_entries",
     "prior_verdicts",
     "read_history",
     "read_plan",
     "read_store_start",
     "reconcile",
+    "resolve_candidates",
     "settings_from",
     "source_family",
     "subprocess_runner",
