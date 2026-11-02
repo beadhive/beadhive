@@ -3243,6 +3243,19 @@ class IntakeConfig(_QuietSection):
     external: IntakeExternalConfig = Field(default_factory=IntakeExternalConfig)
 
 
+class TrackerSyncConfig(_QuietSection):
+    """``tracker_sync`` — the tracker pull of `bh hive remote sync` (host-owned, off)."""
+
+    commit_after_pull: StrictBool = Field(
+        False,
+        description=(
+            "After a successful pull from the tracker, `dolt commit` the imported rows so they "
+            "do not sit in the store's Dolt working set (bh-cm4er). Default off: the pull leaves "
+            "them uncommitted, and the report counts and warns about them."
+        ),
+    )
+
+
 # ---- plugins / plugin_kernel (plugin-kernel-v1-adr.md section 6) -----------------
 
 _PLUGIN_ID_RE = re.compile(r"[a-z][a-z0-9-]*")
@@ -3886,6 +3899,11 @@ class BeadhiveConfig(BaseSettings):
         None,
         description="External issue intake (host-owned, every switch off). Absent = intake off.",
     )
+    tracker_sync: TrackerSyncConfig | None = Field(
+        None,
+        description="`bh hive remote sync` tracker pull settings (host-owned, off). Absent = "
+        "the pull leaves its rows uncommitted.",
+    )
     plugins: PluginsConfig | None = Field(
         None,
         description="Canonical plugin-owned namespaces `plugins.<plugin_id>`. Built-in fragments "
@@ -4284,6 +4302,7 @@ __all__ = (
     "SchemaField",
     "StoreDescriptor",
     "TrackerGithubConfig",
+    "TrackerSyncConfig",
     "ValidationBrokerConfig",
     "WorkConfig",
     "WorktreeInitRule",

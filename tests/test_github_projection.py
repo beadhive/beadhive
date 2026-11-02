@@ -73,6 +73,30 @@ def _entry(ws, **public):
     }
 
 
+#: What bd 1.3.0 printed for `bd diff HEAD WORKING --json` on a scratch store (exit 0 both ways):
+#: a clean working set is plain text, NOT `[]`; a dirty one is a JSON list of these entries.
+DIFF_CLEAN = "No changes between HEAD and WORKING\n"
+DIFF_ENTRY = {
+    "IssueID": "pr-d9q",
+    "DiffType": "added",
+    "OldValue": None,
+    "NewValue": {
+        "id": "pr-d9q",
+        "title": "x",
+        "status": "open",
+        "priority": 2,
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+    },
+}
+
+
+def _diff_out(count: int) -> str:
+    if not count:
+        return DIFF_CLEAN
+    return json.dumps([dict(DIFF_ENTRY, IssueID=f"pr-{n}") for n in range(count)], indent=2)
+
+
 class RecordedBd:
     """Stands in for ``beadhive.bd.run`` beneath the REAL StoreTransport: replays recorded
     stdout per argv shape and records every call (argv, -C dir, env)."""
@@ -84,6 +108,12 @@ class RecordedBd:
         self.pull_err = ""
         self.rows = _rows(rows) if rows else []
         self.config = config if config is not None else {"issue_prefix": "widpub"}
+        # Working-set rows `bd diff HEAD WORKING --json` reports; a pull leaves them there
+        # (bd 1.3.0 embedded: HEAD stays at `bd init`), and `bd dolt commit` clears them.
+        self.uncommitted = len(self.rows)
+        self.diff_rc = 0
+        self.diff_out: str | None = None
+        self.commit_rc = 0
 
     def __call__(self, args, cwd, **kw):
         self.calls.append(SimpleNamespace(args=list(args), cwd=cwd, **kw))
@@ -93,7 +123,21 @@ class RecordedBd:
             return subprocess.CompletedProcess(args, 0, json.dumps(self.config), "")
         if args[:1] == ["list"]:
             return subprocess.CompletedProcess(args, 0, json.dumps(self.rows), "")
+        if args == ["diff", "HEAD", "WORKING", "--json"]:
+            out = self.diff_out
+            if out is None:
+                out = _diff_out(self.uncommitted)
+            return subprocess.CompletedProcess(args, self.diff_rc, out, "")
+        if args[:2] == ["dolt", "commit"]:
+            if self.commit_rc == 0:
+                self.uncommitted = 0
+            return subprocess.CompletedProcess(
+                args, self.commit_rc, "", "boom" * (self.commit_rc > 0)
+            )
         raise AssertionError(f"unexpected bd call {args}")
+
+    def commit_calls(self):
+        return [c for c in self.calls if c.args[:2] == ["dolt", "commit"]]
 
     def github_calls(self):
         return [c for c in self.calls if c.args[:1] == ["github"]]
@@ -502,3 +546,134 @@ def test_legacy_hive_remote_still_takes_hives_and_flags_without_the_subcommand(
     assert seen == {"hives": None, "dry_run": True}
     result = CliRunner().invoke(cli.app, ["hive", "remote", "wid", "--json"])
     assert result.exit_code == 0 and seen["hives"] == ["wid"]
+
+
+# --- uncommitted rows after the pull (bh-cm4er) ---------------------------------------------
+
+
+def test_a_pull_reports_the_rows_it_left_uncommitted_and_warns(ws, recorded):
+    report = _project(ws)
+    assert report.uncommitted == 2 and not report.committed and report.ok
+    assert recorded.commit_calls() == []  # off by default: nothing is committed
+    assert report.to_json()["uncommitted"] == 2
+    text = "\n".join(github_projection.render(report))
+    assert "warning: 2 row(s) from the pull are uncommitted" in text
+    assert "tracker_sync.commit_after_pull" in text
+
+
+def test_a_clean_working_set_reports_zero_without_a_warning(ws, recorded):
+    recorded.uncommitted = 0
+    report = _project(ws)
+    assert report.uncommitted == 0 and report.warnings == []
+    assert "warning" not in "\n".join(github_projection.render(report))
+
+
+@pytest.mark.parametrize(
+    "stdout", [DIFF_CLEAN, DIFF_CLEAN.strip(), "", "  \n"], ids=["text", "bare", "empty", "blank"]
+)
+def test_bds_plain_text_clean_diff_is_zero_not_unreadable(ws, recorded, stdout):
+    recorded.diff_out = stdout
+    report = _project(ws, commit_after_pull=True)
+    assert report.uncommitted == 0 and report.warnings == [] and report.ok
+    assert recorded.commit_calls() == []  # clean: nothing to commit
+
+
+def test_a_recorded_dirty_diff_entry_counts_one_row(ws, recorded):
+    recorded.diff_out = json.dumps([DIFF_ENTRY], indent=2)
+    assert _project(ws).uncommitted == 1
+
+
+@pytest.mark.parametrize("failure", [{"diff_rc": 1}, {"diff_out": "not json"}, {"diff_out": "{}"}])
+def test_an_unreadable_working_set_is_a_warning_never_silent(ws, recorded, failure):
+    for name, value in failure.items():
+        setattr(recorded, name, value)
+    report = _project(ws)
+    assert report.uncommitted is None and report.ok
+    assert "could not read the store's uncommitted rows" in report.warnings[0]
+    assert report.to_json()["uncommitted"] is None
+
+
+def test_commit_after_pull_commits_the_pulled_rows_with_a_descriptive_message(ws, recorded):
+    report = _project(ws, commit_after_pull=True)
+    (commit,) = recorded.commit_calls()
+    assert commit.args == [
+        "dolt",
+        "commit",
+        "-m",
+        "bh: pull 2 GitHub issue(s) from acme/widget (2 created, 0 updated)",
+    ]
+    assert commit.cwd == ws.public_root and commit.env["BEADS_DIR"] == str(
+        ws.public_root / ".beads"
+    )
+    assert report.committed and report.uncommitted == 0 and report.warnings == []
+    assert report.ok
+    assert "committed the pulled rows" in "\n".join(github_projection.render(report))
+
+
+def test_commit_after_pull_skips_a_clean_working_set(ws, recorded):
+    recorded.uncommitted = 0
+    report = _project(ws, commit_after_pull=True)
+    assert recorded.commit_calls() == [] and not report.committed and report.ok
+
+
+def test_a_failed_commit_is_a_problem_and_the_rows_are_still_counted(ws, recorded):
+    recorded.commit_rc = 1
+    report = _project(ws, commit_after_pull=True)
+    assert not report.ok and not report.committed
+    assert "bd dolt commit` failed (boom)" in report.problems[0]
+    assert report.uncommitted == 2
+
+
+def test_commit_after_pull_never_commits_a_pull_whose_identity_failed(ws, recorded):
+    rows = _rows("list-after-pull-1.json")
+    recorded.rows = [*rows, dict(rows[0], id="widpub-dup")]
+    report = _project(ws, commit_after_pull=True)
+    assert not report.ok and recorded.commit_calls() == []
+
+
+def test_a_dry_run_reads_no_working_set(ws, recorded):
+    recorded.pull_out = _fixture("pull-2-dry-run.txt")
+    report = _project(ws, dry_run=True, commit_after_pull=True)
+    assert not any(c.args[:1] in (["diff"], ["dolt"]) for c in recorded.calls)
+    assert report.warnings == [] and not report.committed
+
+
+def test_commit_after_pull_is_read_from_config_and_defaults_off():
+    enabled = github_projection.commit_after_pull_enabled
+    assert enabled({}) is False and enabled(None) is False
+    assert enabled({"tracker_sync": {}}) is False
+    assert enabled({"tracker_sync": {"commit_after_pull": True}}) is True
+    assert enabled({"tracker_sync": {"commit_after_pull": "true"}}) is False  # strict boolean
+
+
+def test_remote_sync_pull_only_reports_uncommitted_rows_in_json_and_text(cli_fleet, pushes):
+    argv = ["hive", "remote", "sync", "wid", "--store", "widpub", "--pull-only"]
+    doc = json.loads(CliRunner().invoke(cli.app, [*argv, "--json"]).stdout)
+    assert doc["pull"]["uncommitted"] == 2 and doc["pull"]["committed"] is False
+    assert doc["pull"]["warnings"] and doc["ok"]
+    result = CliRunner().invoke(cli.app, argv)
+    assert result.exit_code == 0 and "warning: 2 row(s)" in result.output
+    assert cli_fleet.commit_calls() == []
+
+
+def test_remote_sync_commits_after_pull_when_the_config_key_is_on(cli_fleet, pushes, tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        (tmp_path / "config.yaml").read_text() + "tracker_sync:\n  commit_after_pull: true\n"
+    )
+    result = CliRunner().invoke(
+        cli.app, ["hive", "remote", "sync", "wid", "--store", "widpub", "--pull-only", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    pull = json.loads(result.stdout)["pull"]
+    assert pull["committed"] is True and pull["uncommitted"] == 0 and pull["warnings"] == []
+    assert len(cli_fleet.commit_calls()) == 1
+
+
+def test_remote_sync_with_a_push_leg_settles_the_pull_warning(cli_fleet, pushes):
+    doc = json.loads(
+        CliRunner()
+        .invoke(cli.app, ["hive", "remote", "sync", "wid", "--store", "widpub", "--json"])
+        .stdout
+    )
+    assert doc["pull"]["uncommitted"] == 2 and doc["pull"]["warnings"] == []
+    assert doc["push"]["pushed"] is True

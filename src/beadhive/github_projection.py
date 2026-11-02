@@ -15,6 +15,9 @@ little itself: Beads already ships the GitHub integration (``bd github sync``), 
 * runs exactly ``bd github sync --pull-only --prefer-github [--dry-run]`` through the store's
   transport (``-C <store root>`` + ``BEADS_DIR``), re-checked by
   :func:`guard.public_store_github_refusal` so no push shape can be built here;
+* reports the rows the pull left in the store's Dolt working set (``bd diff HEAD WORKING``) —
+  uncommitted, so an audit before publish must cover them — and, only when the opt-in
+  ``tracker_sync.commit_after_pull`` is on, commits them (bh-cm4er);
 * verifies identity afterwards: every projected row carries ``external_ref`` = the issue's
   GitHub URL for THIS repository, and no URL appears twice (a re-pull updates in place).
 
@@ -25,6 +28,7 @@ docs/design/github-issue-projection.md.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -45,6 +49,8 @@ PULL_TIMEOUT_SECONDS = 900.0
 
 _REPO_KEYS = ("github.owner", "github.repo", "github.repository")
 _PULLED = re.compile(r"Pulled (\d+) issues \((\d+) created, (\d+) updated\)")
+#: What bd 1.3.0 prints (exit 0) for ``bd diff HEAD WORKING --json`` on a clean working set.
+_NO_WORKING_CHANGES = "No changes between HEAD and WORKING"
 _WOULD_IMPORT = re.compile(r"\[dry-run\] Would import: (\d+) - ")
 _WOULD_UPDATE = re.compile(r"\[dry-run\] Would update local issue: (\d+) - ")
 
@@ -82,6 +88,13 @@ class ProjectionReport:
     would_import: list[int] = field(default_factory=list)
     would_update: list[int] = field(default_factory=list)
     projected: int = 0
+    #: Rows in the store's Dolt working set that HEAD does not hold, after the pull (and after the
+    #: opt-in commit). 0 = clean; None = could not be read (always accompanied by a warning).
+    uncommitted: int | None = 0
+    #: True when ``tracker_sync.commit_after_pull`` committed the pulled rows.
+    committed: bool = False
+    #: Visible, non-fatal findings (an uncommitted working set); never silent, never an exit code.
+    warnings: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
     @property
@@ -202,10 +215,74 @@ def verify_identity(rows: Any, projection: Projection) -> tuple[int, list[str]]:
     return len(seen), problems
 
 
+def commit_after_pull_enabled(cfg: Mapping[str, Any] | None) -> bool:
+    """``tracker_sync.commit_after_pull`` of a loaded config (default False, so absent = off).
+    :func:`project` never reads config itself: its callers pass this in."""
+    section = (cfg or {}).get("tracker_sync") or {}
+    return isinstance(section, Mapping) and section.get("commit_after_pull") is True
+
+
+def uncommitted_rows(routes: Any) -> int | None:
+    """How many rows the store's Dolt working set holds that HEAD does not (``bd diff HEAD
+    WORKING --json``); None when bd could not answer.
+
+    Recorded bd 1.3.0: dirty is a JSON list of ``{IssueID, DiffType, OldValue, NewValue}``
+    entries; clean is exit 0 with the plain text ``No changes between HEAD and WORKING`` (not
+    ``[]``), which counts as 0, as does empty output."""
+    res = routes.working_set_diff()
+    if getattr(res, "returncode", 1) != 0:
+        return None
+    out = str(getattr(res, "stdout", "") or "").strip()
+    if not out or out == _NO_WORKING_CHANGES:
+        return 0
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        return None
+    return len(rows) if isinstance(rows, list) else None
+
+
+def _warn_uncommitted(report: ProjectionReport) -> None:
+    if report.uncommitted is None:
+        report.warnings.append(
+            "could not read the store's uncommitted rows (`bd diff HEAD WORKING`); audit the "
+            "working set before publishing"
+        )
+    elif report.uncommitted:
+        report.warnings.append(
+            f"{report.uncommitted} row(s) from the pull are uncommitted in the store working "
+            "set (Dolt HEAD does not hold them); commit before an audit or publish, or set "
+            "tracker_sync.commit_after_pull"
+        )
+
+
+def _settle_working_set(
+    routes: Any, report: ProjectionReport, projection: Projection, *, commit: bool
+) -> None:
+    """Count the pulled rows left uncommitted; with ``commit`` commit them first. A refused or
+    failed commit is a problem (the operator asked for it); a count is only ever a warning."""
+    report.uncommitted = uncommitted_rows(routes)
+    if commit and report.uncommitted != 0:
+        message = (
+            f"bh: pull {report.pulled} GitHub issue(s) from {projection.slug} "
+            f"({report.created} created, {report.updated} updated)"
+        )
+        res = routes.dolt_commit(message)
+        if getattr(res, "returncode", 1) != 0:
+            report.problems.append(
+                f"tracker_sync.commit_after_pull: `bd dolt commit` failed ({_tail(res, [])})"
+            )
+        else:
+            report.uncommitted = uncommitted_rows(routes)
+            report.committed = report.uncommitted == 0
+    _warn_uncommitted(report)
+
+
 def project(
     entry: Mapping[str, Any],
     *,
     dry_run: bool = False,
+    commit_after_pull: bool = False,
     token_source: TokenSource | None = None,
     routes_factory: RoutesFactory | None = None,
     environ: Mapping[str, str] | None = None,
@@ -259,6 +336,7 @@ def project(
     report.projected, report.problems = verify_identity(
         routes.issue_list(all_=True, limit=0), projection
     )
+    _settle_working_set(routes, report, projection, commit=commit_after_pull and report.ok)
     return report
 
 
@@ -282,6 +360,9 @@ def render(report: ProjectionReport) -> list[str]:
         f"  pulled {report.pulled} issue(s): {report.created} created, "
         f"{report.updated} updated; {report.projected} projected in the store",
     ]
+    if report.committed:
+        lines.append("  committed the pulled rows (tracker_sync.commit_after_pull)")
+    lines += [f"  warning: {warning}" for warning in report.warnings]
     lines += [f"  ✗ {problem}" for problem in report.problems]
     return lines
 
@@ -294,9 +375,11 @@ __all__ = [
     "ProjectionReport",
     "ambient_token",
     "child_env",
+    "commit_after_pull_enabled",
     "payload",
     "project",
     "render",
     "resolve_projection",
+    "uncommitted_rows",
     "verify_identity",
 ]

@@ -3866,6 +3866,20 @@
       "title": "TrackerGithubWrite",
       "type": "object"
     },
+    "TrackerSyncConfig": {
+      "additionalProperties": false,
+      "description": "``tracker_sync`` — the tracker pull of `bh hive remote sync` (host-owned, off).",
+      "properties": {
+        "commit_after_pull": {
+          "default": false,
+          "description": "After a successful pull from the tracker, `dolt commit` the imported rows so they do not sit in the store's Dolt working set (bh-cm4er). Default off: the pull leaves them uncommitted, and the report counts and warns about them.",
+          "title": "Commit After Pull",
+          "type": "boolean"
+        }
+      },
+      "title": "TrackerSyncConfig",
+      "type": "object"
+    },
     "ValidationBrokerBudgetConfig": {
       "additionalProperties": false,
       "description": "`work.validation_broker.budget` — the most the local engine may grant at once (bh-qrixp).",
@@ -5140,6 +5154,18 @@
       "description": "Config schema version this file was written for.",
       "title": "Schema Version",
       "type": "integer"
+    },
+    "tracker_sync": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TrackerSyncConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "`bh hive remote sync` tracker pull settings (host-owned, off). Absent = the pull leaves its rows uncommitted."
     },
     "work": {
       "$ref": "#/$defs/WorkConfig"
