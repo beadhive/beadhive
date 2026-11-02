@@ -877,6 +877,10 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
     # `bh backfill export --history` appends one optional boolean to the 2.17.0 verb. The default
     # export keeps its exact request, output, exit codes and JSON keys; only the flag is new.
     "backfill.export": {"history": {"type": "boolean"}},
+    # operator approval 2026-11-02 (sub-epic bh-wj8d7): `bh backfill timeline --since-cursor`
+    # appends one optional boolean (default off). A run without it keeps its exact request,
+    # output, exit codes and JSON keys.
+    "backfill.timeline": {"since_cursor": {"type": "boolean"}},
     "worktree.status": {
         "local_safe": {"type": "boolean"},
         "root": {"type": "array", "items": {}},

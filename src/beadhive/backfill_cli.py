@@ -445,16 +445,25 @@ def timeline_cmd(
     pre_state: Path | None = _PRE_STATE_OPTION,
     audit: Path | None = _AUDIT_OPTION,
     as_json: bool = typer.Option(False, "--json", help="emit the plan summary/audit as JSON"),
+    since_cursor: bool = _SINCE_CURSOR_OPTION,
 ) -> None:
     """Preview or apply the lifecycle timeline (writes only metadata.lifecycle.* keys)."""
     if apply and dry_run:
         raise typer.BadParameter("choose either --dry-run or --apply")
+    if apply and since_cursor:
+        raise typer.BadParameter(
+            "--since-cursor applies to the dry run; the plan records its range"
+        )
     try:
         cwd, group = _target(hive)
         if not apply:
-            pass_ = timeline_pass(cwd, hive)
+            extra: dict[str, Any] = {}
+            if since_cursor:
+                extra = {"incremental": True, "cursor": _load_cursor(hive, cwd, TIMELINE_PASS)}
+            pass_ = timeline_pass(cwd, hive, **extra)
             engine = BackfillEngine(groups=[group], passes=[pass_])
             plan = engine.plan(pass_, store_loader(cwd, group=group.id))
+            _warn_incremental(plan)
             if plan_path is not None:
                 plan.write(plan_path)
             if as_json:
@@ -469,6 +478,7 @@ def timeline_cmd(
                 )
                 return
             _render_timeline(plan)
+            _render_incremental(plan)
             if plan_path is not None:
                 typer.echo(f"saved plan: {plan_path}")
             return
