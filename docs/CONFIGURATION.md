@@ -534,6 +534,19 @@ writes only the cache file; a failure warns and never fails the apply.
 `code_types` and `doc_roots` are part of the cache's inputs hash, so changing either marks the
 cache stale until the next refresh.
 
+### `backfill.continuous` {#backfill-continuous}
+
+`backfill.continuous` keeps linkage and the lifecycle timeline current with small incremental
+runs ([BACKFILL.md](BACKFILL.md#incremental-and-continuous-backfill) has the cursors, the scope
+of a run and its bounds). It is **off by default** and **host-owned** (part of `backfill`). A run
+is best effort: any failure warns on stderr and never fails the merge or sync that triggered it.
+
+| Key (under `backfill.continuous`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | run the incremental passes after the configured triggers |
+| `passes` | `[commits, timeline]` | the incremental passes, in order: `commits` (`git.commits` appends) and `timeline` (`metadata.lifecycle.*`) |
+| `triggers` | `[post-merge]` | what starts a run: `post-merge` (after `bh work merge` / `finish` lands on the integration branch) and/or `sync` (after `bh hive sync` pulls a hive; needs a cursor from one `bh backfill commits --since-cursor` run) |
+
 ## `bh config` commands
 
 | Command | Effect |

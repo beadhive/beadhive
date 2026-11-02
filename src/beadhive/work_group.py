@@ -820,7 +820,7 @@ def merge_group(cfg, group_arg, hive, rm):
     if rm:
         worktree.reclaim_merged(hive, branch)
     if base == config.integration_branch(cfg, entry):
-        from . import work_backup, work_intake
+        from . import work_backup, work_intake, work_merge
 
         # The merge milestone (I10) for the members that closed; a no-op unless intake is on, and
         # it never fails the merge.
@@ -833,6 +833,18 @@ def merge_group(cfg, group_arg, hive, rm):
             main=main,
             beads=members,
             echo=lambda line: typer.echo(line, err=line.startswith("⚠")),
+        )
+        # Continuous backfill (opt-in): the closed members' commits and timeline, after the slot.
+        work_merge.post_merge_backfill(
+            cfg,
+            entry,
+            main,
+            base,
+            base,
+            [m for m in members if m not in failed_close],
+            base_sha,
+            home=config.home,
+            echo=lambda line: typer.echo(line, err=True),
         )
     if failed_close:
         typer.echo(

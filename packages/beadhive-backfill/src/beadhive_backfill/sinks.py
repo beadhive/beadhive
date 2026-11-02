@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
 from beadlog import BeadEvent, Generator, Group, write_archive
@@ -44,7 +44,10 @@ class JsonFileAuditSink:
 
 
 class ArchivePreStateExporter:
-    """Writes the baseline the engine read as a ``.bdlg`` recovery archive at ``path``."""
+    """Writes the baseline the engine read as a ``.bdlg`` recovery archive at ``path``.
+
+    With ``only`` (bead ids) the archive holds just those beads' events: the recovery artifact of
+    a small incremental run is the beads it may change, not the whole corpus."""
 
     def __init__(
         self,
@@ -52,12 +55,19 @@ class ArchivePreStateExporter:
         *,
         groups: Sequence[Group],
         generator: Generator = GENERATOR,
+        only: Collection[str] | None = None,
     ) -> None:
         self.path = Path(path)
         self.groups = tuple(groups)
         self.generator = generator
+        self.only = None if only is None else frozenset(only)
 
     def export_pre_state(self, baseline: Sequence[BeadEvent]) -> str:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        write_archive(self.path, baseline, groups=self.groups, generator=self.generator)
+        events = (
+            baseline
+            if self.only is None
+            else [event for event in baseline if event.bead.id in self.only]
+        )
+        write_archive(self.path, events, groups=self.groups, generator=self.generator)
         return str(self.path)

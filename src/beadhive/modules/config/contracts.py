@@ -2183,6 +2183,28 @@ class BackfillCoverageConfig(_Section):
     )
 
 
+class BackfillContinuousConfig(_Section):
+    """``backfill.continuous`` — keep linkage and timeline current with small incremental runs
+    (docs/BACKFILL.md "Incremental and continuous backfill"). Off by default: nothing runs after a
+    merge or a sync until ``enabled``. Every run is best effort (a failure warns, the merge or
+    sync carries on) and reads only what moved since the pass's cursor."""
+
+    enabled: bool = Field(
+        False,
+        description="Run the incremental passes after the configured triggers.",
+    )
+    passes: list[Literal["commits", "timeline"]] = Field(
+        default_factory=lambda: ["commits", "timeline"],
+        description="Incremental passes run, in order: commits (git.commits appends) and "
+        "timeline (metadata.lifecycle.* facts).",
+    )
+    triggers: list[Literal["post-merge", "sync"]] = Field(
+        default_factory=lambda: ["post-merge"],
+        description="What starts a run: post-merge (after bh work merge / finish lands on the "
+        "integration branch) and/or sync (after bh hive sync pulls a hive).",
+    )
+
+
 class BackfillConfig(_Section):
     """``backfill`` — shared backfill engine settings (every behavior off by default)."""
 
@@ -2197,6 +2219,10 @@ class BackfillConfig(_Section):
     coverage: BackfillCoverageConfig = Field(
         default_factory=BackfillCoverageConfig,
         description="Link-coverage metrics: what is measured and the opt-in cache refresh.",
+    )
+    continuous: BackfillContinuousConfig = Field(
+        default_factory=BackfillContinuousConfig,
+        description="Opt-in incremental backfill after merges and syncs.",
     )
 
 

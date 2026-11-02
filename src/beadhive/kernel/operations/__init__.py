@@ -48,7 +48,7 @@ class OperationSpec:
 _CLI_ROWS = """
 alerts show|as_json:boolean:o
 backfill apply|plan_path:string:r,hive:string:o,dry_run:boolean:o,pre_state:string:o,audit:string:o,as_json:boolean:o
-backfill commits|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o
+backfill commits|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o,since_cursor:boolean:o
 backfill complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backfill coverage|hive:string:o,refresh:boolean:o,as_json:boolean:o
 backfill docs|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o
