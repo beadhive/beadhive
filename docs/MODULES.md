@@ -624,6 +624,13 @@ identity is the bound `owner/repo` plus `install_id` (`.bh/intake/install-id`). 
 (bh-fehna). Tests: `tests/unit/modules/intake/test_intake_outbox_sender.py`,
 `tests/test_intake_outbox_root.py` and `tests/test_intake_outbox_wiring.py`.
 
+`ThreadService` is composed in production by `intake_services.thread_call` (bh-o9rep) when
+`intake.external.comments.enabled`: over the operational store, the root lock, `StoreOutboxView`
+and, for ingestion, the same binding requesting `comments.read`. The `bh work thread show`,
+`ingest` and `considered --through <seq>` verbs (wire 2.21.0) reach `thread_of`, `ingest_thread`
+plus `reconcile_thread`, and `mark_considered`; the outbox service carries the thread operations
+too while comments are on. Tests: `tests/test_intake_thread_composition.py`.
+
 The same sender also carries `labels.change` (I9b, `bh-88vji`) as its own gate: `OutboxPolicy`
 gains `labels_enabled` (off by default, separate from `enabled`, which gates the outbox and the
 comment), so a label operation is refused with `LABELS_DISABLED` at approve and at send before any

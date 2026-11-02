@@ -688,6 +688,16 @@ Adopted as `bh-fptob` R1 to R8, stored in `intake.thread`:
 - **Triage watermark** `considered_rev` derives "new evidence"; it never changes the `intake`
   dimension (wake-on-reply waits for `bh-elkv`, D3).
 
+**Composed in production (`bh-o9rep`, wire 2.21.0).** `intake.external.comments` ships
+`enabled` (default `false`), `deletion_confirmations` (2), `purge_deleted_bodies` (`true`) and
+`max_body_chars` (unset); `reconcile_every` is not shipped (no timer ingests yet).
+`intake_services.thread_call` composes `ThreadService` over the operational store, the root lock,
+`StoreOutboxView` and, for ingestion, the binding requesting `comments.read`, with the outbox's
+`OwnIdentity`. The CLI spelling is `bh work thread show <report>` (`thread_of`), `bh work thread
+ingest <report>` (`ingest_thread` then `reconcile_thread`) and `bh work thread considered <report>
+--through <seq>` (`mark_considered`; `--through` is required, so the watermark is always the seq
+the reader saw).
+
 **How triage marks `considered_rev` (decided in I7, `bh-rkmq1`; was open).** Through an explicit
 module operation, `IntakePort.mark_considered(ConsiderRequest(report, actor, through_seq))`, and
 **never** as a side effect of a disposition. Triage reads `IntakePort.thread_of(report)` (the
@@ -1119,7 +1129,7 @@ semantics and the defaults are the decision. Every key is per hive; everything i
 | `comments.deletion_confirmations` | `2` | Complete snapshots before a tombstone | `bh-fptob` |
 | `comments.purge_deleted_bodies` | `true` | Drop the latest body on tombstone | `bh-fptob` |
 | `comments.max_body_chars` | unset | Optional body cap (digest kept) | `bh-fptob` |
-| `comments.reconcile_every` | unset | Full comment-id pass cadence, in ingest passes | `bh-fptob` |
+| `comments.reconcile_every` | unset | Full comment-id pass cadence, in ingest passes (not shipped by `bh-o9rep`: `thread ingest` reconciles every pass) | `bh-fptob` |
 | `privacy.allow_published_operational_store` | `false` | Acknowledgement to enable on a single-store or `git-origin` hive | `bh-fptob` |
 | `outbox.enabled` | `false` | The per-hive egress opt-in (`bh-o2mjz`) | `bh-6wj9y` R15 |
 | `outbox.mode` | `supervised` | The only accepted value in v1 (D2); anything else fails validation | `bh-6wj9y` |
