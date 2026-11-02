@@ -73,6 +73,7 @@ def sync(
     confirmed: bool = False,
     eng=None,
     origin_url: str | None = None,
+    cfg: Mapping[str, Any] | None = None,
 ) -> TrackerSyncReport:
     target = select_tracker_store(entry, store)
     report = TrackerSyncReport(hive=target.hive, store=target.prefix, dry_run=dry_run)
@@ -91,12 +92,21 @@ def sync(
         return report
     if confirmed:
         raise TrackerSyncError("--confirm only applies with --force-with-lease")
-    report.pull = github_projection.project(entry, dry_run=dry_run)
+    report.pull = github_projection.project(
+        entry,
+        dry_run=dry_run,
+        # ``cfg`` is the caller's loaded config; none given = the opt-in key is off.
+        commit_after_pull=github_projection.commit_after_pull_enabled(cfg),
+    )
     if not report.pull.ok or pull_only:
         return report
     report.publish = public_publish.publish_public(
         entry, dry_run=dry_run, eng=eng, origin_url=origin_url
     )
+    # The push leg's `dolt commit` records the pulled rows, so the pull-time warning is settled
+    # (``pull.uncommitted`` keeps the count as it stood after the pull; bh-cm4er).
+    if not dry_run:
+        report.pull.warnings = []
     return report
 
 

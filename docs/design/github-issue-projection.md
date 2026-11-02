@@ -21,6 +21,10 @@ bd -C <public store root> github sync --pull-only --prefer-github [--dry-run]
         GITHUB_TOKEN=<ambient credential, if bh resolved one>
 ```
 
+The pull leaves its rows in the store's Dolt working set (bd does not commit them). The report
+counts them (`uncommitted`) and warns; the opt-in `tracker_sync.commit_after_pull` commits them
+after a successful pull (docs/CONFIGURATION.md, bh-cm4er).
+
 Implementation: `src/beadhive/github_projection.py`; the argv is the named route
 `beadhive_bd_cli.github_pull_only_argv`; the guard is `guard.public_store_github_refusal`.
 

@@ -47,6 +47,8 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         # External intake is host-owned too: a fleet push can never switch import on, and no
         # intake key can enable or pre-approve a tracker write (external-intake-module-adr.md 15).
         "intake",
+        # Committing a pull's rows is a host-local write policy; a fleet push can never turn it on.
+        "tracker_sync",
         # The backfill judge runs a host command that may spend API credit with a key from the
         # host's environment; a fleet push can never switch it on (backfill-platform-adr.md 4).
         "backfill",

@@ -377,6 +377,18 @@ The public store is synced only on demand by `bh hive remote sync <hive> --store
 [--dry-run] [--json]` (pull, then fast-forward push; `--force-with-lease <sha> --confirm` is the
 guarded one-time replacement). `bh hive project-issues` is its deprecated `--pull-only` alias.
 
+A pull leaves the rows it imported in the store's Dolt working set: `bd github sync` does not commit
+them, and only the push leg's `dolt commit` records them. Every pull report (human and `--json`)
+therefore carries `uncommitted` (the rows `bd diff HEAD WORKING` finds, `0` when clean, `null` when
+bd could not be read), `committed` and `warnings`; a non-zero count prints a `warning:` line and
+never changes the exit code. `tracker_sync.commit_after_pull` (host-owned, **default `false`**)
+commits the pulled rows with a descriptive `dolt commit` after a successful pull; with it off the
+behaviour is unchanged apart from the report.
+
+| Key (under `tracker_sync`) | Default | Meaning |
+|---|---|---|
+| `commit_after_pull` | `false` | strict boolean: after a successful pull (identity verified), `bd dolt commit` the working set; a failed commit is reported as a problem (exit 1) |
+
 Running a partitioned hive — layout, bootstrap modes, explicit public sync and publication,
 diagnostics, recovery, and the separate rollout gate for a live hive — is in the operator guide
 [TWO-STORES.md](TWO-STORES.md).

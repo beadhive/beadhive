@@ -472,3 +472,14 @@ def test_backfill_loader_routes_batch_one_bead_and_carry_documents_on_stdin() ->
         '{"bdlg": {"created": {"event_id": "sha256:0"}}}',
     )
     assert all(call[4] is True for call in bd.calls)
+
+
+def test_working_set_routes_own_their_argv() -> None:
+    bd = RecordingBd()
+    routes = CliRoutes(bd, "/store")
+    routes.working_set_diff()
+    routes.dolt_commit("bh: pulled", actor="dev/x")
+    assert bd.calls == [
+        ("run", ["diff", "HEAD", "WORKING", "--json"], "/store", "", True, None),
+        ("run", ["dolt", "commit", "-m", "bh: pulled"], "/store", "dev/x", True, None),
+    ]

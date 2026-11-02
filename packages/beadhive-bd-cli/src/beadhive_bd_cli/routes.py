@@ -26,6 +26,12 @@ def public_snapshot_argv(output: Path) -> list[str]:
     return ["export", "-o", str(output)]
 
 
+#: Read-only: what the Dolt working set holds that HEAD does not. bd 1.3.0 prints a JSON list of
+#: ``{IssueID, DiffType, OldValue, NewValue}`` entries when dirty, and the plain text ``No changes
+#: between HEAD and WORKING`` (exit 0, not ``[]``) when clean.
+_WORKING_SET_DIFF_ARGV = ["diff", "HEAD", "WORKING", "--json"]
+
+
 def github_pull_only_argv(*, dry_run: bool = False) -> list[str]:
     """The ONE GitHub sync shape a public projection store runs (bh-lniwf.6).
 
@@ -456,6 +462,17 @@ class CliRoutes:
         if timeout is not None:
             kwargs["timeout"] = timeout
         return self._bd.run(github_pull_only_argv(dry_run=dry_run), self._cwd, **kwargs)
+
+    def working_set_diff(self) -> Any:
+        """Captured ``bd diff HEAD WORKING --json``: the rows changed in the Dolt working set and
+        not yet committed. Dirty: a JSON list of entries; clean: the plain text ``No changes
+        between HEAD and WORKING`` (exit 0), which is not JSON."""
+        return self._bd.run(_WORKING_SET_DIFF_ARGV, self._cwd, capture=True)
+
+    def dolt_commit(self, message: str, *, actor: str = "") -> Any:
+        """Captured ``bd dolt commit -m <message>``: commit the working set. ``Nothing to
+        commit.`` is a success (exit 0), so callers re-read :meth:`working_set_diff`."""
+        return self._bd.run(["dolt", "commit", "-m", message], self._cwd, actor=actor, capture=True)
 
     def public_snapshot_export(self, output: Path) -> Any:
         return self._bd.run(public_snapshot_argv(output), self._cwd)

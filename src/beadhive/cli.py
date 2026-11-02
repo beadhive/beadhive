@@ -2486,11 +2486,13 @@ def hive_remote_sync(
 ):
     from . import github_projection, public_publish, store_target, tracker_sync
 
-    entry = registry.resolve_hive(config.load(), hive_id)
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive_id)
     try:
         report = tracker_sync.sync(
             entry,
             store,
+            cfg=cfg,
             pull_only=pull_only,
             dry_run=dry_run,
             force_with_lease=force_with_lease,
@@ -2538,9 +2540,14 @@ def hive_project_issues(
         "`bh hive remote sync HIVE --store <tracker store> --pull-only`",
         err=True,
     )
-    entry = registry.resolve_hive(config.load(), hive_id)
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive_id)
     try:
-        report = github_projection.project(entry, dry_run=dry_run)
+        report = github_projection.project(
+            entry,
+            dry_run=dry_run,
+            commit_after_pull=github_projection.commit_after_pull_enabled(cfg),
+        )
     except (github_projection.ProjectionError, store_target.StoreResolutionError) as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
