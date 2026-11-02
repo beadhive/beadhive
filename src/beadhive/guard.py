@@ -27,6 +27,8 @@ allowed, and never reimplements bd behavior.
 
 from __future__ import annotations
 
+import re
+
 import typer
 
 from . import config
@@ -886,6 +888,15 @@ def publish_refusal(args, actor: str) -> str | None:
 
 #: The only `bd github sync` flags a GitHub-authoritative public store admits (bh-lniwf.6).
 _PUBLIC_PULL_FLAGS = frozenset({"--pull-only", "--prefer-github", "--dry-run", "--json"})
+#: `--issues=<n>[,<n>...]`: GitHub issue NUMBERS for the opt-in overlap re-pull (bh-clqa5).
+_REPULL_ISSUES = re.compile(r"--issues=[1-9][0-9]*(,[1-9][0-9]*)*")
+
+
+def _repull_numbers_only(args) -> bool:
+    """Exactly one ``--issues=`` token naming GitHub issue numbers only (never a bead id, never
+    the space-separated form) — the overlap re-pull's shape; it stays pull-only."""
+    issues = [a for a in args if a.split("=", 1)[0] == "--issues"]
+    return len(issues) == 1 and _REPULL_ISSUES.fullmatch(issues[0]) is not None
 
 
 def public_store_github_refusal(args) -> str | None:
@@ -894,10 +905,11 @@ def public_store_github_refusal(args) -> str | None:
 
     A public store is GitHub-authoritative and pull-only (docs/design/two-store-scope-adr.md
     section 3), so the one admitted shape is `github sync --pull-only` with at most
-    `--prefer-github` / `--dry-run` / `--json`. Bare (bidirectional) sync, `--push-only`,
-    `github push`, selective `--issues` / `--parent` and every other github sub-verb are
-    refused regardless of seat — unlike :func:`publish_refusal`, no seat may publish from a
-    projection store."""
+    `--prefer-github` / `--dry-run` / `--json`, plus one `--issues=<n>[,<n>...]` of GitHub issue
+    numbers for the opt-in overlap re-pull (bh-clqa5). Bare (bidirectional) sync, `--push-only`,
+    `github push`, `--issues` naming a bead id or in the space-separated form, `--parent` and
+    every other github sub-verb are refused regardless of seat — unlike
+    :func:`publish_refusal`, no seat may publish from a projection store."""
     positionals = _positionals(args)
     if not positionals or positionals[0] != "github":
         return None
@@ -905,6 +917,8 @@ def public_store_github_refusal(args) -> str | None:
     flags = [a.split("=", 1)[0] for a in args if a.startswith("-")]
     if sub == "sync" and len(positionals) == 2 and "--pull-only" in flags:
         if set(flags) <= _PUBLIC_PULL_FLAGS:
+            return None
+        if set(flags) <= _PUBLIC_PULL_FLAGS | {"--issues"} and _repull_numbers_only(args):
             return None
     if sub == "sync" and "--pull-only" not in flags:
         return (

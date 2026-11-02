@@ -5,7 +5,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from beadhive_bd_cli import CliRoutes, github_pull_only_argv, public_snapshot_argv
+import pytest
+
+from beadhive_bd_cli import (
+    CliRoutes,
+    github_pull_only_argv,
+    github_repull_argv,
+    public_snapshot_argv,
+)
 
 
 class RecordingBd:
@@ -340,6 +347,17 @@ def test_github_pull_only_route_never_pushes() -> None:
     for call in bd.calls:
         argv = call[1]
         assert "push" not in argv and "--push-only" not in argv and "--issues" not in argv
+
+
+def test_github_repull_route_is_pull_only_and_names_numbers_only() -> None:
+    bd = RecordingBd()
+    CliRoutes(bd, "/store").github_repull([7, 2, 7])
+    argv = ["github", "sync", "--pull-only", "--prefer-github", "--issues=2,7"]
+    assert github_repull_argv([7, 2, 7]) == argv
+    assert bd.calls == [("run", argv, "/store", "", True, None)]
+    for bad in ([], [0], [-3, 4]):
+        with pytest.raises(ValueError):
+            github_repull_argv(bad)
 
 
 def test_database_ping_route_owns_its_argv_and_timeout() -> None:
