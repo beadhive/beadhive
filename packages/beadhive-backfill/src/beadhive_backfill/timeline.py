@@ -79,6 +79,7 @@ from beadlog_sources import (
     HISTORY_LABEL_REMOVED,
     HISTORY_REOPENED,
     CommitDates,
+    GitReadError,
     HistoryEvent,
     HistoryEvents,
     HistoryRead,
@@ -86,9 +87,20 @@ from beadlog_sources import (
     commit_dates,
     history_events,
     read_history,
+    subprocess_runner,
     suppress_artifacts,
 )
 
+from ._errors import BackfillError
+from .incremental import (
+    INCREMENTAL_KEY,
+    MODE_FULL,
+    MODE_INCREMENTAL,
+    MODE_SCOPED,
+    IncrementalReaders,
+    PassCursor,
+    incremental_info,
+)
 from .merges import DEFAULT_REF, LandKind, LandMerge, MergeScan, read_land_merges
 from .run_journals import RunJournalRead, RunRecord, read_run_journals
 
@@ -193,6 +205,37 @@ class PathReaders:
 
     def run_journals(self) -> RunJournalRead:
         return read_run_journals(self.journals)
+
+    # -- the narrow reads of an incremental run (IncrementalReaders) --------------------------
+
+    def _git(self, *args: str) -> str:
+        run = subprocess_runner(self.timeout, GitReadError, "git")
+        return run([self.git_binary, "-C", str(self.root), *args])
+
+    def head(self) -> str | None:
+        try:
+            out = self._git("rev-parse", "--verify", "--quiet", f"{self.ref}^{{commit}}")
+        except GitReadError:
+            return None
+        return out.strip() or None
+
+    def reaches(self, sha: str) -> bool:
+        try:  # exit 0: an ancestor of (or equal to) the branch; 1 or an unknown sha: not
+            self._git("merge-base", "--is-ancestor", sha, self.ref)
+        except GitReadError:
+            return False
+        return True
+
+    def history_since(self, at: str) -> HistoryRead:
+        return read_history(self.root, binary=self.bd_binary, timeout=self.timeout, since=at)
+
+    def history_of(self, ids: Sequence[str]) -> HistoryRead:
+        return read_history(self.root, binary=self.bd_binary, timeout=self.timeout, issue_ids=ids)
+
+    def lands_since(self, sha: str) -> MergeScan:
+        return read_land_merges(
+            self.root, f"{sha}..{self.ref}", binary=self.git_binary, timeout=self.timeout
+        )
 
 
 # -- facts -----------------------------------------------------------------------------------
@@ -528,11 +571,66 @@ def build_timeline(
 # -- the pass --------------------------------------------------------------------------------
 
 
+class _ScopedReaders:
+    """:class:`TimelineReaders` narrowed to the beads of an incremental run: their ``events``
+    rows only (one chunked ``SELECT`` when the readers can, else a filter of the full read). The
+    land log, commit dates and journals are shared with the full run, so a bead's facts are the
+    ones the full run derives. With ``ids=None`` it only remembers the history it passed on."""
+
+    def __init__(self, inner: TimelineReaders, ids: frozenset[str] | None) -> None:
+        self.inner = inner
+        self.ids = ids
+        self.read: HistoryRead | None = None
+
+    def history(self) -> HistoryRead:
+        if self.ids is None:
+            self.read = self.inner.history()
+        elif isinstance(self.inner, IncrementalReaders):
+            self.read = self.inner.history_of(sorted(self.ids))
+        else:
+            whole = self.inner.history()
+            self.read = HistoryRead(
+                tuple(event for event in whole.events if event.bead in self.ids),
+                whole.skipped,
+                whole.unknown_types,
+                whole.rows,
+            )
+        return self.read
+
+    def lands(self) -> MergeScan:
+        return self.inner.lands()
+
+    def commit_dates(self, shas: Sequence[str]) -> CommitDates:
+        return self.inner.commit_dates(shas)
+
+    def run_journals(self) -> RunJournalRead:
+        return self.inner.run_journals()
+
+
+def _newest(events: Sequence[HistoryEvent]) -> HistoryEvent | None:
+    return max(events, key=lambda event: (instant(event.at), event.row_id), default=None)
+
+
 class TimelinePass:
     """The lifecycle timeline as an engine pass (module doc): proposes ``set`` events for the
     ``metadata.lifecycle.*`` keys and nothing else.
 
     DRIFT is applicable: every bead exists already, so its facts are folded-state changes.
+
+    **Incremental** (``incremental=True``, ``bh backfill timeline --since-cursor``): instead of
+    every bead, the pass derives the facts of the beads that *moved* since ``cursor``: those with
+    an ``events`` row at or after ``cursor.events_at`` and the targets of the lands after
+    ``cursor.land_sha`` (a batch land: the beads carrying its ``batch:`` label), plus
+    ``extra_scope`` (the beads a merge just closed). A moved bead's facts come from the same
+    sources and rules as a full run, so the proposal is exactly what a full run would add for
+    those beads; every other bead is simply not looked at. With no usable cursor the pass runs in
+    full (a corrupt or stale one adds a warning; ``full_ok=False`` refuses instead, for triggers
+    that must stay small), unless ``extra_scope`` alone names the beads
+    (``mode=scoped``: nothing else is read and no cursor moves). ``scope`` freezes the beads
+    explicitly, which is how an applied plan re-derives exactly what it planned.
+
+    The run records itself in the report's ``incremental`` section: the mode, the scope, the
+    cursor read and the one :func:`cursor_to_record` writes once the plan is applied.
     """
 
     name = PASS_NAME
@@ -540,9 +638,34 @@ class TimelinePass:
     invalidating_fields = INVALIDATING_FIELDS
     drift_applicable = True
 
-    def __init__(self, readers: TimelineReaders) -> None:
+    def __init__(
+        self,
+        readers: TimelineReaders,
+        *,
+        incremental: bool = False,
+        cursor: PassCursor | None = None,
+        extra_scope: Sequence[str] = (),
+        scope: Sequence[str] | None = None,
+        full_ok: bool = True,
+    ) -> None:
         self.readers = readers
+        self.full_ok = full_ok
+        self.incremental = bool(incremental or scope is not None)
+        self.cursor = cursor
+        self.extra_scope = tuple(extra_scope)
+        self.scope = None if scope is None else frozenset(scope)
+        self.info: dict[str, Any] | None = None
         self._notes: Counter[str] = Counter()
+
+    @classmethod
+    def for_plan(cls, readers: TimelineReaders, report: Mapping[str, Any]) -> TimelinePass:
+        """The pass that applies a saved plan: an incremental plan re-derives its recorded scope
+        (so the post-apply second dry run is as narrow as the plan), any other plan runs in full."""
+        info = report.get(INCREMENTAL_KEY)
+        scope = info.get("scope") if isinstance(info, Mapping) else None
+        if isinstance(scope, list):
+            return cls(readers, incremental=True, scope=[str(item) for item in scope])
+        return cls(readers)
 
     def exclusion(self, state: BeadState) -> str | None:
         if not state.exists or state.deleted or state.erased:
@@ -555,6 +678,102 @@ class TimelinePass:
             baseline, self.readers, extracted_at=extracted_at, include_history=True
         )
 
+    # -- the incremental run ---------------------------------------------------------------
+
+    def _usable(self, narrow: bool) -> tuple[bool, str | None]:
+        """Whether the cursor can bound this run, and the warning when it is the reason not."""
+        cursor = self.cursor
+        if cursor is None:
+            return False, None
+        if not narrow:
+            return False, "the readers cannot make incremental reads"
+        if cursor.events_at is None or cursor.land_sha is None:
+            return False, "the timeline cursor is incomplete"
+        assert isinstance(self.readers, IncrementalReaders)
+        if not self.readers.reaches(cursor.land_sha):
+            return False, f"cursor commit {cursor.land_sha[:12]} is not in the branch history"
+        return True, None
+
+    def _moved(
+        self, baseline: Sequence[BeadEvent], cursor: PassCursor
+    ) -> tuple[frozenset[str], HistoryEvent | None]:
+        """The beads that moved since ``cursor`` and the newest ``events`` row it read."""
+        assert isinstance(self.readers, IncrementalReaders)
+        assert cursor.events_at is not None and cursor.land_sha is not None
+        floor = instant(cursor.events_at)
+        rows = [
+            event
+            for event in self.readers.history_since(cursor.events_at).events
+            if instant(event.at) >= floor
+        ]
+        moved = {event.bead for event in rows}
+        batches: dict[str, list[str]] = {}
+        for bead, state in fold(baseline).items():
+            for label in state.labels:
+                if label.startswith(BATCH_LABEL):
+                    batches.setdefault(label[len(BATCH_LABEL) :], []).append(bead.id)
+        for land in self.readers.lands_since(cursor.land_sha).merges:
+            moved.add(land.target)
+            if land.kind is LandKind.BATCH:
+                moved.update(batches.get(land.target, ()))
+        return frozenset(moved), _newest(rows)
+
+    def _incremental(self, baseline: Sequence[BeadEvent], extracted_at: str) -> Timeline:
+        narrow = isinstance(self.readers, IncrementalReaders)
+        live = {
+            bead.id
+            for bead, state in fold(baseline).items()
+            if state.exists and not state.deleted and not state.erased
+        }
+        warnings: list[str] = []
+        cursor_next: PassCursor | None = None
+        scope = self.scope
+        mode = MODE_INCREMENTAL
+        head = self.readers.head() if narrow and scope is None else None  # before any other read
+        if scope is None:
+            usable, why = self._usable(narrow)
+            if why:
+                warnings.append(why)
+            if usable:
+                assert self.cursor is not None
+                moved, newest = self._moved(baseline, self.cursor)
+                scope = (moved | set(self.extra_scope)) & live
+                cursor_next = PassCursor(
+                    PASS_NAME,
+                    head or self.cursor.land_sha,
+                    newest.at if newest else self.cursor.events_at,
+                    newest.row_id if newest else self.cursor.events_row_id,
+                )
+            elif self.extra_scope:
+                scope, mode = frozenset(set(self.extra_scope) & live), MODE_SCOPED
+            elif not self.full_ok:
+                raise BackfillError(
+                    "timeline: no usable cursor and no merged bead to scope the run to; "
+                    "run `bh backfill timeline --since-cursor` once to start one"
+                )
+            else:
+                mode = MODE_FULL
+        readers = _ScopedReaders(self.readers, None if scope is None else frozenset(scope))
+        narrowed = (
+            list(baseline)
+            if scope is None
+            else [event for event in baseline if event.bead.id in scope]
+        )
+        timeline = build_timeline(narrowed, readers, extracted_at=extracted_at)
+        if mode == MODE_FULL and head is not None and readers.read is not None:
+            newest = _newest(readers.read.events)
+            cursor_next = PassCursor(
+                PASS_NAME, head, newest.at if newest else None, newest.row_id if newest else None
+            )
+        self.info = incremental_info(
+            mode,
+            cursor_in=self.cursor,
+            cursor_next=cursor_next,
+            warnings=warnings,
+            scope=None if scope is None else sorted(scope),
+        )
+        return timeline
+
     def propose(
         self,
         baseline: Sequence[BeadEvent],
@@ -562,7 +781,10 @@ class TimelinePass:
         extracted_at: str,
         judge: JudgmentPort,
     ) -> Iterator[BeadEvent]:
-        timeline = build_timeline(baseline, self.readers, extracted_at=extracted_at)
+        if self.incremental:
+            timeline = self._incremental(baseline, extracted_at)
+        else:
+            timeline = build_timeline(baseline, self.readers, extracted_at=extracted_at)
         self._notes = timeline.notes
         yield from timeline.lifecycle_events()
 
@@ -598,12 +820,15 @@ class TimelinePass:
                 by_tier[str(event.data["value"])] += 1
             else:
                 by_fact[name] += 1
-        return {
+        report: dict[str, Any] = {
             "facts": dict(sorted(by_fact.items())),
             "confidence": dict(sorted(by_tier.items())),
             "beads_with_facts": len({event.bead for event in proposed}),
             "notes": dict(sorted(self._notes.items())),
         }
+        if self.info is not None:
+            report[INCREMENTAL_KEY] = self.info
+        return report
 
 
 def _timestamp(value: Any) -> bool:

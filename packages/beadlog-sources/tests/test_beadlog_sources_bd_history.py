@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from beadlog_sources import BdHistoryError, HistoryEvent, history_argv, parse_history, read_history
-from beadlog_sources.bd_history import HISTORY_SQL, decode_rows, parse_event_row
+from beadlog_sources.bd_history import HISTORY_SQL, decode_rows, history_sql, parse_event_row
 
 
 def js(value: dict[str, Any]) -> str:
@@ -561,3 +561,47 @@ def test_timeout_is_passed_through_and_reported(monkeypatch: pytest.MonkeyPatch)
     with pytest.raises(BdHistoryError):
         read_history("/hive")
     assert seen[-1] == 300.0  # the generous default
+
+
+# -- narrowed reads (incremental runs): still SELECT-only, validated, bounded ----------------
+
+
+def test_a_since_read_widens_the_bound_by_a_day_and_is_still_one_select() -> None:
+    runner = CountingRunner([])
+    read_history("/hive", runner=runner, since="2026-08-14T10:00:00Z")
+    (argv,) = runner.calls
+    # a day earlier: the store's session time zone is unknown, the caller filters exactly
+    assert argv[-1] == f"{HISTORY_SQL} WHERE created_at >= '2026-08-13 10:00:00'"
+    assert argv == history_argv("/hive", since="2026-08-14T10:00:00Z")
+
+
+def test_an_offset_since_is_converted_to_utc() -> None:
+    assert history_sql(since="2026-08-14T12:00:00+02:00").endswith(
+        "created_at >= '2026-08-13 10:00:00'"
+    )
+
+
+def test_ids_are_read_in_bounded_chunks_and_merged() -> None:
+    template = BY_ID["00030648-95fd-5cdc-8c4d-1275790dec20"]
+    ids = [f"bh-{n}" for n in range(450)]
+    runner = CountingRunner([{**template, "id": "row-1", "issue_id": "bh-1"}])
+    read = read_history("/hive", runner=runner, issue_ids=ids)
+    assert len(runner.calls) == 3  # 200 + 200 + 50, never one call per bead
+    assert all(call[-1].startswith(HISTORY_SQL) and " IN (" in call[-1] for call in runner.calls)
+    assert len(read.events) == 3  # the fake answers each chunk with its one row
+
+
+def test_no_ids_selects_nothing_without_a_syntax_error() -> None:
+    assert history_sql(issue_ids=[]).endswith("WHERE issue_id IN (NULL)")
+
+
+@pytest.mark.parametrize("bad", ["x'; DROP TABLE events; --", "a b", "", "-lead", "a)"])
+def test_an_id_that_is_not_a_plain_bead_id_is_refused(bad: str) -> None:
+    with pytest.raises(BdHistoryError, match="not a bead id"):
+        history_sql(issue_ids=[bad])
+
+
+@pytest.mark.parametrize("bad", ["yesterday", "2026-08-14", "2026-08-14 10:00:00", "'; --"])
+def test_a_since_that_is_not_a_timestamp_is_refused(bad: str) -> None:
+    with pytest.raises(BdHistoryError, match="not a timestamp"):
+        history_sql(since=bad)

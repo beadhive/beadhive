@@ -24,7 +24,10 @@ or bd specific arriving through a port:
   expected post-state, the pass postcondition holds, and a second dry run proposes nothing
   using the plan's recorded judgments only (no judge is invoked). Any failure or interruption
   replays the loader inverses of the touched units in reverse and is audited.
-- DRIFT proposals are reported but applied only when the pass sets `drift_applicable`.
+- DRIFT proposals are reported but applied only when the pass sets `drift_applicable`; the
+  `commits`, `docs` and `planning` passes (`beadhive_backfill.source_passes`, wrapping the neutral
+  `git-commits`, `docs` and `planning` strategies) set it, so their appends, stamps and later
+  closes are applied as well as their NEW beads.
 - Inverses follow the format ADR's per-kind table: a `create` is undone by a `retire` with
   reason `backfill-rollback`, never a delete; `comment` and `tombstone` have none and are
   audited as rollback residue.
@@ -58,6 +61,14 @@ Store-neutral adapters: `JsonFileAuditSink` (the audit file beside the plan) and
   reads arrive through the `TimelineReaders` port (`PathReaders` over a checkout); a full read
   costs a fixed number of calls, never one per bead. `Timeline.of(bead)` returns a bead's whole
   timeline, history events included.
+
+- `beadhive_backfill.incremental` — per-pass cursors (`PassCursor`, a small digest-checked JSON
+  file; a corrupt or stale one reads as no cursor with a warning) and the `IncrementalReaders`
+  port. `TimelinePass(incremental=True, cursor=...)` and `source_pass("commits", incremental=True,
+  cursor=...)` read only what moved since the cursor and propose exactly the events a full run
+  would add for it; the report's `incremental` section records the mode, scope and the cursor an
+  applied plan earns (`cursor_to_record`). Cursor and pass logic live here; the file location, the
+  CLI and the post-merge trigger are root wiring.
 
 Identity-label passes land in a later bead.
 

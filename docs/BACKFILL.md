@@ -13,7 +13,7 @@ The architecture and packaging are decided in
 |---|---|
 | `beadlog` | the `.bdlg` format: events, ids, manifest, merge/fold/diff, archive I/O |
 | `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader, the `bd-history` events-table conversion, `git-commits`, `docs` and `planning`), reconcile, judges, the standalone `beadlog` CLI |
-| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`) |
+| `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`, `beadhive_backfill.source_passes`) and the link-coverage metrics (`beadhive_backfill.coverage`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
 | `beadlog-xtdb` | BeadHive-free XTDB loader foundation (not vendored into root; the opt-in plugin binds it): pgwire connection, layout (b) row builders, an in-package transit codec, single-type column coercion, the `>=2.2.0,<2.3` version gate and the dangling-edge report |
 
@@ -25,6 +25,10 @@ Root never holds engine logic; the published wheel vendors the three libraries' 
 ```text
 bh backfill complexity   [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
 bh backfill timeline     [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
+bh backfill commits      [--hive H] [--dry-run | --apply] [--since-cursor] [--plan F] [--pre-state F] [--audit F] [--option K=V]... [--json]
+bh backfill docs         (the same options as commits, without --since-cursor)
+bh backfill planning     (the same options as commits, without --since-cursor)
+bh backfill coverage     [--hive H] [--refresh] [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verify       F.bdlg [--json]
@@ -33,8 +37,8 @@ bh backfill-complexity   (the flat alias of `bh backfill complexity`; published 
 ```
 
 Nothing writes to a hive unless asked: a pass previews by default and writes only with
-`--apply`, and `apply` writes only without `--dry-run`. `export`, `inspect` and `verify` never
-write to a hive.
+`--apply`, and `apply` writes only without `--dry-run`. `export`, `inspect`, `verify` and
+`coverage` never write to a hive.
 
 ### Shared options
 
@@ -204,7 +208,8 @@ beadlog extract git-commits --root . --group <group id> --group-dir <prefix> \
 
 Options: `rev` (default `HEAD`), `since` (a commit, or a date for `git log --since`),
 `allow_shallow=true`. Reconcile classes an append as DRIFT (the bead exists and its `git.commits`
-changes); see [Known limitation](#known-limitation-drift-is-not-applied-by-the-neutral-apply).
+changes); `bh backfill commits` applies it (see
+[the hive passes](#bh-backfill-commits-docs-and-planning-passes-3-to-5)).
 
 ### `beadlog extract docs`
 
@@ -249,6 +254,76 @@ every routable bead, which is hive policy: name it through `--option labels=comp
 
 A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
 are off in the bd loader and are reported as dropped.
+
+## Coverage
+
+`bh backfill coverage` measures how well a hive's work is linked, so that backfill becomes a drift
+detector and not a one-time chore. Three ratios, the baselines of the
+[ADR](design/backfill-platform-adr.md#context) measured the same way:
+
+| Ratio (JSON key) | Numerator | Denominator |
+|---|---|---|
+| `closed_beads_with_commits` | closed code-bearing beads that record a commit in `metadata.git.commits` | closed (or retired) beads of a `code_types` type |
+| `commits_resolving_to_bead` | commits whose message (subject and body) names a bead of the hive | every commit of the integration branch |
+| `docs_linked_to_bead` | docs under `doc_roots` that some bead carries as its `external_ref` | every `*.md` under `doc_roots` |
+
+The code-bearing types are `backfill.coverage.code_types` (default `bug`, `chore`, `feature`,
+`task`); `event`, `gate` and `molecule` records are infrastructure and never enter the first ratio,
+whatever is configured. Commits are matched with the same two-step matcher as `git-commits` (a loose
+namespace-anchored token, kept only when it resolves in the hive's own id set), so `bh-infra` is
+not a link. A ratio over an empty denominator is `null`, never 0 or 1. A shallow clone is refused,
+as in `git-commits`: truncated history would understate the commit ratio.
+
+```bash
+bh backfill coverage --refresh   # one bd export, one git log, one doc walk; rewrites the cache
+bh backfill coverage             # the cached state, checked against the hive's current inputs
+bh backfill coverage --json      # the same as JSON (schema: `packages/beadhive-backfill/src/beadhive_backfill/schemas/coverage-v1.schema.json`)
+```
+
+**Cached state.** The ratios are cached as a versioned JSON file in the bh state dir,
+`<bh home>/state/backfill/<hive key>/coverage.json`: `computed_at`, an `inputs_hash`, the settings,
+the ratios and the top unlinked examples of each (most recently closed beads, newest commits, doc
+paths). The `inputs_hash` is a SHA-256 over exactly what the ratios depend on: the settings, each
+bead's type, closedness, recorded commits and `external_ref`, each commit's sha and message, and
+the doc paths. A plain `coverage` reads the inputs once to compare, and reports the cache as one of:
+
+| `status` | Meaning |
+|---|---|
+| `fresh` | the cache matches the hive's current inputs |
+| `stale` | the cache was computed from different inputs: its figures are shown marked **STALE** (text) or with `status: stale` (JSON) and are never presented as current; run `--refresh` |
+| `missing` | no cache yet; run `--refresh` |
+| `invalid` | the file is corrupt or of a version this build does not read; `--refresh` replaces it |
+
+The cache is rewritten atomically by `coverage --refresh`, and, when `backfill.coverage.enabled`
+is true (off by default), after every applied pass: `complexity`, `timeline` and the neutral
+`apply`. A failed refresh only warns on stderr; the apply has already landed and is audited.
+
+**Advisory surfaces.** With `backfill.coverage.enabled` (off by default) `bh doctor` (a
+`link_coverage` section, one row per hive) and `bh hive ready` (one optional `link coverage` line)
+show the cached ratios. They read the cache file once with `check_cache(path)` and no inputs: no bd
+export, no `git log`, no doc walk, so they stay cheap, and with the check disabled they do not open
+the cache at all. A ratio below `backfill.coverage.warn_below` (default `0.60`, judged per ratio;
+an empty ratio never warns) renders a warning and is marked `!`; it never fails `hive ready`, whose
+coverage line is optional. States:
+
+| State | Shown when | Rendered |
+|---|---|---|
+| ok / warn | the cache is readable and was measured with the configured `code_types` and `doc_roots` | the three ratios, `!` on those below the threshold |
+| never computed | there is no cache file | a hint to run `bh backfill coverage --refresh` |
+| stale | the file is unreadable, corrupt or of a version this build does not read, or it was measured with other `code_types` / `doc_roots` than configured | no figures (they would not be current) and the same hint |
+
+`stale` here is narrower than the `stale` of `bh backfill coverage`: whether the beads, commits or
+docs changed since the cache was written is exactly what the cheap read cannot know, so a cache
+that merely aged shows its ratios with their `[cached <time>]` stamp. Run `coverage` to compare the
+inputs. The verdict logic is `beadhive_backfill.coverage_advisory.evaluate`.
+
+**For later passes.** The seam is one call. A new applied pass ends with
+`backfill_cli.refresh_coverage_after_apply(hive, quiet=as_json)`, or, from a module that
+`backfill_cli` imports (as `complexity_backfill` is), appends to its own `APPLIED_HOOKS` list. A
+caller that has the inputs without a full export (an incremental run) builds a
+`beadhive_backfill.coverage.CoverageReport` with `compute_coverage` and persists it with
+`write_coverage_cache`; a cheap advisory check reads the cache with `check_cache(path)` and no
+inputs, and gets `unverified` instead of a freshness claim.
 
 ## Reconcile statuses
 
@@ -312,17 +387,106 @@ Run the extract from the repository the history lives in, with the baseline expo
 hive you are going to apply to. After the apply, export again and extract again: the second
 extract must propose nothing (the postcondition column of the matrix).
 
-### Known limitation: DRIFT is not applied by the neutral apply
+### `bh backfill commits`, `docs` and `planning` (passes #3 to #5)
 
-`bh backfill apply` applies the NEW proposals of a neutral plan and reports DRIFT. Three things
-are DRIFT to reconcile because the bead already exists: the `git-commits` appends, the `docs`
-`external_ref` stamps, and a close that arrives after the bead was created. The neutral apply
-therefore does not apply them. Applying them needs a registered hive pass that declares
-`drift_applicable` (as `complexity` does for its labels). Those passes, `bh backfill commits`,
-`docs` and `planning`, are the hive apply passes tracked in `bh-yvg41.3` (sub-epic D); they are
-not registered yet. Until they are, only `planning`, and the NEW beads a judge adds from `docs`,
-are written by the flow above, and the stamps and appends are produced, reviewed and left in the
-plan.
+Reconcile classes most of what these strategies propose as DRIFT, because the bead already exists:
+the `git-commits` appends, the `docs` `external_ref` stamps and a close that arrives after the
+bead was created. The neutral `bh backfill apply` applies NEW only. Each of these hive passes wraps
+its strategy, declares `drift_applicable`, and so applies DRIFT and NEW alike through the full
+envelope (plan hash, drift gate, pre-state, applying audit, verification, rollback). They read the
+repository at the hive checkout and the bd store through the StoreLoader; no `beadlog` CLI,
+baseline export or reconcile step is needed.
+
+```bash
+bh backfill commits --plan commits.bdlg                  # preview: writes nothing
+bh backfill commits --apply --plan commits.bdlg          # apply the saved plan
+bh backfill docs --option docs=docs/decisions,docs/design --plan docs.bdlg
+bh backfill planning --option labels=complexity:MEDIUM --plan planning.bdlg
+bh backfill planning --apply --plan planning.bdlg
+```
+
+| Pass | Proposes | DRIFT (applied) | NEW (applied) | `--option` keys |
+|---|---|---|---|---|
+| `commits` | `set` of `metadata.git.commits` appending shas | the append to a bead that exists | none | `rev`, `since`, `allow_shallow`, `git` |
+| `docs` | `set` of `external_ref`; a judged NEW doc | the stamp on a bead that exists | `create` plus `origin:backfill` and `source:docs` for a judged NEW doc | `docs`, `top_k`, `id_prefix`, `new_type`, `labels`, `allow_shallow`, `git` |
+| `planning` | `create` of epics and issues, edges, closes | a close that arrives after the bead exists | the epics, issues and edges of the tree | `planning`, `id_prefix`, `labels`, `issue_type`, `allow_shallow`, `git` |
+
+`--option K=V` is repeatable and takes the same keys as `beadlog extract` (an unknown key is
+refused). The options are recorded in the plan, and `--apply` rebuilds the pass from the plan, so
+it takes no `--option`. `commits` pins `rev` to the commit it names at plan time, so the apply and
+its proof read the planned history even when the branch moved in between. The plan fails to apply
+if the hive changed after planning (the drift gate), and if the pass settings differ from the
+ones recorded.
+
+The judge is off by default. Without `backfill.judge.enabled` the `docs` pass hands the strategy no
+judge: every unmatched doc stays an abstain residual, printed as `RESIDUAL <doc>: undecided; needs
+human confirm`, and nothing is created for it. With the judge configured, each verdict is recorded
+in the plan and the apply replays the recorded verdicts only. Strategy-level drift (a bead that
+points at another doc, a malformed `git.commits`) is printed as `DRIFT <bead>: <reason>; not
+overwritten` and never written.
+
+Created `planning` beads carry `origin:backfill` and `source:planning`; name a routing tier with
+`--option labels=complexity:<TIER>` or run `bh backfill complexity` afterwards. Idempotent: once a
+plan is applied the next preview reports `0 beads would change`, and the engine proves that on
+the fresh store before it reports the apply as done. An applied pass also refreshes the coverage
+cache when `backfill.coverage.enabled`. A plan from these passes also applies through
+`bh backfill apply PLAN.bdlg`.
+
+## Incremental and continuous backfill
+
+Linkage and timeline stay current with small runs instead of full re-scans.
+
+**Cursors.** Each incremental pass keeps a cursor: the first-parent head it last read to
+(`land_sha`) and, for `timeline`, the newest bd `events` row it saw (`events_at`, `events_row_id`).
+They live in one small versioned JSON file per hive, beside the coverage cache
+(`<state>/backfill/<hive>/cursors.json`), with a digest. A cursor moves only when an **applied**
+incremental plan names it (the entry records the `plan_hash` and the `audit` of the run it came
+from); a dry run never moves one. The `events` table's row id is a UUID and its `created_at` has
+second resolution, so "after the cursor" is `created_at >= events_at` (inclusive: a row from the
+cursor's own second is seen again, which is harmless because every proposal is content-addressed).
+
+**`bh backfill commits --since-cursor`** (a dry-run option; the saved plan records its range)
+reads only the commits after the cursor, and the `timeline` pass has the same incremental form
+(`TimelinePass(incremental=True)`), which `backfill.continuous` runs; the published
+`bh backfill timeline` verb is unchanged. What each pass reads when it runs incrementally:
+
+| Pass | What moved | How it is read |
+|---|---|---|
+| `commits` | the commits after `land_sha` | `git log <land_sha>..<rev>` (the plan pins `since` and `rev`) |
+| `timeline` | beads with an `events` row at or after `events_at`, and the targets of the lands after `land_sha` (a batch land: every bead carrying its `batch:` label) | a `WHERE created_at >= ...` read, then the `events` rows of just those beads |
+
+A moved bead's facts come from the same sources and rules as a full run, so a run proposes
+**exactly the events a full run would add for those beads, and nothing else**. The plan report
+gains an `incremental` section (`mode`, the `scope`, the `cursor_in`, the `cursor_next` and any
+`warnings`); a run without `--since-cursor` is unchanged. What a cursor cannot see: a commit that
+names a bead created after it, and run journals (host-local files): a periodic full run catches
+both.
+
+A cursor is a hint, never an authority. With no cursor the first `--since-cursor` run is a full
+run (and, once applied, records the cursor). A cursor file that cannot be trusted (not JSON,
+another schema, a failed digest, a malformed entry), or a cursor whose commit left the branch
+history, is a warning on stderr and a full run.
+
+**Continuous backfill** (`backfill.continuous`, off by default) runs the same passes after
+`bh work merge` / `finish` lands on the integration branch (trigger `post-merge`) and after
+`bh hive sync` pulls a hive (trigger `sync`). It is best effort: a failing loader, a corrupt cursor
+or any pass error is one warning on stderr and the merge or sync carries on. It runs after the
+merge slot is released and is bounded:
+
+- `timeline` is scoped to the merged beads plus whatever moved since the cursor; `commits` reads
+  from the cursor, or, with none, from the integration tip before the merge. A hook never starts a
+  full run: with nothing to bound it, it says so and waits for one `--since-cursor` run.
+- With no cursor the hook is scoped to the merged beads and records none, so it cannot skip commits
+  an earlier run never read; with a cursor it follows and moves it. Today the CLI earns a cursor for
+  `commits` only (`--since-cursor`); a `timeline` hook therefore stays scoped to the merged beads,
+  and the `sync` trigger has nothing to follow for `timeline` until the published `timeline` verb
+  gains the same flag (an additive wire change that needs operator approval).
+- Each run is the ordinary plan/apply envelope (plan hash, drift gate, applying audit,
+  verification, rollback). Its recovery export holds only the beads it changes (a `.bdlg`, never a
+  corpus archive) and its audit and recovery files replace the previous run's
+  (`<state>/backfill/<hive>/continuous/`); the bd rows are read through a per-run read cache.
+- When anything was applied the coverage cache is refreshed through the same seam as the other
+  passes (when `backfill.coverage.enabled`).
 
 ## History readers
 
@@ -496,9 +660,9 @@ loss-report entry.
 | `complexity` | `bh backfill complexity` | `bd list --all --include-infra` | `bd label add/remove`, one label at a time | JSON (`complexity-label-backfill`, schema 1) | applied | one valid `complexity:<TIER>` per routable bead; `model:*` untouched |
 | `timeline` | `bh backfill timeline` | the bd `events` table, `git log --first-parent`, commit dates, run journals | `bd update` of `metadata.lifecycle.*` (and `metadata.bdlg`) only, one bead at a time | `.bdlg` (`timeline`, schema 1) | applied | every lifecycle key well-formed with its confidence; a second dry run proposes nothing |
 | `reconcile` (neutral) | `bh backfill apply` | `bd export --all` | the bd StoreLoader (`bd import`, `bd update`, `bd close`, `bd dep`, `bd comments add`) | `.bdlg` from `beadlog reconcile` | reported only | second reconcile finds no NEW |
-| `git-commits` | `beadlog extract git-commits` | `git log` (`rev`, `since`) and the baseline's bead ids | one `set` of `metadata.git.commits` per bead, appending shas | `.bdlg` (extract, then reconcile) | appends are DRIFT; reported, not applied | a second extract proposes nothing |
-| `docs` | `beadlog extract docs` | the doc dirs, the first-add commit of each doc and the baseline | `set` of `external_ref` (DRIFT); `create` plus `origin:backfill` and `source:docs` for a judged NEW | `.bdlg` (extract, then reconcile) | stamps are DRIFT; reported, not applied | a second extract finds every doc `PRESENT-in-sync` |
-| `planning` | `beadlog extract planning` | the `.planning` tree and the git add date of each plan and summary | `create` of epics and issues, `parent-child` and `blocks` edges, closes | `.bdlg` (extract, then reconcile) | a later close is DRIFT; reported, not applied | a second extract proposes nothing |
+| `commits` (`git-commits`) | `bh backfill commits` (neutral: `beadlog extract git-commits`) | `git log` (`rev`, `since`) and the bd store's bead ids | one `set` of `metadata.git.commits` per bead, appending shas | `.bdlg` (`commits`, schema 1) | appends are DRIFT; applied | a second plan proposes nothing |
+| `docs` | `bh backfill docs` (neutral: `beadlog extract docs`) | the doc dirs, the first-add commit of each doc and the bd store | `set` of `external_ref` (DRIFT); `create` plus `origin:backfill` and `source:docs` for a judged NEW | `.bdlg` (`docs`, schema 1) | stamps are DRIFT; applied | a second plan finds every doc `PRESENT-in-sync` |
+| `planning` | `bh backfill planning` (neutral: `beadlog extract planning`) | the `.planning` tree and the git add date of each plan and summary | `create` of epics and issues, `parent-child` and `blocks` edges, closes | `.bdlg` (`planning`, schema 1) | a later close is DRIFT; applied | a second plan proposes nothing |
 
 Scope: `timeline` governs every bead that exists in the hive and proposes only the lifecycle keys
 it has a source for (a bead with no facts is untouched). `complexity` governs epics, features,
@@ -571,6 +735,8 @@ own BeadHive-free skill directory, tracked as `bh-skls-8vr`.
 ## Defaults
 
 Every new behavior is off until asked for: the Haiku judge (`backfill.judge.enabled=false`),
-the dolt_history gap fill (`backfill.timeline.gapfill.enabled=false`), deletion and erasure in
+the dolt_history gap fill (`backfill.timeline.gapfill.enabled=false`), the coverage cache refresh
+after an applied pass (`backfill.coverage.enabled=false`), continuous backfill after merges and
+syncs (`backfill.continuous.enabled=false`), deletion and erasure in
 the bd loader, `export --history` (the plain export is the default), and any write (a pass,
 `timeline` included, previews unless `--apply`).

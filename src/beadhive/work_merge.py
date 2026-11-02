@@ -655,6 +655,7 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         )
         raise api.typer.Exit(1)
     _reap_backups_after_land(api, cfg, entry, main, [epic], base)
+    _post_merge_backfill(api, cfg, entry, main, base, integration, [epic], pre)
     api.typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
 
 
@@ -1459,6 +1460,7 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
             _milestone_merged(api, cfg, entry, main, base, integration, [bead], hive)
     if closed:
         _reap_backups_after_land(api, cfg, entry, main, [bead], base)
+        _post_merge_backfill(api, cfg, entry, main, base, integration, [bead], base_before)
     api.otel.record_merge_duration(
         api.time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
     )
@@ -1505,6 +1507,52 @@ def _milestone_merged(api, cfg, entry, main, base, integration, beads, hive, *, 
         return
     members = (lambda: api._molecule_members(molecule, main)) if molecule else None
     api.work_intake.on_work_merged(cfg, entry, main, base, beads, hive, members)
+
+
+def post_merge_backfill(cfg, entry, main, base, integration, beads, since, *, home, echo):
+    """Continuous backfill (``backfill.continuous``): append the just-landed beads' commits and
+    lifecycle timeline through the incremental passes (``docs/BACKFILL.md``).
+
+    Runs AFTER the merge slot is released, only for a land on the canonical integration branch (a
+    land into a container is not on main yet), and **never fails the merge**: it is a no-op
+    unless the hive enabled it, and any problem, an unexpected exception included, becomes a
+    warning through ``echo``. ``since`` is the integration tip before the land (where this
+    merge's commits start). Shared by the bead, molecule and group merges."""
+    if base != integration:
+        return
+    section = (cfg.get("backfill") or {}).get("continuous") or {}
+    if not isinstance(section, dict) or section.get("enabled") is not True:
+        return  # off by default: no import, no bd call, no git call
+    try:
+        # lazy: only a hive that enabled it pays for the imports
+        from . import backfill_cli, backfill_continuous
+
+        backfill_continuous.on_work_merged(
+            cfg,
+            entry,
+            main,
+            base,
+            list(beads),
+            seams=backfill_cli,
+            home=home(),
+            since=since or None,
+        )
+    except Exception as exc:  # noqa: BLE001 - the merge has landed; this is bookkeeping
+        echo(f"⚠ continuous backfill did not run (the merge is unaffected): {exc}")
+
+
+def _post_merge_backfill(api, cfg, entry, main, base, integration, beads, since):
+    post_merge_backfill(
+        cfg,
+        entry,
+        main,
+        base,
+        integration,
+        beads,
+        since,
+        home=lambda: api.config.home(),  # noqa: PLW0108 - read inside the hook's try
+        echo=lambda line: api.typer.echo(line, err=True),
+    )
 
 
 def _reap_accepted_safety_refs(api, entry, branch, *, boundary):

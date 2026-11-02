@@ -3434,6 +3434,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
         "tracker_adapters": _timed(timings, "tracker_adapters", _data_tracker_adapters, cfg),
+        "link_coverage": _timed(timings, "link_coverage", _data_link_coverage, cfg),
         "writer_fence": _timed(timings, "writer_fence", _data_writer_fence, cfg),
         "forward": _timed(timings, "forward", _data_forward, cfg),
         "warnings": _timed(
@@ -3480,6 +3481,46 @@ def _render_tracker_adapters(rows: list[dict]) -> None:
         typer.echo(f"  {glyph} {row['hive']} [{row['scope']}] {row['detail']}")
 
 
+def _data_link_coverage(cfg) -> list[dict]:
+    """One advisory row per registered hive with its CACHED link-coverage ratios
+    (``docs/BACKFILL.md`` "Coverage"). Empty, with no cache read, unless
+    ``backfill.coverage.enabled``. A cheap read of one small file per hive: it never runs a bd
+    export or ``git log``, so it can say ``never computed`` or ``stale`` (unusable cache, or
+    measured with other settings) but cannot tell that the inputs moved; that is
+    ``bh backfill coverage``."""
+    from . import backfill_coverage  # lazy: only an enabled section pays for the import
+
+    rows: list[dict] = []
+    for entry in registry.hives(cfg):
+        advisory = backfill_coverage.advisory_for(cfg, entry, Path.cwd(), config.home())
+        if advisory is None:
+            return []
+        rows.append({"hive": registry.hive_key(entry), **advisory.to_json()})
+    return rows
+
+
+def _render_link_coverage(rows: list[dict]) -> None:
+    if not rows:
+        return
+    typer.echo("\n# Link coverage (cached)")
+    glyph = {"ok": "✓", "warn": "!", "never": "•", "stale": "!"}
+    for row in rows:
+        if row["ratios"]:
+            parts = [
+                f"{r['label']} "
+                + ("n/a" if r["ratio"] is None else f"{r['ratio'] * 100:.1f}%")
+                + f" ({r['linked']}/{r['total']})"
+                + (" !" if r["below"] else "")
+                for r in row["ratios"]
+            ]
+            detail = f"{', '.join(parts)} [cached {row['computed_at']}]"
+        else:
+            detail = row["detail"]
+        if row["hint"]:
+            detail += f"; {row['hint']}"
+        typer.echo(f"  {glyph.get(row['state'], '•')} {row['hive']} {detail}")
+
+
 def _data_build_verify(cfg) -> list[dict]:
     root = Path.cwd()
     if not (root / "pants.toml").is_file():
@@ -3518,7 +3559,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``prefix_mismatches``, ``hq_remotes``, ``node_id``, ``beads_role``, ``beads_routing``,
     ``stores``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``, ``intake_holds``,
-    ``install``, ``observability``, ``build_verify``, ``tracker_adapters``, ``writer_fence``,
+    ``install``, ``observability``, ``build_verify``, ``tracker_adapters``, ``link_coverage``,
+    ``writer_fence``,
     ``forward``, ``warnings``), plus
     ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
@@ -3636,6 +3678,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_observability(data["observability"])
     _render_build_verify(data["build_verify"])
     _render_tracker_adapters(data.get("tracker_adapters") or [])
+    _render_link_coverage(data.get("link_coverage") or [])
     _render_writer_fence(data.get("writer_fence") or [])
     _render_forward(data.get("forward") or [])
     _render_warnings(data["warnings"])
