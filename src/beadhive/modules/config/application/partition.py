@@ -51,6 +51,9 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         # host's environment; a fleet push can never switch it on (backfill-platform-adr.md 4).
         "backfill",
         "plugins.tracker-github",
+        # The XTDB BeadLog store (beadlog-format-adr.md A6): a fleet push can never point a host at
+        # a node or switch the store on.
+        "plugins.beadlog-xtdb",
         "plugins.herdr",
         "plugins.hitch",
         "plugins.observaloop",

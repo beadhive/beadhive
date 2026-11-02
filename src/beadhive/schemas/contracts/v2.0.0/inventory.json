@@ -74,7 +74,7 @@
       "id": "urn:beadhive:wire-schema:config:1",
       "kind": "json-schema",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:b619a083323fa4e75aca741fe8d1f444b0f5cf8579065ba16179411661678cb2",
+      "sha256": "sha256:816ef2c2cff74c33c740da5786110f40f09aa6e7e6ed9ccd6161f8b5e4a38126",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema",
       "version": 2
     },
@@ -152,8 +152,21 @@
       "id": "urn:beadhive:wire-catalog:operations:1",
       "kind": "catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:e2feda305e80b5fd5bf5bbb9138382af005542e314fff72ec99638c590cb0e06",
+      "sha256": "sha256:fd97eb6f46ba43d54d4e5d68a54d2ceca791703d6cf2cdbf9f83fd0e6aa084bd",
       "source_owner": "beadhive.kernel.operations.document",
+      "version": 2
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-config-beadlog-xtdb-v1-valid"
+      ],
+      "family": "plugin-fragment",
+      "id": "urn:beadhive:wire-schema:plugin-config:beadlog-xtdb:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-config-beadlog-xtdb-v1.schema.json",
+      "sha256": "sha256:9a8a49e5b5f03c47398e6651184f1bc314718b10b927194688f8e985756e08ea",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
       "version": 2
     },
     {

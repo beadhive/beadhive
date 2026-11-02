@@ -179,8 +179,12 @@ def test_package_cli_projection_is_absent_when_optional_package_is_not_installed
 
     monkeypatch.setattr(plugins, "import_module", without_pants)
 
-    assert [m.plugin_id for m in plugins.projected_cli_mounts()] == ["tracker-github"]  # root-owned
-    assert len(plugins.projected_cli_commands()) == 2  # its status and doctor, never pants
+    # Both root-owned projections (tracker-github, beadlog-xtdb) remain; pants never appears.
+    assert [m.plugin_id for m in plugins.projected_cli_mounts()] == [
+        "tracker-github",
+        "beadlog-xtdb",
+    ]
+    assert len(plugins.projected_cli_commands()) == 4  # their status and doctor, never pants
 
 
 def test_plugin_lifecycle_delivery_uses_semantic_port_with_bounded_attribution(
@@ -267,9 +271,9 @@ def test_compatibility_facade_delegates_builtin_metadata_and_enablement(monkeypa
         host_executables={name: "1.0.0" for name in names},
     )
 
-    # `pants` (build.impact) and `tracker-github` (tracker.adapter) are built-in manifests with
-    # no legacy registry declaration.
-    builtins = sorted((*names, "pants", "tracker-github"))
+    # `pants` (build.impact), `tracker-github` (tracker.adapter) and `beadlog-xtdb`
+    # (beadlog.store) are built-in manifests with no legacy registry declaration.
+    builtins = sorted((*names, "beadlog-xtdb", "pants", "tracker-github"))
     assert [plugin.manifest.plugin_id for plugin in result.plugins] == builtins
     assert {selection.plugin_id for selection in result.capabilities} == set(builtins)
     assert result.errors == ()
@@ -297,6 +301,7 @@ def test_kernel_disablement_overrides_legacy_enablement_and_never_runs_callback(
             "enabled": {
                 plugin_id: False
                 for plugin_id in (
+                    "beadlog-xtdb",
                     "herdr",
                     "hitch",
                     "observaloop",

@@ -54,6 +54,7 @@ def _compose(document, manifests, **kwargs):
 def test_fragment_publication_and_composed_schema_are_deterministic():
     artifacts = plugin_fragment_artifacts()
     assert [fragment.plugin_id for fragment, _payload in artifacts] == [
+        "beadlog-xtdb",
         "herdr",
         "hitch",
         "observaloop",

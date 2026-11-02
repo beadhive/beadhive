@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_PACKAGES = frozenset(
     {
         "beadhive-bd-cli",
+        "beadhive-beadlog-xtdb",
         "beadhive-beads-client",
         "beadhive-hq-storage",
         "beadhive-hq-storage-dolt",

@@ -83,6 +83,7 @@ target(
         "./kernel/telemetry",
         "./modules",
         "./modules/agents",
+        "./modules/beadlog_store",
         "./modules/config",
         "./modules/hives",
         "./modules/intake",

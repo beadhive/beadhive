@@ -609,6 +609,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "store",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -636,7 +644,8 @@
             "dry_run",
             "pre_state",
             "audit",
-            "as_json"
+            "as_json",
+            "store"
           ],
           "path": "backfill apply",
           "progress": {
@@ -1102,6 +1111,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "store",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -1127,7 +1144,8 @@
             "hive",
             "out",
             "as_json",
-            "history"
+            "history",
+            "store"
           ],
           "path": "backfill export",
           "progress": {
