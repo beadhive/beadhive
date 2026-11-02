@@ -14,7 +14,7 @@ from typing import Any
 
 from .transport import BdTransport
 
-__all__ = ["CliRoutes", "github_pull_only_argv", "public_snapshot_argv"]
+__all__ = ["CliRoutes", "github_pull_only_argv", "github_repull_argv", "public_snapshot_argv"]
 
 #: bd reads a ``--metadata`` JSON document from a file; the process stdin is the one that needs no
 #: temporary file and survives a forwarded invocation (the transport carries ``text_input``).
@@ -41,6 +41,17 @@ def github_pull_only_argv(*, dry_run: bool = False) -> list[str]:
     if dry_run:
         args.append("--dry-run")
     return args
+
+
+def github_repull_argv(numbers: Iterable[int]) -> list[str]:
+    """The pull-only re-fetch of named GitHub issue NUMBERS (bh-clqa5's overlap re-pull).
+
+    Still pull-only with GitHub winning every conflict; ``--issues=`` carries positive issue
+    numbers only (bd fetches each one), never a bead id, so nothing local is selected to push."""
+    picked = sorted({int(n) for n in numbers})
+    if not picked or picked[0] <= 0:
+        raise ValueError("github_repull_argv needs at least one positive GitHub issue number")
+    return [*github_pull_only_argv(), "--issues=" + ",".join(str(n) for n in picked)]
 
 
 class CliRoutes:
@@ -462,6 +473,14 @@ class CliRoutes:
         if timeout is not None:
             kwargs["timeout"] = timeout
         return self._bd.run(github_pull_only_argv(dry_run=dry_run), self._cwd, **kwargs)
+
+    def github_repull(self, numbers: Iterable[int], *, timeout: float | None = None) -> Any:
+        """Captured ``bd github sync --pull-only --prefer-github --issues=<numbers>`` (see
+        :func:`github_repull_argv`); the caller's transport selects the store."""
+        kwargs: dict[str, Any] = {"capture": True}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return self._bd.run(github_repull_argv(numbers), self._cwd, **kwargs)
 
     def working_set_diff(self) -> Any:
         """Captured ``bd diff HEAD WORKING --json``: the rows changed in the Dolt working set and

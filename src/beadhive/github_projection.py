@@ -18,6 +18,9 @@ little itself: Beads already ships the GitHub integration (``bd github sync``), 
 * reports the rows the pull left in the store's Dolt working set (``bd diff HEAD WORKING``) —
   uncommitted, so an audit before publish must cover them — and, only when the opt-in
   ``tracker_sync.commit_after_pull`` is on, commits them (bh-cm4er);
+* only when the opt-in ``tracker_sync.overlap_repull`` is on, re-pulls the issues the tracker
+  port reports since bh's own inclusive checkpoint, covering edits bd's end-of-sync
+  ``last_sync`` skips (:mod:`beadhive.github_repull`, bh-clqa5);
 * verifies identity afterwards: every projected row carries ``external_ref`` = the issue's
   GitHub URL for THIS repository, and no URL appears twice (a re-pull updates in place).
 
@@ -38,6 +41,15 @@ from typing import Any
 from beadhive_plugins.credentials import ResolvedToken, TokenSource, scrub
 
 from . import bd_cli, guard, store_target
+from .github_repull import (
+    OverlapRepull,
+    RepullReport,
+    batches,
+    first_run_floor,
+    list_changed,
+    read_checkpoint,
+    write_checkpoint,
+)
 from .store_target import SCOPE_PUBLIC, StoreTarget
 
 #: The only ``stores.public.source`` this projection serves.
@@ -93,6 +105,8 @@ class ProjectionReport:
     uncommitted: int | None = 0
     #: True when ``tracker_sync.commit_after_pull`` committed the pulled rows.
     committed: bool = False
+    #: The ``tracker_sync.overlap_repull`` leg; None when it is off (or on a dry run).
+    repull: RepullReport | None = None
     #: Visible, non-fatal findings (an uncommitted working set); never silent, never an exit code.
     warnings: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
@@ -283,6 +297,7 @@ def project(
     *,
     dry_run: bool = False,
     commit_after_pull: bool = False,
+    overlap_repull: OverlapRepull | None = None,
     token_source: TokenSource | None = None,
     routes_factory: RoutesFactory | None = None,
     environ: Mapping[str, str] | None = None,
@@ -291,7 +306,8 @@ def project(
 
     Raises :class:`ProjectionError` / ``StoreResolutionError`` for a refusal; a bd failure is
     raised too, with the credential scrubbed. Identity problems after a real pull are returned
-    in :attr:`ProjectionReport.problems` (the caller exits non-zero)."""
+    in :attr:`ProjectionReport.problems` (the caller exits non-zero), as is a failed opt-in
+    ``overlap_repull`` leg (:func:`beadhive.github_repull.for_config` builds it; None = off)."""
     projection = resolve_projection(entry)
     target = projection.target.require_present()
     environ = dict(os.environ if environ is None else environ)
@@ -300,7 +316,8 @@ def project(
     secrets = [token] if token else []
     routes = (routes_factory or _default_routes)(target, child_env(projection, token))
 
-    conflicts = _repo_conflicts(routes.config_list(), projection)
+    store_config = routes.config_list()
+    conflicts = _repo_conflicts(store_config, projection)
     if conflicts:
         raise ProjectionError(
             f"{target.hive}: the public store's bd config names another repository "
@@ -312,6 +329,8 @@ def project(
     if refusal is not None:  # pragma: no cover - the route is pinned; this is the backstop
         raise ProjectionError(refusal)
 
+    overlap = None if dry_run else overlap_repull
+    started = overlap.clock() if overlap else None  # before bd's fetch begins
     res = routes.github_pull_only(dry_run=dry_run, timeout=PULL_TIMEOUT_SECONDS)
     if getattr(res, "returncode", 1) != 0:
         raise ProjectionError(
@@ -333,11 +352,57 @@ def project(
     match = _PULLED.search(out)
     if match:
         report.pulled, report.created, report.updated = (int(g) for g in match.groups())
-    report.projected, report.problems = verify_identity(
-        routes.issue_list(all_=True, limit=0), projection
-    )
+    mark = None
+    if overlap:
+        mark = _overlap_repull(routes, report, projection, overlap, started, secrets)
+    report.projected, problems = verify_identity(routes.issue_list(all_=True, limit=0), projection)
+    report.problems += problems
     _settle_working_set(routes, report, projection, commit=commit_after_pull and report.ok)
+    if overlap and mark and report.ok and report.repull is not None:
+        write_checkpoint(overlap.checkpoint_path, projection.slug, mark)
+        report.repull.checkpoint_saved = True
     return report
+
+
+def _overlap_repull(
+    routes: Any,
+    report: ProjectionReport,
+    projection: Projection,
+    overlap: OverlapRepull,
+    started: Any,
+    secrets: list[str],
+) -> str | None:
+    """Re-pull every issue the tracker reports at or after bh's saved checkpoint (first run: every
+    issue updated since shortly before ``started``); return the checkpoint to save once the whole
+    projection succeeded, or None after a failure (recorded as a problem, so the next run retries
+    from the old mark). See :mod:`beadhive.github_repull`."""
+    token = read_checkpoint(overlap.checkpoint_path, projection.slug)
+    report.repull = leg = RepullReport(from_checkpoint=token is not None)
+    floor = None if token else first_run_floor(started)
+    try:
+        numbers, mark, warnings = list_changed(overlap.reader, token, _issue_ref(projection), floor)
+    except Exception as exc:  # noqa: BLE001 - adapter refusals are typed; never echo their text
+        report.problems.append(
+            f"tracker_sync.overlap_repull: listing {projection.slug} through the tracker port "
+            f"failed ({type(exc).__name__}); the checkpoint was not advanced"
+        )
+        return None
+    leg.listed = len(numbers)
+    report.warnings += warnings
+    for batch in batches(numbers):
+        res = routes.github_repull(batch, timeout=PULL_TIMEOUT_SECONDS)
+        if getattr(res, "returncode", 1) != 0:
+            report.problems.append(
+                f"tracker_sync.overlap_repull: `bd github sync --pull-only --issues=` failed "
+                f"({_tail(res, secrets)}); the checkpoint was not advanced"
+            )
+            return None
+        leg.repulled += batch
+        pulled = _PULLED.search(scrub(str(getattr(res, "stdout", "") or ""), secrets))
+        if pulled:
+            leg.created += int(pulled.group(2))
+            leg.updated += int(pulled.group(3))
+    return mark
 
 
 def payload(report: ProjectionReport) -> dict[str, Any]:
@@ -360,6 +425,14 @@ def render(report: ProjectionReport) -> list[str]:
         f"  pulled {report.pulled} issue(s): {report.created} created, "
         f"{report.updated} updated; {report.projected} projected in the store",
     ]
+    if report.repull is not None:
+        leg = report.repull
+        since = "since the saved checkpoint" if leg.from_checkpoint else "first run, no checkpoint"
+        lines.append(
+            f"  overlap re-pull ({since}): {len(leg.repulled)} issue(s) re-pulled, "
+            f"{leg.created} created, {leg.updated} updated"
+            + ("; checkpoint saved" if leg.checkpoint_saved else "; checkpoint NOT advanced")
+        )
     if report.committed:
         lines.append("  committed the pulled rows (tracker_sync.commit_after_pull)")
     lines += [f"  warning: {warning}" for warning in report.warnings]

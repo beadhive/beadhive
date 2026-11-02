@@ -74,6 +74,7 @@ def sync(
     eng=None,
     origin_url: str | None = None,
     cfg: Mapping[str, Any] | None = None,
+    overlap_repull: github_projection.OverlapRepull | None = None,
 ) -> TrackerSyncReport:
     target = select_tracker_store(entry, store)
     report = TrackerSyncReport(hive=target.hive, store=target.prefix, dry_run=dry_run)
@@ -97,6 +98,8 @@ def sync(
         dry_run=dry_run,
         # ``cfg`` is the caller's loaded config; none given = the opt-in key is off.
         commit_after_pull=github_projection.commit_after_pull_enabled(cfg),
+        # Built by the caller from ``tracker_sync.overlap_repull`` (bh-clqa5); None = off.
+        overlap_repull=overlap_repull,
     )
     if not report.pull.ok or pull_only:
         return report

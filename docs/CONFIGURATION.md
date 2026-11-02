@@ -388,6 +388,7 @@ behaviour is unchanged apart from the report.
 | Key (under `tracker_sync`) | Default | Meaning |
 |---|---|---|
 | `commit_after_pull` | `false` | strict boolean: after a successful pull (identity verified), `bd dolt commit` the working set; a failed commit is reported as a problem (exit 1) |
+| `overlap_repull` | `false` | strict boolean: after bd's incremental pull, re-pull (`--issues=<numbers>`) every issue the hive's bound tracker adapter reports since bh's own inclusive checkpoint, so an edit bd's end-of-sync `last_sync` skipped still lands ([github-issue-projection.md](design/github-issue-projection.md), bh-clqa5). Needs `plugins.tracker-github` with `issues.read` and the store's `adapter` binding; without them the sync refuses. A failed listing or re-pull is a problem (exit 1) and leaves the checkpoint where it was |
 
 Running a partitioned hive — layout, bootstrap modes, explicit public sync and publication,
 diagnostics, recovery, and the separate rollout gate for a live hive — is in the operator guide

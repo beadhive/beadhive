@@ -25,6 +25,22 @@ The pull leaves its rows in the store's Dolt working set (bd does not commit the
 counts them (`uncommitted`) and warns; the opt-in `tracker_sync.commit_after_pull` commits them
 after a successful pull (docs/CONFIGURATION.md, bh-cm4er).
 
+bd 1.3 checkpoints the pull at the END-of-sync wall clock (`github.last_sync`, rounded up to the
+next second) and sends it as the next pull's `since`, so an issue edited while a sync runs is
+skipped by every later incremental pull until it is edited again (reproduced against real bd in
+`tests/test_github_checkpoint_repro_int.py`, bh-clqa5). bh does not rewrite bd's mark (it lives
+in the dolt-ignored `local_metadata` table; moving it earlier trips bd's own pull guard). The
+opt-in `tracker_sync.overlap_repull` keeps bh's own inclusive tracker-port checkpoint per store
+under `<bh home>/state/tracker-sync/` and, after the incremental pull, re-pulls every issue the
+bound tracker adapter reports since it:
+
+```text
+bd -C <public store root> github sync --pull-only --prefer-github --issues=<n>[,<n>...]
+```
+
+The guard admits `--issues=` only in that form, with GitHub issue numbers (never a bead id).
+The checkpoint advances only after the whole projection succeeded.
+
 Implementation: `src/beadhive/github_projection.py`; the argv is the named route
 `beadhive_bd_cli.github_pull_only_argv`; the guard is `guard.public_store_github_refusal`.
 
