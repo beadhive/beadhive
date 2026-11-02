@@ -95,6 +95,13 @@ pants = ["beadhive-pants"]
 # works without it. Installing it enables nothing: `plugins.tracker-github.enabled` is false by
 # default and a store binding never turns it on.
 github = ["beadhive-tracker-github"]
+# `beadhive[xtdb]` — the XTDB BeadLog store plugin (beadlog-format-adr.md amendment A6): binds the
+# `beadlog-xtdb` loader into `bh backfill apply|export --store xtdb` through the `beadlog.store`
+# capability. Opt-in twice over: installing it enables nothing (`plugins.beadlog-xtdb.enabled` is
+# false by default) and root imports it only lazily, after manifest selection. It brings psycopg
+# (LGPL-3.0, outside `license_allow`): deliberately an EXTRA, never a default group, so the
+# `--no-dev`, extras-free license SBOM (`just sbom`) never carries it.
+xtdb = ["beadhive-beadlog-xtdb"]
 
 [project.scripts]
 bh = "beadhive.bootstrap.cli:main"
@@ -164,6 +171,7 @@ beadlog = { workspace = true }
 beadlog-sources = { workspace = true }
 beadhive-backfill = { workspace = true }
 beadlog-xtdb = { workspace = true }
+beadhive-beadlog-xtdb = { workspace = true }
 
 # Both groups are installed by plain `uv sync` (see `[tool.uv] default-groups` below), so dev
 # and CI checkouts keep resolving `beadhive-pants` from the workspace exactly as before this
@@ -252,8 +260,12 @@ dev = [
     # workspace for DEV/CI ONLY, so the offline package gate finds its psycopg wheels in the uv
     # cache. psycopg is LGPL-3.0, outside `license_allow`: `--no-dev` keeps it out of the license
     # SBOM, and nothing shipped depends on it (root never imports it, the wheel does not vendor
-    # it). The opt-in plugin that binds the loader needs an explicit licence decision first.
+    # it).
     "beadlog-xtdb",
+    # The opt-in plugin that binds it (bh-qjrj9), editable for DEV/CI ONLY on the same terms: the
+    # public spelling is the `beadhive[xtdb]` extra; never add it to `default-groups` or to
+    # `license_allow` (operator decision 2026-11-02).
+    "beadhive-beadlog-xtdb",
 ]
 
 [tool.commitizen]

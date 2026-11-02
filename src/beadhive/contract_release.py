@@ -157,6 +157,10 @@ _OFFICIAL_V1_ARTIFACT_IDENTITIES = (
     ("urn:beadhive:wire-catalog:mcp-projections:1", "artifacts/mcp-projections-v1.json"),
     ("urn:beadhive:wire-catalog:operations:1", "artifacts/operation-catalog-v1.json"),
     (
+        "urn:beadhive:wire-schema:plugin-config:beadlog-xtdb:1",
+        "artifacts/plugin-config-beadlog-xtdb-v1.schema.json",
+    ),
+    (
         "urn:beadhive:wire-schema:plugin-config:herdr:1",
         "artifacts/plugin-config-herdr-v1.schema.json",
     ),

@@ -375,6 +375,7 @@ def test_real_root_composition_maps_all_consumed_workspace_packages() -> None:
     assert expected == {
         "packages/beadhive-backfill/*",
         "packages/beadhive-bd-cli/*",
+        "packages/beadhive-beadlog-xtdb/*",
         "packages/beadhive-beads-client/*",
         "packages/beadhive-core/*",
         "packages/beadhive-hq-storage-dolt/*",

@@ -17,6 +17,7 @@ members = [
     "beadhive",
     "beadhive-backfill",
     "beadhive-bd-cli",
+    "beadhive-beadlog-xtdb",
     "beadhive-beads-client",
     "beadhive-core",
     "beadhive-hq-storage",
@@ -185,6 +186,9 @@ pants = [
 release-verify = [
     { name = "sigstore" },
 ]
+xtdb = [
+    { name = "beadhive-beadlog-xtdb" },
+]
 
 [package.dev-dependencies]
 backfill = [
@@ -198,6 +202,7 @@ core = [
     { name = "beadhive-core" },
 ]
 dev = [
+    { name = "beadhive-beadlog-xtdb" },
     { name = "beadlog-xtdb" },
     { name = "commitizen" },
     { name = "editables" },
@@ -236,6 +241,7 @@ worktrees = [
 [package.metadata]
 requires-dist = [
     { name = "attrs", specifier = ">=23" },
+    { name = "beadhive-beadlog-xtdb", marker = "extra == 'xtdb'", editable = "packages/beadhive-beadlog-xtdb" },
     { name = "beadhive-pants", marker = "extra == 'pants'", editable = "packages/beadhive-pants" },
     { name = "beadhive-tracker-github", marker = "extra == 'github'", editable = "packages/beadhive-tracker-github" },
     { name = "cryptography", specifier = ">=45" },
@@ -256,7 +262,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
-provides-extras = ["mcp", "otel", "release-verify", "pants", "github"]
+provides-extras = ["mcp", "otel", "release-verify", "pants", "github", "xtdb"]
 
 [package.metadata.requires-dev]
 backfill = [
@@ -270,6 +276,7 @@ core = [
     { name = "beadhive-core", editable = "packages/beadhive-core" },
 ]
 dev = [
+    { name = "beadhive-beadlog-xtdb", editable = "packages/beadhive-beadlog-xtdb" },
     { name = "beadlog-xtdb", editable = "packages/beadlog-xtdb" },
     { name = "commitizen", specifier = ">=4.16.4" },
     { name = "editables", specifier = ">=0.5" },
@@ -323,6 +330,21 @@ dependencies = [
 requires-dist = [
     { name = "beadhive-beads-client", editable = "packages/beadhive-beads-client" },
     { name = "beadhive-core", editable = "packages/beadhive-core" },
+]
+
+[[package]]
+name = "beadhive-beadlog-xtdb"
+version = "0.1.0"
+source = { editable = "packages/beadhive-beadlog-xtdb" }
+dependencies = [
+    { name = "beadhive" },
+    { name = "beadlog-xtdb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beadhive", editable = "." },
+    { name = "beadlog-xtdb", editable = "packages/beadlog-xtdb" },
 ]
 
 [[package]]

@@ -423,6 +423,25 @@ above, never on githubkit's built-in retry.
 As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
 to every host (`bh-uf986`).
 
+`plugins.beadlog-xtdb` configures the opt-in XTDB BeadLog store
+([beadlog-format-adr.md](design/beadlog-format-adr.md) amendment A6): with it enabled,
+`bh backfill apply|export --store xtdb` reach the operator's node through the `beadlog.store`
+capability, and `bh plugin beadlog-xtdb status|doctor` report on it. It is **host-owned** and off
+by default. bh never starts, stops or upgrades the node. No key holds the password: it is the
+node's `XTDB_PASSWORD`, resolved from the host's fnox secret broker through `credential`, and a
+`dsn` that embeds one is refused. The plugin ships as the optional `beadhive-beadlog-xtdb`
+package (install `beadhive[xtdb]`; it brings psycopg, LGPL-3.0); installing it enables nothing,
+and `import beadhive` never needs or imports it.
+
+| Key (under `plugins.beadlog-xtdb`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | the plugin's own gate (strict boolean) |
+| `dsn` | `host=127.0.0.1 port=5432 user=xtdb dbname=xtdb` | libpq string or `postgresql://` URI of the loopback pgwire port; never a password |
+| `credential.config_path` / `credential.profile` / `credential.key` | unset | fnox lookup of the node's `XTDB_PASSWORD`; unset means no password (doctor reports it) |
+| `image` | the validated XTDB 2.2.0 digest | digest-pinned image the operator runs (`<repo>@sha256:<64 hex>`; a tag is refused; doctor warns on another digest) |
+| `data_dir` | unset | absolute host path mounted at `/var/lib/xtdb`, for doctor's check (`tmpfs`/`ramfs` refused) |
+| `health_url` | `http://127.0.0.1:8080/healthz/alive` | loopback healthz URL, probed with `GET` (the stock image `HEALTHCHECK` sends `HEAD`, answered `405`) |
+
 ### `intake.external` {#intake-external}
 
 `intake.external` configures external issue intake

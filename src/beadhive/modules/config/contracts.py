@@ -3026,6 +3026,107 @@ class TrackerGithubConfig(_QuietSection):
         return value
 
 
+# ---- plugins.beadlog-xtdb (beadlog-format-adr.md amendment A6, bh-cntr0) -----------
+# Host-owned settings of the opt-in XTDB BeadLog store plugin (capability `beadlog.store`).
+# Off by default. bh never starts, stops or upgrades the node: these keys only tell bh where the
+# operator's loopback node is and what doctor checks. No key can hold the password: it comes from
+# the host's fnox secret broker through `credential`, and a DSN that embeds one is refused.
+
+#: The XTDB 2.2.0 image digest the loader and the bh-cntr0 operational spike validated.
+BEADLOG_XTDB_VALIDATED_IMAGE = (
+    "ghcr.io/xtdb/xtdb@sha256:a6a426505b95a36e4e0e1d0de88efcf4220cb6bde8f1f5e594b0a1f92a948a77"
+)
+_DIGEST_PINNED_IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}")
+_CONNINFO_PASSWORD_RE = re.compile(r"(?:^|\s)password\s*=", re.IGNORECASE)
+
+
+class BeadlogXtdbConfig(_QuietSection):
+    """``plugins.beadlog-xtdb`` — the XTDB BeadLog store plugin (host-owned; off by default).
+
+    Enabling it makes ``bh backfill apply|export --store xtdb`` reach the operator-run node named
+    by ``dsn``; ``bh plugin beadlog-xtdb doctor`` checks the node and this host. Nothing here
+    starts a node, and no key holds a secret.
+    """
+
+    enabled: StrictBool = Field(False, description="The plugin's own gate (default off).")
+    dsn: str = Field(
+        "host=127.0.0.1 port=5432 user=xtdb dbname=xtdb",
+        description="libpq connection string (key=value or postgresql:// URI) of the loopback "
+        "XTDB pgwire port. Never a password: one embedded here is refused; the password comes "
+        "from `credential`.",
+    )
+    credential: HqFnoxRef = Field(
+        default_factory=HqFnoxRef,
+        description="Host-local fnox lookup (config_path, profile, key) of the node's "
+        "XTDB_PASSWORD; the value is resolved by the secret broker when needed and never stored, "
+        "logged or echoed. Unset = no password (doctor reports it).",
+    )
+    image: str = Field(
+        BEADLOG_XTDB_VALIDATED_IMAGE,
+        description="The digest-pinned XTDB image the operator runs (`<repo>@sha256:<64 hex>`; "
+        "a tag such as `latest` is refused). Doctor warns when it is not the validated digest.",
+    )
+    data_dir: str = Field(
+        "",
+        description="Absolute host path mounted as the node's /var/lib/xtdb, for the doctor's "
+        "filesystem check (a tmpfs or ramfs directory is refused). Unset = not checked.",
+    )
+    health_url: str = Field(
+        "http://127.0.0.1:8080/healthz/alive",
+        description="The node's loopback healthz URL, probed with GET (the stock image "
+        "HEALTHCHECK sends HEAD, which XTDB answers 405).",
+    )
+
+    @field_validator("dsn")
+    @classmethod
+    def _no_secret_in_dsn(cls, value):
+        # Never repeat the value: it is the field most likely to carry a pasted password.
+        text = value.strip()
+        if text.lower().startswith(("postgresql://", "postgres://")):
+            try:
+                parts = urlsplit(text)
+                has_password = parts.password is not None or "password=" in parts.query.lower()
+            except ValueError:
+                raise ValueError("dsn is not a valid postgresql:// URI") from None
+            if has_password:
+                raise ValueError("dsn must not embed a password; use `credential` (fnox)")
+        elif _CONNINFO_PASSWORD_RE.search(text):
+            raise ValueError("dsn must not embed a password; use `credential` (fnox)")
+        return value
+
+    @field_validator("image")
+    @classmethod
+    def _digest_pinned(cls, value):
+        if not _DIGEST_PINNED_IMAGE_RE.fullmatch(value):
+            raise ValueError("image must be pinned by digest: <repository>@sha256:<64 hex>")
+        return value
+
+    @field_validator("data_dir")
+    @classmethod
+    def _absolute_data_dir(cls, value):
+        if value and not Path(value).is_absolute():
+            raise ValueError("data_dir must be an absolute path")
+        return value
+
+    @field_validator("health_url")
+    @classmethod
+    def _http_health_url(cls, value):
+        try:
+            parts = urlsplit(value)
+            valid_port = parts.port is None or parts.port > 0
+        except ValueError:
+            parts, valid_port = None, False
+        if (
+            parts is None
+            or not valid_port
+            or parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or "@" in parts.netloc
+        ):
+            raise ValueError("health_url must be an http(s) URL without userinfo")
+        return value
+
+
 # ---- intake.external (external-intake-module-adr.md section 15) -------------------
 
 
@@ -3169,6 +3270,11 @@ class PluginsConfig(_QuietSection):
         None,
         alias="tracker-github",
         description="The GitHub tracker adapter plugin (host-owned; every switch off).",
+    )
+    beadlog_xtdb: BeadlogXtdbConfig | None = Field(
+        None,
+        alias="beadlog-xtdb",
+        description="The XTDB BeadLog store plugin (host-owned; off by default).",
     )
 
 
@@ -4126,7 +4232,9 @@ __all__ = (
     "BackfillCoverageConfig",
     "BackfillJudgeConfig",
     "BackupConfig",
+    "BEADLOG_XTDB_VALIDATED_IMAGE",
     "BeadhiveConfig",
+    "BeadlogXtdbConfig",
     "BeadsConfig",
     "ClaudeConfig",
     "ConflictConfig",

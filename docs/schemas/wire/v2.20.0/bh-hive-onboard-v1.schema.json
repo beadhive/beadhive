@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:wire-schema:bh.hive-onboard:1",
+  "title": "bh hive onboard --json v1",
+  "type": "object",
+  "required": [
+    "schema_version", "command", "success", "exit_code", "hive", "target", "dry_run",
+    "cloned", "checks", "steps", "registered", "installers", "hub_synced", "warnings", "text"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"const": 1},
+    "command": {"const": "hive onboard"},
+    "success": {"type": "boolean"},
+    "exit_code": {"type": "integer", "minimum": 0},
+    "hive": {"type": "string"},
+    "target": {"type": "string"},
+    "dry_run": {"type": "boolean"},
+    "cloned": {"type": "boolean"},
+    "checks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/Check"}
+    },
+    "steps": {"type": "array", "items": {"type": "string"}},
+    "registered": {"type": "boolean"},
+    "installers": {"type": "array", "items": {"type": "string"}},
+    "hub_synced": {"type": "boolean"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "text": {"type": "string"}
+  },
+  "$defs": {
+    "Check": {
+      "type": "object",
+      "required": ["id", "label", "ok", "detail", "overridable", "skipped", "text"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {"type": "string"},
+        "label": {"type": "string"},
+        "ok": {"type": "boolean"},
+        "detail": {"type": "string"},
+        "overridable": {"type": "boolean"},
+        "skipped": {"type": "boolean"},
+        "text": {"type": "string"}
+      }
+    }
+  }
+}

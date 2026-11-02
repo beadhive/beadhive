@@ -825,6 +825,12 @@ _APPROVED_OPTIONAL_STRING_PARAMS: dict[str, tuple[str, ...]] = {
             "emergency-revoke",
         )
     },
+    # operator approval 2026-11-02 (bh-qjrj9, sub-epic bh-wj8d7): `bh backfill apply|export
+    # --store <name>` appends one optional string to each verb. Without it (or with `--store bd`)
+    # both keep their exact request, output, exit codes and JSON keys; `xtdb` resolves the opt-in
+    # `beadlog.store` plugin.
+    "backfill.apply": ("store",),
+    "backfill.export": ("store",),
 }
 _OPTIONAL_STRING_PARAM = {
     "privilege": "inherited",

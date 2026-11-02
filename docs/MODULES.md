@@ -493,6 +493,17 @@ Concrete adapters live in plugin packages. Consumers test against
 `beadhive.testing.tracker.TRACKER_CASES`. Module-internal tests are `tests/unit/modules/tracker`
 and `tests/unit/testing/test_tracker_conformance_kit.py`.
 
+### `modules/beadlog_store`
+
+Owns the **`beadlog.store` capability, API 1** ([beadlog-format-adr.md](design/beadlog-format-adr.md)
+amendment A6): `beadhive.modules.beadlog_store.contracts` (the capability id and version, the
+`BeadlogStore` and `BeadlogStoreLoader` Protocols, `StoreSnapshot`, `PasswordSource` and the
+`BeadlogStoreError` / `BeadlogStoreUnavailable` refusals; standard library only). It is the seam
+through which `bh backfill apply|export --store <name>` reaches a BeadLog store other than the
+built-in bd store. It has no domain, application or state and imports no other module. The
+composition root is `beadhive.bootstrap.beadlog_store` (lazy, after manifest selection); the only
+provider is the opt-in `beadhive-beadlog-xtdb` plugin package (`beadhive[xtdb]`).
+
 ### `modules/intake`
 
 Owns **external intake**: the one shared intake queue, the intake and origin vocabulary and, in

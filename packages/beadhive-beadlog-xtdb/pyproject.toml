@@ -1,0 +1,25 @@
+[project]
+name = "beadhive-beadlog-xtdb"
+version = "0.1.0"
+description = "XTDB BeadLog store plugin for Beadhive (beadlog.store v1): config, doctor/status and the bh backfill binding"
+requires-python = ">=3.11"
+# A PLUGIN package (it carries plugin.json, docs/design/package-class-library-vs-plugin-adr.md):
+# root resolves it lazily, by name, only after manifest selection and only when
+# `plugins.beadlog-xtdb.enabled` is true (beadlog-format-adr.md amendment A6). The loader itself is
+# the `beadlog-xtdb` LIBRARY; psycopg (LGPL-3.0, outside `license_allow`) is that library's
+# dependency, never the root's, and it is imported only inside functions here. `beadhive[xtdb]`
+# is the public, opt-in spelling; dev/CI get the package through the `dev` dependency group only,
+# so the `--no-dev` license SBOM never carries psycopg.
+dependencies = ["beadhive", "beadlog-xtdb"]
+classifiers = ["Private :: Do Not Upload"]
+
+[tool.uv.sources]
+beadhive = { workspace = true }
+beadlog-xtdb = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beadhive_beadlog_xtdb"]

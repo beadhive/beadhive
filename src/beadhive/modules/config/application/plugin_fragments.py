@@ -19,6 +19,7 @@ from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ValidationError
 
 from ..contracts import (
+    BeadlogXtdbConfig,
     HerdrConfig,
     HitchConfig,
     ObservaloopConfig,
@@ -31,6 +32,7 @@ from .resolution import SourceLayer
 _URN_PREFIX = "urn:beadhive:wire-schema:plugin-config:"
 _FRAGMENT_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType(
     {
+        "beadlog-xtdb": BeadlogXtdbConfig,
         "herdr": HerdrConfig,
         "hitch": HitchConfig,
         "observaloop": ObservaloopConfig,

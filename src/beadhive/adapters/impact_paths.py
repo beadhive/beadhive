@@ -40,10 +40,24 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_reconcile_docs.py",
         "tests/test_backfill_source_passes_cli.py",
         "tests/test_backfill_source_passes_int.py",
+        "tests/test_backfill_store_cli.py",
+        "tests/test_backfill_store_xtdb_int.py",
         "tests/test_backfill_timeline_cli.py",
         "tests/test_complexity_backfill.py",
         "tests/test_hive_ready.py",
         "tests/test_work_merge_backfill.py",
+    ),
+    # The XTDB BeadLog store plugin (bh-qjrj9): the `beadlog.store` composition root, its
+    # status/doctor CLI, `bh backfill apply|export --store`, the manifest drift and import
+    # isolation guards, and the integration-marked load into a real XTDB.
+    "beadhive-beadlog-xtdb": (
+        "tests/contracts/test_beadlog_xtdb_manifest_drift.py",
+        "tests/contracts/test_builtin_plugin_manifests.py",
+        "tests/test_backfill_store_cli.py",
+        "tests/test_backfill_store_xtdb_int.py",
+        "tests/test_beadlog_store_import_isolation.py",
+        "tests/unit/bootstrap/test_beadlog_store_composition.py",
+        "tests/unit/bootstrap/test_beadlog_xtdb_plugin_cli.py",
     ),
     "beadhive-bd-cli": (
         "tests/test_bd_cli.py",
@@ -158,6 +172,8 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_reconcile_docs.py",
         "tests/test_backfill_source_passes_cli.py",
         "tests/test_backfill_source_passes_int.py",
+        "tests/test_backfill_store_cli.py",
+        "tests/test_backfill_store_xtdb_int.py",
         "tests/test_backfill_timeline_cli.py",
         "tests/test_complexity_backfill.py",
     ),
@@ -173,13 +189,17 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_reconcile_docs.py",
         "tests/test_backfill_source_passes_cli.py",
         "tests/test_backfill_source_passes_int.py",
+        "tests/test_backfill_store_cli.py",
+        "tests/test_backfill_store_xtdb_int.py",
         "tests/test_backfill_timeline_cli.py",
         "tests/test_complexity_backfill.py",
     ),
-    # The XTDB loader library is a dev/CI group only (no root test imports it yet); the entry keeps
-    # root-composition invalidation fail-closed for it until the plugin that binds it registers its
-    # root tests.
-    "beadlog-xtdb": (),
+    # The XTDB loader library (dev/CI group only): root reaches it only through the opt-in plugin
+    # (bh-qjrj9), so its root closure is the plugin's store CLI and the real-XTDB load.
+    "beadlog-xtdb": (
+        "tests/test_backfill_store_cli.py",
+        "tests/test_backfill_store_xtdb_int.py",
+    ),
 }
 
 

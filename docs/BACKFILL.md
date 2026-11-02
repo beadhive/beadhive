@@ -29,10 +29,10 @@ bh backfill commits      [--hive H] [--dry-run | --apply] [--since-cursor] [--pl
 bh backfill docs         (the same options as commits, without --since-cursor)
 bh backfill planning     (the same options as commits, without --since-cursor)
 bh backfill coverage     [--hive H] [--refresh] [--json]
-bh backfill export       [--hive H] [--out F.bdlg] [--history] [--json]
+bh backfill export       [--hive H] [--out F.bdlg] [--history] [--store bd|xtdb] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verify       F.bdlg [--json]
-bh backfill apply        PLAN.bdlg [--hive H] [--dry-run] [--pre-state F] [--audit F] [--json]
+bh backfill apply        PLAN.bdlg [--hive H] [--dry-run] [--pre-state F] [--audit F] [--store bd|xtdb] [--json]
 bh backfill-complexity   (the flat alias of `bh backfill complexity`; published wire surface)
 ```
 
@@ -51,6 +51,7 @@ Nothing writes to a hive unless asked: a pass previews by default and writes onl
 | `--pre-state F` | the recovery export, written before the first write (default: beside the plan) |
 | `--audit F` | the machine audit JSON (default: beside the plan) |
 | `--json` | machine output: the plan, audit, summary or loss report |
+| `--store S` | `apply` and `export` only: the BeadLog store, `bd` (the default; the hive's bd store) or `xtdb` (see [Other stores](#other-stores---store)) |
 
 ### `bh backfill complexity` (pass #1)
 
@@ -184,6 +185,32 @@ declare exactly one bead group; the bd loader loads that group into the hive. `-
 the loader's assessment only and prints its loss report (every field bd cannot keep).
 
 The whole sequence, from the baseline export to the apply, is under [End to end](#end-to-end).
+
+### Other stores (`--store`)
+
+`apply` and `export` take `--store`. Without it, or with `--store bd`, they are exactly the bd
+verbs above (same request, output, JSON keys, exit codes, recovery artifact and follow-ups).
+Any other store comes from a plugin providing the `beadlog.store` capability, composed lazily
+only when it is installed, enabled and selected; otherwise the verb exits 1 saying what to do
+(install `beadhive[xtdb]`, `bh config set plugins.beadlog-xtdb.enabled true`, run
+`bh plugin beadlog-xtdb doctor`). Today that is `xtdb`, the opt-in
+[`beadhive-beadlog-xtdb`](../packages/beadhive-beadlog-xtdb/README.md) plugin over the
+`beadlog-xtdb` loader, configured under [`plugins.beadlog-xtdb`](CONFIGURATION.md); the operator
+runs the node ([`bh-cntr0`](spikes/bh-cntr0-xtdb-operational-fit.md)).
+
+- `apply PLAN --store xtdb` runs the same [safety envelope](#safety-envelope) against the
+  store: the corpus hash is checked against the store's own history (so a plan written against
+  the bd hive does not apply to a store holding something else; a plan for a fresh store is a
+  `beadlog reconcile` against an empty baseline), the whole-plan dry run gives the loader's loss
+  report, the recovery artifact is a `.bdlg` of the store's pre-apply history
+  (`<plan>.pre-state.bdlg` by default), and every bead is written, audited and verified as with
+  bd. On a fresh database the first written unit takes the loader's monotone initial load
+  (recorded time preserved) and later units load incrementally; each loss report says which.
+  The bd-only follow-ups (the incremental cursor, the coverage cache) are not touched.
+- `export --store xtdb` writes the store's current state for the hive's bead group, read by the
+  as-of reader (default file `<prefix>.xtdb.bdlg`); the manifest's `annotations["beadhive.store"]`
+  names the store and target and counts the reader's notes (what it could not carry back).
+  `--history` reads the bd events table and is refused with a non-bd store.
 
 The standalone `beadlog` CLI is the `beadlog-sources` distribution's script (in a checkout,
 `uv run beadlog`); the installed `bh` carries the libraries but not that script or its

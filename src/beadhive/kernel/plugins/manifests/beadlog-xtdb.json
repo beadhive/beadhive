@@ -1,0 +1,33 @@
+{
+  "capabilities": {"provides": [{"api_version": 1, "id": "beadlog.store"}]},
+  "compatibility": {
+    "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+    "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+  },
+  "configuration": {"legacy_namespaces": [], "namespace": "plugins.beadlog-xtdb", "schema_artifact": "urn:beadhive:wire-schema:plugin-config:beadlog-xtdb:1"},
+  "lifecycle": {"subscriptions": []},
+  "manifest_version": 1,
+  "plugin_id": "beadlog-xtdb",
+  "plugin_version": "1.0.0",
+  "presentation": {
+    "cli": [
+      {"capability_id": "beadlog.store", "command": "plugin beadlog-xtdb doctor"},
+      {"capability_id": "beadlog.store", "command": "plugin beadlog-xtdb status"}
+    ]
+  },
+  "security": {
+    "credentials": [
+      {
+        "id": "xtdb-password",
+        "purpose": "authenticate to the operator's XTDB node as user xtdb (its XTDB_PASSWORD); resolved by the host fnox secret broker, never stored in configuration",
+        "required": false,
+        "sources": [{"kind": "file-reference", "name": "plugins.beadlog-xtdb.credential"}]
+      }
+    ],
+    "executables": [],
+    "permissions": [
+      {"id": "network.xtdb.pgwire", "purpose": "read and load BeadLog events over the loopback XTDB pgwire port", "required": true},
+      {"id": "network.xtdb.healthz", "purpose": "GET the loopback XTDB healthz endpoint for doctor", "required": false}
+    ]
+  }
+}

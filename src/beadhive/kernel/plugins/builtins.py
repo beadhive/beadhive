@@ -9,6 +9,7 @@ from beadhive_plugins.contracts import ManifestDocument, ManifestProvenance
 from .discovery import BuiltInManifestSource
 
 BUILTIN_PLUGIN_IDS = (
+    "beadlog-xtdb",
     "herdr",
     "hitch",
     "observaloop",

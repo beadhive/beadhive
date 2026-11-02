@@ -288,6 +288,12 @@
       "name": "operation-catalog-v1-valid"
     },
     {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:beadlog-xtdb:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "plugin-config-beadlog-xtdb-v1-valid"
+    },
+    {
       "artifact_id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
       "assertion": "valid-json-schema-instance",
       "input": {},
@@ -331,7 +337,7 @@
           "provides": [
             {
               "api_version": 1,
-              "id": "agent.session"
+              "id": "beadlog.store"
             }
           ]
         },
@@ -346,76 +352,53 @@
           }
         },
         "configuration": {
-          "legacy_namespaces": [
-            "herdr"
-          ],
-          "namespace": "plugins.herdr",
-          "schema_artifact": "urn:beadhive:wire-schema:plugin-config:herdr:1"
+          "legacy_namespaces": [],
+          "namespace": "plugins.beadlog-xtdb",
+          "schema_artifact": "urn:beadhive:wire-schema:plugin-config:beadlog-xtdb:1"
         },
         "lifecycle": {
-          "subscriptions": [
-            {
-              "compensation": {
-                "action_id": null,
-                "mode": "none"
-              },
-              "criticality": "best-effort",
-              "event": "host.readiness",
-              "id": "herdr.probe-readiness",
-              "idempotency": "not-applicable",
-              "order": 100,
-              "retry": {
-                "backoff_seconds": 0,
-                "max_attempts": 1
-              },
-              "timeout_seconds": 30
-            },
-            {
-              "compensation": {
-                "action_id": null,
-                "mode": "none"
-              },
-              "criticality": "best-effort",
-              "event": "hive.onboarding",
-              "id": "herdr.install-plugin",
-              "idempotency": "required",
-              "order": 100,
-              "retry": {
-                "backoff_seconds": 0,
-                "max_attempts": 1
-              },
-              "timeout_seconds": 30
-            }
-          ]
+          "subscriptions": []
         },
         "manifest_version": 1,
-        "plugin_id": "herdr",
+        "plugin_id": "beadlog-xtdb",
         "plugin_version": "1.0.0",
         "presentation": {
           "cli": [
             {
-              "capability_id": "agent.session",
-              "command": "plugin herdr"
+              "capability_id": "beadlog.store",
+              "command": "plugin beadlog-xtdb doctor"
+            },
+            {
+              "capability_id": "beadlog.store",
+              "command": "plugin beadlog-xtdb status"
             }
           ]
         },
         "security": {
-          "credentials": [],
-          "executables": [
+          "credentials": [
             {
-              "name": "herdr",
+              "id": "xtdb-password",
+              "purpose": "authenticate to the operator's XTDB node as user xtdb (its XTDB_PASSWORD); resolved by the host fnox secret broker, never stored in configuration",
               "required": false,
-              "version": {
-                "maximum_exclusive": "999.0.0",
-                "minimum_inclusive": "0.0.0"
-              }
+              "sources": [
+                {
+                  "kind": "file-reference",
+                  "name": "plugins.beadlog-xtdb.credential"
+                }
+              ]
             }
           ],
+          "executables": [],
           "permissions": [
             {
-              "id": "process.session.control",
-              "purpose": "control optional terminal sessions",
+              "id": "network.xtdb.pgwire",
+              "purpose": "read and load BeadLog events over the loopback XTDB pgwire port",
               "required": true
+            },
+            {
+              "id": "network.xtdb.healthz",
+              "purpose": "GET the loopback XTDB healthz endpoint for doctor",
+              "required": false
             }
           ]
         }
