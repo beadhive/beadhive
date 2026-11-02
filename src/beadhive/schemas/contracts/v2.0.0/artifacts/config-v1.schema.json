@@ -3875,6 +3875,12 @@
           "description": "After a successful pull from the tracker, `dolt commit` the imported rows so they do not sit in the store's Dolt working set (bh-cm4er). Default off: the pull leaves them uncommitted, and the report counts and warns about them.",
           "title": "Commit After Pull",
           "type": "boolean"
+        },
+        "overlap_repull": {
+          "default": false,
+          "description": "After the incremental pull, re-pull every issue the bound tracker adapter reports since bh's own inclusive checkpoint, so an edit bd's end-of-sync last_sync skips still lands (bh-clqa5). Needs the hive's tracker adapter bound with issues.read enabled. Default off: only bd's incremental pull runs.",
+          "title": "Overlap Repull",
+          "type": "boolean"
         }
       },
       "title": "TrackerSyncConfig",

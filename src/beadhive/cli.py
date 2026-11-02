@@ -2484,11 +2484,12 @@ def hive_remote_sync(
         False, "--confirm", help="with --force-with-lease: confirm the destructive replacement"
     ),
 ):
-    from . import github_projection, public_publish, store_target, tracker_sync
+    from . import github_projection, github_repull, public_publish, store_target, tracker_sync
 
     cfg = config.load()
     entry = registry.resolve_hive(cfg, hive_id)
     try:
+        overlap = None if force_with_lease else github_repull.for_config(cfg, entry, config.home())
         report = tracker_sync.sync(
             entry,
             store,
@@ -2497,8 +2498,10 @@ def hive_remote_sync(
             dry_run=dry_run,
             force_with_lease=force_with_lease,
             confirmed=confirm,
+            overlap_repull=overlap,
         )
     except (
+        github_repull.RepullUnavailable,
         tracker_sync.TrackerSyncError,
         public_publish.PublishError,
         github_projection.ProjectionError,
@@ -2533,7 +2536,7 @@ def hive_project_issues(
     ),
     as_json: bool = typer.Option(False, "--json", help="emit the versioned report"),
 ):
-    from . import github_projection, jsonout, store_target
+    from . import github_projection, github_repull, jsonout, store_target
 
     typer.echo(
         "note: `bh hive project-issues` is deprecated; use "
@@ -2547,8 +2550,13 @@ def hive_project_issues(
             entry,
             dry_run=dry_run,
             commit_after_pull=github_projection.commit_after_pull_enabled(cfg),
+            overlap_repull=github_repull.for_config(cfg, entry, config.home()),
         )
-    except (github_projection.ProjectionError, store_target.StoreResolutionError) as exc:
+    except (
+        github_repull.RepullUnavailable,
+        github_projection.ProjectionError,
+        store_target.StoreResolutionError,
+    ) as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
     if as_json:

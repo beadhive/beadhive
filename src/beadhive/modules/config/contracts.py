@@ -3254,6 +3254,15 @@ class TrackerSyncConfig(_QuietSection):
             "them uncommitted, and the report counts and warns about them."
         ),
     )
+    overlap_repull: StrictBool = Field(
+        False,
+        description=(
+            "After the incremental pull, re-pull every issue the bound tracker adapter reports "
+            "since bh's own inclusive checkpoint, so an edit bd's end-of-sync last_sync skips "
+            "still lands (bh-clqa5). Needs the hive's tracker adapter bound with issues.read "
+            "enabled. Default off: only bd's incremental pull runs."
+        ),
+    )
 
 
 # ---- plugins / plugin_kernel (plugin-kernel-v1-adr.md section 6) -----------------
