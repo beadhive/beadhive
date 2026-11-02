@@ -499,6 +499,18 @@ behave exactly as before. `outbox.labels_enabled` is a new key: `BeadhiveConfig`
 keys, so nothing in a shared config should set it until the schema has rotated to every host
 (`bh-tfko9`).
 
+The `bh work outbox` verbs that reach the tracker (`draft`, `approve`, `send`, `reconcile`,
+`discard`, `retry`, and `show <id>`'s dry run) build it from the same binding as import: with
+`enabled`, `outbox.enabled` and `plugins.tracker-github.enabled` all on, the tracker is the hive's
+bound adapter, the own-message identity is the bound `owner/repo` plus this hive's install id (a
+random id minted once into the private `.bh/intake/install-id`; never configuration), the marker
+line is the adapter's own codec, and the owned label prefixes are
+`plugins.tracker-github.write.labels.owned_prefixes` (only while `write.labels.enabled`). Any
+switch off refuses naming it. Without a tracker, `bh work outbox show <id>` prints the stored
+draft, its event and its operations' states instead of the dry run (no digest, so nothing can be
+approved from it). Nothing here posts: a send still needs the adapter's write flag and an
+operator's per-operation approval minting a single-use grant.
+
 ### `backfill.judge` {#backfill-judge}
 
 `backfill.judge` configures the opt-in judge that backfill reconcile asks about its fuzzy

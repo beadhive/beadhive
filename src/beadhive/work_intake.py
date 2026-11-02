@@ -493,12 +493,26 @@ def _record_row(report: str, record) -> dict:
     }
 
 
+def _stored_operation_row(op) -> dict:
+    row: dict = {"kind": op.kind.value, "state": op.state.value}
+    if op.labels is not None:
+        row["add"], row["remove"] = sorted(op.labels.add), sorted(op.labels.remove)
+    return row
+
+
 def _outbox_payload(call, verb: str) -> dict:
     value = call.value
     payload: dict = {"ok": call.code == 0, "verb": verb, "reason": call.reason, "error": call.error}
     if value is None:
         return payload
-    if hasattr(value, "renders"):  # a RenderedRecord
+    if isinstance(value, intake_services.StoredOutboxRecord):  # no tracker wired (bh-fehna)
+        payload["record"] = _record_row(value.report, value.record)
+        payload["stored"] = {
+            "text": value.text,
+            "note": value.note,
+            "operations": [_stored_operation_row(op) for op in value.record.operations],
+        }
+    elif hasattr(value, "renders"):  # a RenderedRecord
         payload["record"] = _record_row(value.report, value.record)
         payload["renders"] = [_rendered_row(r) for r in value.renders]
     elif hasattr(value, "entries"):  # an OutboxListing
@@ -535,6 +549,21 @@ def _rendered_lines(rendered) -> list[str]:
     return lines
 
 
+def _stored_lines(stored) -> list[str]:
+    record = stored.record
+    lines = [f"{record.outbox_id} on {stored.report} ({record.event.value}, stored draft)"]
+    for op in record.operations:
+        line = f"{op.kind.value}: {op.state.value}"
+        if op.labels is not None:
+            changes = [f"+{label}" for label in sorted(op.labels.add)]
+            changes += [f"-{label}" for label in sorted(op.labels.remove)]
+            line += f" ({' '.join(changes)})" if changes else ""
+        lines.append(line)
+    lines += [f"  | {line}" for line in stored.text.splitlines() or [""]]
+    lines.append(f"  → {stored.note}")
+    return lines
+
+
 def render_outbox(call, verb: str, as_json: bool) -> None:
     """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal."""
     if as_json:
@@ -544,7 +573,10 @@ def render_outbox(call, verb: str, as_json: bool) -> None:
         return
     value = call.value
     done = value if isinstance(value, tuple) else ((value,) if value is not None else ())
-    if hasattr(value, "renders"):
+    if isinstance(value, intake_services.StoredOutboxRecord):
+        for line in _stored_lines(value):
+            typer.echo(line)
+    elif hasattr(value, "renders"):
         typer.echo(f"{value.record.outbox_id} on {value.report} ({value.record.event.value})")
         for rendered in value.renders:
             for line in _rendered_lines(rendered):

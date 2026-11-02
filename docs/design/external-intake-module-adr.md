@@ -888,12 +888,26 @@ decided before any write or tracker request: `intake.external.enabled` (`intake_
 saying the outbox tracker is not wired; tests patch that one seam). The listing form of `show` (no
 id) makes no tracker request and works without wiring.
 
-**Not done here (`bh-kzs0b`).** `outbox_wiring` is empty. Building the outbox's `tracker` (a
-`TrackerAdapters.for_store` bound port narrowed to the writers), `OwnIdentity` (hive and install
-UUID) and the adapter's `marker_line` codec from the plugin binding is not done: the marker codec
-lives in the plugin package, which root may not import. Until it lands, `bh work outbox show <id>`
-(a dry run against the tracker) and every sending verb refuse; `bh-kzs0b` built the process
-`TrackerAdapters` for import and discover only, so it does not make `bh-fehna` moot.
+**Done by `bh-uavc2` (absorbing `bh-fehna`).** `outbox_wiring` now builds all four from the
+hive's public-store binding when `intake.external.enabled`, `intake.external.outbox.enabled` and
+`plugins.tracker-github.enabled` are on: the tracker is `TrackerAdapters.for_store`'s bound,
+narrowed port (a writer only with its write flag on); the marker codec is that port's new optional
+`MarkerCodec.marker_line` (an additive port Protocol beside A1 that the GitHub adapter implements
+with its `bh:v1` codec and `narrow` passes through), so root still never imports the plugin;
+`OwnIdentity` is the bound `owner/repo` plus `install_id`, a random 32-hex id minted once into the
+hive's private `.bh/intake/install-id` (never configuration, never derived from a host or bead
+id); `owned_label_prefixes` is `write.labels.owned_prefixes` while `labels.change` is enabled. A
+binding refusal is carried as the refusal of every verb that needs the tracker. Without a tracker,
+`bh work outbox show <id>` prints the stored record (draft text, event, operation states, no
+digest) instead of refusing. O5 and O9 are unchanged: operator-only, one grant per operation.
+
+**Was not done here (`bh-kzs0b`; superseded by the paragraph above).** `outbox_wiring` was
+empty. Building the outbox's `tracker` (a `TrackerAdapters.for_store` bound port narrowed to the
+writers), `OwnIdentity` (hive and install UUID) and the adapter's `marker_line` codec from the
+plugin binding was not done: the marker codec lives in the plugin package, which root may not
+import. Until then, `bh work outbox show <id>` (a dry run against the tracker) and every sending
+verb refused; `bh-kzs0b` built the process `TrackerAdapters` for import and discover only, so it
+did not make `bh-fehna` moot.
 
 Interpretations, to be confirmed by the operator:
 
