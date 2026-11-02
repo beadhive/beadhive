@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 from pathlib import Path
 
 from beadhive import localloop, role_execution, role_process, run_journal
@@ -324,6 +325,14 @@ async def direct_cancel(root: Path, artifact, name: str) -> None:
     require(rows[-1]["activity"]["process"]["group_gone"], f"{name}: descendant survived")
 
 
+def wheel_packages(pyproject: Path) -> list[str]:
+    """Return the wheel's vendored import-package source paths from ``pyproject.toml``."""
+    config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    packages = config["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    require(packages, "pyproject.toml declares no wheel packages")
+    return list(packages)
+
+
 def parity(root: Path, *, python_executable: str | None = None) -> dict:
     python_executable = python_executable or sys.executable
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
@@ -347,30 +356,12 @@ def parity(root: Path, *, python_executable: str | None = None) -> dict:
     ]
     require(dependency_paths, "isolated parity could not locate runtime dependencies")
     (site / "_beadhive_parity_dependencies.pth").write_text("\n".join(dependency_paths) + "\n")
-    shutil.copytree(source / "src" / "beadhive", site / "beadhive")
-    # beadhive.kernel.lifecycle/plugins resolve their contracts through beadhive_plugins (a
-    # workspace library package the published wheel also vendors, bh-xh8ku.2) and are imported
-    # eagerly from beadhive.cli's top-level import chain, so the isolated site needs it too.
-    shutil.copytree(
-        source / "packages" / "beadhive-plugins" / "src" / "beadhive_plugins",
-        site / "beadhive_plugins",
-    )
-    # beadhive.worktree composition resolves the worktree.manager slot through beadhive_worktrees
-    # (bh-xh8ku.3, depends only on beadhive_plugins) and is imported eagerly from beadhive.cli's
-    # top-level import chain too, so the isolated site needs it vendored the same way.
-    shutil.copytree(
-        source / "packages" / "beadhive-worktrees" / "src" / "beadhive_worktrees",
-        site / "beadhive_worktrees",
-    )
-    # The HQ storage port and its Dolt adapter (bh-xxkf7) back hq_sql_* and the fence through
-    # beadhive.hq_storage_composition; the published wheel ships both import packages from their
-    # source roots, so the isolated site vendors them the same way.
-    for package, module in (
-        ("beadhive-hq-storage", "beadhive_hq_storage"),
-        ("beadhive-hq-storage-dolt", "beadhive_hq_storage_dolt"),
-        ("beadhive-validation-broker", "beadhive_validation_broker"),
-    ):
-        shutil.copytree(source / "packages" / package / "src" / module, site / module)
+    # The installed site carries exactly the import packages the published wheel vendors, derived
+    # from [tool.hatch.build.targets.wheel].packages in the committed pyproject.toml so a newly
+    # vendored package cannot drift out of this probe (bh-ygq8n).  Unvendored workspace members
+    # (e.g. beadlog_xtdb) are deliberately absent, exactly as in the wheel.
+    for package in wheel_packages(source / "pyproject.toml"):
+        shutil.copytree(source / package, site / Path(package).name)
     bootstrap = f"import site,sys;sys.path.insert(0,{str(site)!r});site.addsitedir({str(site)!r});"
     bh = bin_dir / "bh"
     bh_program = bootstrap + "sys.argv[0]='bh';from beadhive.cli import app;app()"

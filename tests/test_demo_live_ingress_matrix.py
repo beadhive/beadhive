@@ -53,3 +53,11 @@ def test_parity_does_not_require_venv_or_ensurepip(tmp_path) -> None:
     ]
     assert result["install_method"].startswith("manual isolated bin/site")
     assert not (tmp_path / "must-not-exist").exists()
+
+
+def test_wheel_packages_cover_backfill_libraries_and_exclude_xtdb() -> None:
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    names = {Path(p).name for p in demo_live_ingress_matrix.wheel_packages(pyproject)}
+
+    assert {"beadhive", "beadlog", "beadlog_sources", "beadhive_backfill"} <= names
+    assert "beadlog_xtdb" not in names
