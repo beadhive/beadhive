@@ -1353,6 +1353,7 @@ _DOCTOR_SECTIONS = {
     "observability",
     "build_verify",
     "tracker_adapters",
+    "link_coverage",
     "writer_fence",
     "forward",
     "warnings",

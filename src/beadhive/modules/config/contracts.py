@@ -2151,6 +2151,60 @@ class BackfillTimelineConfig(_Section):
     )
 
 
+class BackfillCoverageConfig(_Section):
+    """``backfill.coverage`` — link-coverage metrics (docs/BACKFILL.md "Coverage"). Off by
+    default: ``bh backfill coverage`` always works when run by hand, but an applied backfill pass
+    refreshes the cached state only when ``enabled`` (and the advisory ``doctor`` / ``hive ready``
+    checks read it only then). ``code_types`` and ``doc_roots`` define what is measured."""
+
+    enabled: bool = Field(
+        False,
+        description="Refresh the cached coverage state after every applied backfill pass.",
+    )
+    code_types: list[str] = Field(
+        default_factory=lambda: ["bug", "chore", "feature", "task"],
+        description="Bead types that count as code-bearing in the closed-beads-with-commits "
+        "ratio. event, gate and molecule never count, whatever is listed.",
+    )
+    doc_roots: list[str] = Field(
+        default_factory=lambda: ["docs"],
+        min_length=1,
+        description="Repo-relative directories whose *.md files are the docs-linked-to-a-bead set.",
+    )
+    example_limit: int = Field(
+        5, ge=0, description="Top unlinked examples kept per ratio in the cached state."
+    )
+    warn_below: float = Field(
+        0.60,
+        ge=0.0,
+        le=1.0,
+        description="Advisory threshold applied to each cached coverage ratio by bh doctor and "
+        "bh hive ready (when enabled): a ratio below it renders a warning, never a failure.",
+    )
+
+
+class BackfillContinuousConfig(_Section):
+    """``backfill.continuous`` — keep linkage and timeline current with small incremental runs
+    (docs/BACKFILL.md "Incremental and continuous backfill"). Off by default: nothing runs after a
+    merge or a sync until ``enabled``. Every run is best effort (a failure warns, the merge or
+    sync carries on) and reads only what moved since the pass's cursor."""
+
+    enabled: bool = Field(
+        False,
+        description="Run the incremental passes after the configured triggers.",
+    )
+    passes: list[Literal["commits", "timeline"]] = Field(
+        default_factory=lambda: ["commits", "timeline"],
+        description="Incremental passes run, in order: commits (git.commits appends) and "
+        "timeline (metadata.lifecycle.* facts).",
+    )
+    triggers: list[Literal["post-merge", "sync"]] = Field(
+        default_factory=lambda: ["post-merge"],
+        description="What starts a run: post-merge (after bh work merge / finish lands on the "
+        "integration branch) and/or sync (after bh hive sync pulls a hive).",
+    )
+
+
 class BackfillConfig(_Section):
     """``backfill`` — shared backfill engine settings (every behavior off by default)."""
 
@@ -2161,6 +2215,14 @@ class BackfillConfig(_Section):
     timeline: BackfillTimelineConfig = Field(
         default_factory=BackfillTimelineConfig,
         description="History/timeline export settings, including the opt-in dolt_history gap fill.",
+    )
+    coverage: BackfillCoverageConfig = Field(
+        default_factory=BackfillCoverageConfig,
+        description="Link-coverage metrics: what is measured and the opt-in cache refresh.",
+    )
+    continuous: BackfillContinuousConfig = Field(
+        default_factory=BackfillContinuousConfig,
+        description="Opt-in incremental backfill after merges and syncs.",
     )
 
 
@@ -4061,6 +4123,7 @@ __all__ = (
     "AttestVersionBumpConfig",
     "AttestKeyConfig",
     "BackfillConfig",
+    "BackfillCoverageConfig",
     "BackfillJudgeConfig",
     "BackupConfig",
     "BeadhiveConfig",

@@ -111,3 +111,33 @@ def test_backfill_timeline_gapfill_is_additive_and_off_by_default():
 def test_backfill_timeline_gapfill_refuses_invalid_values(gapfill):
     with pytest.raises(ValidationError):
         BeadhiveConfig(backfill={"timeline": {"gapfill": gapfill}})
+
+
+def test_backfill_coverage_is_additive_and_off_by_default():
+    cov = BeadhiveConfig(backfill={}).backfill.coverage
+    assert cov.enabled is False
+    assert cov.code_types == ["bug", "chore", "feature", "task"]
+    assert cov.doc_roots == ["docs"] and cov.example_limit == 5
+    assert field_default("backfill.coverage.enabled") is False
+    paths = {f.path for f in iter_schema_fields() if f.path.startswith("backfill.coverage.")}
+    assert paths >= {
+        "backfill.coverage.enabled",
+        "backfill.coverage.code_types",
+        "backfill.coverage.doc_roots",
+        "backfill.coverage.example_limit",
+    }
+    assert {partition.partition_of(path) for path in paths} == {partition.HOST}
+
+    tuned = BeadhiveConfig(backfill={"coverage": {"enabled": True, "doc_roots": ["docs", "adr"]}})
+    assert tuned.backfill.coverage.enabled is True
+    assert tuned.backfill.coverage.doc_roots == ["docs", "adr"]
+    assert tuned.backfill.judge.enabled is False  # the sibling section is untouched
+
+
+@pytest.mark.parametrize(
+    "coverage",
+    [{"doc_roots": []}, {"example_limit": -1}, {"enabled": "maybe"}, {"unknown": True}],
+)
+def test_backfill_coverage_refuses_invalid_values(coverage):
+    with pytest.raises(ValidationError):
+        BeadhiveConfig(backfill={"coverage": coverage})

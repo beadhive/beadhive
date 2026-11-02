@@ -367,6 +367,14 @@
       "additionalProperties": false,
       "description": "``backfill`` — shared backfill engine settings (every behavior off by default).",
       "properties": {
+        "continuous": {
+          "$ref": "#/$defs/BackfillContinuousConfig",
+          "description": "Opt-in incremental backfill after merges and syncs."
+        },
+        "coverage": {
+          "$ref": "#/$defs/BackfillCoverageConfig",
+          "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
+        },
         "judge": {
           "$ref": "#/$defs/BackfillJudgeConfig",
           "description": "Opt-in bh-judge/1 command judge for reconcile; deterministic when off."
@@ -377,6 +385,90 @@
         }
       },
       "title": "BackfillConfig",
+      "type": "object"
+    },
+    "BackfillContinuousConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.continuous`` — keep linkage and timeline current with small incremental runs\n(docs/BACKFILL.md \"Incremental and continuous backfill\"). Off by default: nothing runs after a\nmerge or a sync until ``enabled``. Every run is best effort (a failure warns, the merge or\nsync carries on) and reads only what moved since the pass's cursor.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Run the incremental passes after the configured triggers.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "passes": {
+          "description": "Incremental passes run, in order: commits (git.commits appends) and timeline (metadata.lifecycle.* facts).",
+          "items": {
+            "enum": [
+              "commits",
+              "timeline"
+            ],
+            "type": "string"
+          },
+          "title": "Passes",
+          "type": "array"
+        },
+        "triggers": {
+          "description": "What starts a run: post-merge (after bh work merge / finish lands on the integration branch) and/or sync (after bh hive sync pulls a hive).",
+          "items": {
+            "enum": [
+              "post-merge",
+              "sync"
+            ],
+            "type": "string"
+          },
+          "title": "Triggers",
+          "type": "array"
+        }
+      },
+      "title": "BackfillContinuousConfig",
+      "type": "object"
+    },
+    "BackfillCoverageConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.coverage`` — link-coverage metrics (docs/BACKFILL.md \"Coverage\"). Off by\ndefault: ``bh backfill coverage`` always works when run by hand, but an applied backfill pass\nrefreshes the cached state only when ``enabled`` (and the advisory ``doctor`` / ``hive ready``\nchecks read it only then). ``code_types`` and ``doc_roots`` define what is measured.",
+      "properties": {
+        "code_types": {
+          "description": "Bead types that count as code-bearing in the closed-beads-with-commits ratio. event, gate and molecule never count, whatever is listed.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Code Types",
+          "type": "array"
+        },
+        "doc_roots": {
+          "description": "Repo-relative directories whose *.md files are the docs-linked-to-a-bead set.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Doc Roots",
+          "type": "array"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Refresh the cached coverage state after every applied backfill pass.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "example_limit": {
+          "default": 5,
+          "description": "Top unlinked examples kept per ratio in the cached state.",
+          "minimum": 0,
+          "title": "Example Limit",
+          "type": "integer"
+        },
+        "warn_below": {
+          "default": 0.6,
+          "description": "Advisory threshold applied to each cached coverage ratio by bh doctor and bh hive ready (when enabled): a ratio below it renders a warning, never a failure.",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Warn Below",
+          "type": "number"
+        }
+      },
+      "title": "BackfillCoverageConfig",
       "type": "object"
     },
     "BackfillGapfillConfig": {

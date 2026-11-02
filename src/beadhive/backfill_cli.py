@@ -9,12 +9,21 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
   ``bh backfill-complexity``; both are the same command);
 - ``timeline`` — pass #2, the lifecycle timeline: derives claimed/committed/submitted/reviewed/
   merged/reopened facts from the history readers and writes only ``metadata.lifecycle.*``;
+- ``commits`` / ``docs`` / ``planning`` — the hive passes over the neutral ``git-commits``,
+  ``docs`` and ``planning`` strategies: they apply DRIFT (``git.commits`` appends,
+  ``external_ref`` stamps, a later close) as well as NEW through the same envelope;
+- ``commits --since-cursor`` — an incremental dry run from the pass's recorded cursor
+  (``docs/BACKFILL.md`` "Incremental and continuous backfill"); an applied plan moves the cursor,
+  and ``backfill.continuous`` runs the incremental ``commits`` and ``timeline`` passes after
+  merges (the published ``timeline`` verb itself is unchanged);
 - ``export`` — the hive's current state as a ``.bdlg`` archive, read by the neutral bd strategy;
   with ``--history`` also every history event of the bd events table (the archival archive);
 - ``inspect`` — an archive's manifest, counts and (for a plan) its classification and verdicts;
 - ``verify`` — an archive's integrity and event ids, and a plan's hash;
 - ``apply`` — a ``.bdlg`` plan through the envelope: one written by ``bh backfill`` or by the
-  standalone ``beadlog reconcile``.
+  standalone ``beadlog reconcile``;
+- ``coverage`` — the three link-coverage ratios from a cached state (``--refresh`` recomputes it;
+  an enabled ``backfill.coverage`` also refreshes it after every applied pass).
 """
 
 from __future__ import annotations
@@ -24,7 +33,7 @@ import json
 import re
 import uuid
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +43,27 @@ from beadhive_backfill import (
     BackfillEngine,
     BackfillError,
     JsonFileAuditSink,
+    PassCursor,
     PathReaders,
     Plan,
+    SourcePass,
     TimelinePass,
+    read_cursor,
+    source_pass,
+    source_pass_for_plan,
     system_clock,
 )
+from beadhive_backfill.coverage import (
+    RATIO_BEADS,
+    RATIO_COMMITS,
+    RATIO_DOCS,
+    CacheState,
+    CoverageError,
+    CoverageReport,
+    check_cache,
+    write_coverage_cache,
+)
+from beadhive_backfill.source_passes import SOURCE_PASS_NAMES, parse_options
 from beadhive_backfill.timeline import PASS_NAME as TIMELINE_PASS
 from beadlog import ArchiveError, ArchiveReader, Generator, Group, ManifestError, write_archive
 from beadlog_sources import (
@@ -47,6 +72,8 @@ from beadlog_sources import (
     GapfillReader,
     HistoryRead,
     JsonCursorFile,
+    JudgeSettings,
+    build_judge,
     gap_events,
     gapfill_annotation,
     history_annotation,
@@ -56,9 +83,9 @@ from beadlog_sources import (
     read_store_start,
 )
 
-from . import complexity_backfill, config, registry
+from . import backfill_continuous, backfill_coverage, complexity_backfill, config, registry
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
-from .modules.config.contracts import BackfillGapfillConfig
+from .modules.config.contracts import BackfillGapfillConfig, BackfillJudgeConfig
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -86,6 +113,7 @@ _PRE_STATE_OPTION = typer.Option(
 _AUDIT_OPTION = typer.Option(None, "--audit", help="machine audit JSON (default: beside the plan)")
 _ERRORS = (
     BackfillError,
+    CoverageError,
     BdLoadError,
     BdReadError,
     ArchiveError,
@@ -138,18 +166,27 @@ def history_inputs(cwd: Path) -> tuple[HistoryRead, str | None]:
     return read_history(cwd), read_store_start(cwd)
 
 
-def timeline_pass(cwd: Path, hive: str) -> TimelinePass:
+def timeline_pass(cwd: Path, hive: str, **options: Any) -> TimelinePass:
     """The lifecycle timeline pass reading the hive at ``cwd`` (the seam tests replace): its
-    first-parent history on the hive's integration branch and its host-local run journals."""
+    first-parent history on the hive's integration branch and its host-local run journals.
+    ``options`` are the incremental settings of :class:`~beadhive_backfill.TimelinePass`."""
     cfg = config.load()
     entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
     ref = str(config.integration_branch(cfg, entry)) if entry is not None else "main"
+    return timeline_pass_for(cwd, entry, ref=ref, **options)
+
+
+def timeline_pass_for(
+    cwd: Path, entry: Mapping[str, Any] | None, *, ref: str, **options: Any
+) -> TimelinePass:
+    """The timeline pass for an already-resolved hive (``entry``) and branch ``ref`` (the seam
+    the post-merge hook uses, which knows both). The host-local run journals are optional."""
     journals = None
     if entry is not None:
         from . import run_journal  # lazy: the journal store is only needed for this pass
 
         journals = run_journal.journal_root_for_hive(registry.hive_key(entry))
-    return TimelinePass(PathReaders(cwd, ref=ref, journals=journals))
+    return TimelinePass(PathReaders(cwd, ref=ref, journals=journals), **options)
 
 
 def _fail(exc: BaseException) -> typer.Exit:
@@ -159,6 +196,122 @@ def _fail(exc: BaseException) -> typer.Exit:
 
 def _emit(value: Mapping[str, Any]) -> None:
     typer.echo(json.dumps(value, sort_keys=True, indent=2))
+
+
+def _coverage_target(cfg: Mapping[str, Any], hive: str, cwd: Path) -> tuple[Path, str]:
+    """Where the hive's coverage cache lives and which branch's commits are counted."""
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    ref = str(config.integration_branch(cfg, entry)) if entry is not None else "main"
+    return backfill_coverage.state_path(entry, cwd, config.home()), ref
+
+
+def _cursor_file(hive: str, cwd: Path) -> Path:
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    return backfill_continuous.cursor_path(entry, cwd, config.home())
+
+
+def _load_cursor(hive: str, cwd: Path, name: str) -> PassCursor | None:
+    """The pass's recorded cursor for ``--since-cursor``. A cursor file that cannot be trusted
+    warns and reads as no cursor, so the run goes ahead in full."""
+    read = read_cursor(_cursor_file(hive, cwd), name)
+    if read.warning:
+        typer.echo(f"! {read.warning}; running in full", err=True)
+    return read.cursor
+
+
+def _incremental(plan: Plan) -> Mapping[str, Any] | None:
+    info = plan.report.get(backfill_continuous.INCREMENTAL_KEY)
+    return info if isinstance(info, Mapping) else None
+
+
+def _render_incremental(plan: Plan) -> None:
+    """The incremental run's mode and scope (one line; absent for a run that is not one)."""
+    info = _incremental(plan)
+    if info is None:
+        return
+    scope = info.get("scope")
+    where = "" if scope is None else f", {len(scope)} bead(s) in scope"
+    cold = info.get("cursor_in") is None and info.get("mode") == "full"
+    suffix = " (no cursor recorded yet)" if cold else ""
+    typer.echo(f"incremental: {info.get('mode')}{where}{suffix}")
+
+
+def _warn_incremental(plan: Plan) -> None:
+    """A cursor that could not bound the run (corrupt, or its commit left the history) warns on
+    stderr, whatever the output format."""
+    for warning in (_incremental(plan) or {}).get("warnings") or ():
+        typer.echo(f"! {warning}", err=True)
+
+
+def _record_cursor(hive: str, cwd: Path, plan: Plan, audit: Path) -> None:
+    """Move the pass's cursor after an applied incremental plan; a failure only warns (the
+    apply is done and audited, and a stale cursor costs time, not correctness)."""
+    try:
+        backfill_continuous.record_cursor(_cursor_file(hive, cwd), plan, audit)
+    except Exception as exc:  # noqa: BLE001 - the apply already landed
+        typer.echo(f"! cursor not recorded: {exc}", err=True)
+
+
+def refresh_coverage_after_apply(hive: str, quiet: bool = False) -> None:
+    """Rewrite the hive's cached coverage state after an applied pass, when
+    ``backfill.coverage.enabled``.
+
+    The seam every applied pass ends with (``complexity``, ``timeline``, the neutral ``apply``;
+    later passes call it too). The apply has already succeeded and is audited, so a refresh
+    that fails only warns on stderr. ``quiet`` keeps stdout pure JSON."""
+    try:
+        cfg = config.load()
+        if not backfill_coverage.refresh_enabled(cfg):
+            return
+        cwd, group = _target(hive)
+        path, ref = _coverage_target(cfg, hive, cwd)
+    except Exception as exc:  # noqa: BLE001 - advisory: never fail an apply that already landed
+        typer.echo(f"! coverage cache not refreshed: {exc}", err=True)
+        return
+    _refresh_coverage(cfg, cwd, group, path, ref, quiet)
+
+
+def refresh_coverage_at(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any] | None,
+    cwd: Path,
+    group: Group,
+    *,
+    ref: str,
+    quiet: bool = True,
+) -> None:
+    """:func:`refresh_coverage_after_apply` for a hive the caller already resolved (the
+    post-merge hook, which holds the hive entry and the branch it just merged onto)."""
+    if not backfill_coverage.refresh_enabled(cfg):
+        return
+    path = backfill_coverage.state_path(entry, cwd, config.home())
+    _refresh_coverage(cfg, cwd, group, path, ref, quiet)
+
+
+def _refresh_coverage(
+    cfg: Mapping[str, Any], cwd: Path, group: Group, path: Path, ref: str, quiet: bool
+) -> None:
+    try:
+        backfill_coverage.refresh_cache(
+            cwd,
+            reader=store_loader(cwd, group=group.id),
+            ref=ref,
+            settings=backfill_coverage.coverage_settings(cfg),
+            group=group.id,
+            path=path,
+        )
+    except Exception as exc:  # noqa: BLE001 - advisory: never fail an apply that already landed
+        typer.echo(f"! coverage cache not refreshed: {exc}", err=True)
+        return
+    if not quiet:
+        typer.echo(f"coverage: cache refreshed ({path})")
+
+
+# The complexity pass is its own module (and the flat published ``backfill-complexity``); it
+# calls the registered hooks after an applied run.
+if refresh_coverage_after_apply not in complexity_backfill.APPLIED_HOOKS:
+    complexity_backfill.APPLIED_HOOKS.append(refresh_coverage_after_apply)
 
 
 def gapfill_settings(cfg: Mapping[str, Any] | None = None) -> BackfillGapfillConfig:
@@ -214,6 +367,22 @@ def _history_archive(
 _PLAN_OPTION = typer.Option(
     None, "--plan", help="write this plan on dry-run; required and read back on --apply"
 )
+_SINCE_CURSOR_OPTION = typer.Option(
+    False,
+    "--since-cursor",
+    help="incremental dry run: read only what moved since the pass's recorded cursor "
+    "(a missing or corrupt cursor runs in full)",
+)
+
+
+def _timeline_pass_for_plan(cwd: Path, hive: str, plan: Plan) -> TimelinePass:
+    """The pass that applies a timeline ``plan``: an incremental plan re-derives exactly the
+    beads it recorded (so its second dry run is as narrow as the plan), any other runs in full."""
+    info = _incremental(plan)
+    scope = info.get("scope") if info is not None else None
+    if isinstance(scope, list):
+        return timeline_pass(cwd, hive, scope=[str(item) for item in scope])
+    return timeline_pass(cwd, hive)
 
 
 def _render_timeline(plan: Plan) -> None:
@@ -244,9 +413,9 @@ def timeline_cmd(
         raise typer.BadParameter("choose either --dry-run or --apply")
     try:
         cwd, group = _target(hive)
-        pass_ = timeline_pass(cwd, hive)
-        engine = BackfillEngine(groups=[group], passes=[pass_])
         if not apply:
+            pass_ = timeline_pass(cwd, hive)
+            engine = BackfillEngine(groups=[group], passes=[pass_])
             plan = engine.plan(pass_, store_loader(cwd, group=group.id))
             if plan_path is not None:
                 plan.write(plan_path)
@@ -270,6 +439,8 @@ def timeline_cmd(
         plan = Plan.read(plan_path)
         if plan.pass_name != TIMELINE_PASS:
             raise BackfillError(f"{plan_path} is a {plan.pass_name!r} plan, not a timeline plan")
+        pass_ = _timeline_pass_for_plan(cwd, hive, plan)
+        engine = BackfillEngine(groups=[group], passes=[pass_])
         pre_state = pre_state or default_pre_state_path(plan_path)
         audit = audit or plan_path.with_name(f"{plan_path.stem}.audit.json")
         loader = store_loader(cwd, group=group.id, pre_state_path=pre_state)
@@ -278,13 +449,207 @@ def timeline_cmd(
         raise _fail(exc) from None
     if as_json:
         _emit(entry.to_json())
-        return
+    else:
+        typer.echo(
+            f"applied {len(entry.completed)} beads; only metadata.lifecycle.* written; "
+            "second dry-run empty"
+        )
+        typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+        typer.echo(f"audit: {audit}")
+    _record_cursor(hive, cwd, plan, audit)
+    refresh_coverage_after_apply(hive, as_json)
+
+
+# -- the source-strategy passes: commits, docs, planning ---------------------------------------
+
+_SOURCE_PASS_HELP = {
+    "commits": "preview/apply git.commits appends from git log (DRIFT and NEW)",
+    "docs": "preview/apply external_ref stamps linking decision/design docs to beads",
+    "planning": "preview/apply epics, issues, edges and closes from a .planning tree",
+}
+_OPTION_OPTION = typer.Option(
+    None,
+    "--option",
+    help="strategy option key=value (repeatable): rev, since, docs, planning, labels, id_prefix",
+)
+
+
+def judge_settings(cfg: Mapping[str, Any] | None = None) -> JudgeSettings:
+    """The ``backfill.judge`` settings (disabled unless the config enables them)."""
+    cfg = config.load() if cfg is None else cfg
+    section = BackfillJudgeConfig.model_validate((cfg.get("backfill") or {}).get("judge") or {})
+    return JudgeSettings(**section.model_dump())
+
+
+def source_pass_for(
+    name: str,
+    cwd: Path,
+    group: Group,
+    options: Mapping[str, str],
+    *,
+    judging: bool,
+    **incremental: Any,
+) -> SourcePass:
+    """The hive pass ``name`` reading the checkout at ``cwd`` (the seam tests replace).
+    ``incremental`` carries ``incremental`` / ``cursor`` / ``since`` for a ``commits`` run."""
+    return source_pass(name, cwd, group.id, options=options, judging=judging, **incremental)
+
+
+def _plan_counts(plan: Plan) -> str:
+    return ", ".join(f"{key}={value}" for key, value in plan.totals.get("by_class", {}).items())
+
+
+def _render_source_plan(name: str, plan: Plan) -> None:
+    report = plan.report
     typer.echo(
-        f"applied {len(entry.completed)} beads; only metadata.lifecycle.* written; "
-        "second dry-run empty"
+        f"{name}: {plan.changes} beads would change "
+        f"({len(plan.applicable_events())} events); classes: {_plan_counts(plan) or 'none'}"
     )
-    typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
-    typer.echo(f"audit: {audit}")
+    judge = "on" if report.get("judging") else "off"
+    typer.echo(f"judge: {judge}; judge calls: {plan.totals.get('judge_calls', 0)}")
+    _render_incremental(plan)
+    if plan.drift_reported():
+        typer.echo(f"drift reported, not applied: {len(plan.drift_reported())}")
+    for item in report.get("drift") or ():
+        typer.echo(f"DRIFT {item.get('bead')}: {item.get('reason')}; not overwritten")
+    for doc in report.get("residual") or ():
+        typer.echo(f"RESIDUAL {doc}: undecided; needs human confirm")
+    typer.echo(f"plan hash: {plan.plan_hash}")
+
+
+def _run_source(
+    name: str,
+    hive: str,
+    apply: bool,
+    dry_run: bool,
+    plan_path: Path | None,
+    pre_state: Path | None,
+    audit: Path | None,
+    option: list[str] | None,
+    as_json: bool,
+    since_cursor: bool,
+) -> None:
+    if apply and dry_run:
+        raise typer.BadParameter("choose either --dry-run or --apply")
+    if apply and since_cursor:
+        raise typer.BadParameter(
+            "--since-cursor applies to the dry run; the plan records its range"
+        )
+    try:
+        cwd, group = _target(hive)
+        if not apply:
+            settings = judge_settings()
+            extra: dict[str, Any] = {}
+            if since_cursor:
+                extra = {"incremental": True, "cursor": _load_cursor(hive, cwd, name)}
+            pass_ = source_pass_for(
+                name,
+                cwd,
+                group,
+                parse_options(option or ()),
+                judging=settings.enabled,
+                **extra,
+            )
+            engine = BackfillEngine(groups=[group], passes=[pass_])
+            judge = build_judge(settings) if settings.enabled else None
+            plan = engine.plan(pass_, store_loader(cwd, group=group.id), judge)
+            _warn_incremental(plan)
+            if plan_path is not None:
+                plan.write(plan_path)
+            if as_json:
+                _emit(
+                    {
+                        "pass": plan.pass_name,
+                        "plan_hash": plan.plan_hash,
+                        "changes": plan.changes,
+                        "totals": plan.totals,
+                        "report": plan.report,
+                    }
+                )
+                return
+            _render_source_plan(name, plan)
+            if plan_path is not None:
+                typer.echo(f"saved plan: {plan_path}")
+            return
+        if plan_path is None:
+            raise BackfillError("--apply requires --plan from a prior dry-run")
+        if option:
+            raise BackfillError("--option applies to the dry-run; the plan records its options")
+        plan = Plan.read(plan_path)
+        if plan.pass_name != name:
+            raise BackfillError(f"{plan_path} is a {plan.pass_name!r} plan, not a {name} plan")
+        pass_ = source_pass_for_plan(name, cwd, group.id, plan.report)
+        engine = BackfillEngine(groups=[group], passes=[pass_])
+        pre_state = pre_state or default_pre_state_path(plan_path)
+        audit = audit or plan_path.with_name(f"{plan_path.stem}.audit.json")
+        loader = store_loader(cwd, group=group.id, pre_state_path=pre_state)
+        entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    if as_json:
+        _emit(entry.to_json())
+    else:
+        typer.echo(
+            f"applied {len(entry.completed)} beads; verification clean; second dry-run empty"
+        )
+        typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+        typer.echo(f"audit: {audit}")
+    _record_cursor(hive, cwd, plan, audit)
+    refresh_coverage_after_apply(hive, as_json)
+
+
+def _source_command(name: str) -> Callable[..., None]:
+    if name == "commits":
+
+        def commits(
+            hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+            apply: bool = typer.Option(False, "--apply", help="apply a previously saved --plan"),
+            dry_run: bool = typer.Option(
+                False, "--dry-run", help="explicit preview mode (the default)"
+            ),
+            plan_path: Path | None = _PLAN_OPTION,
+            pre_state: Path | None = _PRE_STATE_OPTION,
+            audit: Path | None = _AUDIT_OPTION,
+            option: list[str] | None = _OPTION_OPTION,
+            as_json: bool = typer.Option(
+                False, "--json", help="emit the plan summary/audit as JSON"
+            ),
+            since_cursor: bool = _SINCE_CURSOR_OPTION,
+        ) -> None:
+            _run_source(
+                name, hive, apply, dry_run, plan_path, pre_state, audit, option, as_json,
+                since_cursor,
+            )  # fmt: skip
+
+        command: Callable[..., None] = commits
+    else:
+
+        def other(
+            hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+            apply: bool = typer.Option(False, "--apply", help="apply a previously saved --plan"),
+            dry_run: bool = typer.Option(
+                False, "--dry-run", help="explicit preview mode (the default)"
+            ),
+            plan_path: Path | None = _PLAN_OPTION,
+            pre_state: Path | None = _PRE_STATE_OPTION,
+            audit: Path | None = _AUDIT_OPTION,
+            option: list[str] | None = _OPTION_OPTION,
+            as_json: bool = typer.Option(
+                False, "--json", help="emit the plan summary/audit as JSON"
+            ),
+        ) -> None:
+            _run_source(
+                name, hive, apply, dry_run, plan_path, pre_state, audit, option, as_json, False
+            )
+
+        command = other
+    command.__name__ = f"{name}_cmd"
+    command.__doc__ = _SOURCE_PASS_HELP[name].capitalize() + "."
+    return command
+
+
+for _name in SOURCE_PASS_NAMES:
+    app.command(_name, help=_SOURCE_PASS_HELP[_name])(_source_command(_name))
 
 
 @app.command("export")
@@ -532,17 +897,110 @@ def apply_cmd(
             return
         passes: list[Any] = [complexity_backfill.complexity_pass()]
         if plan.pass_name == TIMELINE_PASS:
-            passes.append(timeline_pass(cwd, hive))
+            passes.append(_timeline_pass_for_plan(cwd, hive, plan))
+        elif plan.pass_name in SOURCE_PASS_NAMES:
+            passes.append(source_pass_for_plan(plan.pass_name, cwd, group.id, plan.report))
         engine = BackfillEngine(groups=plan.groups, passes=passes)
         entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
     except _ERRORS as exc:
         raise _fail(exc) from None
     if as_json:
         _emit(entry.to_json())
+    else:
+        typer.echo(
+            f"applied {len(entry.completed)} beads; verification clean; second dry-run empty"
+        )
+        typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+        typer.echo(f"audit: {audit}")
+    _record_cursor(hive, cwd, plan, audit)
+    refresh_coverage_after_apply(hive, as_json)
+
+
+_RATIO_LABELS = (
+    (RATIO_BEADS, "closed code beads with recorded commits", "beads"),
+    (RATIO_COMMITS, "commits resolving to a bead", "commits"),
+    (RATIO_DOCS, "docs linked to a bead", "docs"),
+)
+_REFRESH_HINT = "run `bh backfill coverage --refresh`"
+
+
+def _percent(ratio: Any) -> str:
+    value = ratio.value
+    return "n/a" if value is None else f"{value * 100:.1f}%"
+
+
+def _example_text(kind: str, item: Mapping[str, str]) -> str:
+    if kind == "beads":
+        return f"{item.get('id')}  {item.get('title', '')}".rstrip()
+    if kind == "commits":
+        return f"{item.get('sha', '')[:12]}  {item.get('subject', '')}".rstrip()
+    return str(item.get("path", ""))
+
+
+def _render_coverage(report: CoverageReport, state: CacheState, detail: str) -> None:
+    stale = state is CacheState.STALE
+    heading = "STALE cache (not current)" if stale else f"cache {state.value}"
+    typer.echo(f"coverage: {heading}, computed {report.computed_at}")
+    for key, label, _kind in _RATIO_LABELS:
+        ratio = report.ratios[key]
+        typer.echo(f"  {label}: {ratio.linked}/{ratio.total} ({_percent(ratio)})")
+    examples = report.examples.to_json()
+    for key, _label, kind in _RATIO_LABELS:
+        if items := examples[key]:
+            typer.echo(f"unlinked {kind} (top {len(items)}):")
+            for item in items:
+                typer.echo(f"  {_example_text(kind, item)}")
+    if stale:
+        typer.echo(f"! stale: {detail}; {_REFRESH_HINT}")
+
+
+@app.command("coverage")
+def coverage_cmd(
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="recompute from the hive and rewrite the cached state"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the coverage state as JSON"),
+) -> None:
+    """Show link coverage: closed beads with commits, commits with beads, docs with beads.
+
+    Reads the cached state and compares its inputs hash with the hive's current inputs: a cache
+    computed from different inputs is reported stale and its figures are marked as such. With
+    --refresh the ratios are recomputed (one bd export, one git log, one doc walk) and the cache
+    is rewritten."""
+    try:
+        cwd, group = _target(hive)
+        cfg = config.load()
+        path, ref = _coverage_target(cfg, hive, cwd)
+        settings = backfill_coverage.coverage_settings(cfg)
+        current = backfill_coverage.measure_hive(
+            cwd,
+            reader=store_loader(cwd, group=group.id),
+            ref=ref,
+            settings=settings,
+            group=group.id,
+        )
+        if refresh:
+            write_coverage_cache(path, current)
+        check = check_cache(path, current.inputs_hash)
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    envelope: dict[str, Any] = {
+        "status": check.state.value,
+        "cache_path": str(path),
+        "detail": check.detail,
+        "refreshed": refresh,
+        "current_inputs_hash": current.inputs_hash,
+        "cache": None if check.report is None else check.report.to_json(),
+    }
+    if as_json:
+        _emit(envelope)
         return
-    typer.echo(f"applied {len(entry.completed)} beads; verification clean; second dry-run empty")
-    typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
-    typer.echo(f"audit: {audit}")
+    if check.report is None:
+        reason = "unusable" if check.state is CacheState.INVALID else "missing"
+        typer.echo(f"coverage: cache {reason} ({check.detail}); {_REFRESH_HINT}")
+        return
+    _render_coverage(check.report, check.state, check.detail)
 
 
 __all__ = [
@@ -555,6 +1013,11 @@ __all__ = [
     "gapfill_state_path",
     "hive_group",
     "history_inputs",
+    "judge_settings",
+    "refresh_coverage_after_apply",
+    "refresh_coverage_at",
+    "source_pass_for",
     "store_loader",
     "timeline_pass",
+    "timeline_pass_for",
 ]

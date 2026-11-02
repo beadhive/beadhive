@@ -33,8 +33,9 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -293,9 +294,52 @@ def decode_rows(text: str) -> Any:
     raise BdHistoryError("bd sql output holds no JSON array")
 
 
-def history_argv(root: Path | str, *, binary: str = "bd") -> list[str]:
+_BEAD_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SQL_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
+# The store's session time zone is not known to this reader, so a ``since`` bound is widened by a
+# day (more than any UTC offset): the SQL narrows the read, the caller filters exactly.
+SINCE_MARGIN = timedelta(days=1)
+ID_CHUNK = 200
+
+
+def history_sql(*, since: str | None = None, issue_ids: Sequence[str] | None = None) -> str:
+    """The events ``SELECT``, optionally narrowed (still a ``SELECT``, never a write).
+
+    ``since`` (a canonical timestamp) keeps rows created within a day before it or later;
+    ``issue_ids`` keeps the rows of those beads. Both are validated, because they are spliced
+    into the statement: an id must be a plain bead id and a timestamp RFC 3339."""
+    clauses: list[str] = []
+    if since is not None:
+        if not _SQL_TIMESTAMP.match(since):
+            raise BdHistoryError(f"not a timestamp: {since!r}")
+        bound = datetime.fromisoformat(since.replace("Z", "+00:00")) - SINCE_MARGIN
+        bound = bound.astimezone(UTC).replace(tzinfo=None)
+        clauses.append(f"created_at >= '{bound.strftime('%Y-%m-%d %H:%M:%S')}'")
+    if issue_ids is not None:
+        for item in issue_ids:
+            if not _BEAD_ID.match(item):
+                raise BdHistoryError(f"not a bead id: {item!r}")
+        quoted = ", ".join(f"'{item}'" for item in issue_ids) or "NULL"
+        clauses.append(f"issue_id IN ({quoted})")
+    return HISTORY_SQL if not clauses else f"{HISTORY_SQL} WHERE {' AND '.join(clauses)}"
+
+
+def history_argv(
+    root: Path | str,
+    *,
+    binary: str = "bd",
+    since: str | None = None,
+    issue_ids: Sequence[str] | None = None,
+) -> list[str]:
     """The one bulk read: ``bd -C <root> sql --json <HISTORY_SQL>`` (a SELECT, never a write)."""
-    return [binary, "-C", str(root), "sql", "--json", HISTORY_SQL]
+    return [
+        binary,
+        "-C",
+        str(root),
+        "sql",
+        "--json",
+        history_sql(since=since, issue_ids=issue_ids),
+    ]
 
 
 def read_history(
@@ -304,21 +348,39 @@ def read_history(
     binary: str = "bd",
     timeout: float | None = DEFAULT_TIMEOUT_SECONDS,
     runner: Runner | None = None,
+    since: str | None = None,
+    issue_ids: Sequence[str] | None = None,
 ) -> HistoryRead:
-    """Read the whole hive's ``events`` table with exactly one store call and parse it."""
+    """Read the hive's ``events`` table with exactly one store call and parse it.
+
+    With ``since`` or ``issue_ids`` the read is narrowed (:func:`history_sql`); ``issue_ids``
+    is read in chunks of :data:`ID_CHUNK` (one store call per chunk) and merged."""
     run = runner or subprocess_runner(timeout, BdHistoryError, "bd sql")
-    return parse_history(decode_rows(run(history_argv(root, binary=binary))))
+    if issue_ids is None:
+        return parse_history(decode_rows(run(history_argv(root, binary=binary, since=since))))
+    ids = list(dict.fromkeys(issue_ids))
+    rows: list[Any] = []
+    for start in range(0, max(len(ids), 1), ID_CHUNK):
+        chunk = ids[start : start + ID_CHUNK]
+        argv = history_argv(root, binary=binary, since=since, issue_ids=chunk)
+        part = decode_rows(run(argv))
+        if not isinstance(part, list):
+            raise BdHistoryError("bd sql --json did not return a JSON array of rows")
+        rows.extend(part)
+    return parse_history(rows)
 
 
 __all__ = [
     "COLUMNS",
     "EVENT_TYPES",
     "HISTORY_SQL",
+    "SINCE_MARGIN",
     "BdHistoryError",
     "HistoryEvent",
     "HistoryRead",
     "decode_rows",
     "history_argv",
+    "history_sql",
     "parse_event_row",
     "parse_history",
     "read_history",

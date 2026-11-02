@@ -2201,6 +2201,29 @@ def _pull_push_flags(pull: bool, push: bool) -> tuple[bool, bool]:
     return pull, push
 
 
+def _backfill_after_sync(plan) -> None:
+    """The ``sync`` trigger of ``backfill.continuous``: a no-op unless the hive enabled it, and
+    it never fails the sync (a problem is a warning)."""
+    pulled = list(getattr(plan, "pulled", ()) or ())
+    if not pulled:
+        return
+    try:
+        cfg = config.load()
+        if (cfg.get("backfill") or {}).get("continuous", {}).get("enabled") is not True:
+            return  # off by default: nothing imported, nothing read
+        from . import backfill_cli, backfill_continuous
+
+        hives = []
+        for hive_id in pulled:
+            entry = registry.resolve_hive(cfg, hive_id)
+            if entry is not None:
+                ref = str(config.integration_branch(cfg, entry))
+                hives.append((entry, Path(registry.hive_dir_for(cfg, hive_id)), ref))
+        backfill_continuous.after_sync(cfg, config.home(), backfill_cli, hives)
+    except Exception as exc:  # noqa: BLE001 - the sync has pulled; this is bookkeeping
+        typer.echo(f"⚠ continuous backfill did not run (the sync is unaffected): {exc}", err=True)
+
+
 def _run_sync_remotes(
     hive: list[str],
     all_hives: bool,
@@ -2227,6 +2250,8 @@ def _run_sync_remotes(
         remote=remote or "",
         force=force,
     )
+    if do_pull and not dry_run:
+        _backfill_after_sync(plan)
     if plan.offending:
         raise typer.Exit(1)
 

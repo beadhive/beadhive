@@ -514,6 +514,39 @@ extra runs and the archive and its `bdlg.history` annotation are exactly what th
 `backfill.timeline` is a new subsection and `BeadhiveConfig` forbids unknown keys, so nothing in a
 shared config should set it until the schema has rotated to every host (`bh-tfko9`).
 
+### `backfill.coverage` {#backfill-coverage}
+
+`backfill.coverage` configures the link-coverage metrics of `bh backfill coverage`
+([BACKFILL.md](BACKFILL.md#coverage) has the three ratios and the cache). It is **off by
+default** and **host-owned** (part of `backfill`). The command itself always works when run by
+hand; `enabled` governs the unattended part: whether an applied backfill pass refreshes the cached
+state. The refresh is read-only toward the hive (one bd export, one `git log`, one doc walk) and
+writes only the cache file; a failure warns and never fails the apply.
+
+| Key (under `backfill.coverage`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | rewrite the cached state after every applied backfill pass, and show the cached ratios in `bh doctor` and `bh hive ready` (advisory) |
+| `code_types` | `[bug, chore, feature, task]` | bead types that count as code-bearing in the closed-beads-with-commits ratio; `event`, `gate` and `molecule` never count, whatever is listed |
+| `doc_roots` | `[docs]` | directories whose `*.md` files (recursively) are the set of docs measured (at least one) |
+| `example_limit` | `5` | top unlinked examples kept per ratio (0 keeps none) |
+| `warn_below` | `0.60` | advisory threshold, per ratio (0 to 1): a cached ratio below it renders a warning in `bh doctor` and `bh hive ready`, never a failure |
+
+`code_types` and `doc_roots` are part of the cache's inputs hash, so changing either marks the
+cache stale until the next refresh.
+
+### `backfill.continuous` {#backfill-continuous}
+
+`backfill.continuous` keeps linkage and the lifecycle timeline current with small incremental
+runs ([BACKFILL.md](BACKFILL.md#incremental-and-continuous-backfill) has the cursors, the scope
+of a run and its bounds). It is **off by default** and **host-owned** (part of `backfill`). A run
+is best effort: any failure warns on stderr and never fails the merge or sync that triggered it.
+
+| Key (under `backfill.continuous`) | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | run the incremental passes after the configured triggers |
+| `passes` | `[commits, timeline]` | the incremental passes, in order: `commits` (`git.commits` appends) and `timeline` (`metadata.lifecycle.*`) |
+| `triggers` | `[post-merge]` | what starts a run: `post-merge` (after `bh work merge` / `finish` lands on the integration branch) and/or `sync` (after `bh hive sync` pulls a hive; needs a cursor from one `bh backfill commits --since-cursor` run) |
+
 ## `bh config` commands
 
 | Command | Effect |
