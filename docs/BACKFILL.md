@@ -196,7 +196,8 @@ only when it is installed, enabled and selected; otherwise the verb exits 1 sayi
 `bh plugin beadlog-xtdb doctor`). Today that is `xtdb`, the opt-in
 [`beadhive-beadlog-xtdb`](../packages/beadhive-beadlog-xtdb/README.md) plugin over the
 `beadlog-xtdb` loader, configured under [`plugins.beadlog-xtdb`](CONFIGURATION.md); the operator
-runs the node ([`bh-cntr0`](spikes/bh-cntr0-xtdb-operational-fit.md)).
+runs the node ([`bh-cntr0`](spikes/bh-cntr0-xtdb-operational-fit.md)); see the
+[XTDB store runbook](XTDB-STORE.md).
 
 - `apply PLAN --store xtdb` runs the same [safety envelope](#safety-envelope) against the
   store: the corpus hash is checked against the store's own history (so a plan written against
