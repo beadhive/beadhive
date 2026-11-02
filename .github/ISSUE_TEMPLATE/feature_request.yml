@@ -1,0 +1,83 @@
+# Template: feature  ·  Version: 1
+# Versioned intake form. The checklist triage reads is docs/INTAKE-TEMPLATES.md; keep the two in
+# step. Bump the version (here, in the `template_version` value, and in the doc) whenever a field
+# is added, removed, renamed, or its required-ness changes.
+name: Feature request
+description: Suggest a new capability or a change in behaviour
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. The facts marked required are what a maintainer needs to decide
+        whether and how to take it on; the optional ones speed that up.
+  - type: input
+    id: template_version
+    attributes:
+      label: Template version
+      description: Filled in by the form so triage knows which fields to expect. Leave as is.
+      value: "bh-intake/feature/v1"
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Current behaviour and the problem
+      description: What beadhive does today and what you cannot do, or find hard to do, because of it.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Proposed behaviour
+      description: What you would like to happen instead, as concretely as you can.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Use case or evidence
+      description: A real scenario, example commands, or prior art that shows the need.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried or other designs you thought about.
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Version you looked at
+      description: Output of `bh --version`, so we know the behaviour you are describing.
+      placeholder: "0.30.0"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Only if the request depends on it, such as operating system or tracker setup.
+    validations:
+      required: false
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: How much this would help you.
+      options:
+        - Unblocks work I cannot do today
+        - Removes a significant workaround
+        - Nice to have
+    validations:
+      required: true
+  - type: textarea
+    id: impact_detail
+    attributes:
+      label: Who benefits
+      description: Who else would use it and how often.
+    validations:
+      required: false
