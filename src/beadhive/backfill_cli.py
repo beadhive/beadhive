@@ -22,6 +22,10 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
 - ``verify`` — an archive's integrity and event ids, and a plan's hash;
 - ``apply`` — a ``.bdlg`` plan through the envelope: one written by ``bh backfill`` or by the
   standalone ``beadlog reconcile``;
+- ``apply --store xtdb`` / ``export --store xtdb`` — the same verbs against another BeadLog store,
+  composed through the ``beadlog.store`` capability (:mod:`beadhive.bootstrap.beadlog_store`) from
+  the opt-in ``beadlog-xtdb`` plugin; without ``--store`` (or with ``--store bd``) they use the
+  hive's bd store exactly as before;
 - ``coverage`` — the three link-coverage ratios from a cached state (``--refresh`` recomputes it;
   an enabled ``backfill.coverage`` also refreshes it after every applied pass).
 """
@@ -40,6 +44,7 @@ from typing import Any
 import typer
 
 from beadhive_backfill import (
+    ArchivePreStateExporter,
     BackfillEngine,
     BackfillError,
     JsonFileAuditSink,
@@ -85,6 +90,7 @@ from beadlog_sources import (
 
 from . import backfill_continuous, backfill_coverage, complexity_backfill, config, registry
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
+from .modules.beadlog_store.contracts import BUILTIN_STORE, BeadlogStoreError
 from .modules.config.contracts import BackfillGapfillConfig, BackfillJudgeConfig
 
 app = typer.Typer(
@@ -111,7 +117,16 @@ _PRE_STATE_OPTION = typer.Option(
     None, "--pre-state", help="JSONL recovery export (default: beside the plan)"
 )
 _AUDIT_OPTION = typer.Option(None, "--audit", help="machine audit JSON (default: beside the plan)")
+_STORE_OPTION = typer.Option(
+    None,
+    "--store",
+    help="BeadLog store: bd (default; the hive's bd store) or xtdb (the opt-in beadlog-xtdb "
+    "plugin, `bh plugin beadlog-xtdb doctor`)",
+)
+# The annotation a non-bd export records: which store and target it read, and the read's notes.
+STORE_ANNOTATION = "beadhive.store"
 _ERRORS = (
+    BeadlogStoreError,
     BackfillError,
     CoverageError,
     BdLoadError,
@@ -158,6 +173,29 @@ def _target(hive: str) -> tuple[Path, Group]:
 def store_loader(cwd: Path, *, group: str, pre_state_path: Path | None = None) -> BdStoreLoader:
     """The bd StoreLoader for the hive at ``cwd`` (the seam tests replace with a fake bd)."""
     return bd_store_loader(cwd, group=group, pre_state_path=pre_state_path)
+
+
+def _store_name(store: str | None) -> str:
+    """``--store``: absent means the built-in bd store."""
+    return BUILTIN_STORE if store is None or store == BUILTIN_STORE else store
+
+
+def beadlog_store(name: str) -> Any:
+    """The ``beadlog.store`` store answering to ``--store <name>`` (the seam tests replace).
+
+    Composed lazily from this host's ``plugins`` / ``plugin_kernel`` config: the plugin package
+    (and psycopg) is imported only when it is installed, enabled and selected; otherwise a
+    :class:`~beadhive.modules.beadlog_store.contracts.BeadlogStoreUnavailable` says what to do."""
+    from .beadlog_store_credentials import fnox_password_source  # lazy: only for a non-bd store
+    from .bootstrap.beadlog_store import BeadlogStores
+
+    cfg = config.load()
+    stores = BeadlogStores(
+        plugins=cfg.get("plugins"),
+        plugin_kernel=cfg.get("plugin_kernel"),
+        password_source_for=fnox_password_source,
+    )
+    return stores.resolve(name).port
 
 
 def history_inputs(cwd: Path) -> tuple[HistoryRead, str | None]:
@@ -407,16 +445,25 @@ def timeline_cmd(
     pre_state: Path | None = _PRE_STATE_OPTION,
     audit: Path | None = _AUDIT_OPTION,
     as_json: bool = typer.Option(False, "--json", help="emit the plan summary/audit as JSON"),
+    since_cursor: bool = _SINCE_CURSOR_OPTION,
 ) -> None:
     """Preview or apply the lifecycle timeline (writes only metadata.lifecycle.* keys)."""
     if apply and dry_run:
         raise typer.BadParameter("choose either --dry-run or --apply")
+    if apply and since_cursor:
+        raise typer.BadParameter(
+            "--since-cursor applies to the dry run; the plan records its range"
+        )
     try:
         cwd, group = _target(hive)
         if not apply:
-            pass_ = timeline_pass(cwd, hive)
+            extra: dict[str, Any] = {}
+            if since_cursor:
+                extra = {"incremental": True, "cursor": _load_cursor(hive, cwd, TIMELINE_PASS)}
+            pass_ = timeline_pass(cwd, hive, **extra)
             engine = BackfillEngine(groups=[group], passes=[pass_])
             plan = engine.plan(pass_, store_loader(cwd, group=group.id))
+            _warn_incremental(plan)
             if plan_path is not None:
                 plan.write(plan_path)
             if as_json:
@@ -431,6 +478,7 @@ def timeline_cmd(
                 )
                 return
             _render_timeline(plan)
+            _render_incremental(plan)
             if plan_path is not None:
                 typer.echo(f"saved plan: {plan_path}")
             return
@@ -662,8 +710,12 @@ def export_cmd(
         "--history",
         help="also export every history event of the bd events table (archival archive)",
     ),
+    store: str | None = _STORE_OPTION,
 ) -> None:
     """Export the hive's current state as a BeadLog archive (the neutral bd strategy)."""
+    if _store_name(store) != BUILTIN_STORE:
+        _export_store(_store_name(store), hive, out, as_json, history)
+        return
     try:
         cwd, group = _target(hive)
         loader = store_loader(cwd, group=group.id)
@@ -709,6 +761,57 @@ def export_cmd(
     )
     if "history" in summary:
         _echo_history(summary["history"])
+
+
+def _export_store(name: str, hive: str, out: Path | None, as_json: bool, history: bool) -> None:
+    """``export --store <name>``: the store's current state for the hive's bead group, read
+    through the store's as-of reader and written as a ``.bdlg``."""
+    try:
+        if history:
+            raise BackfillError(
+                f"--history reads the bd events table; it cannot be combined with --store {name}"
+            )
+        _cwd, group = _target(hive)
+        bound = beadlog_store(name)
+        try:
+            snapshot = bound.snapshot(group=group.id, extracted_at=system_clock())
+        finally:
+            bound.close()
+        out = out if out is not None else Path(f"{group.dir}.{name}.bdlg")
+        annotations = {
+            STORE_ANNOTATION: {
+                "store": name,
+                "target": snapshot.target,
+                "read_notes": dict(sorted(snapshot.notes.items())),
+            }
+        }
+        manifest = write_archive(
+            out,
+            snapshot.events,
+            groups=[group],
+            generator=GENERATOR,
+            description=f"current state of {snapshot.target}",
+            annotations=annotations,
+        )
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    summary: dict[str, Any] = {
+        "path": str(out),
+        "group": group.to_json(),
+        "events": int(manifest.counts.get("events", 0)),
+        "beads": int(manifest.counts.get("beads", 0)),
+        "store": annotations[STORE_ANNOTATION],
+    }
+    if as_json:
+        _emit(summary)
+        return
+    typer.echo(
+        f"exported {summary['events']} events across {summary['beads']} beads from "
+        f"{snapshot.target} to {out} (group {group.id})"
+    )
+    if snapshot.notes:
+        notes = ", ".join(f"{code}={count}" for code, count in sorted(snapshot.notes.items()))
+        typer.echo(f"read notes: {notes}")
 
 
 def _echo_history(history: Mapping[str, Any]) -> None:
@@ -867,8 +970,12 @@ def apply_cmd(
     pre_state: Path | None = _PRE_STATE_OPTION,
     audit: Path | None = _AUDIT_OPTION,
     as_json: bool = typer.Option(False, "--json", help="emit the loss report/audit as JSON"),
+    store: str | None = _STORE_OPTION,
 ) -> None:
     """Apply a BeadLog plan to the hive through the backfill safety envelope."""
+    if _store_name(store) != BUILTIN_STORE:
+        _apply_store(_store_name(store), plan_path, hive, dry_run, pre_state, audit, as_json)
+        return
     try:
         plan = Plan.read(plan_path)
         group = _plan_group(plan)
@@ -914,6 +1021,79 @@ def apply_cmd(
         typer.echo(f"audit: {audit}")
     _record_cursor(hive, cwd, plan, audit)
     refresh_coverage_after_apply(hive, as_json)
+
+
+def _apply_store(
+    name: str,
+    plan_path: Path,
+    hive: str,
+    dry_run: bool,
+    pre_state: Path | None,
+    audit: Path | None,
+    as_json: bool,
+) -> None:
+    """``apply --store <name>``: the same envelope as the bd path, with the store's loader as the
+    reader and the loader, and a ``.bdlg`` of the store's pre-apply history as the recovery
+    artifact. The bd-only follow-ups (the incremental cursor and the coverage cache) do not
+    apply: they describe the hive's bd store."""
+    try:
+        plan = Plan.read(plan_path)
+        group = _plan_group(plan)
+        cwd, _hive_group = _target(hive)
+        pre_state = pre_state or plan_path.with_name(f"{plan_path.stem}.pre-state.bdlg")
+        audit = audit or plan_path.with_name(f"{plan_path.stem}.audit.json")
+        bound = beadlog_store(name)
+        try:
+            loader = bound.loader()
+            if dry_run:
+                report = loader.load(plan.applicable_events(), dry_run=True)
+            else:
+                passes: list[Any] = [complexity_backfill.complexity_pass()]
+                if plan.pass_name == TIMELINE_PASS:
+                    passes.append(_timeline_pass_for_plan(cwd, hive, plan))
+                elif plan.pass_name in SOURCE_PASS_NAMES:
+                    passes.append(source_pass_for_plan(plan.pass_name, cwd, group.id, plan.report))
+                engine = BackfillEngine(groups=plan.groups, passes=passes)
+                exporter = ArchivePreStateExporter(
+                    pre_state, groups=plan.groups, generator=GENERATOR
+                )
+                entry = engine.apply(
+                    plan, loader, loader, JsonFileAuditSink(audit), pre_state=exporter
+                )
+            target = loader.target
+        finally:
+            bound.close()
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    if dry_run:
+        summary = {
+            "store": name,
+            "target": target,
+            "plan_hash": plan.plan_hash,
+            "pass": plan.pass_name,
+            "changes": plan.changes,
+            "applicable_events": len(plan.applicable_events()),
+            "loss_report": report,
+        }
+        if as_json:
+            _emit(summary)
+            return
+        by_code = (report.get("summary") or {}).get("by_code") or {}
+        losses = ", ".join(f"{k}={v}" for k, v in sorted(by_code.items())) or "none"
+        typer.echo(
+            f"plan {plan.plan_hash} ({plan.pass_name}) into {target}: {plan.changes} beads, "
+            f"{summary['applicable_events']} events; losses: {losses}"
+        )
+        return
+    if as_json:
+        _emit(entry.to_json())
+        return
+    typer.echo(
+        f"applied {len(entry.completed)} beads to {target}; verification clean; "
+        "second dry-run empty"
+    )
+    typer.echo(f"pre-state: {entry.recovery.pre_state_artifact}")
+    typer.echo(f"audit: {audit}")
 
 
 _RATIO_LABELS = (
@@ -1008,6 +1188,7 @@ __all__ = [
     "GROUP_NAMESPACE",
     "app",
     "archive_summary",
+    "beadlog_store",
     "gapfill_reader",
     "gapfill_settings",
     "gapfill_state_path",

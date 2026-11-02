@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import pytest
 
 from beadhive import deps
+from beadhive.bootstrap.beadlog_store import BEADLOG_STORE, BUILTIN_STORE_PROVIDERS
 from beadhive.bootstrap.impact import BUILTIN_IMPACT_PROVIDERS
 from beadhive.bootstrap.tracker import BUILTIN_TRACKER_PROVIDERS, TRACKER_ADAPTER
 from beadhive.kernel.plugins import (
@@ -82,23 +83,29 @@ def _manifests() -> dict[str, dict[str, object]]:
 
 
 def _inventory_problems(manifests: dict[str, dict[str, object]]) -> list[str]:
-    """Every way the built-in manifests disagree with the three provider sets.
+    """Every way the built-in manifests disagree with the four provider sets.
 
     A built-in manifest belongs to exactly one set: the runtime catalog (legacy integrations,
-    one required-by-the-catalog executable), the build-impact providers (no config fragment yet)
-    or the tracker-adapter providers (a package plugin: only OPTIONAL host executables, which
-    need not match any catalog, and always a published config fragment). Returns an empty list
-    when they agree, so a negative control can show each rule actually fires.
+    one required-by-the-catalog executable), the build-impact providers (no config fragment yet),
+    the tracker-adapter providers (a package plugin: only OPTIONAL host executables, which
+    need not match any catalog, and always a published config fragment) or the beadlog-store
+    providers (a package plugin with the same rules). Returns an empty list when they agree, so a
+    negative control can show each rule actually fires.
     """
 
     catalog = {entry.plugin_id: entry for entry in PLUGIN_RUNTIME_CATALOG}
     impact = {provider.plugin_id: provider for provider in BUILTIN_IMPACT_PROVIDERS}
     tracker = {provider.plugin_id: provider for provider in BUILTIN_TRACKER_PROVIDERS}
+    store = {provider.plugin_id: provider for provider in BUILTIN_STORE_PROVIDERS}
     problems: list[str] = []
-    overlaps = (set(catalog) & set(impact)) | (set(tracker) & (set(catalog) | set(impact)))
+    overlaps = (
+        (set(catalog) & set(impact))
+        | (set(tracker) & (set(catalog) | set(impact)))
+        | (set(store) & (set(catalog) | set(impact) | set(tracker)))
+    )
     if overlaps:
         problems.append(f"provider sets overlap: {sorted(overlaps)}")
-    declared = set(catalog) | set(impact) | set(tracker)
+    declared = set(catalog) | set(impact) | set(tracker) | set(store)
     if set(manifests) != declared:
         problems.append(f"manifests {sorted(manifests)} != provider sets {sorted(declared)}")
     for plugin_id, manifest in manifests.items():
@@ -116,9 +123,10 @@ def _inventory_problems(manifests: dict[str, dict[str, object]]) -> list[str]:
             # A build-system plugin with no configuration yet declares no schema fragment.
             if not (artifact is None or str(artifact).startswith(urn)):
                 problems.append(f"{plugin_id}: schema_artifact is neither null nor its URN")
-        elif plugin_id in tracker:
-            if TRACKER_ADAPTER.capability_id not in provides:
-                problems.append(f"{plugin_id}: does not provide {TRACKER_ADAPTER.capability_id}")
+        elif plugin_id in tracker or plugin_id in store:
+            capability = TRACKER_ADAPTER if plugin_id in tracker else BEADLOG_STORE
+            if capability.capability_id not in provides:
+                problems.append(f"{plugin_id}: does not provide {capability.capability_id}")
             if any(item["required"] for item in executables):
                 problems.append(f"{plugin_id}: declares a required host executable")
             # A config-bearing provider always publishes its fragment.
@@ -207,6 +215,16 @@ def _mutated(mutate) -> dict[str, dict[str, object]]:
             "a tracker manifest in the wrong namespace",
             lambda m: m["tracker-github"]["configuration"].update(namespace="plugins.github"),
             "namespace is not plugins.tracker-github",
+        ),
+        (
+            "a store manifest that stops providing beadlog.store",
+            lambda m: m["beadlog-xtdb"]["capabilities"]["provides"].clear(),
+            "does not provide beadlog.store",
+        ),
+        (
+            "a store provider without its manifest",
+            lambda m: m.pop("beadlog-xtdb"),
+            "!= provider sets",
         ),
         (
             "a catalog executable drift (the pre-existing rule still fires)",

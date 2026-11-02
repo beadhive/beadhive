@@ -1,13 +1,15 @@
 # ADR: Backfill platform — BeadLog interchange, three library packages, neutral production vs hive import
 
 - **Status:** Accepted (architecture and packaging). The BeadLog v0 wire details are decided in
-  `bh-65jen` ([`beadlog-format-adr.md`](beadlog-format-adr.md)); the first bi-temporal store
-  target is gated on spike molecule `bh-5wu0u`.
+  `bh-65jen` ([`beadlog-format-adr.md`](beadlog-format-adr.md)). The first bi-temporal store
+  target, XTDB v2, was gated on spike molecule `bh-5wu0u`: verdict **GO**, decision `bh-psu1b`
+  (amended 2026-10-31, see [Amendment 2026-10-31](#amendment-2026-10-31-xtdb-spike-findings)).
 - **Date:** 2026-10-30
 - **Decision owner:** Beadhive maintainers (operator-approved planning session)
 - **Related work:** workstream `bh-pu6n6`; sub-epics `bh-ebopn` (BeadLog format and engine),
   `bh-8a7ts` (source strategies), `bh-b3xhd` (timeline and archival export), `bh-yvg41`
-  (coverage and continuous backfill), `bh-5wu0u` (XTDB spike); `bh-skls-svo` (skills hive)
+  (coverage and continuous backfill), `bh-5wu0u` (XTDB spike, GO), `bh-psu1b` (XTDB adoption
+  decision); `bh-skls-svo` (skills hive)
 - **Supersedes:** `bh-9wpd` (`bh import`, parked since 2026-07), whose design is absorbed here;
   `bh-9wpd.8` is carried forward as deferred source strategies.
 - **Amends:** [`docs/MODULES.md`](../MODULES.md) principle 9 and the landed `packages/*`
@@ -118,6 +120,8 @@ probabilities, confidence, option count, rationale and engine. This follows
 - **XTDB target.** XTDB v2 is the first bi-temporal target to spike: user-set valid time,
   monotone backfill of system time (v2.2+), native as-of reads, `ERASE` for tombstones,
   schemaless nested documents. On GO, its loader is its own package depending only on `beadlog`.
+  *Amended 2026-10-31:* spiked, GO. The loader is two packages, `ERASE` is logical only, and
+  recorded-time preservation is a one-shot initial load (see the amendment below).
 - A second store candidate gets evaluated only after the XTDB verdict.
 
 ### 6. Defaults
@@ -167,3 +171,49 @@ here for reasons specific to this capability:
 - History capture improves before more erodes: `bh-4kec3` produces the first archival BeadLog of
   `bh`. It does not replace two-tier history retention (`bh-3vs6c`).
 - A tracker-sync strategy (GitHub/Jira) remains out of scope; that is `bh sync`.
+
+## Amendment 2026-10-31: XTDB spike findings
+
+Spike molecule `bh-5wu0u` returned **GO** and decision `bh-psu1b` adopts XTDB v2 (2.2.x) as the
+first bi-temporal BeadLog loader. This amends the architecture above: the status line no longer
+gates the XTDB target, and section 5's "its loader is its own package depending only on
+`beadlog`" becomes two packages. The wire-level decisions are in the
+[BeadLog format ADR amendment](beadlog-format-adr.md#amendment-2026-10-31-xtdb-spike-findings);
+this section records only what changes the platform. Spike evidence:
+
+| Spike | Document |
+|---|---|
+| `bh-o1x4r` | [store landscape](../spikes/bh-o1x4r-beadlog-store-landscape.md) |
+| `bh-w56ts` | [bead shape](../spikes/bh-w56ts-xtdb-bead-shape.md) |
+| `bh-cntr0` | [operational fit](../spikes/bh-cntr0-xtdb-operational-fit.md) |
+| `bh-3jp2g` | [bitemporal load](../spikes/bh-3jp2g-xtdb-bitemporal-load.md) |
+
+- **Two packages, not one** ([`bh-cntr0`](../spikes/bh-cntr0-xtdb-operational-fit.md)
+  recommendation 2). `packages/beadlog-xtdb` is a **library** that never imports `beadhive`; it
+  depends on `beadlog`, `psycopg[binary]>=3.2,<4` and an exactly pinned `transit-python2` (or an
+  in-package transit writer). `packages/beadhive-beadlog-xtdb` is a **plugin** with `plugin.json`
+  that binds the loader into `bh` through a new **`beadlog.store`** capability (API 1). Both are
+  `Private :: Do Not Upload`. Per the
+  [package-class ADR](package-class-library-vs-plugin-adr.md), the public extra is
+  `beadhive[xtdb]` and root resolves the plugin lazily after manifest selection, as
+  `beadhive-tracker-github` does for `tracker.adapter`. The three-library table in section 2 is
+  otherwise unchanged. Root's bd StoreLoader remains loader #1.
+- **ERASE is logical** ([`bh-3jp2g`](../spikes/bh-3jp2g-xtdb-bitemporal-load.md) E7). A
+  tombstone removes a bead from every read but leaves its bytes in the XTDB log and block files.
+  The loader declares `erase-logical` and reports `erasure.incomplete`. Physical purge means
+  rebuilding the database from a purged BeadLog; XTDB is a rebuildable projection, never the only
+  copy ([`bh-cntr0`](../spikes/bh-cntr0-xtdb-operational-fit.md) verdict). The apply envelope
+  must surface the loss for acknowledgement.
+- **Recorded time is a one-shot load into a fresh database**
+  ([`bh-3jp2g`](../spikes/bh-3jp2g-xtdb-bitemporal-load.md) E4, E5). Strict ordering is checked
+  client side, future times are refused, any abort discards the database and reloads, and the
+  null-`recorded_at` tail and any `ERASE` load afterwards in wall-clock transactions. Same-instant
+  writes to one entity split by a microsecond (operator decision 2026-10-31); the grouping rule
+  for `index/recorded.jsonl` is in the format ADR. Later loads keep valid time only and report
+  `recorded-time.reassigned`.
+- **Operational posture** ([`bh-cntr0`](../spikes/bh-cntr0-xtdb-operational-fit.md)): optional,
+  off by default, operator-run, single node, loopback bind with a password, `--memory 2g`,
+  real-disk data directory, pinned image digest, version gate `>=2.2.0,<2.3`. Tests against a real
+  XTDB are integration-marked and skip cleanly without Docker; unit tests use fakes.
+- **Second store candidate.** Section 5 deferred evaluating one until after the XTDB verdict. That
+  verdict is in, so the evaluation is now unblocked. It is still not scheduled by this amendment.

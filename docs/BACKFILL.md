@@ -15,6 +15,7 @@ The architecture and packaging are decided in
 | `beadlog-sources` | BeadHive-free producers: source strategies (the neutral `bd` reader, the `bd-history` events-table conversion, `git-commits`, `docs` and `planning`), reconcile, judges, the standalone `beadlog` CLI |
 | `beadhive-backfill` | the envelope (`BackfillEngine`, `Plan`, audit and pre-state ports) and the hive-policy passes (`beadhive_backfill.complexity`, `beadhive_backfill.timeline`, `beadhive_backfill.source_passes`) and the link-coverage metrics (`beadhive_backfill.coverage`) |
 | root `beadhive` | the bd StoreLoader (`backfill_bd`), the `bh backfill` CLI and its catalog rows |
+| `beadlog-xtdb` | BeadHive-free XTDB loader foundation (not vendored into root; the opt-in plugin binds it): pgwire connection, layout (b) row builders, an in-package transit codec, single-type column coercion, the `>=2.2.0,<2.3` version gate and the dangling-edge report |
 
 Root never holds engine logic; the published wheel vendors the three libraries' import packages
 (they stay `Private :: Do Not Upload`).
@@ -23,15 +24,15 @@ Root never holds engine logic; the published wheel vendors the three libraries' 
 
 ```text
 bh backfill complexity   [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
-bh backfill timeline     [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
+bh backfill timeline     [--hive H] [--dry-run | --apply] [--since-cursor] [--plan F] [--pre-state F] [--audit F] [--json]
 bh backfill commits      [--hive H] [--dry-run | --apply] [--since-cursor] [--plan F] [--pre-state F] [--audit F] [--option K=V]... [--json]
 bh backfill docs         (the same options as commits, without --since-cursor)
 bh backfill planning     (the same options as commits, without --since-cursor)
 bh backfill coverage     [--hive H] [--refresh] [--json]
-bh backfill export       [--hive H] [--out F.bdlg] [--history] [--json]
+bh backfill export       [--hive H] [--out F.bdlg] [--history] [--store bd|xtdb] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verify       F.bdlg [--json]
-bh backfill apply        PLAN.bdlg [--hive H] [--dry-run] [--pre-state F] [--audit F] [--json]
+bh backfill apply        PLAN.bdlg [--hive H] [--dry-run] [--pre-state F] [--audit F] [--store bd|xtdb] [--json]
 bh backfill-complexity   (the flat alias of `bh backfill complexity`; published wire surface)
 ```
 
@@ -50,6 +51,7 @@ Nothing writes to a hive unless asked: a pass previews by default and writes onl
 | `--pre-state F` | the recovery export, written before the first write (default: beside the plan) |
 | `--audit F` | the machine audit JSON (default: beside the plan) |
 | `--json` | machine output: the plan, audit, summary or loss report |
+| `--store S` | `apply` and `export` only: the BeadLog store, `bd` (the default; the hive's bd store) or `xtdb` (see [Other stores](#other-stores---store)) |
 
 ### `bh backfill complexity` (pass #1)
 
@@ -183,6 +185,33 @@ declare exactly one bead group; the bd loader loads that group into the hive. `-
 the loader's assessment only and prints its loss report (every field bd cannot keep).
 
 The whole sequence, from the baseline export to the apply, is under [End to end](#end-to-end).
+
+### Other stores (`--store`)
+
+`apply` and `export` take `--store`. Without it, or with `--store bd`, they are exactly the bd
+verbs above (same request, output, JSON keys, exit codes, recovery artifact and follow-ups).
+Any other store comes from a plugin providing the `beadlog.store` capability, composed lazily
+only when it is installed, enabled and selected; otherwise the verb exits 1 saying what to do
+(install `beadhive[xtdb]`, `bh config set plugins.beadlog-xtdb.enabled true`, run
+`bh plugin beadlog-xtdb doctor`). Today that is `xtdb`, the opt-in
+[`beadhive-beadlog-xtdb`](../packages/beadhive-beadlog-xtdb/README.md) plugin over the
+`beadlog-xtdb` loader, configured under [`plugins.beadlog-xtdb`](CONFIGURATION.md); the operator
+runs the node ([`bh-cntr0`](spikes/bh-cntr0-xtdb-operational-fit.md)); see the
+[XTDB store runbook](XTDB-STORE.md).
+
+- `apply PLAN --store xtdb` runs the same [safety envelope](#safety-envelope) against the
+  store: the corpus hash is checked against the store's own history (so a plan written against
+  the bd hive does not apply to a store holding something else; a plan for a fresh store is a
+  `beadlog reconcile` against an empty baseline), the whole-plan dry run gives the loader's loss
+  report, the recovery artifact is a `.bdlg` of the store's pre-apply history
+  (`<plan>.pre-state.bdlg` by default), and every bead is written, audited and verified as with
+  bd. On a fresh database the first written unit takes the loader's monotone initial load
+  (recorded time preserved) and later units load incrementally; each loss report says which.
+  The bd-only follow-ups (the incremental cursor, the coverage cache) are not touched.
+- `export --store xtdb` writes the store's current state for the hive's bead group, read by the
+  as-of reader (default file `<prefix>.xtdb.bdlg`); the manifest's `annotations["beadhive.store"]`
+  names the store and target and counts the reader's notes (what it could not carry back).
+  `--history` reads the bd events table and is refused with a non-bd store.
 
 The standalone `beadlog` CLI is the `beadlog-sources` distribution's script (in a checkout,
 `uv run beadlog`); the installed `bh` carries the libraries but not that script or its
@@ -444,10 +473,9 @@ from); a dry run never moves one. The `events` table's row id is a UUID and its 
 second resolution, so "after the cursor" is `created_at >= events_at` (inclusive: a row from the
 cursor's own second is seen again, which is harmless because every proposal is content-addressed).
 
-**`bh backfill commits --since-cursor`** (a dry-run option; the saved plan records its range)
-reads only the commits after the cursor, and the `timeline` pass has the same incremental form
-(`TimelinePass(incremental=True)`), which `backfill.continuous` runs; the published
-`bh backfill timeline` verb is unchanged. What each pass reads when it runs incrementally:
+**`bh backfill commits --since-cursor`** and **`bh backfill timeline --since-cursor`** (dry-run
+options; the saved plan records its range) read only what moved after the cursor;
+`backfill.continuous` runs the same incremental passes. What each pass reads when it runs incrementally:
 
 | Pass | What moved | How it is read |
 |---|---|---|
@@ -476,10 +504,9 @@ merge slot is released and is bounded:
   from the cursor, or, with none, from the integration tip before the merge. A hook never starts a
   full run: with nothing to bound it, it says so and waits for one `--since-cursor` run.
 - With no cursor the hook is scoped to the merged beads and records none, so it cannot skip commits
-  an earlier run never read; with a cursor it follows and moves it. Today the CLI earns a cursor for
-  `commits` only (`--since-cursor`); a `timeline` hook therefore stays scoped to the merged beads,
-  and the `sync` trigger has nothing to follow for `timeline` until the published `timeline` verb
-  gains the same flag (an additive wire change that needs operator approval).
+  an earlier run never read; with a cursor it follows and moves it. Both `commits` and `timeline`
+  earn a cursor from `--since-cursor`; until a `timeline` cursor exists, a `timeline` hook stays
+  scoped to the merged beads.
 - Each run is the ordinary plan/apply envelope (plan hash, drift gate, applying audit,
   verification, rollback). Its recovery export holds only the beads it changes (a `.bdlg`, never a
   corpus archive) and its audit and recovery files replace the previous run's

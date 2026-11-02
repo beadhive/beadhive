@@ -825,6 +825,12 @@ _APPROVED_OPTIONAL_STRING_PARAMS: dict[str, tuple[str, ...]] = {
             "emergency-revoke",
         )
     },
+    # operator approval 2026-11-02 (bh-qjrj9, sub-epic bh-wj8d7): `bh backfill apply|export
+    # --store <name>` appends one optional string to each verb. Without it (or with `--store bd`)
+    # both keep their exact request, output, exit codes and JSON keys; `xtdb` resolves the opt-in
+    # `beadlog.store` plugin.
+    "backfill.apply": ("store",),
+    "backfill.export": ("store",),
 }
 _OPTIONAL_STRING_PARAM = {
     "privilege": "inherited",
@@ -871,6 +877,10 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
     # `bh backfill export --history` appends one optional boolean to the 2.17.0 verb. The default
     # export keeps its exact request, output, exit codes and JSON keys; only the flag is new.
     "backfill.export": {"history": {"type": "boolean"}},
+    # operator approval 2026-11-02 (sub-epic bh-wj8d7): `bh backfill timeline --since-cursor`
+    # appends one optional boolean (default off). A run without it keeps its exact request,
+    # output, exit codes and JSON keys.
+    "backfill.timeline": {"since_cursor": {"type": "boolean"}},
     "worktree.status": {
         "local_safe": {"type": "boolean"},
         "root": {"type": "array", "items": {}},
