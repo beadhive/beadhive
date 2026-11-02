@@ -845,9 +845,10 @@ The XTDB loader is two packages, following
   loader capability name (`loader.capabilities` items match `^[a-z][a-z0-9:._-]*$`), the split is
   derived rather than stored, and `x-xtdb.us-split` is a legal loss code. No field was needed.
 - **`beadlog` package follow-up** (code in merged sub-epic `bh-ebopn`, deliberately not changed
-  here): add `erase-logical` to `LoaderCapability`, and teach the conformance kit that a store
-  declares at most one of `erase` and `erase-logical`. Until then the name works as a plain
-  string in a loss report.
+  by this amendment): add `erase-logical` to `LoaderCapability`, and teach the conformance kit
+  that a store declares at most one of `erase` and `erase-logical`. **Landed** in `packages/beadlog`:
+  `LoaderCapability.ERASE_LOGICAL` exists and the `beadlog.testing` conformance kit enforces that
+  rule, so the XTDB loader declares `erase-logical` as a real capability, not a plain string.
 
 ### A8. What this supersedes in §8 and §9
 

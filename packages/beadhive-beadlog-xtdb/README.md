@@ -13,7 +13,8 @@ It binds the [`beadlog-xtdb`](../beadlog-xtdb/README.md) loader library into
   command work without it.
 - **bh never runs the node.** The operator starts, stops, backs up and upgrades the XTDB 2.2.x
   container (loopback only, `XTDB_PASSWORD`, `--memory 2g`, a real-disk data directory, a
-  GET-based health check and a pinned image digest: see
+  GET-based health check and a pinned image digest: see the
+  [operator runbook](../../docs/XTDB-STORE.md) and
   [`bh-cntr0`](../../docs/spikes/bh-cntr0-xtdb-operational-fit.md)).
 - **No secret in configuration.** The password comes from the host's fnox secret broker through
   `plugins.beadlog-xtdb.credential` (`config_path`, `profile`, `key`); a DSN that embeds one is
