@@ -1,0 +1,90 @@
+# Template: bug  ·  Version: 1
+# Versioned intake form. The checklist triage reads is docs/INTAKE-TEMPLATES.md; keep the two in
+# step. Bump the version (here, in the `template_version` value, and in the doc) whenever a field
+# is added, removed, renamed, or its required-ness changes.
+name: Bug report
+description: Something in beadhive does not behave as documented
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The facts marked required are what a maintainer needs to decide
+        what to do with it; the optional ones speed that up. Please do not include secrets or
+        tokens in logs.
+  - type: input
+    id: template_version
+    attributes:
+      label: Template version
+      description: Filled in by the form so triage knows which fields to expect. Leave as is.
+      value: "bh-intake/bug/v1"
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happened
+      description: What you saw, including any error text, exactly as printed.
+      placeholder: "`bh work check bh-xyz` exited 2 with 'no worktree'"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead, and where the docs or help say so if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce, or evidence
+      description: >-
+        The exact commands that trigger it, or if you cannot reproduce it on demand, the log,
+        output, or screenshot you have. A minimal case is best.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Affected version
+      description: Output of `bh --version`, or the commit if you run from source.
+      placeholder: "0.30.0"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, how you installed `bh`, and `bd` / Python versions if relevant.
+      placeholder: "Ubuntu 24.04, uv tool install, bd 1.3"
+    validations:
+      required: false
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: How much this gets in your way.
+      options:
+        - Blocks me, no workaround
+        - Blocks me, I have a workaround
+        - Annoying but I can continue
+        - Cosmetic or documentation only
+    validations:
+      required: true
+  - type: textarea
+    id: impact_detail
+    attributes:
+      label: Impact detail
+      description: Who or what is affected, how often it happens, and any workaround you found.
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that helps, such as when it last worked or related reports.
+    validations:
+      required: false

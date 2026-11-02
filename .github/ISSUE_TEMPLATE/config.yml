@@ -1,0 +1,8 @@
+# Issue chooser settings. Blank issues stay allowed (the pre-template behaviour); triage treats a
+# body with no template_version marker as "unversioned" and asks for the missing facts. Flip this
+# to false only as a deliberate hive policy change.
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/beadhive/beadhive/security/advisories/new
+    about: Report vulnerabilities privately, following SECURITY.md, not in a public issue.
