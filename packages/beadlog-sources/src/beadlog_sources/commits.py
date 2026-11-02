@@ -27,9 +27,11 @@ CLI writes) and no event is emitted for it, so it is never overwritten.
 
 **Events.** ``set`` of ``metadata.git.commits`` with ``provenance: derived`` (the bead id was
 derived deterministically from observed commits), ``occurred_at`` = the committer date of the
-newest appended commit (raised to the time of the baseline's latest ``create`` or
-``set`` of that field when the commit predates it, so the new value wins the last-writer-wins
-fold), ``recorded_at`` null, ``source`` = ``git`` / ``commit/<newest sha>`` and one ``commit``
+newest appended commit (raised to one microsecond past the time of the baseline's latest
+``create`` or ``set`` of that field when the commit does not postdate it, so the new value
+strictly wins the last-writer-wins fold: a tie would be broken by event id, a hash, so a commit
+made in the same second as the one already recorded could lose; :func:`just_after`),
+``recorded_at`` null, ``source`` = ``git`` / ``commit/<newest sha>`` and one ``commit``
 evidence entry per appended sha.
 
 **Shallow clones are refused**: their history is truncated, so beads whose commits predate the cut
@@ -48,7 +50,7 @@ import subprocess
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -338,6 +340,19 @@ def commit_time(value: str) -> str | None:
         return None
 
 
+def just_after(value: str) -> str:
+    """The first whole microsecond strictly after the canonical timestamp ``value``.
+
+    The time a proposal is raised to when its newest commit does not postdate the baseline's
+    decider of the field: equal is not enough, because two events at one instant (both with a
+    null ``recorded_at``) are ordered by id, which is a hash, so the new value would win or lose
+    the last-writer-wins fold by chance (bh-hxodo).
+    """
+    _, seconds, nanos = instant(value)
+    moment = datetime.fromisoformat(seconds).replace(tzinfo=UTC)
+    return format_timestamp(moment + timedelta(microseconds=nanos // 1000 + 1))
+
+
 # -- the strategy --------------------------------------------------------------------------
 
 
@@ -487,8 +502,8 @@ def propose(
         else:
             when, newest = None, new[-1]
         floor = floors.get(bead.id)
-        if floor is not None and (when is None or instant(when) < instant(floor)):
-            when = floor
+        if floor is not None and (when is None or instant(when) <= instant(floor)):
+            when = just_after(floor)
         events.append(
             mint_event(
                 str(EventKind.SET),
@@ -560,6 +575,7 @@ __all__ = [
     "dump_linkage",
     "extract_candidates",
     "is_shallow",
+    "just_after",
     "match_commits",
     "parse_linkage",
     "propose",
