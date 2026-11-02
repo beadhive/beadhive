@@ -24,7 +24,7 @@ Root never holds engine logic; the published wheel vendors the three libraries' 
 
 ```text
 bh backfill complexity   [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
-bh backfill timeline     [--hive H] [--dry-run | --apply] [--plan F] [--pre-state F] [--audit F] [--json]
+bh backfill timeline     [--hive H] [--dry-run | --apply] [--since-cursor] [--plan F] [--pre-state F] [--audit F] [--json]
 bh backfill commits      [--hive H] [--dry-run | --apply] [--since-cursor] [--plan F] [--pre-state F] [--audit F] [--option K=V]... [--json]
 bh backfill docs         (the same options as commits, without --since-cursor)
 bh backfill planning     (the same options as commits, without --since-cursor)
@@ -472,10 +472,9 @@ from); a dry run never moves one. The `events` table's row id is a UUID and its 
 second resolution, so "after the cursor" is `created_at >= events_at` (inclusive: a row from the
 cursor's own second is seen again, which is harmless because every proposal is content-addressed).
 
-**`bh backfill commits --since-cursor`** (a dry-run option; the saved plan records its range)
-reads only the commits after the cursor, and the `timeline` pass has the same incremental form
-(`TimelinePass(incremental=True)`), which `backfill.continuous` runs; the published
-`bh backfill timeline` verb is unchanged. What each pass reads when it runs incrementally:
+**`bh backfill commits --since-cursor`** and **`bh backfill timeline --since-cursor`** (dry-run
+options; the saved plan records its range) read only what moved after the cursor;
+`backfill.continuous` runs the same incremental passes. What each pass reads when it runs incrementally:
 
 | Pass | What moved | How it is read |
 |---|---|---|
@@ -504,10 +503,9 @@ merge slot is released and is bounded:
   from the cursor, or, with none, from the integration tip before the merge. A hook never starts a
   full run: with nothing to bound it, it says so and waits for one `--since-cursor` run.
 - With no cursor the hook is scoped to the merged beads and records none, so it cannot skip commits
-  an earlier run never read; with a cursor it follows and moves it. Today the CLI earns a cursor for
-  `commits` only (`--since-cursor`); a `timeline` hook therefore stays scoped to the merged beads,
-  and the `sync` trigger has nothing to follow for `timeline` until the published `timeline` verb
-  gains the same flag (an additive wire change that needs operator approval).
+  an earlier run never read; with a cursor it follows and moves it. Both `commits` and `timeline`
+  earn a cursor from `--since-cursor`; until a `timeline` cursor exists, a `timeline` hook stays
+  scoped to the merged beads.
 - Each run is the ordinary plan/apply envelope (plan hash, drift gate, applying audit,
   verification, rollback). Its recovery export holds only the beads it changes (a `.bdlg`, never a
   corpus archive) and its audit and recovery files replace the previous run's

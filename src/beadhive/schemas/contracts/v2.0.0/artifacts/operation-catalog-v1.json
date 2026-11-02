@@ -1397,6 +1397,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "since_cursor",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -1425,7 +1433,8 @@
             "plan_path",
             "pre_state",
             "audit",
-            "as_json"
+            "as_json",
+            "since_cursor"
           ],
           "path": "backfill timeline",
           "progress": {

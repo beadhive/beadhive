@@ -23,8 +23,6 @@ from typer.testing import CliRunner
 from beadhive import backfill_cli, backfill_continuous, backfill_coverage, cli
 from beadhive.backfill_bd import BdLoadError, BdStoreLoader
 from beadhive_backfill import (
-    BackfillEngine,
-    JsonFileAuditSink,
     PassCursor,
     Plan,
     TimelinePass,
@@ -216,21 +214,13 @@ def _lifecycle(world: World, bead: str) -> dict[str, Any]:
 
 
 def _apply_full_since_cursor(world: World, tmp_path: Path) -> Path:
-    """What a first incremental timeline run earns: a full run applied through the envelope and
-    the cursor it recorded (the published ``timeline`` verb has no ``--since-cursor``)."""
-    pass_ = backfill_cli.timeline_pass_for(tmp_path, None, ref="main", incremental=True)
-    engine = BackfillEngine(groups=[world.group], passes=[pass_])  # type: ignore[attr-defined]
-    plan = engine.plan(pass_, backfill_cli.store_loader(tmp_path, group=world.group.id))  # type: ignore[attr-defined]
-    assert plan.report["incremental"]["mode"] == "full"
-    audit = tmp_path / "first.audit.json"
-    loader = backfill_cli.store_loader(
-        tmp_path,
-        group=world.group.id,
-        pre_state_path=tmp_path / "first.pre-state.jsonl",  # type: ignore[attr-defined]
-    )
-    engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
-    assert backfill_continuous.record_cursor(_cursor_file(tmp_path), plan, audit) is not None
-    return audit
+    """What a first ``bh backfill timeline --since-cursor`` run earns: a full run applied through
+    the CLI envelope, and the cursor it recorded."""
+    plan = tmp_path / "first.timeline.bdlg"
+    _invoke("backfill", "timeline", "--since-cursor", "--plan", str(plan))
+    _invoke("backfill", "timeline", "--apply", "--plan", str(plan))
+    assert read_cursor(_cursor_file(tmp_path), "timeline").cursor is not None
+    return plan.with_name(f"{plan.stem}.audit.json")
 
 
 # -- bh backfill commits --since-cursor and the cursor lifecycle -------------------------------
@@ -363,12 +353,83 @@ def test_since_cursor_is_a_dry_run_option(world) -> None:
     assert "applies to the dry run" in result.output
 
 
-def test_only_the_commits_pass_takes_since_cursor_the_published_timeline_verb_is_unchanged(
-    world,
-) -> None:
-    for name, takes in (("commits", True), ("timeline", False), ("docs", False)):
+def test_commits_and_timeline_take_since_cursor_docs_and_planning_do_not(world) -> None:
+    for name, takes in (
+        ("commits", True),
+        ("timeline", True),
+        ("docs", False),
+        ("planning", False),
+    ):
         helped = CliRunner().invoke(cli.app, ["backfill", name, "--help"], env=ENV)
         assert ("--since-cursor" in helped.output) is takes, name
+
+
+def test_timeline_since_cursor_creates_then_advances_the_cursor_and_reads_only_what_moved(
+    world, tmp_path
+) -> None:
+    world.merge("wd-0")
+    world.merge("wd-1")
+    cursor_file = _cursor_file(tmp_path)
+    assert (
+        "incremental: full (no cursor recorded yet)"
+        in _invoke("backfill", "timeline", "--since-cursor").stdout
+    )
+    assert not cursor_file.exists()  # a dry run never moves a cursor
+
+    first = tmp_path / "first.bdlg"
+    _invoke("backfill", "timeline", "--since-cursor", "--plan", str(first))
+    _invoke("backfill", "timeline", "--apply", "--plan", str(first))
+    created = read_cursor(cursor_file, "timeline").cursor
+    assert created is not None and created.land_sha == world.head and created.plan_hash
+    assert _lifecycle(world, "wd-1")
+
+    world.merge("wd-2")
+    world.merge("wd-3")
+    incremental = tmp_path / "incr.bdlg"
+    summary = json.loads(
+        _invoke(
+            "backfill", "timeline", "--since-cursor", "--json", "--plan", str(incremental)
+        ).stdout
+    )
+    info = summary["report"]["incremental"]
+    assert info["mode"] == "incremental" and info["warnings"] == []
+    # wd-0 did not move; wd-1 is re-read only because the events cursor is second-inclusive
+    assert sorted(info["scope"]) == ["wd-1", "wd-2", "wd-3"]
+    touched = {event.bead.id for event in Plan.read(incremental).applicable_events()}
+    assert touched == {"wd-2", "wd-3"}
+    assert not _lifecycle(world, "wd-2")  # still a dry run
+
+    _invoke("backfill", "timeline", "--apply", "--plan", str(incremental))
+    assert _lifecycle(world, "wd-2") and _lifecycle(world, "wd-3")
+    moved = read_cursor(cursor_file, "timeline").cursor
+    assert moved is not None and moved.land_sha == world.head != created.land_sha
+    after = json.loads(_invoke("backfill", "timeline", "--since-cursor", "--json").stdout)
+    assert after["changes"] == 0
+
+
+def test_a_corrupt_cursor_file_warns_and_the_timeline_run_is_full(world, tmp_path) -> None:
+    world.merge("wd-1")
+    plan = tmp_path / "first.bdlg"
+    _invoke("backfill", "timeline", "--since-cursor", "--plan", str(plan))
+    _invoke("backfill", "timeline", "--apply", "--plan", str(plan))
+    world.merge("wd-2")
+    _cursor_file(tmp_path).write_text("{ not a cursor")
+
+    result = CliRunner().invoke(
+        cli.app, ["backfill", "timeline", "--since-cursor", "--json"], env=ENV
+    )
+
+    assert result.exit_code == 0
+    assert "corrupt" in result.output and "running in full" in result.output
+    assert json.loads(result.stdout)["report"]["incremental"]["mode"] == "full"
+
+
+def test_timeline_since_cursor_is_a_dry_run_option_and_off_by_default(world) -> None:
+    result = _invoke("backfill", "timeline", "--apply", "--since-cursor", code=2)
+    assert "applies to the dry run" in result.output
+    world.merge("wd-1")
+    plain = json.loads(_invoke("backfill", "timeline", "--json").stdout)
+    assert "incremental" not in plain["report"]
 
 
 # -- continuous backfill: the post-merge trigger -----------------------------------------------
