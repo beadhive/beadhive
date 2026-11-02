@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 import beadlog
-from beadlog import BeadEvent, BeadRef, EventKind, fold, mint_event
+from beadlog import BeadEvent, BeadRef, EventKind, fold, instant, mint_event
 from beadlog_sources import ExtractRequest, GitCommitsStrategy, ShallowCloneError, reconcile
 from beadlog_sources.cli import discover_strategies, main
 from beadlog_sources.commits import (
@@ -30,6 +30,7 @@ from beadlog_sources.commits import (
     derive_namespaces,
     extract_candidates,
     is_shallow,
+    just_after,
     match_commits,
     parse_linkage,
     read_commits,
@@ -289,6 +290,40 @@ def test_a_commit_older_than_the_bead_still_wins_the_fold(repo: Path) -> None:
     baseline = _baseline(["bh-100"], existing={"bh-100": json.dumps(["f" * 40])})
     events = GitCommitsStrategy().extract(_request(repo, baseline, rev="main"))
     assert _linkage([*baseline, *events]) == {"bh-100": ["f" * 40, c1]}
+
+
+@pytest.mark.parametrize(
+    ("value", "after"),
+    [
+        ("2026-09-01T10:00:00Z", "2026-09-01T10:00:00.000001Z"),
+        ("2026-09-01T10:00:00.25Z", "2026-09-01T10:00:00.250001Z"),
+        ("2026-09-01T10:00:00.0000005Z", "2026-09-01T10:00:00.000001Z"),
+        ("2026-12-31T23:59:59.999999Z", "2027-01-01T00:00:00Z"),
+    ],
+)
+def test_just_after_is_the_next_whole_microsecond(value: str, after: str) -> None:
+    assert just_after(value) == after
+    assert instant(after) > instant(value)
+
+
+def test_a_commit_in_the_same_second_as_the_recorded_one_still_wins_the_fold(repo: Path) -> None:
+    """bh-hxodo: the baseline's ``set`` (an applied proposal, ``recorded_at`` null) and the next
+    proposal carried the same committer second, so the fold ordered them by event id — a hash —
+    and the new sha was dropped about half the time. The new value must be strictly later."""
+    same = "2026-10-01T10:00:00+00:00"
+    applied: list[BeadEvent] = list(_baseline(["bh-100"]))
+    shas: list[str] = []
+    prior: BeadEvent | None = None
+    for n in range(4):
+        shas.append(_commit(repo, f"feat: step {n} (bh-100)", date=same))
+        (event,) = GitCommitsStrategy().extract(_request(repo, applied, rev="main"))
+        assert json.loads(event.data["value"]) == shas
+        if prior is not None:
+            assert instant(event.occurred_at) > instant(prior.occurred_at)
+        applied.append(event)
+        assert _linkage(applied) == {"bh-100": shas}
+        prior = event
+    assert GitCommitsStrategy().extract(_request(repo, applied, rev="main")) == ()
 
 
 # -- idempotence and append-only -----------------------------------------------------------

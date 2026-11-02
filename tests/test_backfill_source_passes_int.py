@@ -35,6 +35,8 @@ TRIPLET = ("provider:github", "org:agentguides", "repo:infra")
 ENTRY = {"provider": "github", "org": "agentguides", "repo": "infra", "prefix": "ag-infra"}
 P1 = ".planning/phases/01-foundation"
 DOC = "docs/design/001-linked.md"
+# Every commit carries this one date on purpose: a later commit in the same second as one
+# already recorded must still be appended (bh-hxodo), whatever the shas hash to.
 WHEN = "2026-09-01T10:00:00+00:00"
 
 
