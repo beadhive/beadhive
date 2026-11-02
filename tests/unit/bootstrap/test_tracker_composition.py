@@ -45,6 +45,7 @@ from beadhive.modules.tracker.contracts import (
     IssueResolver,
     LabelOwnership,
     LabelWriter,
+    MarkerCodec,
     Operation,
     OperationNotEnabled,
     OwnMarker,
@@ -52,7 +53,7 @@ from beadhive.modules.tracker.contracts import (
     TrackerAdapter,
     WriteGrant,
 )
-from beadhive.testing.tracker import MemoryTracker, MemoryWorld, at
+from beadhive.testing.tracker import MemoryTracker, MemoryWorld, at, without_resolver
 
 REPO = Path(__file__).resolve().parents[3]
 HIVE = "github/acme/widget"
@@ -461,6 +462,58 @@ def test_writers_are_absent_from_the_bound_object_unless_their_write_is_enabled(
     assert not isinstance(port, CommentWriter)
     assert not isinstance(port, LabelWriter)
     assert isinstance(port, IssueResolver)  # optional, passed through when implemented
+
+
+def test_the_pure_marker_codec_passes_through_whatever_is_enabled():
+    adapters, _ = roots()
+    port = adapters.for_store(entry()).port
+    marker = OwnMarker("acme/widget", "i" * 32, "ob1_x")
+
+    assert isinstance(port, MarkerCodec)  # not a write: never gated on an operation
+    assert port.marker_line(marker) == MemoryTracker(MemoryWorld()).marker_line(marker)
+    assert "ob1_x" in port.marker_line(marker)
+
+
+def test_an_adapter_without_the_codec_is_bound_without_it():
+    class Bare(Factory):
+        def __call__(self, request):
+            return without_resolver(super().__call__(request))
+
+    class NoCodec:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            if name == "marker_line":
+                raise AttributeError(name)
+            return getattr(self._inner, name)
+
+        def describe(self):
+            return self._inner.describe()
+
+        def list_issues(self, query):
+            return self._inner.list_issues(query)
+
+        def list_comments(self, query):
+            return self._inner.list_comments(query)
+
+        def list_ids(self, query):
+            return self._inner.list_ids(query)
+
+        def whoami(self):
+            return self._inner.whoami()
+
+        def probe_capabilities(self):
+            return self._inner.probe_capabilities()
+
+    class Plain(Factory):
+        def __call__(self, request):
+            return NoCodec(super().__call__(request))
+
+    adapters, _ = roots(factory=Plain())
+    assert not isinstance(adapters.for_store(entry()).port, MarkerCodec)
+    adapters, _ = roots(factory=Bare())
+    assert isinstance(adapters.for_store(entry()).port, MarkerCodec)
 
 
 def test_enabling_a_write_flag_adds_only_its_writer():

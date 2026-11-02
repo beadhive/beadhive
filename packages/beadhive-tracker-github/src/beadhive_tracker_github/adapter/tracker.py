@@ -1,4 +1,5 @@
-"""The GitHub ``TrackerAdapter`` (read path) plus the optional ``IssueResolver`` (amendment A1).
+"""The GitHub ``TrackerAdapter`` (read path) plus the optional ``IssueResolver`` (amendment A1)
+and the pure ``MarkerCodec`` (the ``bh:v1`` own-message footer, :mod:`.marker`).
 
 Wiring-free (tracker-adapter-port-adr.md section 4): constructed with explicit arguments (the
 project, the resolved ``enabled`` set, a ``RetryBudget``, ``sleep``, the token source), it reads
@@ -65,6 +66,7 @@ from beadhive.modules.tracker.contracts import (
     Operation,
     OperationNotEnabled,
     OtherProject,
+    OwnMarker,
     Page,
     PageCursor,
     PermissionDenied,
@@ -82,6 +84,7 @@ from beadhive_plugins.credentials import TokenSource
 from . import mapping
 from .grants import GrantLedger
 from .identity import RepositoryFacts, probe_operation
+from .marker import marker_line
 from .transport import DEFAULT_TIMEOUT_SECONDS, Reply, Session, Transport
 from .urls import GitHubLocation
 
@@ -355,6 +358,13 @@ class GitHubTrackerAdapter:
         if parsed is None or not self._location.same_repository(parsed[0], parsed[1]):
             raise OtherProject(f"{key.identifier} was transferred to another repository")
         return mapping.issue(row, self._location.canonical_url)
+
+    # -- MarkerCodec (pure) ----------------------------------------------------------------------
+
+    def marker_line(self, marker: OwnMarker) -> str:
+        """Pure: the exact ``bh:v1`` footer line ``post_comment`` appends for ``marker``, so the
+        consumer's dry run shows the bytes a write would post (no request, no credential)."""
+        return marker_line(marker)
 
     # -- TrackerIdentity -----------------------------------------------------------------------
 
