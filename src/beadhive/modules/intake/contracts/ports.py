@@ -36,6 +36,7 @@ from ..domain import (
     MilestoneOutcome,
     NeedsInfoOutcome,
     NeedsInfoRequest,
+    NoticeFact,
     OpKind,
     OutboxApprove,
     OutboxDocument,
@@ -52,6 +53,7 @@ from ..domain import (
     ReportDraft,
     SanitizerFinding,
     SourceSnapshot,
+    StartFact,
     StoreScope,
     Thread,
     ThreadActor,
@@ -160,6 +162,14 @@ class IntakePort(Protocol):
     def wake(self, request: WakeRequest) -> WakeOutcome: ...  # bh work wake <report>
 
     def wake_all(self, *, actor: str) -> WakeSweep: ...  # bh work wake --all (opt-in)
+
+    # the progress milestones (bh-dev42). Drafts only, like the merge and release triggers:
+    # ``started`` from the claim hook (the work layer wraps it so it never fails a claim),
+    # ``blocked`` / ``deprioritised`` from ``bh work delivery blocked|deprioritised``.
+
+    def on_work_started(self, fact: StartFact) -> MilestoneOutcome: ...  # work.claim (first claim)
+
+    def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome: ...  # bh work delivery <event>
 
 
 @runtime_checkable

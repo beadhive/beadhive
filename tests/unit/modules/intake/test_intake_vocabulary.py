@@ -26,7 +26,16 @@ def test_intake_dimensions_are_the_closed_sets() -> None:
         "backfill",
     }
     assert vocab.INTAKE_DIMENSIONS["delivery"] == {"pending", "merged", "released", "reverted"}
-    assert vocab.INTAKE_DIMENSIONS["notified"] == {"replied", "merged", "released", "corrected"}
+    # started / blocked / deprioritised: the progress milestones (bh-dev42), rotation-gated
+    assert vocab.INTAKE_DIMENSIONS["notified"] == {
+        "replied",
+        "merged",
+        "released",
+        "corrected",
+        "started",
+        "blocked",
+        "deprioritised",
+    }
     assert set(vocab.INTAKE_DIMENSIONS) == {"intake", "origin", "delivery", "notified"}
 
 
@@ -48,6 +57,9 @@ def test_label_constants_agree_with_the_dimensions() -> None:
         vocab.NOTIFIED_REPLIED,
         vocab.NOTIFIED_MERGED,
         vocab.NOTIFIED_RELEASED,
+        vocab.NOTIFIED_STARTED,
+        vocab.NOTIFIED_BLOCKED,
+        vocab.NOTIFIED_DEPRIORITISED,
         vocab.NOTIFIED_CORRECTED,
     ):
         dimension, _, value = label.partition(":")

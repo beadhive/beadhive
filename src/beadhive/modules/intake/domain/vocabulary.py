@@ -57,7 +57,12 @@ INTAKE_DIMENSIONS: Mapping[str, frozenset[str]] = {
     DELIVERY_DIM: frozenset({"pending", "merged", "released", "reverted"}),
     # Which milestone the reporter was last told about. Written only by the outbox sender, after a
     # comment operation reaches `sent`. Per-operation outbox states are NOT dimensions.
-    NOTIFIED_DIM: frozenset({"replied", "merged", "released", "corrected"}),
+    # `started`, `blocked` and `deprioritised` (bh-dev42) are the progress milestones' values;
+    # rotation-gated like `needs-info` (rollout bh-hmtjn): every reader accepts them before any
+    # hive sends such a comment.
+    NOTIFIED_DIM: frozenset(
+        {"replied", "merged", "released", "corrected", "started", "blocked", "deprioritised"}
+    ),
 }
 
 #: The link type from a report to the work it tracks (reserved here; used by a later bead).
@@ -81,6 +86,9 @@ NOTIFIED_REPLIED = "notified:replied"
 NOTIFIED_MERGED = "notified:merged"
 NOTIFIED_RELEASED = "notified:released"
 NOTIFIED_CORRECTED = "notified:corrected"
+NOTIFIED_STARTED = "notified:started"  # the progress milestones (bh-dev42)
+NOTIFIED_BLOCKED = "notified:blocked"
+NOTIFIED_DEPRIORITISED = "notified:deprioritised"
 
 # Triage disposition -> the terminal `intake` value it transitions to. Setting any of these via
 # `bd set-state` clears `untriaged` (leaving the triage queue) while recording the outcome as an
@@ -211,11 +219,14 @@ __all__ = [
     "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
+    "NOTIFIED_BLOCKED",
     "NOTIFIED_CORRECTED",
+    "NOTIFIED_DEPRIORITISED",
     "NOTIFIED_DIM",
     "NOTIFIED_MERGED",
     "NOTIFIED_RELEASED",
     "NOTIFIED_REPLIED",
+    "NOTIFIED_STARTED",
     "ORIGIN_BACKFILL",
     "ORIGIN_DIM",
     "ORIGIN_ESCALATION",

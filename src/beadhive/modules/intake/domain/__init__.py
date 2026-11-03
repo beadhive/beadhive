@@ -464,6 +464,30 @@ __all__ += [
     "released_facts",
 ]
 
+# -- the progress milestones (bh-dev42): started, blocked and deprioritised -----------------
+
+from .milestones import (  # noqa: E402
+    NOTICE_EVENTS,
+    PROGRESS_EVENTS,
+    STARTED_MESSAGE,
+    NoticeFact,
+    StartFact,
+    notice_draft,
+    notice_reason_problem,
+    started_draft,
+)
+
+__all__ += [
+    "NOTICE_EVENTS",
+    "PROGRESS_EVENTS",
+    "STARTED_MESSAGE",
+    "NoticeFact",
+    "StartFact",
+    "notice_draft",
+    "notice_reason_problem",
+    "started_draft",
+]
+
 # -- waiting for the reporter (bh-61xkc): intake:needs-info and wake-on-reply -----------------
 
 from .waiting import (  # noqa: E402

@@ -121,6 +121,12 @@ class OutboxEvent(StrEnum):
     RELEASED = "released"
     CORRECTED = "corrected"
     REPLY = "reply"
+    # the progress milestones (bh-dev42), in the milestone group like ``merged``: work a report
+    # tracks was claimed for the first time, or an operator recorded it blocked or deprioritised.
+    # Rotation-gated (rollout bh-hmtjn): every reader decodes them before any hive drafts one.
+    STARTED = "started"
+    BLOCKED = "blocked"
+    DEPRIORITISED = "deprioritised"
 
 
 class OpKind(StrEnum):

@@ -1351,7 +1351,15 @@ def test_register_preserves_comments_and_flow(cfg_path):
 
 
 _DELIVERY_VALUES = ("pending", "merged", "released", "reverted")
-_NOTIFIED_VALUES = ("replied", "merged", "released", "corrected")
+_NOTIFIED_VALUES = (
+    "replied",
+    "merged",
+    "released",
+    "corrected",
+    "started",  # the progress milestones (bh-dev42)
+    "blocked",
+    "deprioritised",
+)
 
 
 def test_validate_accepts_every_delivery_and_notified_value(cfg_path, monkeypatch):

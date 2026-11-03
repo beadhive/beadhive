@@ -35,6 +35,10 @@ NOTIFIED_BY_EVENT = {
     "merged": "merged",
     "released": "released",
     "corrected": "corrected",
+    # the progress milestones (bh-dev42): a sent comment records the event's own value
+    "started": "started",
+    "blocked": "blocked",
+    "deprioritised": "deprioritised",
 }
 #: The ``notified`` values that tell the reporter about each ``delivery`` value (a later
 #: milestone covers an earlier one: being told it was released covers being told it merged).
