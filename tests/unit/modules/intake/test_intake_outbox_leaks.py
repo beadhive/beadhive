@@ -37,6 +37,7 @@ from beadhive.modules.intake.domain import (
     mint_outbox_id,
 )
 from beadhive.modules.intake.domain import outbox as ob
+from beadhive.modules.tracker.contracts import join_marker_line
 from beadhive.testing.intake import RecordingSanitizer, SequentialIdSource
 
 URL = "https://tracker.example/acme/widgets/issues/7"
@@ -55,7 +56,11 @@ ALL = Capabilities(frozenset({"comment.create", "labels.change", "comments.read"
 
 def ctx(**changes) -> RenderContext:
     base = RenderContext(
-        URL, POLICY, RecordingSanitizer.of([SECRET]), labels=LabelBase("r1", frozenset())
+        URL,
+        POLICY,
+        RecordingSanitizer.of([SECRET]),
+        labels=LabelBase("r1", frozenset()),
+        join_marker_line=join_marker_line,
     )
     return dataclasses.replace(base, **changes)
 

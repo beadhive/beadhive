@@ -296,6 +296,26 @@ def test_the_write_is_one_post_of_the_marked_body_with_the_pinned_api_version(gh
     assert receipt.comment.author.key == me.key
 
 
+@pytest.mark.parametrize(
+    "body",
+    ["We reproduced this.   ", "We reproduced this.\n\n\n", "We reproduced this.\r\n \t\n", ""],
+    ids=["trailing-spaces", "trailing-newlines", "mixed-trailing-whitespace", "empty"],
+)
+def test_the_posted_bytes_are_the_ports_join_of_the_body_and_the_codecs_line(body):
+    """bh-crf27: on the wire, the comment is exactly ``join_marker_line(body, marker_line)``, the
+    one rule a consumer's dry run renders, leak-checks and digests (so approved == posted)."""
+    world, issue = world_with_issue()
+    adapter = writer(world)
+
+    adapter.post_comment(issue, body, marker=MARKER, grant=grant(issue))
+
+    (request,) = world.requests
+    line = adapter.marker_line(MARKER)
+    expected = port.join_marker_line(body, line)
+    assert json.loads(request.content) == {"body": expected}
+    assert expected == (f"We reproduced this.\n\n{line}" if body else line)
+
+
 def test_a_rate_limited_write_is_retried_within_budget_on_the_injected_sleep():
     """A rate-limit answer proves nothing was written, so the same write may be sent again."""
     world, issue = world_with_issue()

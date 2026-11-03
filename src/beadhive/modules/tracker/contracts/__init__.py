@@ -30,6 +30,7 @@ from .ports import (
     TrackerAdapter,
     TrackerIdentity,
     TrackerReader,
+    join_marker_line,
 )
 from .records import (
     PORT_API_VERSION,
@@ -124,4 +125,5 @@ __all__ = [
     "WriteGrant",
     "WriteOutcomeUnknown",
     "WriteReceipt",
+    "join_marker_line",
 ]

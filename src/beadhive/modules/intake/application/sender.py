@@ -34,7 +34,9 @@ tracker in R6's order, and is the only code that ever calls a writer:
   shown nothing was written and an operator has retried (O17) and approved again.
 
 The render is the dry run: no tracker request and no store write. The marker line is encoded by
-the injected ``marker_line`` (the adapter's own codec), so the bytes shown are the bytes posted.
+the injected ``marker_line`` (the adapter's own codec) and joined to the body by the port's
+``join_marker_line``, the same rule the adapter's ``post_comment`` applies, so the bytes shown,
+leak-checked and digested are the bytes posted (``bh-crf27``).
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from beadhive.modules.tracker.contracts import (
     TrackerAdapter,
     TrackerComment,
     TrackerError,
+    join_marker_line,
 )
 
 from ..contracts import IdSource, IntakeLock, ReportStore, Sanitizer
@@ -563,6 +566,7 @@ class OutboxService:
             self._leaks,
             self._sanitizer,
             marker_line=self._marker_line(marker),
+            join_marker_line=join_marker_line,
             labels=labels,
             thread_missing=thread is not None and thread.state is ThreadState.MISSING,
         )
