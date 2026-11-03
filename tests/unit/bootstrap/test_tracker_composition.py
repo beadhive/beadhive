@@ -617,6 +617,11 @@ def test_the_composition_root_runs_without_higher_layers_or_effects(monkeypatch)
     """Module-internal evidence: the category composes and binds a MemoryTracker with the CLI,
     the legacy config and plugin facades, the work layer, every HTTP client and the adapter
     package refused at import, and with no socket, process or real sleep allowed."""
+    # Re-importing rebinds the ``beadhive.bootstrap.tracker`` attribute of the package; restore
+    # it with the sys.modules entry, or a later test in this worker resolves
+    # ``from beadhive.bootstrap import tracker`` to the fresh copy and its exception classes
+    # stop matching the ones the original module raises (an order-dependent failure).
+    monkeypatch.setattr(sys.modules["beadhive.bootstrap"], "tracker", tracker_root)
     for name in tuple(sys.modules):
         if name.startswith(("beadhive.bootstrap.tracker", *_FORBIDDEN_IMPORTS)):
             monkeypatch.delitem(sys.modules, name, raising=False)
