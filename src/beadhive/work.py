@@ -486,6 +486,43 @@ def link_cmd(
     return work_intake.link(bead, to, remove, replace, as_, hive, as_json)
 
 
+def investigate_cmd(
+    bead: str = typer.Argument(..., metavar="<report>", help="the bound (imported) report"),
+    work: str = typer.Option(
+        "", "--work", help="an existing work bead of this hive that investigates the report"
+    ),
+    new_work: bool = typer.Option(
+        False, "--new-work", help="create a reproduction bead (plain work) that investigates it"
+    ),
+    remove: bool = typer.Option(
+        False, "--remove", help="with --work: that bead stops investigating the report"
+    ),
+    issue_type: str = typer.Option(
+        "", "--type", "-t", help="with --new-work: the new bead's type (default task)"
+    ),
+    priority: str = typer.Option(
+        "", "--priority", "-p", help="with --new-work: the new bead's priority (0-4 / P0-P4)"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Link reproduction work to an imported report as `investigates`, never `tracks`, so it
+    fires no delivery milestone.
+
+    Closing, merging, claiming or releasing an investigating bead drafts no milestone, writes no
+    `delivery` value and never closes the report; `bh work link` / `accept --work` link the work
+    whose delivery the reporter should hear about. `--work <id>` links an existing bead of this
+    hive, `--new-work` creates a plain one titled "Reproduce: <report title>", `--work <id>
+    --remove` unlinks one, and with neither it lists the report's tracked work and investigating
+    beads. Several beads may investigate one report; the work it tracks may not. The report stays
+    held and its intake state is untouched. Off unless `intake.external.enabled`; never touches a
+    tracker."""
+    return work_intake.investigate(
+        bead, work, new_work, remove, issue_type, priority, as_, hive, as_json
+    )
+
+
 def needs_info_cmd(
     bead: str = typer.Argument(..., metavar="<report>", help="the bound (imported) report"),
     ask: str = typer.Option(
@@ -2066,6 +2103,7 @@ CLI_HANDLERS = {
     "work.import": import_cmd,
     "work.discover": discover_cmd,
     "work.link": link_cmd,
+    "work.investigate": _bind_cli_handler(investigate_cmd, type_="issue_type"),
     "work.needs-info": needs_info_cmd,
     "work.wake": wake_cmd,
     "work.delivery.blocked": delivery_blocked_cmd,
@@ -2130,6 +2168,7 @@ promote_cmd = _CLI_CALLBACKS["work.promote"]
 import_cmd = _CLI_CALLBACKS["work.import"]
 discover_cmd = _CLI_CALLBACKS["work.discover"]
 link_cmd = _CLI_CALLBACKS["work.link"]
+investigate_cmd = _CLI_CALLBACKS["work.investigate"]
 needs_info_cmd = _CLI_CALLBACKS["work.needs-info"]
 wake_cmd = _CLI_CALLBACKS["work.wake"]
 delivery_blocked_cmd = _CLI_CALLBACKS["work.delivery.blocked"]

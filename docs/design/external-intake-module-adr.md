@@ -549,6 +549,63 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   (`_APPROVED_OPTIONAL_REPAIR_PARAMS`), the same mechanism earlier optional-flag additions used.
   Both are off unless `intake.external.enabled`. CLI only, no MCP row. `accept` has no `--json`.
 
+**As built: the investigates relation (`bh-u3a53`).** A reproduction task linked with `tracks`
+would draft "a change that addresses this issue has been merged" when it closes and, under
+`close-on-merge`, close the report (design doc section 3: acceptance without reproduction must not
+read as a fix). Reproduction work gets its own relation beside `tracks`; nothing above changes, and
+`bh work link` / `accept --work` are byte-identical.
+
+- **Edge.** bd 1.3.0 refuses an unknown dependency type (`unknown dependency type "investigates"`,
+  probed), so the relation is stored as bd's built-in `validates` edge from the WORK to the report
+  (`bd dep add <work> <report> -t validates`, rendered `VALIDATES` on the work and `VALIDATED BY`
+  on the report; `INVESTIGATES_EDGE` in `domain/vocabulary.py`). bh uses `validates` nowhere else;
+  it is not in bd's `AffectsReadyWork` set or in `_BLOCKING_DEPENDENCIES`, so the reproduction bead
+  stays dispatchable although it "depends on" an open, held report (pinned against real bd). The
+  direction is the opposite of `tracks` on purpose: bd keeps ONE edge per (source, target) pair and
+  `bd dep remove` takes no type, so the two relations never share a pair and removing one never
+  removes the other; `uninvestigate` reads the pair's type first and never removes another edge.
+  `validates` is not among the link edges `bh-mj7cl` section 5 rejected for `tracks`.
+- **Ports.** `ReportStore` gains `investigate`, `uninvestigate` and `investigations_of` (the
+  `store.investigates-is-not-tracks` contract case, run on `MemoryReportStore`, `BdReportStore`
+  over the fake bd and over a real bd store); `IntakePort` gains `investigate(InvestigateRequest)`,
+  `uninvestigate(report, work)` and `relations(report) -> ReportRelations` (the report view:
+  `tracks`, its derived progress and `investigated_by`). `NullIntake` refuses the writes and reads
+  empty relations.
+- **Never a milestone, by construction.** Every trigger reads `trackers_of` (the `tracks` edges):
+  the merge and release triggers, `on_work_started` (the claim hook), `delivery_notice`, the link
+  catch-up `on_linked` and `reports_for_work` / `work_progress`. An investigation is not one, so
+  closing, merging, claiming or releasing an investigating bead drafts nothing, moves no dimension
+  and never closes the report, while a report tracking the very same bead hears each event (pinned
+  per trigger in the unit, composition and work-layer hook tests). Investigating writes the edge and
+  nothing else: no `delivery` value, no outbox document or fact, no catch-up, and the report's
+  `intake` value is untouched (reproduction is a triage step). `investigate_report` composes the
+  service with no milestone service bound at all.
+- **Rules** (`check_investigate`, each a refusal before any write): the link refusals in the link
+  order (`PUBLIC_STORE_ID`, `SELF_LINK`, `NOT_FOUND`, `NOT_A_REPORT`, `REPORT_CLOSED`,
+  `CROSS_STORE_LINK`, `TARGET_IS_REPORT`, `TARGET_UNTRIAGED`), then `TRACKED_WORK` (new): the work
+  the report tracks is its delivery, so it may not also investigate it. Several beads may
+  investigate one report and one bead several reports; a repeat is `already_linked`. The reverse is
+  allowed: a report may later `tracks` a bead that investigates it (the reproduction turned out to
+  be the fix), and then the `tracks` edge, not the investigation, drives its milestones.
+  `--new-work` runs the report-side refusals (`check_investigable`) first, creates a plain bead
+  (`create_work`; title `Reproduce: <report title>`, type `--type` or `task`, triage's own
+  description naming the report, never the issue body) and closes it again if the edge then fails.
+  Removal is allowed on a closed report.
+- **Registered (wire 2.21.0, additive).** `bh work investigate <report> [--work <id>] [--new-work]
+  [--remove] [--type T] [--priority P] [--as] [--hive] [--json]`, row
+  `work investigate|bead:string:r,work:string:o,new_work:boolean:o,remove:boolean:o,type_:string:o,priority:string:o,as_:string:o,hive:string:o,as_json:boolean:o`,
+  handler `"work.investigate"`. `--work` links, `--new-work` creates, `--work --remove` unlinks;
+  with neither it lists the report's links (read-only). Contradictory flags exit 2 before any
+  store is built. Off unless `intake.external.enabled` (every form, the listing included, refuses
+  `intake_disabled`); no new key; CLI only, no MCP row. `bh work thread show` gains a `links` key
+  (`--json`) and lines (human) listing both relations; an unknown report still reads "no thread".
+  No new stored vocabulary (the edge type is bd's, `TRACKED_WORK` is a refusal code only), so no
+  rotation gate is needed.
+- **Tests.** `tests/unit/modules/intake/test_intake_investigate.py`,
+  `tests/test_intake_investigate_composition.py`, `tests/test_intake_investigate_int.py`
+  (`integration`), the adapter argv cases in `tests/test_intake_bead_store.py` and the contract
+  case.
+
 ### 7. Report dimensions, the hold gate and field ownership
 
 A report has four dimensions, each with one writer (`bh-6wj9y` R2):
@@ -1478,6 +1535,8 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
   (section 9, "As built: needs-info and wake-on-reply"); `bh-elkv` keeps its rename and queue.
 - ~~Started, blocked and deprioritised milestones~~: landed in `bh-dev42` (section 12, "As
   built: the progress milestones"). Revert detection stays open.
+- ~~A relation for reproduction work that never fires milestones~~: landed in `bh-u3a53` (section
+  6, "As built: the investigates relation").
 - A closing-keyword lint on merge commits.
 - Issue identity across a transfer or key change (port ADR O3): v1 refuses a transferred URL as
   `OTHER_PROJECT` and marks a thread `missing` for a human; no automatic re-binding.

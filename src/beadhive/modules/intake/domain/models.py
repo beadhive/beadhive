@@ -196,6 +196,50 @@ class LinkOutcome:
 
 
 @dataclass(frozen=True)
+class ReportRelations:
+    """The work linked to one report, read from the store and never stored as such (bh-u3a53).
+
+    ``tracks`` is the one work bead whose delivery the report follows (empty: none) and
+    ``progress`` that bead's derived progress; ``investigated_by`` is every reproduction bead that
+    investigates the report, sorted. Only ``tracks`` ever drives a delivery milestone."""
+
+    report: str
+    tracks: str = ""
+    investigated_by: tuple[str, ...] = ()
+    progress: WorkProgress = WorkProgress.UNLINKED
+
+
+@dataclass(frozen=True)
+class InvestigateRequest:
+    """``bh work investigate <report> --work <id>`` or ``--new-work`` (bh-u3a53): a reproduction
+    bead investigates the report. Exactly one of ``work`` (an existing bead of this store) and
+    ``new_work`` (create a plain work bead for it now); ``issue_type`` and ``priority`` go to the
+    new bead only."""
+
+    report: str
+    actor: str
+    work: str = ""
+    new_work: bool = False
+    issue_type: str = ""
+    priority: str = ""
+
+
+@dataclass(frozen=True)
+class InvestigateOutcome:
+    """What an investigate, or its removal, did. ``kind`` reuses :class:`LinkKind`: ``linked``
+    (now investigates), ``already_linked`` (already did) or ``unlinked`` (no longer does; with an
+    empty ``work`` when there was nothing to remove). ``created_work`` is set when this call
+    created the reproduction bead. ``relations`` are the report's links afterwards. An
+    investigation writes no ``delivery`` value and drafts nothing."""
+
+    kind: LinkKind
+    report: str
+    work: str = ""
+    created_work: bool = False
+    relations: ReportRelations | None = None
+
+
+@dataclass(frozen=True)
 class WorkDraft:
     """A work bead triage creates for ``accept --new-work``: born internal, with no
     ``external_ref``, no ``origin`` and no ``intake`` state, and a description triage writes (it is
@@ -306,6 +350,8 @@ __all__ = [
     "ImportKind",
     "ImportOutcome",
     "ImportRequest",
+    "InvestigateOutcome",
+    "InvestigateRequest",
     "IssueBinding",
     "IssueStatus",
     "LinkKind",
@@ -315,6 +361,7 @@ __all__ = [
     "QueueQuery",
     "QueueView",
     "ReportDraft",
+    "ReportRelations",
     "SourceSnapshot",
     "StoreScope",
     "WorkDraft",

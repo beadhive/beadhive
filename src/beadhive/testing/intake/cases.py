@@ -308,6 +308,34 @@ def _tracks_many_reports_to_one_work(factory: ReportStoreFactory) -> None:
     assert store.tracked_work(a) is None and store.trackers_of(work) == (b,)
 
 
+def _investigates_is_not_tracks(factory: ReportStoreFactory) -> None:
+    """An investigation (bh-u3a53) is its own edge: never read as, written as or removed with a
+    ``tracks`` link, several per report, and it survives either bead's closure."""
+    store = factory()
+    report, other = store.create(draft("a")), store.create(draft("b"))
+    repro, fix = store.create(draft("repro")), store.create(draft("fix"))
+    assert store.investigations_of(report) == ()
+    store.investigate(report, repro, actor="dev/test")
+    store.investigate(report, repro, actor="dev/test")  # idempotent
+    store.investigate(report, fix, actor="dev/test")
+    store.investigate(other, repro, actor="dev/test")
+    assert store.investigations_of(report) == tuple(sorted((repro, fix)))
+    assert store.investigations_of(other) == (repro,)
+    assert store.tracked_work(report) is None and store.trackers_of(repro) == ()
+    store.track(report, fix, actor="dev/test")  # the same pair may also be tracked
+    store.untrack(report, fix, actor="dev/test")
+    assert store.investigations_of(report) == tuple(sorted((repro, fix)))
+    store.track(report, fix, actor="dev/test")
+    store.uninvestigate(report, fix, actor="dev/test")
+    assert store.tracked_work(report) == fix and store.investigations_of(report) == (repro,)
+    store.uninvestigate(report, fix, actor="dev/test")  # nothing left to remove: a no-op
+    assert store.tracked_work(report) == fix and store.trackers_of(fix) == (report,)
+    store.close(repro, reason="reproduced", actor="dev/test")
+    store.close(report, reason="dup", actor="dev/test")
+    assert store.investigations_of(report) == (repro,)  # of every status
+    assert store.investigations_of(other) == (repro,)
+
+
 def _create_work_is_plain_work(factory: ReportStoreFactory) -> None:
     store = factory()
     work = store.create_work(
@@ -559,6 +587,7 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.record-snapshot", _record_snapshot),
     ReportStoreCase("store.duplicate-pairs", _duplicate_pairs),
     ReportStoreCase("store.tracks-many-reports-to-one-work", _tracks_many_reports_to_one_work),
+    ReportStoreCase("store.investigates-is-not-tracks", _investigates_is_not_tracks),
     ReportStoreCase("store.create-work-is-plain-work", _create_work_is_plain_work),
     ReportStoreCase("store.unknown-bead-is-a-store-error", _unknown_bead_is_a_store_error),
     ReportStoreCase("store.thread-absent-reads-none", _thread_absent_reads_none),

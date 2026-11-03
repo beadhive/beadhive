@@ -78,6 +78,8 @@ from .modules.intake import (
     IntakeRefused,
     IntakeService,
     IntakeStoreError,
+    InvestigateOutcome,
+    InvestigateRequest,
     IssueDiscoverer,
     IssueImporter,
     LinkOutcome,
@@ -87,6 +89,7 @@ from .modules.intake import (
     QueueQuery,
     RefusalReason,
     ReportDraft,
+    ReportRelations,
     StorePosture,
     StoreScope,
     ThreadPolicy,
@@ -742,6 +745,103 @@ def accept_to_work(
     except store_target.StoreResolutionError as exc:
         return LinkResult(1, str(exc), "store_unresolved")
     return LinkResult(0, disposition=outcome)
+
+
+# -- reproduction work (bh-u3a53): a bead that investigates a report, never tracks it ----------
+
+
+@dataclass(frozen=True)
+class InvestigateResult:
+    """The rendering input of one ``bh work investigate``: ``code`` is the exit status, ``reason``
+    the stable refusal code (empty on success, ``store_error`` for a store failure), ``error`` the
+    one-line message naming the fix. ``outcome`` is set for an investigate or a removal,
+    ``relations`` for the read-only listing."""
+
+    code: int
+    error: str = ""
+    reason: str = ""
+    outcome: InvestigateOutcome | None = None
+    relations: ReportRelations | None = None
+    #: A bead a failed call had already written (the new reproduction bead).
+    bead: str = ""
+
+
+def investigate_message(exc: IntakeStoreError) -> str:
+    """The one-line message for a store failure during ``bh work investigate``."""
+    operation, detail = exc.operation, exc.detail
+    if operation == "create_work":
+        return f"nothing was linked: could not create the reproduction bead: {detail}"
+    if operation in {"investigate", "uninvestigate"}:
+        return f"could not {operation} {exc.bead}: {detail} (repeat the command; it is idempotent)"
+    return store_error_message(exc)
+
+
+def investigate_report(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    report: str,
+    actor: str,
+    *,
+    work: str = "",
+    new_work: bool = False,
+    remove: bool = False,
+    issue_type: str = "",
+    priority: str = "",
+    lock: IntakeLock | None = None,
+    hive: str = "",
+) -> InvestigateResult:
+    """``bh work investigate <report> (--work <id> | --new-work) [--remove]``, or with neither the
+    report's relations (read-only).
+
+    The port is the plain service over the OPERATIONAL store and the root lock, with NO milestone
+    service bound whatever the hive's milestone keys say: an investigation drafts nothing and
+    writes no ``delivery`` value, by construction as well as by rule. No tracker is composed. Off
+    unless ``intake.external.enabled``: every form, the listing included, then refuses
+    ``intake_disabled`` before any store is built. Argument shape is the caller's to check."""
+    enabled, _default_type = external_intake_settings(cfg)
+
+    def build():
+        store = report_store(directory, lambda: store_scope(cfg, entry))
+        labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
+        held = (
+            lock
+            if lock is not None
+            else intake_lock(cfg, directory, hive=hive, verb="work investigate")
+        )
+        return IntakeService(store, labels, lock=held)
+
+    try:
+        if not enabled:
+            raise IntakeRefused(
+                RefusalReason.INTAKE_DISABLED,
+                "external intake is off for this hive (intake.external.enabled; it is opt-in)",
+            )
+        port = build()
+        if remove:
+            outcome = port.uninvestigate(report, work, actor=actor)
+        elif work or new_work:
+            outcome = port.investigate(
+                InvestigateRequest(
+                    report,
+                    actor,
+                    work=work,
+                    new_work=new_work,
+                    issue_type=issue_type,
+                    priority=priority,
+                )
+            )
+        else:
+            return InvestigateResult(0, relations=port.relations(report))
+    except IntakeRefused as exc:
+        return InvestigateResult(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return InvestigateResult(
+            exc.returncode, investigate_message(exc), "store_error", bead=exc.bead
+        )
+    except store_target.StoreResolutionError as exc:
+        return InvestigateResult(1, str(exc), "store_unresolved")
+    return InvestigateResult(0, outcome=outcome, relations=outcome.relations)
 
 
 # -- dispositions ----------------------------------------------------------------------------
@@ -1937,6 +2037,8 @@ class ThreadCall:
     error: str = ""
     reason: str = ""
     value: Any = None
+    #: ``show`` only: the report's links (``tracks`` and the beads that investigate it, bh-u3a53).
+    links: ReportRelations | None = None
 
 
 def thread_message(exc: IntakeStoreError) -> str:
@@ -2007,15 +2109,24 @@ def thread_call(
 
 def thread_show(cfg, entry, directory, report: str, **kwargs) -> ThreadCall:
     """``bh work thread show <report>``: the stored thread with its derived reads (``seq``, new
-    evidence, flagged), or ``None`` when nothing was ingested yet. No tracker request, no lock."""
-    return thread_call(
-        cfg,
-        entry,
-        directory,
-        lambda port: port.thread_of(report),
-        needs_tracker=False,
-        **kwargs,
-    )
+    evidence, flagged), or ``None`` when nothing was ingested yet, plus the report's links (the
+    work it tracks and the beads that investigate it). No tracker request, no lock."""
+
+    def run(port):
+        view = port.thread_of(report)
+        try:
+            links = port.relations(report)
+        except IntakeRefused as exc:  # an unknown report still reads "no thread", as before
+            if exc.reason is not RefusalReason.NOT_FOUND:
+                raise
+            links = None
+        return view, links
+
+    call = thread_call(cfg, entry, directory, run, needs_tracker=False, **kwargs)
+    if call.code:
+        return call
+    view, links = call.value
+    return ThreadCall(0, value=view, links=links)
 
 
 def thread_ingest(cfg, entry, directory, report: str, actor: str, **kwargs) -> ThreadCall:
