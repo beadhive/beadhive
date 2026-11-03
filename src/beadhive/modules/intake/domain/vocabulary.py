@@ -68,6 +68,16 @@ INTAKE_DIMENSIONS: Mapping[str, frozenset[str]] = {
 #: The link type from a report to the work it tracks (reserved here; used by a later bead).
 TRACKS_EDGE = "tracks"
 
+#: The native edge type of an investigation (bh-u3a53): a reproduction bead ``investigates`` a
+#: report, stored as bd's built-in ``validates`` edge from the WORK to the report (``bd dep add
+#: <work> <report> -t validates``: the work "validates" the report's claim, rendered ``VALIDATES``
+#: on the work and ``VALIDATED BY`` on the report). bd 1.3.0 refuses an unknown edge type, so the
+#: relation reuses a built-in one that bh uses nowhere else, that gates no readiness in bd
+#: (``AffectsReadyWork`` false) or in bh's operator views, and whose direction differs from
+#: ``tracks`` (report to work), so a ``bd dep remove`` of one never removes the other. Only edges
+#: whose target is a bound report count; nothing reads this type for delivery.
+INVESTIGATES_EDGE = "validates"
+
 # Canonical `<dim>:<value>` label-cache entries (what `bd set-state` writes).
 INTAKE_UNTRIAGED = "intake:untriaged"
 INTAKE_PROMOTED = "intake:promoted"  # handed to the planner (adopt queue key)
@@ -234,6 +244,7 @@ __all__ = [
     "ORIGIN_GITHUB",
     "ORIGIN_IMPORT",
     "ORIGIN_REPORT",
+    "INVESTIGATES_EDGE",
     "TRACKS_EDGE",
     "DeliveryAfterUnlink",
     "channel_of",

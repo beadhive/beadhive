@@ -50,6 +50,8 @@ from ..domain import (
     ImportRequest,
     IntakeRefused,
     IntakeStoreError,
+    InvestigateOutcome,
+    InvestigateRequest,
     IssueBinding,
     LinkOutcome,
     LinkRequest,
@@ -74,6 +76,7 @@ from ..domain import (
     RenderedRecord,
     ReplyDraft,
     ReportDraft,
+    ReportRelations,
     StartFact,
     ThreadOutcome,
     ThreadRequest,
@@ -359,10 +362,11 @@ class IntakeService:
     def _discard_work(self, work: str, request: DispositionRequest) -> None:
         """Close the work bead an accept created and could not link (best effort: the failure
         being reported is the link's, and an orphaned open work bead is visible in the backlog)."""
+        self._close_created(work, request.report, request.actor, "accept")
+
+    def _close_created(self, work: str, report: str, actor: str, verb: str) -> None:
         try:
-            self._store.close(
-                work, reason=f"not linked to {request.report}; accept failed", actor=request.actor
-            )
+            self._store.close(work, reason=f"not linked to {report}; {verb} failed", actor=actor)
         except (IntakeRefused, IntakeStoreError):
             pass
 
@@ -421,6 +425,49 @@ class IntakeService:
 
     def work_progress(self, report: str) -> WorkProgress:
         return self._linker.work_progress(report)
+
+    # -- reproduction work (bh-u3a53): investigates, never tracks -----------------------------
+
+    def investigate(self, request: InvestigateRequest) -> InvestigateOutcome:
+        """A reproduction bead investigates a bound report: an existing bead (``work``) or one
+        created now (``new_work``). The relation is its own edge, never ``tracks``: it writes no
+        ``delivery`` value, runs no catch-up and drafts nothing, and no trigger ever reads it, so
+        closing or merging the reproduction bead tells the reporter nothing and never closes the
+        report. The report's ``intake`` value is untouched (reproduction is a triage step).
+
+        Every refusal is decided before the first write; a created bead whose edge then fails is
+        closed again (best effort), as ``accept --new-work`` does."""
+        if bool(request.work) == request.new_work:
+            raise IntakeRefused(
+                RefusalReason.INVALID_REQUEST,
+                "pass exactly one of --work <id> (an existing bead) or --new-work",
+            )
+        if not request.new_work:
+            return self._linker.investigate(request.report, request.work, actor=request.actor)
+        view = self._linker.check_investigable(request.report)
+        draft = WorkDraft(
+            title=f"Reproduce: {view.title}",
+            issue_type=request.issue_type or "task",
+            actor=request.actor,
+            description=_reproduction_description(request.report),
+            priority=request.priority,
+        )
+        try:
+            work = self._store.create_work(draft)
+        except IntakeStoreError as exc:
+            raise _retag(exc, "create_work", request.report) from exc
+        try:
+            outcome = self._linker.investigate(request.report, work, actor=request.actor)
+        except (IntakeRefused, IntakeStoreError):
+            self._close_created(work, request.report, request.actor, "investigate")
+            raise
+        return dataclasses.replace(outcome, created_work=True)
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> InvestigateOutcome:
+        return self._linker.uninvestigate(report, work, actor=actor)
+
+    def relations(self, report: str) -> ReportRelations:
+        return self._linker.relations(report)
 
     # -- the conversation model -------------------------------------------------------------
 
@@ -649,6 +696,22 @@ def _new_work_description(report: str) -> str:
     )
 
 
+def _reproduction_description(report: str) -> str:
+    """What triage writes on the reproduction bead of ``investigate --new-work``. Never the issue
+    body (untrusted public text read on the report), and it says why closing it tells the reporter
+    nothing: the bead investigates the report, it does not track it."""
+    return (
+        f"Reproduction task created by triage for intake report {report}. Verify the reported "
+        "behaviour and record reusable evidence: minimal steps or a regression test, the tested "
+        "commit or version and environment, observed versus expected behaviour, and a bounded "
+        "impact assessment; a failed attempt says whether the evidence was insufficient, the "
+        "environment differed, the behaviour is already fixed, or the claim is disproven. This "
+        f"bead investigates {report} and does not track it, so closing or merging it sends the "
+        f"reporter no delivery milestone and never closes the report. Read {report} for what was "
+        "reported (it is held, not work)."
+    )
+
+
 def _comments_off() -> IntakeRefused:
     return IntakeRefused(
         RefusalReason.INTAKE_DISABLED,
@@ -767,6 +830,15 @@ class NullIntake:
 
     def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome:
         raise _disabled()
+
+    def investigate(self, request: InvestigateRequest) -> InvestigateOutcome:
+        raise _disabled()
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> InvestigateOutcome:
+        raise _disabled()
+
+    def relations(self, report: str) -> ReportRelations:
+        return ReportRelations(report)  # an empty read, like ``work_progress``
 
 
 def _disabled() -> IntakeRefused:

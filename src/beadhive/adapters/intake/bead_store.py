@@ -24,6 +24,7 @@ from typing import Any, Protocol
 from beadhive.modules.intake.contracts import (
     INTAKE_HOLD_GATE_TYPE,
     INTAKE_HOLD_REASON,
+    INVESTIGATES_EDGE,
     OUTBOX_KEY,
     THREAD_KEY,
     BeadView,
@@ -222,6 +223,10 @@ class BdReportStore:
     def trackers_of(self, work: str) -> tuple[str, ...]:
         return self._edge_ids(work, direction="up")
 
+    def investigations_of(self, report: str) -> tuple[str, ...]:
+        # the edge runs work -> report, so the investigating beads are the report's dependents
+        return self._edge_ids(report, direction="up", type_=INVESTIGATES_EDGE)
+
     def read_thread(self, bead: str) -> Thread | None:
         """The bead's ``intake.thread`` (one ``bd show``); None for no bead or no document."""
         row = self._show(bead)
@@ -381,6 +386,18 @@ class BdReportStore:
         result = self._routes.dependency_remove(report, work, actor=actor)
         self._check(result, "untrack", report)
 
+    def investigate(self, report: str, work: str, *, actor: str) -> None:
+        """``bd dep add <work> <report> -t validates``: the opposite direction to ``tracks``, so
+        the two never share a (source, target) pair and removing one never removes the other."""
+        result = self._routes.dependency_add(work, report, INVESTIGATES_EDGE, actor=actor)
+        self._check(result, "investigate", report)
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
+        if work not in self.investigations_of(report):
+            return  # bd removes a (source, target) pair whatever its type: never another edge
+        result = self._routes.dependency_remove(work, report, actor=actor)
+        self._check(result, "uninvestigate", report)
+
     def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
         """Re-read the stored ``seq``, then rewrite ``intake.thread`` whole in one ``bd update``.
 
@@ -484,8 +501,8 @@ class BdReportStore:
             return ()
         return tuple(bead_view(row) for row in rows if isinstance(row, dict))
 
-    def _edge_ids(self, bead: str, *, direction: str) -> tuple[str, ...]:
-        rows = self._routes.dependency_list(bead, direction=direction, type_="tracks")
+    def _edge_ids(self, bead: str, *, direction: str, type_: str = "tracks") -> tuple[str, ...]:
+        rows = self._routes.dependency_list(bead, direction=direction, type_=type_)
         if not isinstance(rows, list):
             return ()
         return tuple(sorted(str(r.get("id", "")) for r in rows if isinstance(r, dict)))

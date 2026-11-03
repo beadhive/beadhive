@@ -8,6 +8,10 @@ work, and the work bead is ordinary dispatchable work. A link writes ``delivery:
 unlink cannot clear it (``bd set-state`` has no unset), so it keeps the value and records an
 ``unlinked`` fact in the report's ``intake.outbox`` document, where the other delivery facts live.
 
+A reproduction bead may also INVESTIGATE a report (bh-u3a53): its own edge, never ``tracks``, so
+no milestone trigger, claim hook or link catch-up (which all read ``trackers_of``) ever sees it. An
+investigation writes that edge and nothing else.
+
 Every refusal is decided before the first write (the pure rules in ``domain/link.py``). Writes run
 under the :class:`IntakeLock` (the one lock of every mutating intake operation) when one is bound;
 the ``intake.outbox`` write re-checks the stored ``seq`` as always. Nothing here reads or writes a
@@ -26,13 +30,17 @@ from ..domain import (
     DeliveryFacts,
     IntakeRefused,
     IntakeStoreError,
+    InvestigateOutcome,
     LinkKind,
     LinkOutcome,
     LinkRequest,
     OutboxDocument,
     RefusalReason,
+    ReportRelations,
     UnlinkedFact,
     WorkProgress,
+    check_investigable,
+    check_investigate,
     check_link,
     delivery_after_unlink,
     delivery_at_link,
@@ -183,6 +191,80 @@ class LinkService:
             OutboxDocument(current.seq + 1, facts, current.records, current.schema),
             expect_seq=current.seq,
             actor=actor,
+        )
+
+    # -- investigations (bh-u3a53): reproduction work that never carries delivery ---------------
+
+    def check_investigable(self, report_id: str) -> BeadView:
+        """The report-side refusals of an investigation, with nothing written (``--new-work``
+        runs them before it creates the reproduction bead)."""
+        report = self._store.get(report_id) if report_id else None
+        check_investigable(scope=self._store.scope(), report_id=report_id, report=report)
+        assert report is not None  # check_investigable refuses a missing report
+        return report
+
+    def investigate(self, report_id: str, work_id: str, *, actor: str) -> InvestigateOutcome:
+        """Make ``work_id`` investigate ``report_id``; idempotent. Writes ONE edge and nothing
+        else: no ``delivery`` value, no outbox fact, no milestone. The ``tracks`` edge (if any)
+        and every other investigation of the report are untouched."""
+        scope = self._store.scope()
+        report = self._store.get(report_id)
+        work = self._store.get(work_id) if in_operational_store(scope, work_id) else None
+        tracked = self._store.tracked_work(report_id) if report is not None else None
+        investigated = self._store.investigations_of(report_id) if report is not None else ()
+        kind = check_investigate(
+            scope=scope,
+            report_id=report_id,
+            report=report,
+            work_id=work_id,
+            work=work,
+            tracked=tracked,
+            investigated_by=investigated,
+        )
+        assert report is not None  # check_investigate refuses a missing report
+        if kind is LinkKind.LINKED:
+            with self._held(report):
+                self._edge("investigate", self._store.investigate, report_id, work_id, actor)
+        return InvestigateOutcome(kind, report_id, work_id, relations=self.relations(report_id))
+
+    def uninvestigate(self, report_id: str, work_id: str, *, actor: str) -> InvestigateOutcome:
+        """Remove ``work_id``'s investigation of ``report_id``; the ``tracks`` edge and the other
+        investigations stay. Allowed on a closed report (tidying never needs it open); a bead that
+        does not investigate the report is a no-op with an empty ``work``."""
+        report = self._store.get(report_id)
+        if report is None:
+            raise IntakeRefused(RefusalReason.NOT_FOUND, f"{report_id} not found")
+        if report.binding is None:
+            raise IntakeRefused(
+                RefusalReason.NOT_A_REPORT,
+                f"{report_id} is not a report bound to an external issue; nothing investigates it",
+            )
+        if work_id not in self._store.investigations_of(report_id):
+            return InvestigateOutcome(
+                LinkKind.UNLINKED, report_id, relations=self.relations(report_id)
+            )
+        with self._held(report):
+            self._edge("uninvestigate", self._store.uninvestigate, report_id, work_id, actor)
+        return InvestigateOutcome(
+            LinkKind.UNLINKED, report_id, work_id, relations=self.relations(report_id)
+        )
+
+    def relations(self, report_id: str) -> ReportRelations:
+        """Both kinds of link of one report, read on demand: the work it tracks (with that work's
+        derived progress) and every bead that investigates it."""
+        if self._store.get(report_id) is None:
+            raise IntakeRefused(RefusalReason.NOT_FOUND, f"{report_id} not found")
+        tracked = self._store.tracked_work(report_id) or ""
+        view = self._store.get(tracked) if tracked else None
+        return ReportRelations(
+            report_id,
+            tracks=tracked,
+            investigated_by=self._store.investigations_of(report_id),
+            progress=(
+                WorkProgress.UNLINKED
+                if view is None
+                else work_progress_of(view.status, view.labels)
+            ),
         )
 
     # -- the derived progress ------------------------------------------------------------------

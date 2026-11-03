@@ -69,6 +69,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_intake_bead_store_int.py",
         "tests/test_intake_dimension_reset_int.py",
         "tests/test_intake_hold_int.py",
+        "tests/test_intake_investigate_int.py",
         "tests/test_intake_link_int.py",
         "tests/test_intake_milestones_int.py",
         "tests/test_merge_slot.py",

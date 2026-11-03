@@ -1,9 +1,11 @@
 """Pure rules of the many-to-one report to work link (external-intake-module-adr.md section 6).
 
 Standard library only. A bound report ``tracks`` a work bead (``tracks`` edge, report to work, in
-the one operational store); several reports may track one work bead. These are the decisions the
-link service takes before it writes anything, so every refusal leaves the store untouched, and the
-two derived reads: the ``delivery`` value a link writes and the work progress of a tracked bead.
+the one operational store); several reports may track one work bead. A reproduction bead may also
+investigate a report (bh-u3a53), a separate relation that never carries delivery. These are the
+decisions the link service takes before it writes anything, so every refusal leaves the store
+untouched, and the two derived reads: the ``delivery`` value a link writes and the work progress of
+a tracked bead.
 """
 
 from __future__ import annotations
@@ -30,31 +32,16 @@ def _public(scope: StoreScope, bead: str) -> bool:
     return shape is ReferenceShape.PUBLIC_STORE_ID
 
 
-def check_link(
-    *,
-    scope: StoreScope,
-    report_id: str,
-    report: BeadView | None,
-    work_id: str,
-    work: BeadView | None,
-    tracked: str | None,
-    replace: bool,
-) -> LinkKind:
-    """The kind of link to make, or an :class:`IntakeRefused` (nothing written) naming the fix.
+def _refuse_public(scope: StoreScope, bead: str) -> None:
+    if _public(scope, bead):
+        raise IntakeRefused(
+            RefusalReason.PUBLIC_STORE_ID,
+            f"{bead} belongs to a public store; a link names beads of this hive's own "
+            "internal store only (no edge crosses stores)",
+        )
 
-    ``report`` and ``work`` are the beads as read (``None``: not found in this store), ``tracked``
-    the work ``report`` already tracks. The order is the ADR's: a public id first (no edge crosses
-    stores), then self, then the report, then the target. A bound report is never work (D-a): a
-    target that is itself bound is refused, which also refuses a chain of reports."""
-    for bead in (report_id, work_id):
-        if _public(scope, bead):
-            raise IntakeRefused(
-                RefusalReason.PUBLIC_STORE_ID,
-                f"{bead} belongs to a public store; a link names beads of this hive's own "
-                "internal store only (no edge crosses stores)",
-            )
-    if report_id == work_id:
-        raise IntakeRefused(RefusalReason.SELF_LINK, f"{report_id} cannot track itself")
+
+def _refuse_report(report_id: str, report: BeadView | None) -> None:
     if report is None:
         raise IntakeRefused(RefusalReason.NOT_FOUND, f"{report_id} not found")
     if report.binding is None:
@@ -68,6 +55,25 @@ def check_link(
             RefusalReason.REPORT_CLOSED,
             f"{report_id} is closed; link a report while it is open (its edge outlives the close)",
         )
+
+
+def _check_pair(
+    *,
+    scope: StoreScope,
+    report_id: str,
+    report: BeadView | None,
+    work_id: str,
+    work: BeadView | None,
+    verb: str,
+) -> None:
+    """The refusals a ``tracks`` link and an investigation share, in the ADR's order: a public id
+    first (no edge crosses stores), then self, then the report, then the target. ``verb`` words
+    the self-link refusal (``track`` / ``investigate``)."""
+    for bead in (report_id, work_id):
+        _refuse_public(scope, bead)
+    if report_id == work_id:
+        raise IntakeRefused(RefusalReason.SELF_LINK, f"{report_id} cannot {verb} itself")
+    _refuse_report(report_id, report)
     if not in_operational_store(scope, work_id) or work is None:
         raise IntakeRefused(
             RefusalReason.CROSS_STORE_LINK,
@@ -85,6 +91,32 @@ def check_link(
             RefusalReason.TARGET_UNTRIAGED,
             f"{work_id} is an untriaged intake bead; triage it first, or link to canonical work",
         )
+
+
+def check_link(
+    *,
+    scope: StoreScope,
+    report_id: str,
+    report: BeadView | None,
+    work_id: str,
+    work: BeadView | None,
+    tracked: str | None,
+    replace: bool,
+) -> LinkKind:
+    """The kind of link to make, or an :class:`IntakeRefused` (nothing written) naming the fix.
+
+    ``report`` and ``work`` are the beads as read (``None``: not found in this store), ``tracked``
+    the work ``report`` already tracks. The order is the ADR's: a public id first (no edge crosses
+    stores), then self, then the report, then the target. A bound report is never work (D-a): a
+    target that is itself bound is refused, which also refuses a chain of reports."""
+    _check_pair(
+        scope=scope,
+        report_id=report_id,
+        report=report,
+        work_id=work_id,
+        work=work,
+        verb="track",
+    )
     if tracked == work_id:
         return LinkKind.ALREADY_LINKED
     if tracked and not replace:
@@ -93,6 +125,52 @@ def check_link(
             f"{report_id} already tracks {tracked}; pass --replace to move it to {work_id}",
         )
     return LinkKind.RELINKED if tracked else LinkKind.LINKED
+
+
+def check_investigate(
+    *,
+    scope: StoreScope,
+    report_id: str,
+    report: BeadView | None,
+    work_id: str,
+    work: BeadView | None,
+    tracked: str | None,
+    investigated_by: Iterable[str],
+) -> LinkKind:
+    """Whether ``work_id`` may investigate ``report_id`` (bh-u3a53): ``linked`` (a new
+    investigation), ``already_linked``, or an :class:`IntakeRefused` with nothing written.
+
+    The refusals of a ``tracks`` link apply in the same order (a reproduction bead is ordinary
+    work of this store, never a report), then one of its own: the work the report already
+    ``tracks`` is its delivery, so investigating it as well is refused (``TRACKED_WORK``). Several
+    reproduction beads may investigate one report, and one bead several reports; there is no
+    ``--replace``. The report's ``intake`` value does not matter: reproduction is a triage step."""
+    _check_pair(
+        scope=scope,
+        report_id=report_id,
+        report=report,
+        work_id=work_id,
+        work=work,
+        verb="investigate",
+    )
+    if tracked == work_id:
+        raise IntakeRefused(
+            RefusalReason.TRACKED_WORK,
+            f"{report_id} already tracks {work_id}, so that work is its delivery and its "
+            "milestones reach the reporter; a reproduction task is a separate bead (use "
+            "`--new-work`)",
+        )
+    if work_id in tuple(investigated_by):
+        return LinkKind.ALREADY_LINKED
+    return LinkKind.LINKED
+
+
+def check_investigable(*, scope: StoreScope, report_id: str, report: BeadView | None) -> None:
+    """The report-side refusals of :func:`check_investigate`, decided before ``--new-work``
+    creates the reproduction bead so a refused call creates nothing: a public id, an unknown
+    report, one with no binding, or a closed one."""
+    _refuse_public(scope, report_id)
+    _refuse_report(report_id, report)
 
 
 def delivery_at_link(
@@ -126,6 +204,8 @@ def work_progress_of(status: str, labels: Iterable[str] | None) -> WorkProgress:
 
 __all__ = [
     "REVIEW_PENDING_LABEL",
+    "check_investigable",
+    "check_investigate",
     "check_link",
     "delivery_at_link",
     "in_operational_store",

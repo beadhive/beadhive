@@ -241,8 +241,15 @@ class FakeBd:
             return json.dumps([{**self.issues[b], "dependency_type": kind} for b in wanted])
         target = rest[2]
         self._row(target)
-        if action == "add":
-            self.edges.append((source, target, rest[4]))
+        if action == "add":  # bd 1.3.0: one edge per (source, target); the same type is a no-op
+            kind = rest[4]
+            held = [edge for src, dst, edge in self.edges if (src, dst) == (source, target)]
+            if held and held[0] != kind:
+                raise _BadState(
+                    f"dependency {source} -> {target} already exists with type {held[0]!r}"
+                )
+            if not held:
+                self.edges.append((source, target, kind))
         else:  # remove
             self.edges = [e for e in self.edges if e[:2] != (source, target)]
         return ""
@@ -366,6 +373,38 @@ def test_set_state_update_close_assign_and_tracks_run_the_legacy_argv() -> None:
         (["dep", "add", bead, work, "-t", "tracks"], "a/5"),
         (["dep", "remove", bead, work], "a/5"),
     ]
+
+
+def test_an_investigation_is_a_validates_edge_from_the_work_to_the_report() -> None:
+    """bh-u3a53: bd 1.3.0 refuses an unknown edge type, so ``investigates`` is bd's built-in
+    ``validates``, run the opposite way to ``tracks`` so the two never share a pair."""
+    store, bd = _store()
+    report, work = store.create(draft()), store.create(draft("w"))
+    bd.calls.clear()
+
+    store.investigate(report, work, actor="a/6")
+    assert store.investigations_of(report) == (work,)
+    store.uninvestigate(report, work, actor="a/6")
+    store.uninvestigate(report, work, actor="a/6")  # nothing left: read, then no remove
+
+    assert [(c["args"], c["actor"]) for c in bd.calls] == [
+        (["dep", "add", work, report, "-t", "validates"], "a/6"),
+        (["dep", "list", report, "--direction", "up", "--type", "validates", "--json"], ""),
+        (["dep", "list", report, "--direction", "up", "--type", "validates", "--json"], ""),
+        (["dep", "remove", work, report], "a/6"),
+        (["dep", "list", report, "--direction", "up", "--type", "validates", "--json"], ""),
+    ]
+
+
+def test_uninvestigate_never_removes_another_edge_on_the_same_pair() -> None:
+    store, bd = _store()
+    report, work = store.create(draft()), store.create(draft("w"))
+    bd.edges.append((work, report, "blocks"))  # some other relation a human made
+
+    store.uninvestigate(report, work, actor="a/6")
+
+    assert (work, report, "blocks") in bd.edges
+    assert not [c for c in bd.calls if c["args"][:2] == ["dep", "remove"]]
 
 
 def test_reads_ask_for_the_legacy_queue_and_duplicate_argv() -> None:

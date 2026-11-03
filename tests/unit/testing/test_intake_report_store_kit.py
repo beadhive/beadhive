@@ -39,7 +39,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 28
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 29
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -118,6 +118,28 @@ class _LinkDiesWithTheReport(MemoryReportStore):
 class _UntrackIsANoOp(MemoryReportStore):
     def untrack(self, report, work, *, actor):
         return None
+
+
+class _InvestigateTracks(MemoryReportStore):
+    def investigate(self, report, work, *, actor):
+        super().investigate(report, work, actor=actor)
+        self.track(report, work, actor=actor)
+
+
+class _UninvestigateUntracks(MemoryReportStore):
+    def uninvestigate(self, report, work, *, actor):
+        super().uninvestigate(report, work, actor=actor)
+        self.untrack(report, work, actor=actor)
+
+
+class _InvestigationDiesWithTheReport(MemoryReportStore):
+    def investigations_of(self, report):
+        view = self.get(report)
+        return (
+            ()
+            if view is not None and view.status == "closed"
+            else super().investigations_of(report)
+        )
 
 
 class _SilentOnUnknown(MemoryReportStore):
@@ -294,6 +316,9 @@ _BROKEN = [
     (_IgnoresThreshold, "store.duplicate-pairs"),
     (_LinkDiesWithTheReport, "store.tracks-many-reports-to-one-work"),
     (_UntrackIsANoOp, "store.tracks-many-reports-to-one-work"),
+    (_InvestigateTracks, "store.investigates-is-not-tracks"),
+    (_UninvestigateUntracks, "store.investigates-is-not-tracks"),
+    (_InvestigationDiesWithTheReport, "store.investigates-is-not-tracks"),
     (_WorkBornAsUntriagedReport, "store.create-work-is-plain-work"),
     (_WorkDropsPriority, "store.create-work-is-plain-work"),
     (_SilentOnUnknown, "store.unknown-bead-is-a-store-error"),

@@ -29,6 +29,8 @@ from ..domain import (
     HoldSweepRequest,
     ImportOutcome,
     ImportRequest,
+    InvestigateOutcome,
+    InvestigateRequest,
     IssueBinding,
     LinkOutcome,
     LinkRequest,
@@ -51,6 +53,7 @@ from ..domain import (
     RenderedRecord,
     ReplyDraft,
     ReportDraft,
+    ReportRelations,
     SanitizerFinding,
     SourceSnapshot,
     StartFact,
@@ -171,6 +174,16 @@ class IntakePort(Protocol):
 
     def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome: ...  # bh work delivery <event>
 
+    # reproduction work (bh-u3a53): a bead that INVESTIGATES a report, a relation distinct from
+    # ``tracks``. It writes no ``delivery`` value, drafts nothing, and no milestone trigger, the
+    # claim hook or the link catch-up ever reads it; ``relations`` lists both kinds.
+
+    def investigate(self, request: InvestigateRequest) -> InvestigateOutcome: ...
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> InvestigateOutcome: ...
+
+    def relations(self, report: str) -> ReportRelations: ...  # tracks + investigated by
+
 
 @runtime_checkable
 class ReportStore(Protocol):
@@ -247,6 +260,21 @@ class ReportStore(Protocol):
     def untrack(self, report: str, work: str, *, actor: str) -> None: ...
 
     def trackers_of(self, work: str) -> tuple[str, ...]: ...
+
+    def investigate(self, report: str, work: str, *, actor: str) -> None:
+        """Record that ``work`` investigates ``report`` (bh-u3a53): one native edge, distinct from
+        ``tracks`` (which this never reads, writes or removes), non-blocking in both directions,
+        surviving either bead's closure. Idempotent."""
+        ...
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
+        """Remove that one investigation edge; the ``tracks`` edge and every other investigation
+        of ``report`` stay. A no-op when there is none."""
+        ...
+
+    def investigations_of(self, report: str) -> tuple[str, ...]:
+        """Every bead that investigates ``report`` (sorted), of every status."""
+        ...
 
     def read_thread(self, bead: str) -> Thread | None: ...  # None: no ``intake.thread`` yet
 

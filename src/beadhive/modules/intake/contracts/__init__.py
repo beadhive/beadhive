@@ -37,6 +37,8 @@ from ..domain import (
     ImportRequest,
     IntakeRefused,
     IntakeStoreError,
+    InvestigateOutcome,
+    InvestigateRequest,
     IssueBinding,
     IssueStatus,
     LinkKind,
@@ -52,6 +54,7 @@ from ..domain import (
     RecordState,
     RefusalReason,
     ReportDraft,
+    ReportRelations,
     Role,
     SourceSnapshot,
     StorePosture,
@@ -121,6 +124,8 @@ __all__ = [
     "ImportKind",
     "ImportOutcome",
     "ImportRequest",
+    "InvestigateOutcome",
+    "InvestigateRequest",
     "IntakeLock",
     "IntakePort",
     "IntakeRefused",
@@ -142,6 +147,7 @@ __all__ = [
     "RecordState",
     "RefusalReason",
     "ReportDraft",
+    "ReportRelations",
     "ReportStore",
     "Role",
     "SourceSnapshot",
@@ -274,3 +280,9 @@ __all__ += [
 from ..domain import NoticeFact, StartFact  # noqa: E402
 
 __all__ += ["NoticeFact", "StartFact"]
+
+# -- reproduction work (bh-u3a53): the investigates relation's native edge type ----------------
+
+from ..domain import INVESTIGATES_EDGE, TRACKS_EDGE  # noqa: E402
+
+__all__ += ["INVESTIGATES_EDGE", "TRACKS_EDGE"]
