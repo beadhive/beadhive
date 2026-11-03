@@ -95,12 +95,26 @@ class MarkerCodec(Protocol):
     version stays 1).
 
     ``marker_line`` is pure (no request, no clock): it returns the exact footer line the adapter's
-    ``CommentWriter.post_comment`` appends for ``marker``, so a consumer can render, digest and
-    show the bytes an approved write would post without importing the adapter's package. It
+    ``CommentWriter.post_comment`` appends for ``marker``, joined to the body by
+    :func:`join_marker_line`, so a consumer can render, digest and show the bytes an approved
+    write would post without importing the adapter's package. It
     raises ``ValueError`` for a marker field its grammar cannot carry. The encoding stays
     adapter-owned and versioned; the port carries only :class:`OwnMarker`."""
 
     def marker_line(self, marker: OwnMarker) -> str: ...
+
+
+def join_marker_line(body: str, line: str) -> str:
+    """The exact comment bytes a :class:`CommentWriter` posts for ``body`` and the footer
+    ``line`` its :class:`MarkerCodec` returns: the body with trailing whitespace removed, one
+    blank line, then the line; a body that is empty (or only whitespace) posts the line alone.
+
+    This is the port's one joining rule (``bh-crf27``). An adapter implementing
+    :class:`MarkerCodec` posts ``join_marker_line(body, marker_line(marker))`` from
+    ``post_comment``, and a consumer renders, leak-checks and digests the same call, so the bytes
+    an operator approves are the bytes posted. The line itself stays adapter-owned. Pure."""
+    text = body.rstrip()
+    return f"{text}\n\n{line}" if text else line
 
 
 __all__ = [
@@ -111,4 +125,5 @@ __all__ = [
     "TrackerAdapter",
     "TrackerIdentity",
     "TrackerReader",
+    "join_marker_line",
 ]

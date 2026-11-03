@@ -198,6 +198,24 @@ def test_the_marker_codec_is_optional_pure_and_never_widens_the_required_port() 
     assert "grant" not in inspect.signature(MarkerCodec.marker_line).parameters
 
 
+@pytest.mark.parametrize(
+    ("body", "posted"),
+    [
+        ("Shipped.", "Shipped.\n\n<!-- m -->"),
+        ("Shipped.   ", "Shipped.\n\n<!-- m -->"),
+        ("Shipped.\r\n\n \t\n", "Shipped.\n\n<!-- m -->"),
+        ("  a\n\nb", "  a\n\nb\n\n<!-- m -->"),
+        ("", "<!-- m -->"),
+        (" \n\t", "<!-- m -->"),
+    ],
+)
+def test_the_ports_one_marker_join_strips_trailing_space_and_posts_a_blank_body_as_the_line(
+    body: str, posted: str
+) -> None:
+    """bh-crf27: the one rule both a consumer's render and an adapter's post apply."""
+    assert contracts.join_marker_line(body, "<!-- m -->") == posted
+
+
 def test_optional_protocols_are_detected_by_isinstance_only() -> None:
     plain, resolving = _ReaderOnly(), _Resolving()
 
