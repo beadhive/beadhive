@@ -60,7 +60,7 @@ import dataclasses
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -423,9 +423,12 @@ class RenderContext:
     """Everything a render reads besides the record itself.
 
     ``binding_url`` is the report's current binding; ``marker_line`` is the adapter-encoded own
-    marker for this record, so the bytes rendered are the bytes posted; ``labels`` is the latest
-    issue snapshot's labels (a label operation's render needs it); ``thread_missing`` holds every
-    operation (``bh-fptob`` R6). ``sanitizer=None`` holds every operation (fail closed)."""
+    marker for this record and ``join_marker_line`` the tracker port's one rule joining it to the
+    body (injected by the application layer, which may import the port: X2), so the bytes
+    rendered, leak-checked and digested are the bytes posted (``bh-crf27``); a ``marker_line``
+    without its join refuses to render (fail closed). ``labels`` is the latest issue snapshot's
+    labels (a label operation's render needs it); ``thread_missing`` holds every operation
+    (``bh-fptob`` R6). ``sanitizer=None`` holds every operation (fail closed)."""
 
     binding_url: str
     policy: LeakPolicy
@@ -433,6 +436,7 @@ class RenderContext:
     marker_line: str = ""
     labels: LabelBase | None = None
     thread_missing: bool = False
+    join_marker_line: Callable[[str, str], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -442,7 +446,7 @@ class Rendered:
     outbox_id: str
     kind: OpKind
     target_url: str
-    payload: str  # the comment body plus marker line, or the canonical label diff
+    payload: str  # the exact posted bytes (body joined to the marker line), or the label diff
     body: str  # what the writer is handed (the comment body without the marker)
     base_revision: str | None
     digest: str
@@ -594,12 +598,25 @@ def _label_view(diff: LabelDiff, ctx: RenderContext) -> tuple[LabelBase, str]:
     return current, current.revision
 
 
+def _posted(body: str, ctx: RenderContext) -> str:
+    """The bytes a comment write posts for ``body``: the port's joining rule applied to the
+    adapter's marker line, never a second copy of it (``bh-crf27``). Without a marker line (a
+    draft rendered before any tracker is wired) the payload is the body itself."""
+    if not ctx.marker_line:
+        return body
+    if ctx.join_marker_line is None:
+        raise ValueError("a render with a marker line needs the tracker port's join_marker_line")
+    return ctx.join_marker_line(body, ctx.marker_line)
+
+
 def render(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> Rendered:
-    """The dry run of one operation (``bh work outbox show``): no read, no write."""
+    """The dry run of one operation (``bh work outbox show``): no read, no write. A comment's
+    payload is exactly what the writer posts for :attr:`Rendered.body`; the leak check and the
+    digest run over those bytes."""
     op = _op(record, kind)
     if kind is OpKind.COMMENT:
         body = render_text(record.message, record.facts)
-        payload = f"{body}\n\n{ctx.marker_line}" if ctx.marker_line else body
+        payload = _posted(body, ctx)
         findings = check(payload, ctx.policy, sanitizer=ctx.sanitizer)
         return Rendered(
             record.outbox_id,

@@ -881,11 +881,14 @@ the epoch) and composes `outbox_service_for` with a `RandomIdSource`, the fleet 
 - `notified=<event>` is written by `set_state` straight after the transition's document write (bd
   has no transaction across the two); a failure is reported in the result and never un-sends. The
   close rule is not evaluated here: only milestone records reach it (I10).
-- The marker line is rendered by an injected `marker_line` codec (the adapter's own), so the dry
-  run shows the posted bytes. The tracker adapter itself is injected: building it from the store
-  binding and credentials is `bh-kzs0b`'s, not this bead's. `bh-kzs0b` built the process
-  `TrackerAdapters` for import and discover only; the outbox's own tracker, identity and marker
-  codec are **not** built from it (see "Not done here" under the verbs below).
+- The marker line is rendered by an injected `marker_line` codec (the adapter's own) and joined
+  to the body by the port's `join_marker_line`, injected into `RenderContext` by the application
+  (the domain may not import the port, X2) and called by the adapter's `post_comment` too, so the
+  dry run, its leak check and its digest are over the posted bytes (`bh-crf27`). The tracker
+  adapter itself is injected: building it from the store binding and credentials is
+  `bh-kzs0b`'s, not this bead's. `bh-kzs0b` built the process `TrackerAdapters` for import and
+  discover only; the outbox's own tracker, identity and marker codec are **not** built from it
+  (see "Not done here" under the verbs below).
 
 **The `bh work outbox` verbs (`bh-73td2`, wire 2.16.0).** `show`, `approve`, `send`, `reconcile`,
 `discard`, `retry` and `draft` are registered as `work outbox <verb>` (three tokens, on the nested
