@@ -38,6 +38,7 @@ from ..domain import (
     IntakeStoreError,
     IssueBinding,
     LeakPolicy,
+    MergedFact,
     MergeFact,
     MilestoneItem,
     MilestoneOutcome,
@@ -45,6 +46,7 @@ from ..domain import (
     OutboxDocument,
     OutboxPolicy,
     RefusalReason,
+    ReleasedFact,
     ReleaseFact,
     RenderContext,
     StorePosture,
@@ -55,7 +57,7 @@ from ..domain import (
     delivery_after_release,
     delivery_of,
     fold_facts,
-    is_untriaged_intake,
+    is_awaiting_triage,
     merged_draft,
     merged_facts,
     released_draft,
@@ -238,6 +240,77 @@ class MilestoneService:
             error=_joined(refused, failed),
         )
 
+    # -- catching up a report linked to work that already merged (bh-61xkc) --------------------
+
+    def on_linked(self, report: str, work: str, actor: str) -> MilestoneOutcome:
+        """``report`` now tracks ``work``; when that work has already merged (or released), give
+        the report the milestones it missed, through the SAME steps the triggers take: the merged
+        fact, ``delivery:merged`` and a ``merged`` record when drafting is on, then (when the
+        release was verified) ``delivery:released`` and a ``released`` record, then the completion
+        policy. Without this a duplicate linked late stays ``delivery:pending`` forever.
+
+        The merge (and release) is the one already recorded on another report that tracks
+        ``work`` (its ``facts.merged`` names ``work``); a release counts only where that report
+        reached ``delivery:released`` through a ``YES`` verdict, so nothing unverified is assumed.
+        Work that is not closed, or closed with no recorded merge (no report tracked it when it
+        landed), changes nothing and is reported. Never sends: drafts only, like the triggers."""
+        target = self._store.get(work)
+        if target is None or target.status != "closed":
+            return MilestoneOutcome()
+        merged, released = self._recorded_delivery(work, exclude=report)
+        if merged is None:
+            note = (
+                f"{work} is closed but no report that tracks it recorded its merge, so the merge "
+                "commit is unknown; delivery stays pending"
+            )
+            return MilestoneOutcome((MilestoneItem(report, MERGED, note=note),))
+        fact = MergeFact(work, merged.commit, actor)
+        items = [self._guarded(report, MERGED, lambda: self._merged(report, fact))]
+        if released is not None:
+            items.append(
+                self._guarded(
+                    report,
+                    RELEASED,
+                    lambda: self._caught_up_release(report, merged, released, actor),
+                )
+            )
+        return MilestoneOutcome(tuple(items))
+
+    def _recorded_delivery(
+        self, work: str, *, exclude: str
+    ) -> tuple[MergedFact | None, ReleasedFact | None]:
+        """The merge of ``work`` another tracking report recorded, and its verified release."""
+        for other in self._store.trackers_of(work):
+            if other == exclude:
+                continue
+            doc = self._store.read_outbox(other)
+            merged = doc.facts.merged if doc is not None else None
+            if doc is None or merged is None or merged.work != work:
+                continue
+            view = self._store.get(other)
+            released = doc.facts.released
+            verified = (
+                released is not None
+                and released.verified
+                and view is not None
+                and delivery_of(view.labels) == RELEASED
+            )
+            return merged, (released if verified else None)
+        return None, None
+
+    def _caught_up_release(
+        self, report: str, merged: MergedFact, released: ReleasedFact, actor: str
+    ) -> MilestoneItem:
+        view = self._store.get(report)
+        if view is None:
+            return MilestoneItem(report, RELEASED, note="not a bound report")
+
+        def verdict_of(merge_commit: str) -> Verdict:
+            # the release was verified to contain exactly this merge on the other report
+            return Verdict.YES if merge_commit == merged.commit else Verdict.UNKNOWN
+
+        return self._released(view, ReleaseFact(released.tag, released.commit, actor), verdict_of)
+
     # -- the completion policy -----------------------------------------------------------------
 
     def complete(self, report: str, actor: str) -> bool:
@@ -263,9 +336,10 @@ class MilestoneService:
     def _close_if_complete(
         self, view: BeadView, delivery: str | None, doc: OutboxDocument, actor: str
     ) -> bool:
-        """The close rule (``bh-6wj9y`` R3). Never closes a report that is closed, still
-        untriaged, or no longer tracking the work its delivery describes."""
-        if view.status == "closed" or is_untriaged_intake(view.labels):
+        """The close rule (``bh-6wj9y`` R3). Never closes a report that is closed, still awaiting
+        triage (untriaged, or waiting for its reporter on ``needs-info``), or no longer tracking
+        the work its delivery describes."""
+        if view.status == "closed" or is_awaiting_triage(view.labels):
             return False
         if doc.facts.unlinked is not None:
             return False

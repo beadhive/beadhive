@@ -73,6 +73,10 @@ class RefusalReason(StrEnum):
     NOT_PRIMARY = "not_primary"  # this host is not the hive's primary writer
     # the milestone triggers (I10): the release verb names a tag the repository does not have
     UNKNOWN_TAG = "unknown_tag"
+    # waiting for the reporter (bh-61xkc): wake names a report that is not waiting, and asking
+    # while the thread holds a reply triage has not read would ask for what may already be there
+    NOT_NEEDS_INFO = "not_needs_info"
+    UNREAD_EVIDENCE = "unread_evidence"
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
 

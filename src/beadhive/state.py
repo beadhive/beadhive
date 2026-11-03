@@ -20,6 +20,9 @@ States
   (so the bead leaves the triage queue) while recording *which* disposition fielded the report as
   an event-sourced audit trail. ``intake:promoted`` is also the queue key the planner's adopt path
    reads.
+- ``intake:needs-info`` — a bound report waiting for its reporter (bh-61xkc): out of the triage
+  queue, NOT terminal. A reporter's reply wakes it back to ``untriaged``; every disposition fields
+  it as it fields an untriaged report.
 - ``outbound:pending`` — a staged outbound candidate (captured with ZERO public exposure).
 - ``publish:approved`` — the contributor filed it upstream (behind the human publish gate).
 - ``origin:report|github|import`` — the intake CHANNEL a bead entered through. A CLOSED

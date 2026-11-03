@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from .models import DuplicatePair
-from .vocabulary import is_untriaged_intake
+from .vocabulary import is_awaiting_triage
 
 #: The issue types a cross-hive report may be filed as; bd owns the full type vocabulary, intake
 #: gates the user-facing surface to these.
@@ -21,8 +21,9 @@ def dupes_touching(pairs: Iterable[DuplicatePair], ids: Iterable[str]) -> tuple[
 
 
 def may_disposition(labels: Iterable[str] | None) -> bool:
-    """A disposition only ever fields an untriaged intake bead, never one already fielded."""
-    return is_untriaged_intake(tuple(labels or ()))
+    """A disposition only ever fields a report triage still owes one: untriaged, or waiting for
+    its reporter (``intake:needs-info``, bh-61xkc), never one already fielded."""
+    return is_awaiting_triage(tuple(labels or ()))
 
 
 def _stamp(revision: str) -> tuple[datetime | None, str]:

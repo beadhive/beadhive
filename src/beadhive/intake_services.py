@@ -33,6 +33,10 @@ What is composed here:
   hive's public-store binding, only when intake, the outbox and the tracker plugin are all on;
 * the conversation (``bh-o9rep``): :func:`thread_service_for` and :func:`thread_call` compose
   ``ThreadService`` when ``intake.external.comments.enabled``, for ``bh work thread``;
+* waiting for the reporter (``bh-61xkc``): :func:`needs_info` (on the outbox port, with the
+  thread service) and :func:`wake` (on the thread port) when
+  ``intake.external.needs_info.enabled``; the sweep form also needs ``needs_info.sweep``. A link
+  catches a report up on already merged work when ``milestones.catch_up_on_link`` is on;
 * the process ``TrackerAdapters`` (:func:`process_adapters`), built from the tracker-github plugin
   and ``run.github_token_source()``, only when ``intake.external.enabled`` and
   ``plugins.tracker-github.enabled`` are both set (``bh-kzs0b``).
@@ -78,6 +82,7 @@ from .modules.intake import (
     IssueImporter,
     LinkOutcome,
     LinkRequest,
+    NeedsInfoRequest,
     OwnIdentity,
     QueueQuery,
     RefusalReason,
@@ -86,6 +91,7 @@ from .modules.intake import (
     StoreScope,
     ThreadPolicy,
     ThreadRequest,
+    WakeRequest,
     bind_intake,
 )
 from .modules.intake.application import (  # the composition root may (gap G7)
@@ -625,17 +631,36 @@ def _linking_port(
     lock: IntakeLock | None,
     hive: str,
     verb: str,
+    ids: Any = None,
+    sanitizer: Any = None,
 ):
     """The port a link runs on: the service over the OPERATIONAL store and the root lock when
     ``intake.external.enabled``, else :class:`NullIntake` (every write refuses ``intake_disabled``
-    and no store is built). No tracker is composed: a link neither reads nor writes one."""
+    and no store is built). No tracker is composed: a link neither reads nor writes one. With
+    ``intake.external.milestones.catch_up_on_link`` (off by default) a milestone service is bound
+    too, so a link to work that already merged catches the report up (drafts only)."""
     enabled, _default_type = external_intake_settings(cfg)
 
     def build():
         store = report_store(directory, lambda: store_scope(cfg, entry))
         labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
         held = lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb)
-        return IntakeService(store, labels, lock=held)
+        if not catch_up_on_link(cfg):
+            return IntakeService(store, labels, lock=held)
+        from .adapters.intake import ScrubSanitizer
+
+        outbox, milestones = milestone_settings(cfg)
+        service = MilestoneService(
+            store,
+            held,
+            ids=ids if ids is not None else RandomIdSource(),
+            leak_policy=leak_policy(cfg),
+            sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
+            posture=store_posture(entry),
+            outbox=outbox,
+            milestones=milestones,
+        )
+        return IntakeService(store, labels, lock=held, milestones=service, catch_up_on_link=True)
 
     return bind_intake(enabled, build)
 
@@ -652,6 +677,8 @@ def link_report(
     remove: bool = False,
     lock: IntakeLock | None = None,
     hive: str = "",
+    ids: Any = None,
+    sanitizer: Any = None,
 ) -> LinkResult:
     """``bh work link <report> --to <work> [--replace]`` or ``--remove``.
 
@@ -659,7 +686,7 @@ def link_report(
     never resolved, and no edge crosses stores); several reports may track one work bead and an
     unlink leaves the others intact. Off unless ``intake.external.enabled``."""
     try:
-        port = _linking_port(cfg, entry, directory, lock, hive, "work link")
+        port = _linking_port(cfg, entry, directory, lock, hive, "work link", ids, sanitizer)
         outcome = (
             port.unlink(report, actor=actor)
             if remove
@@ -687,6 +714,8 @@ def accept_to_work(
     priority: str = "",
     lock: IntakeLock | None = None,
     hive: str = "",
+    ids: Any = None,
+    sanitizer: Any = None,
 ) -> LinkResult:
     """``bh work accept <report> --work <id>`` or ``--new-work``: accept the report AND make it
     track work (an existing bead, or one triage creates now). Every refusal is decided before the
@@ -701,7 +730,8 @@ def accept_to_work(
         new_work=new_work,
     )
     try:
-        outcome = _linking_port(cfg, entry, directory, lock, hive, "work accept").dispose(request)
+        port = _linking_port(cfg, entry, directory, lock, hive, "work accept", ids, sanitizer)
+        outcome = port.dispose(request)
     except IntakeRefused as exc:
         return LinkResult(1, exc.detail, exc.reason.value)
     except IntakeStoreError as exc:
@@ -1060,6 +1090,22 @@ def milestone_settings(cfg: Mapping[str, Any]) -> tuple[OutboxPolicy, MilestoneP
             completion=completion,
         ),
     )
+
+
+def catch_up_on_link(cfg: Mapping[str, Any]) -> bool:
+    """``intake.external.milestones.catch_up_on_link`` (host-owned, off): whether a link to work
+    that already merged gives the report the milestones it missed. Only a literal ``true``."""
+    section = (((cfg.get("intake") or {}).get("external")) or {}).get("milestones") or {}
+    return section.get("catch_up_on_link") is True
+
+
+def needs_info_settings(cfg: Mapping[str, Any]) -> tuple[bool, bool]:
+    """``(enabled, sweep)`` from ``intake.external.needs_info`` (host-owned, both off): whether
+    `bh work needs-info` / `bh work wake <report>` may run, and whether `bh work wake --all` may.
+    Only a literal ``true`` enables; ``sweep`` is only effective with ``enabled``."""
+    section = (((cfg.get("intake") or {}).get("external")) or {}).get("needs_info") or {}
+    enabled = section.get("enabled") is True
+    return enabled, enabled and section.get("sweep") is True
 
 
 def comments_settings(cfg: Mapping[str, Any]) -> tuple[bool, ThreadPolicy]:
@@ -1895,7 +1941,79 @@ def thread_considered(
     )
 
 
+# -- waiting for the reporter (bh-61xkc): needs-info and wake-on-reply, off by default -----------
+
+
+def _intake_off_call(make: Callable[..., Any]) -> Any:
+    return make(
+        1,
+        "external intake is off for this hive (intake.external.enabled; it is opt-in)",
+        RefusalReason.INTAKE_DISABLED.value,
+    )
+
+
+def _needs_info_off(make: Callable[..., Any], key: str = "enabled") -> Any:
+    what = "waking every waiting report" if key == "sweep" else "waiting for the reporter"
+    return make(
+        1,
+        f"{what} is off for this hive (intake.external.needs_info.{key}; it is opt-in)",
+        RefusalReason.INTAKE_DISABLED.value,
+    )
+
+
+def needs_info(cfg, entry, directory, report: str, text: str, actor: str, **kwargs) -> OutboxCall:
+    """``bh work needs-info <report> --ask <text>``: draft the question as a supervised reply to
+    the report's issue and move the report to ``intake:needs-info``. Nothing is sent: the reply
+    posts only after an operator approves and sends it (``bh work outbox``). Off unless
+    ``intake.external.enabled`` and ``intake.external.needs_info.enabled``; it also needs the
+    outbox (``outbox.enabled``, the tracker wiring for the dry-run bytes) and comment ingestion
+    (``comments.enabled``), each refused naming its key before anything is written."""
+    if not external_intake_settings(cfg)[0]:
+        return _intake_off_call(OutboxCall)
+    if not needs_info_settings(cfg)[0]:
+        return _needs_info_off(OutboxCall)
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.needs_info(NeedsInfoRequest(report, text, actor)),
+        **kwargs,
+    )
+
+
+def wake(
+    cfg, entry, directory, report: str, actor: str, *, all_: bool = False, **kwargs
+) -> ThreadCall:
+    """``bh work wake <report>`` (or ``--all``): move a report waiting on ``intake:needs-info``
+    back to ``intake:untriaged`` when its stored thread holds a reporter's reply; the reply stays
+    new evidence for triage. Reads the stored thread only (no tracker request; ``thread ingest``
+    refreshes it). Off unless ``intake.external.enabled``, ``intake.external.needs_info.enabled``
+    and ``intake.external.comments.enabled``; ``--all`` also needs ``needs_info.sweep``."""
+    if not external_intake_settings(cfg)[0]:
+        return _intake_off_call(ThreadCall)
+    enabled, sweep = needs_info_settings(cfg)
+    if not enabled:
+        return _needs_info_off(ThreadCall)
+    if all_ and not sweep:
+        return _needs_info_off(ThreadCall, "sweep")
+    if all_:
+
+        def run(port):
+            return port.wake_all(actor=actor)
+
+    else:
+
+        def run(port):
+            return port.wake(WakeRequest(report, actor))
+
+    return thread_call(cfg, entry, directory, run, verb="work wake", needs_tracker=False, **kwargs)
+
+
 __all__ = [
+    "catch_up_on_link",
+    "needs_info",
+    "needs_info_settings",
+    "wake",
     "FlockIntakeLock",
     "INSTALL_ID_FILE",
     "StoredOutboxRecord",

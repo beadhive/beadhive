@@ -13,7 +13,12 @@ to an optional :class:`~.importer.IssueImporter`; without one (no tracker bound)
 delegates to an optional :class:`~.discovery.IssueDiscoverer` and, without one (no tracker bound),
 refuses with ``INTAKE_DISABLED`` like import. The merge and release milestones delegate to an
 optional :class:`~.milestones.MilestoneService` (they only draft; without one they refuse with
-``INTAKE_DISABLED``, and ``NullIntake`` answers them for free).
+``INTAKE_DISABLED``, and ``NullIntake`` answers them for free). Waiting for the reporter
+(bh-61xkc) composes the two: ``needs_info`` drafts the question through the outbox and moves the
+report to ``intake:needs-info``, ``wake`` reads the thread and moves a report its reporter answered
+back to ``intake:untriaged``; each refuses without the service it needs. With
+``catch_up_on_link`` (and a milestone service) a link to work that already merged catches the
+report up on the milestones it missed.
 Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
@@ -25,8 +30,11 @@ from collections.abc import Callable
 from ..contracts import IntakeLock, IntakePort, LabelPolicy, ReportStore
 from ..domain import (
     INTAKE_DIM,
+    INTAKE_NEEDS_INFO,
     INTAKE_UNTRIAGED,
+    NEEDS_INFO,
     REPORT_TYPES,
+    UNTRIAGED,
     BeadView,
     ConsiderRequest,
     DiscoveryOutcome,
@@ -47,7 +55,10 @@ from ..domain import (
     LinkRequest,
     MergeFact,
     MilestoneOutcome,
+    NeedsInfoOutcome,
+    NeedsInfoRequest,
     OpKind,
+    OpState,
     OutboxApprove,
     OutboxListing,
     OutboxQuery,
@@ -65,13 +76,20 @@ from ..domain import (
     ThreadOutcome,
     ThreadRequest,
     ThreadView,
+    WakeOutcome,
+    WakeRequest,
+    WakeSweep,
     WorkDraft,
     WorkProgress,
     channel_of,
+    check_ask,
+    check_wake,
     disposition_state,
     dupes_touching,
     hold_findings,
+    is_needs_info,
     may_disposition,
+    wakes,
 )
 from .discovery import IssueDiscoverer
 from .importer import IssueImporter
@@ -106,7 +124,9 @@ class IntakeService:
     ``outbox`` only when the outbox is (``intake.external.outbox.enabled``, off by default) and
     ``importer`` and ``discoverer`` only when a tracker is (``bh work import`` and ``bh work
     discover`` refuse without it). ``lock`` is the
-    per-binding lock a link or unlink holds while it writes (none: a single in-process writer)."""
+    per-binding lock a link or unlink holds while it writes (none: a single in-process writer).
+    ``catch_up_on_link`` (``intake.external.milestones.catch_up_on_link``, off by default) lets a
+    link to already merged work run the bound ``milestones`` service's catch-up."""
 
     def __init__(
         self,
@@ -120,8 +140,10 @@ class IntakeService:
         lock: IntakeLock | None = None,
         discoverer: IssueDiscoverer | None = None,
         milestones: MilestoneService | None = None,
+        catch_up_on_link: bool = False,
     ) -> None:
         self._store = store
+        self._catch_up = catch_up_on_link
         self._labels = labels
         self._binary = binary
         self._threads = threads
@@ -287,6 +309,8 @@ class IntakeService:
                 actor=request.actor,
             )
         state = self._clear_intake(request, f"accepted; tracks {work}")
+        # after the intake clear: the completion policy never closes a report awaiting triage
+        caught_up = () if created else self._caught_up(request.report, work, request.actor)
         return DispositionOutcome(
             request.report,
             request.disposition,
@@ -295,6 +319,7 @@ class IntakeService:
             priority=request.priority,
             work=work,
             created_work=created,
+            milestones=caught_up,
         )
 
     def _create_work_for(self, view: BeadView, request: DispositionRequest) -> str:
@@ -373,8 +398,21 @@ class IntakeService:
     # -- the link between reports and work (I5) ----------------------------------------------
 
     def link(self, request: LinkRequest) -> LinkOutcome:
-        """A bound report ``tracks`` a work bead of this store (:class:`~.linker.LinkService`)."""
-        return self._linker.link(request)
+        """A bound report ``tracks`` a work bead of this store (:class:`~.linker.LinkService`);
+        with ``catch_up_on_link``, work that already merged then catches the report up."""
+        outcome = self._linker.link(request)
+        caught_up = self._caught_up(request.report, request.work, request.actor)
+        if not caught_up:
+            return outcome
+        return dataclasses.replace(outcome, milestones=caught_up)
+
+    def _caught_up(self, report: str, work: str, actor: str) -> tuple:
+        """The milestones a link to already merged ``work`` caught ``report`` up on (none unless
+        ``catch_up_on_link`` and a milestone service are bound). Never raises: the link stands,
+        and a failed catch-up is reported on its item."""
+        if not self._catch_up or self._milestones is None:
+            return ()
+        return self._milestones.on_linked(report, work, actor).items
 
     def unlink(self, report: str, *, actor: str) -> LinkOutcome:
         return self._linker.unlink(report, actor=actor)
@@ -403,6 +441,88 @@ class IntakeService:
 
     def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome:
         return self._thread_service().mark_considered(request)
+
+    # -- waiting for the reporter (bh-61xkc) --------------------------------------------------
+
+    def needs_info(self, request: NeedsInfoRequest) -> NeedsInfoOutcome:
+        """Ask a bound report's reporter for missing facts: draft the question as a supervised
+        ``reply`` record (posted only after an operator approves and sends it), then move the
+        report to ``intake:needs-info`` so it leaves the untriaged queue. Refused, with nothing
+        written, without the outbox or comment ingestion (a report that waits must be able to
+        hear the reply), and for a born-native, closed or already fielded report, or one whose
+        thread holds evidence triage has not read. The draft comes first, so a crash before the
+        state write leaves an untriaged report and a draft that re-asking finds again (O2)."""
+        outbox = self._outbox_service()
+        threads = self._thread_service()
+        view = self._store.get(request.report)
+        thread = threads.thread_of(request.report)
+        unread = thread.new_evidence if thread is not None else ()
+        checked = check_ask(request.report, view, request.text, unread)
+        drafted = outbox.draft_reply(ReplyDraft(request.report, request.text, request.actor))
+        written = not is_needs_info(checked.labels)
+        if written:
+            try:
+                self._store.set_state(
+                    request.report,
+                    INTAKE_DIM,
+                    NEEDS_INFO,
+                    reason=f"needs info: asked the reporter (outbox {drafted.outbox_id})",
+                    actor=request.actor,
+                )
+            except IntakeStoreError as exc:
+                raise _retag(exc, "stamp:intake", request.report) from exc
+        return NeedsInfoOutcome(
+            request.report,
+            drafted.outbox_id,
+            state_written=written,
+            held=drafted.state is OpState.HELD,
+            detail=drafted.detail,
+        )
+
+    def wake(self, request: WakeRequest) -> WakeOutcome:
+        """Move a report waiting on ``intake:needs-info`` back to ``intake:untriaged`` when its
+        thread has new human evidence (a reporter reply since triage's last read). Reads the
+        stored thread only (``thread ingest`` refreshes it); never marks anything considered, so
+        the reply stays new evidence for the next triage pass. The report keeps its hold."""
+        threads = self._thread_service()
+        view = check_wake(request.report, self._store.get(request.report))
+        return self._wake(view, threads, request.actor)
+
+    def wake_all(self, *, actor: str) -> WakeSweep:
+        """``wake`` every open report on ``intake:needs-info``; one report failing is reported on
+        its item and the rest are still handled."""
+        threads = self._thread_service()
+        items: list[WakeOutcome] = []
+        for view in self._store.list_open_labeled(INTAKE_NEEDS_INFO):
+            try:
+                items.append(self._wake(check_wake(view.id, view), threads, actor))
+            except IntakeRefused as exc:
+                items.append(WakeOutcome(view.id, error=exc.detail or exc.reason.value))
+            except IntakeStoreError as exc:
+                items.append(WakeOutcome(view.id, error=exc.detail))
+        return WakeSweep(tuple(items))
+
+    def _wake(self, view: BeadView, threads: ThreadService, actor: str) -> WakeOutcome:
+        thread = threads.thread_of(view.id)
+        evidence = thread.new_evidence if thread is not None else ()
+        if not wakes(evidence):
+            detail = (
+                "no thread ingested yet (run `bh work thread ingest`)"
+                if thread is None
+                else "no new reply from the reporter since triage last read the thread"
+            )
+            return WakeOutcome(view.id, detail=detail)
+        try:
+            self._store.set_state(
+                view.id,
+                INTAKE_DIM,
+                UNTRIAGED,
+                reason=f"woken: the reporter replied ({', '.join(evidence)})",
+                actor=actor,
+            )
+        except IntakeStoreError as exc:
+            raise _retag(exc, "stamp:intake", view.id) from exc
+        return WakeOutcome(view.id, woken=True, evidence=tuple(evidence))
 
     # -- the lifetime intake-hold ------------------------------------------------------------
 
@@ -582,6 +702,15 @@ class NullIntake:
         return None
 
     def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome:
+        raise _disabled()
+
+    def needs_info(self, request: NeedsInfoRequest) -> NeedsInfoOutcome:
+        raise _disabled()
+
+    def wake(self, request: WakeRequest) -> WakeOutcome:
+        raise _disabled()
+
+    def wake_all(self, *, actor: str) -> WakeSweep:
         raise _disabled()
 
     def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep:

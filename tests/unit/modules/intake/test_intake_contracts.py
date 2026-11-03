@@ -73,6 +73,10 @@ def test_port_names_match_the_adr() -> None:
         "retry",
         "on_work_merged",
         "on_release",
+        # waiting for the reporter (bh-61xkc), additive
+        "needs_info",
+        "wake",
+        "wake_all",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",

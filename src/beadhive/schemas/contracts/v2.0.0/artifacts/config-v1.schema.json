@@ -2659,6 +2659,9 @@
         "milestones": {
           "$ref": "#/$defs/IntakeMilestonesConfig"
         },
+        "needs_info": {
+          "$ref": "#/$defs/IntakeNeedsInfoConfig"
+        },
         "outbox": {
           "$ref": "#/$defs/IntakeOutboxConfig"
         }
@@ -2676,6 +2679,12 @@
           "title": "Append Release To Closed",
           "type": "boolean"
         },
+        "catch_up_on_link": {
+          "default": false,
+          "description": "When `bh work link` (or `accept --work`) links a report to work that already merged, give it the milestones it missed from the merge (and verified release) another tracking report recorded: `delivery:merged`/`released`, a record where drafting is on, then the completion policy (default off: the report stays `delivery:pending`).",
+          "title": "Catch Up On Link",
+          "type": "boolean"
+        },
         "draft_on_merge": {
           "default": false,
           "description": "Draft a `merged` record when linked work merges (default off).",
@@ -2690,6 +2699,26 @@
         }
       },
       "title": "IntakeMilestonesConfig",
+      "type": "object"
+    },
+    "IntakeNeedsInfoConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.needs_info`` — waiting for a bound report's reporter (everything off).\n\nWith ``enabled`` (and ``intake.external.enabled``) `bh work needs-info <report> --ask <text>`\ndrafts the question as a supervised reply (it also needs ``outbox.enabled``, and\n``comments.enabled`` so the reply can be heard) and moves the report to\n``intake:needs-info``; `bh work wake <report>` moves it back to ``intake:untriaged`` once its\nthread holds a reporter's reply. ``sweep`` additionally allows `bh work wake --all` over every\nwaiting report. Nothing here sends: the question posts only after an operator approves it.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Allow `bh work needs-info` and `bh work wake <report>` for bound reports (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "sweep": {
+          "default": false,
+          "description": "Allow `bh work wake --all` to wake every waiting report its reporter answered; needs `enabled` too (default off).",
+          "title": "Sweep",
+          "type": "boolean"
+        }
+      },
+      "title": "IntakeNeedsInfoConfig",
       "type": "object"
     },
     "IntakeOutboxConfig": {

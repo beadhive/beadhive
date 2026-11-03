@@ -631,6 +631,16 @@ and, for ingestion, the same binding requesting `comments.read`. The `bh work th
 plus `reconcile_thread`, and `mark_considered`; the outbox service carries the thread operations
 too while comments are on. Tests: `tests/test_intake_thread_composition.py`.
 
+Waiting for the reporter (bh-61xkc): `IntakeService.needs_info` drafts the question through the
+sender as a `reply` record and writes `intake:needs-info`; `wake` / `wake_all` read the stored
+thread and write `intake:untriaged` back exactly when it holds new external evidence (never via
+`mark_considered`). The rules and records are `domain/waiting.py`. `intake_services.needs_info`
+(outbox port) and `wake` (thread port) are gated by `intake.external.needs_info.enabled` (and
+`.sweep` for `bh work wake --all`); `MilestoneService.on_linked` catches a report linked to already
+merged work up on its milestones when `milestones.catch_up_on_link` is on. Tests:
+`tests/unit/modules/intake/test_intake_needs_info.py`, `test_intake_link_catch_up.py` and
+`tests/test_intake_needs_info_composition.py`.
+
 The same sender also carries `labels.change` (I9b, `bh-88vji`) as its own gate: `OutboxPolicy`
 gains `labels_enabled` (off by default, separate from `enabled`, which gates the outbox and the
 comment), so a label operation is refused with `LABELS_DISABLED` at approve and at send before any

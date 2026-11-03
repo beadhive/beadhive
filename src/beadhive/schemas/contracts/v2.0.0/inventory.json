@@ -61,7 +61,7 @@
       "id": "urn:beadhive:wire-catalog:cli-projections:1",
       "kind": "catalog",
       "path": "artifacts/cli-projections-v1.json",
-      "sha256": "sha256:271e4a335771f747918ac1db42795a9bdd439cd508addc706020e9ef4b598591",
+      "sha256": "sha256:67696de0264bd765e622aecdec591eff48aad5cf03888c7fde5ec2ca4c6aff84",
       "source_owner": "beadhive.transport_inventory.document",
       "version": 2
     },
@@ -74,7 +74,7 @@
       "id": "urn:beadhive:wire-schema:config:1",
       "kind": "json-schema",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:931776672bf065655368fb0e5a863f0c538d8980773f4d5872cb09857cd0fff4",
+      "sha256": "sha256:b0671515e877f47babcd6dd830626af80b82f1d68a0eab9681f7b7dfdb18e613",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema",
       "version": 2
     },
@@ -152,7 +152,7 @@
       "id": "urn:beadhive:wire-catalog:operations:1",
       "kind": "catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:91e0b061040b513414b4487eaca73c747591d4f6ba1b0cdf61cb2fbb589c5b12",
+      "sha256": "sha256:2a6af14d5e0d6f4a57c90c8e196d9030dd7dffc8d56532dd323ea03f1a7141f6",
       "source_owner": "beadhive.kernel.operations.document",
       "version": 2
     },

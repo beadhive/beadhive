@@ -486,6 +486,39 @@ def link_cmd(
     return work_intake.link(bead, to, remove, replace, as_, hive, as_json)
 
 
+def needs_info_cmd(
+    bead: str = typer.Argument(..., metavar="<report>", help="the bound (imported) report"),
+    ask: str = typer.Option(
+        ..., "--ask", help="the question for the reporter (drafted as a reply; never auto-sent)"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Ask an imported report's reporter for missing facts: draft the question as a supervised
+    reply (an operator approves and sends it with `bh work outbox`) and move the report to
+    `intake:needs-info`, out of the untriaged queue; it stays held, never work. Refused for a
+    report filed with `bh report` / `bh escalate` (no issue thread, no hold) and while the thread
+    has comments triage has not read. Off unless `intake.external.needs_info.enabled`."""
+    return work_intake.needs_info(bead, ask, as_, hive, as_json)
+
+
+def wake_cmd(
+    bead: str = typer.Argument("", metavar="<report>", help="the waiting report (or --all)"),
+    all_: bool = typer.Option(
+        False, "--all", help="every waiting report (also needs intake.external.needs_info.sweep)"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Move a report waiting on `intake:needs-info` back to `intake:untriaged` once its thread
+    holds a reply from its reporter (run `bh work thread ingest` first); our own messages never
+    wake it. The reply stays unread for triage, and the report stays held, never work. Reads the
+    stored thread only. Off unless `intake.external.needs_info.enabled`."""
+    return work_intake.wake(bead, all_, as_, hive, as_json)
+
+
 def delivery_release_cmd(
     tag: str = typer.Argument(..., metavar="<tag>", help="the release tag to verify and record"),
     as_: str = _AS,
@@ -1991,6 +2024,8 @@ CLI_HANDLERS = {
     "work.import": import_cmd,
     "work.discover": discover_cmd,
     "work.link": link_cmd,
+    "work.needs-info": needs_info_cmd,
+    "work.wake": wake_cmd,
     "work.delivery.release": delivery_release_cmd,
     "work.outbox.approve": outbox_approve_cmd,
     "work.outbox.discard": outbox_discard_cmd,
@@ -2051,6 +2086,8 @@ promote_cmd = _CLI_CALLBACKS["work.promote"]
 import_cmd = _CLI_CALLBACKS["work.import"]
 discover_cmd = _CLI_CALLBACKS["work.discover"]
 link_cmd = _CLI_CALLBACKS["work.link"]
+needs_info_cmd = _CLI_CALLBACKS["work.needs-info"]
+wake_cmd = _CLI_CALLBACKS["work.wake"]
 delivery_release_cmd = _CLI_CALLBACKS["work.delivery.release"]
 outbox_approve_cmd = _CLI_CALLBACKS["work.outbox.approve"]
 outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]

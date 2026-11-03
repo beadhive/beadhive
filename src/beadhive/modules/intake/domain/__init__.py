@@ -108,6 +108,7 @@ from .vocabulary import (
     DISPOSITION_STATE,
     INTAKE_DIM,
     INTAKE_DIMENSIONS,
+    INTAKE_NEEDS_INFO,
     INTAKE_PROMOTED,
     INTAKE_UNTRIAGED,
     NOTIFIED_DIM,
@@ -124,7 +125,9 @@ from .vocabulary import (
     delivery_after_unlink,
     delivery_of,
     disposition_state,
+    is_awaiting_triage,
     is_escalation_origin,
+    is_needs_info,
     is_promoted,
     is_report_origin,
     is_untriaged_intake,
@@ -150,6 +153,7 @@ __all__ = [
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
+    "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
     "NOTIFIED_DIM",
@@ -244,6 +248,8 @@ __all__ = [
     "is_promoted",
     "is_report_origin",
     "is_untriaged_intake",
+    "is_awaiting_triage",
+    "is_needs_info",
     "mark_considered",
     "marker_bead_ids",
     "may_disposition",
@@ -456,4 +462,32 @@ __all__ += [
     "merged_facts",
     "released_draft",
     "released_facts",
+]
+
+# -- waiting for the reporter (bh-61xkc): intake:needs-info and wake-on-reply -----------------
+
+from .waiting import (  # noqa: E402
+    NEEDS_INFO,
+    UNTRIAGED,
+    NeedsInfoOutcome,
+    NeedsInfoRequest,
+    WakeOutcome,
+    WakeRequest,
+    WakeSweep,
+    check_ask,
+    check_wake,
+    wakes,
+)
+
+__all__ += [
+    "NEEDS_INFO",
+    "UNTRIAGED",
+    "NeedsInfoOutcome",
+    "NeedsInfoRequest",
+    "WakeOutcome",
+    "WakeRequest",
+    "WakeSweep",
+    "check_ask",
+    "check_wake",
+    "wakes",
 ]

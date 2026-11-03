@@ -3218,6 +3218,42 @@ class IntakeMilestonesConfig(_QuietSection):
         False,
         description="Also draft the `released` record for a report already closed (default off).",
     )
+    catch_up_on_link: StrictBool = Field(
+        False,
+        description=(
+            "When `bh work link` (or `accept --work`) links a report to work that already merged, "
+            "give it the milestones it missed from the merge (and verified release) another "
+            "tracking report recorded: `delivery:merged`/`released`, a record where drafting is "
+            "on, then the completion policy (default off: the report stays `delivery:pending`)."
+        ),
+    )
+
+
+class IntakeNeedsInfoConfig(_QuietSection):
+    """``intake.external.needs_info`` — waiting for a bound report's reporter (everything off).
+
+    With ``enabled`` (and ``intake.external.enabled``) `bh work needs-info <report> --ask <text>`
+    drafts the question as a supervised reply (it also needs ``outbox.enabled``, and
+    ``comments.enabled`` so the reply can be heard) and moves the report to
+    ``intake:needs-info``; `bh work wake <report>` moves it back to ``intake:untriaged`` once its
+    thread holds a reporter's reply. ``sweep`` additionally allows `bh work wake --all` over every
+    waiting report. Nothing here sends: the question posts only after an operator approves it.
+    """
+
+    enabled: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work needs-info` and `bh work wake <report>` for bound reports "
+            "(default off)."
+        ),
+    )
+    sweep: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work wake --all` to wake every waiting report its reporter answered; "
+            "needs `enabled` too (default off)."
+        ),
+    )
 
 
 class IntakeOutboxConfig(_QuietSection):
@@ -3272,6 +3308,7 @@ class IntakeExternalConfig(_QuietSection):
     milestones: IntakeMilestonesConfig = Field(default_factory=IntakeMilestonesConfig)
     outbox: IntakeOutboxConfig = Field(default_factory=IntakeOutboxConfig)
     comments: IntakeCommentsConfig = Field(default_factory=IntakeCommentsConfig)
+    needs_info: IntakeNeedsInfoConfig = Field(default_factory=IntakeNeedsInfoConfig)
 
 
 class IntakeConfig(_QuietSection):

@@ -12,6 +12,7 @@ from beadhive.modules.config.contracts import (
     IntakeConfig,
     IntakeDiscoveryConfig,
     IntakeExternalConfig,
+    IntakeNeedsInfoConfig,
     ManagedRepoEntry,
     iter_schema_fields,
 )
@@ -27,6 +28,9 @@ def test_intake_is_absent_by_default_and_every_switch_is_off() -> None:
     assert external.outbox.labels_enabled is False  # the labels.change gate has its own switch
     assert not any(vars(external.milestones).values())  # no milestone drafts unless asked
     assert external.comments.enabled is False  # comment ingestion is opt-in (bh-o9rep)
+    assert external.needs_info == IntakeNeedsInfoConfig()  # waiting for the reporter (bh-61xkc)
+    assert (external.needs_info.enabled, external.needs_info.sweep) == (False, False)
+    assert external.milestones.catch_up_on_link is False
 
 
 def test_a_full_documented_section_validates() -> None:
@@ -105,6 +109,9 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "deletion_confirmations",
         "purge_deleted_bodies",
         "max_body_chars",
+        "catch_up_on_link",
+        "needs_info",
+        "sweep",
     }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
 
@@ -262,3 +269,44 @@ def test_a_comments_section_validates() -> None:
 def test_bad_comments_values_and_unknown_keys_fail_closed(comments) -> None:
     with pytest.raises(ValidationError):
         BeadhiveConfig.model_validate({"intake": {"external": {"comments": comments}}})
+
+
+# -- intake.external.needs_info and milestones.catch_up_on_link (bh-61xkc), off by default --
+
+
+def test_a_needs_info_section_and_the_catch_up_switch_validate_and_are_host_owned() -> None:
+    config = BeadhiveConfig.model_validate(
+        {
+            "intake": {
+                "external": {
+                    "needs_info": {"enabled": True, "sweep": True},
+                    "milestones": {"catch_up_on_link": True},
+                }
+            }
+        }
+    )
+
+    assert config.intake is not None
+    external = config.intake.external
+    assert (external.needs_info.enabled, external.needs_info.sweep) == (True, True)
+    assert external.milestones.catch_up_on_link is True
+    for path in (
+        "intake.external.needs_info.enabled",
+        "intake.external.needs_info.sweep",
+        "intake.external.milestones.catch_up_on_link",
+    ):
+        assert partition.partition_of(path) == partition.HOST
+
+
+@pytest.mark.parametrize(
+    "external",
+    [
+        {"needs_info": {"enabled": "true"}},
+        {"needs_info": {"sweep": 1}},
+        {"needs_info": {"interval_seconds": 60}},  # no timer ships with the sweep
+        {"milestones": {"catch_up_on_link": "yes"}},
+    ],
+)
+def test_bad_needs_info_values_and_unknown_keys_fail_closed(external) -> None:
+    with pytest.raises(ValidationError):
+        BeadhiveConfig.model_validate({"intake": {"external": external}})

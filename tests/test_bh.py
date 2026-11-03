@@ -839,6 +839,9 @@ def test_bead_violations_scopes_to_a_single_bead(cfg_path):
     assert validate.bead_violations(cfg, "ag-infra-1", ["origin:factory-seed"]) == []
     # the backfill historical-reconstruction origin is a registered closed value (bh-vfx9)
     assert validate.bead_violations(cfg, "ag-infra-1", ["origin:backfill"]) == []
+    # a bound report waiting for its reporter is a registered intake value (bh-61xkc)
+    assert validate.bead_violations(cfg, "ag-infra-1", ["intake:needs-info"]) == []
+    assert validate.bead_violations(cfg, "ag-infra-1", ["intake:waiting"]) != []
     # a bad closed value is still caught, scoped to this bead
     bad = validate.bead_violations(cfg, "ag-infra-1", ["origin:carrier-pigeon"])
     assert any("bad-origin" in p for p in bad)
@@ -851,8 +854,16 @@ def test_state_dimensions_are_closed_regardless_of_config(cfg_path):
     """The built-in intake/outbound/publish/origin state dims are code-owned — present in the
     closed set even though the fixture config never declares them."""
     closed = registry.closed_dimensions(config.load())
-    # `untriaged` plus the terminal values a triage disposition transitions to
-    assert closed["intake"] == {"untriaged", "accepted", "rejected", "rerouted", "promoted"}
+    # `untriaged`, the terminal values a triage disposition transitions to, and `needs-info`
+    # (a bound report waiting for its reporter, bh-61xkc)
+    assert closed["intake"] == {
+        "untriaged",
+        "accepted",
+        "rejected",
+        "rerouted",
+        "promoted",
+        "needs-info",
+    }
     assert closed["outbound"] == {"pending"}
     assert closed["publish"] == {"approved"}
     # `factory-seed` is the HQ factory channel; `backfill` the historical-reconstruction one

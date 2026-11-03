@@ -280,6 +280,7 @@ work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:strin
 work list|hive:string:o
 work loop|epic:string:r,as_:string:o,hive:string:o,passes:integer:o,as_json:boolean:o,dry_run:boolean:o,seat_binary:string:o,harness:string:o,baml_required:boolean:o
 work merge|bead:string:o,hive:string:o,rm:boolean:o,molecule:boolean:o,group:string:o,override_validation:string:o,override_as:string:o
+work needs-info|bead:string:r,ask:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work next|as_:string:o,hive:string:o,as_json:boolean:o,epic:string:o
 work outbox approve|outbox_id:string:r,op:array:r,publish:array:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox discard|outbox_id:string:r,reason:string:r,accept_unknown:boolean:o,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
@@ -303,6 +304,7 @@ work thread ingest|bead:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work thread show|bead:string:r,hive:string:o,as_json:boolean:o
 work start|epic:string:r,as_:string:o,hive:string:o
 work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o,override_validation:string:o,override_as:string:o
+work wake|bead:string:o,all_:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree init|path:string:r
 worktree list|as_json:boolean:o,hive:string:o,state:string:o,limit:integer:o,cursor:string:o

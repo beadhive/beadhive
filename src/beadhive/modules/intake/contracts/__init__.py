@@ -248,3 +248,23 @@ __all__ += [
     "ReleaseVerifier",
     "Verdict",
 ]
+
+# -- waiting for the reporter (bh-61xkc) -------------------------------------------------------
+
+from ..domain import (  # noqa: E402
+    INTAKE_NEEDS_INFO,
+    NeedsInfoOutcome,
+    NeedsInfoRequest,
+    WakeOutcome,
+    WakeRequest,
+    WakeSweep,
+)
+
+__all__ += [
+    "INTAKE_NEEDS_INFO",
+    "NeedsInfoOutcome",
+    "NeedsInfoRequest",
+    "WakeOutcome",
+    "WakeRequest",
+    "WakeSweep",
+]

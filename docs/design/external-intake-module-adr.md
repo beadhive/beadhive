@@ -748,6 +748,52 @@ check) are domain functions over those records. Translation to and from `Tracker
 `IssueKey`, `WriteReceipt` and `WriteGrant` happens in `application/`. Test cases are unchanged:
 they drive the application layer with `MemoryTracker`, and the pure domain functions directly.
 
+**As built: needs-info and wake-on-reply (`bh-61xkc`, wire 2.21.0).** The additive half of
+`bh-elkv` this section deferred (D3), planned in epic `bh-vhct2`; `bh-elkv`'s promote rename,
+priority queue and `accepted` redefinition stay there and untouched.
+
+- **Vocabulary.** `needs-info` joins the closed `intake` dimension (`INTAKE_NEEDS_INFO`,
+  `is_needs_info`, `is_awaiting_triage`) and reaches `state.STATE_DIMENSIONS` through the facade, so
+  `bh label validate` accepts it. It is the one non-terminal value besides `untriaged`: a bound
+  report waiting for its reporter, out of the untriaged queue (the queue still keys on
+  `intake:untriaged` only). A new closed value is rotation-gated like I2's (`bh-tfko9` pattern; the
+  rollout is `bh-hmtjn`), and nothing writes it unless `intake.external.needs_info.enabled`.
+- **Writers of the triage dimension.** Still only `IntakeService`: `dispose`, and now `needs_info`
+  (`untriaged` to `needs-info`) and `wake` (`needs-info` to `untriaged`). bd 1.3.0 walks that round
+  trip with one `intake:` label at a time and one event bead per transition, with `bd ready`
+  unchanged (`bh-tvpb6`); transitions are read from those event beads, never `bd history`.
+  `may_disposition` accepts both awaiting values, so every disposition fields a needs-info report
+  exactly as it fields an untriaged one (the refusal text is unchanged byte for byte), and the
+  completion policy never closes a report awaiting triage (`untriaged` or `needs-info`).
+- **`needs_info(NeedsInfoRequest(report, text, actor))`.** Drafts the question through the
+  supervised sender as a `reply` record (O1; O3 holds a leak), then writes `intake=needs-info`;
+  drafting first means a crash between the two leaves an untriaged report whose re-ask finds the
+  same draft (O2: same text, same thread seq). Refused before any write: without the outbox
+  (`OUTBOX_DISABLED`) or comment ingestion (`INTAKE_DISABLED`: a report that waits must be able to
+  hear the reply), on a born-native report (`NOT_A_REPORT`: no issue thread and no `intake-hold:`
+  gate), a closed or already fielded one, and, new, while the thread holds external evidence triage
+  has not read (`UNREAD_EVIDENCE`: read it, record the read with `thread considered`, then ask).
+  That last rule is what makes "a reply wakes it" exact without a second watermark: any new
+  evidence after the ask arrived after the question. Asking again while waiting drafts another
+  question and keeps the state.
+- **`wake(WakeRequest(report, actor))` and `wake_all(actor=)`.** Read the stored thread only (no
+  tracker request; `thread ingest` refreshes it) and move a `needs-info` report to `untriaged`
+  exactly when `new_evidence` is non-empty. Own and peer records are never evidence, so the posted
+  question, or our edit of it, never wakes a report; a reporter's reply or deletion does. Waking
+  **never** calls `mark_considered`: the reply stays new evidence for the next triage pass. The
+  lifetime hold is untouched, so a woken report is back in the untriaged queue and still never
+  ready or claimable. The sweep handles every open `needs-info` report and reports one failing
+  report on its item (`NOT_NEEDS_INFO` names a single report that is not waiting).
+- **Composition and verbs.** `intake_services.needs_info` runs on the outbox port (which carries
+  the thread service while comments are on) and `intake_services.wake` on the thread port.
+  `bh work needs-info <report> --ask <text> [--as] [--hive] [--json]` and `bh work wake [<report>]
+  [--all] [--as] [--hive] [--json]` are additive catalog rows (`work needs-info|...`,
+  `work wake|...`) in the unpublished minor 2.21.0; dropping them reproduces the bh-o9rep Click
+  inventory digest. Config (host-owned, strict, all off): `intake.external.needs_info.enabled`
+  gates both verbs, `needs_info.sweep` additionally gates `wake --all`. CLI only, no MCP row and no
+  timer. Tests: `tests/unit/modules/intake/test_intake_needs_info.py` (the round trip over
+  `MemoryWorld`) and `tests/test_intake_needs_info_composition.py`.
+
 ### 10. The outbox state machine
 
 Adopted as `bh-6wj9y` R4 to R7, stored in `intake.outbox`. Records are keyed by a stable
@@ -1086,6 +1132,21 @@ started, blocked and deprioritised milestones; revert detection (only an operato
   The flat `work delivery-release` was not needed. Off unless `intake.external.enabled`. CLI only,
   no MCP row.
 
+**As built: the link catch-up (`bh-61xkc`).** A report linked (`link`, or `accept --work` after
+its intake clear) to work that already merged used to stay `delivery:pending` forever, because the
+merge trigger had run before the edge existed. With `intake.external.milestones.catch_up_on_link`
+(host-owned, off) the linking service runs `MilestoneService.on_linked(report, work, actor)`: when
+the work is closed and another report that tracks it recorded the merge (`facts.merged` naming that
+work), the SAME per-report steps the triggers take run for the new report (the merged fact,
+`delivery:merged`, a `merged` record when `draft_on_merge`, the completion policy), then, when that
+report reached `delivery:released` through a `YES` verdict, the release steps with that verified
+fact (`released` record superseding the unsent `merged` one, O6). Nothing unverified is assumed and
+nothing sends. Work closed with no recorded merge (no report tracked it when it landed) is reported
+on the item and changes nothing: the merge commit is not known to intake. A catch-up failure is
+reported on its item and never fails the link. `LinkOutcome` / `DispositionOutcome` gain
+`milestones`, and `bh work link --json` carries a `milestones` key only when a catch-up ran. Tests:
+`tests/unit/modules/intake/test_intake_link_catch_up.py`.
+
 ### 13. Leak check and sanitizer seam
 
 Adopted as `bh-6wj9y` R10: a pure `domain.leaks.check(rendered, policy)` runs at O1, at every
@@ -1152,7 +1213,7 @@ behave exactly as today.
 |---|---|
 | D1 one internal report per issue, URL key, native edge, many to one, no cross-store edge | Section 5 (URL idempotence in the operational store only, R1 refuses public ids), section 6 (`tracks`, refusals `CROSS_STORE_LINK`, `PUBLIC_STORE_ID`) |
 | D2 supervised-only first slice | O5 and O9 are operator-only; `outbox.mode` accepts only `supervised`; no timer runs O5 or O9; `bh work outbox show` is the dry-run render whose digest the operator types |
-| D3 import before `bh-elkv`, `intake:untriaged` only, not `promote` | `bh work import`; wake-on-reply and `needs-info` deferred; `bh-elkv`'s rename touches only `vocabulary.py` and its facade consumers |
+| D3 import before `bh-elkv`, `intake:untriaged` only, not `promote` | `bh work import`; wake-on-reply and `needs-info` deferred (since landed as `bh-elkv`'s additive half in `bh-61xkc`, section 9); `bh-elkv`'s rename touches only `vocabulary.py` and its facade consumers |
 | Off by default, configurable | Section 15; `NullIntake` makes every hook free |
 | Every tracker write an operator-approved gate | Section 11 |
 | Public store pull-only | Intake never resolves `SCOPE_PUBLIC`; a test asserts the public-store fixture is byte-identical after every case |
@@ -1354,7 +1415,8 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
   also changes the raw rows `bh work intake --json` emits, so it is its own decision.
 - ~~Clearing a dimension value on unlink (acceptance item 3).~~ Resolved by I2 (`bh-cokbi`), see
   "I2 measurement" below.
-- The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).
+- ~~The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).~~ Landed in `bh-61xkc`
+  (section 9, "As built: needs-info and wake-on-reply"); `bh-elkv` keeps its rename and queue.
 - Started, blocked and deprioritised milestones; revert detection.
 - A closing-keyword lint on merge commits.
 - Issue identity across a transfer or key change (port ADR O3): v1 refuses a transferred URL as

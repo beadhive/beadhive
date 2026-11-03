@@ -189,6 +189,10 @@ class LinkOutcome:
     work: str = ""
     previous: str = ""
     delivery: str = ""
+    #: The ``MilestoneItem``s linking to work that had already merged (or released) caught this
+    #: report up on (bh-61xkc; only with ``intake.external.milestones.catch_up_on_link``). Typed
+    #: loosely: ``milestones`` builds on this module, so it cannot be imported here.
+    milestones: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -259,6 +263,8 @@ class DispositionOutcome:
     seat: str = ""
     work: str = ""  # the work an accept now tracks
     created_work: bool = False  # ... and whether that accept created it
+    #: ``accept --work``: what linking to already merged work caught up on (see LinkOutcome).
+    milestones: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
