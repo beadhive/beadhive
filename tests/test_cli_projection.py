@@ -80,7 +80,8 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 279  # + work thread show / ingest / considered (bh-o9rep)
+    # + work thread show / ingest / considered (bh-o9rep), then needs-info and wake (bh-61xkc)
+    assert len(declarations) == 281
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -145,9 +146,11 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     # and `outbox` groups and accept's `--work` / `--new-work` leaves the pre-2.16.0 digest
     # 523f92a84e7bb9b61787123ef9918065a04d4b32e81bf3b1ff67be078f47dcb9. The `thread` group
     # (bh-o9rep) only ADDS too: dropping it leaves the pre-2.21.0 digest
-    # 1ec6138a3f83c91abe367be7f62148ec783f2cd809016a07fa009f8ee5543c5d.
+    # 1ec6138a3f83c91abe367be7f62148ec783f2cd809016a07fa009f8ee5543c5d. `needs-info` and `wake`
+    # (bh-61xkc) only ADD: dropping them leaves the bh-o9rep digest
+    # 155573cc23c82872f9a40e11ce552758576708d92b0fe492d63fe271a534afe4.
     assert _digest(_click_inventory(work.app)) == (
-        "155573cc23c82872f9a40e11ce552758576708d92b0fe492d63fe271a534afe4"
+        "8d97e54bd45f5d0294eca2265dafdc560fce7f7979fbe865595d793d6d7918c3"
     )
     assert _digest(_click_inventory(plan.app)) == (
         "7156c6aeee559e071428f3e3856586da7500742420cbec3286bbf95db4493f19"
@@ -159,8 +162,9 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
         # The `backfill` group (bh-xxmb1) joins the Hive panel beside `backfill-complexity`.
         (): "9252c456cb560e585f93551b32452e5adef4e924b964937bc415d2faae5da8ab",
         # `work backup` (state/work pairing, bh-cqvj6) joins the command list; the intake verbs
-        # and the `delivery` / `outbox` groups (bh-73td2) join after it, then `thread` (bh-o9rep).
-        ("work",): "145c874a190b8c290d71ac1166ffe0b6552a1887991e8deaad312189829b3c2e",
+        # and the `delivery` / `outbox` groups (bh-73td2) join after it, then `thread` (bh-o9rep),
+        # then `needs-info` and `wake` (bh-61xkc).
+        ("work",): "29ec6e14211442e8cd104608d65680fa6935d2e78e1cf1a4d699f1ccf78f5847",
         ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
     }
     for path, digest in expected_help.items():

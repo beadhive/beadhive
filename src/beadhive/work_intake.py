@@ -173,6 +173,9 @@ def render_link(result, report: str, as_json: bool) -> None:
             "created_work": bool(disposition and disposition.created_work),
             "accepted": disposition is not None,
         }
+        caught_up = _caught_up(result)
+        if caught_up:  # only a catch-up adds the key, so every other payload is unchanged
+            payload["milestones"] = [_milestone_row(item) for item in caught_up]
         typer.echo(json.dumps(payload, sort_keys=True))
         if result.code:
             raise typer.Exit(result.code)
@@ -181,12 +184,14 @@ def render_link(result, report: str, as_json: bool) -> None:
         code = f" ({result.reason})" if result.reason else ""
         typer.echo(f"✗ link refused{code}: {result.error}", err=True)
         raise typer.Exit(result.code)
+    caught_up = _caught_up(result)
     if disposition is not None:
         made = "created and tracks" if disposition.created_work else "tracks"
         typer.echo(f"✓ accepted {report}: it {made} {disposition.work} (delivery:pending)")
         typer.echo(
             f"  → {report} stays held (it is a report, not work); {disposition.work} is work"
         )
+        _echo_caught_up(caught_up)
         return
     assert outcome is not None
     kind = outcome.kind.value
@@ -207,6 +212,34 @@ def render_link(result, report: str, as_json: bool) -> None:
         "relinked": f"{report} now tracks {outcome.work} (was {outcome.previous})",
     }
     typer.echo(f"✓ {verbs[kind]} (delivery:{outcome.delivery})")
+    _echo_caught_up(caught_up)
+
+
+def _caught_up(result) -> tuple:
+    """The milestones a link (or linking accept) caught the report up on (bh-61xkc)."""
+    found = result.disposition if result.disposition is not None else result.outcome
+    return tuple(getattr(found, "milestones", ()) or ())
+
+
+def _milestone_row(item) -> dict:
+    return {
+        "report": item.report,
+        "event": item.event,
+        "delivery": item.delivery,
+        "drafted": item.drafted,
+        "verdict": item.verdict.value if item.verdict else "",
+        "closed": item.closed,
+        "note": item.note,
+        "error": item.error,
+    }
+
+
+def _echo_caught_up(items) -> None:
+    if not items:
+        return
+    typer.echo("  the work had already merged; caught up:")
+    for line in _milestone_item_lines(items):
+        typer.echo(line, err=line.lstrip().startswith("⚠"))
 
 
 def link(
@@ -301,8 +334,12 @@ def discover(hive: str = "", full: bool = False, as_json: bool = False, as_: str
 
 def _milestone_lines(outcome) -> list[str]:
     """One human line per report a milestone looked at: what changed, is pending or failed."""
+    return _milestone_item_lines(outcome.items)
+
+
+def _milestone_item_lines(items) -> list[str]:
     lines: list[str] = []
-    for item in outcome.items:
+    for item in items:
         parts = []
         if item.delivery:
             parts.append(f"delivery:{item.delivery}")
@@ -928,3 +965,134 @@ def thread_considered(
             cfg, entry, directory, bead, through, actor, hive=hive
         ),
     )
+
+
+# -- waiting for the reporter (bh-61xkc): needs-info and wake-on-reply, off by default -----------
+
+
+def render_needs_info(call, report: str, as_json: bool) -> None:
+    """Print one ``bh work needs-info`` (human or ``--json``); non-zero on a refusal."""
+    outcome = call.value if not call.code else None
+    if as_json:
+        payload = {
+            "ok": call.code == 0,
+            "verb": "needs-info",
+            "report": report,
+            "reason": call.reason,
+            "error": call.error,
+        }
+        if outcome is not None:
+            payload.update(
+                {
+                    "state": outcome.state,
+                    "state_written": outcome.state_written,
+                    "outbox_id": outcome.outbox_id,
+                    "held": outcome.held,
+                    "detail": outcome.detail,
+                }
+            )
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if call.code:
+            raise typer.Exit(call.code)
+        return
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ needs-info refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+    already = "" if outcome.state_written else " (it was already waiting; another question)"
+    typer.echo(f"✓ {report} is waiting for its reporter (intake:needs-info){already}")
+    typer.echo(f"  → question drafted as {outcome.outbox_id}; nothing is sent")
+    if outcome.held:
+        typer.echo(f"⚠ the draft is held: {outcome.detail}", err=True)
+    typer.echo(
+        f"  → review it with `bh work outbox show {outcome.outbox_id}`; an operator approves and "
+        "sends it. A reply wakes the report with `bh work wake` after `bh work thread ingest`"
+    )
+
+
+def _wake_row(item) -> dict:
+    return {
+        "report": item.report,
+        "woken": item.woken,
+        "evidence": list(item.evidence),
+        "detail": item.detail,
+        "error": item.error,
+    }
+
+
+def _wake_line(item) -> str:
+    if item.error:
+        return f"⚠ {item.report}: FAILED: {item.error}"
+    if item.woken:
+        return (
+            f"✓ woke {item.report}: the reporter replied ({', '.join(item.evidence)}) → "
+            "intake:untriaged (still held, never work; read it with `bh work thread show`)"
+        )
+    return f"  {item.report} stays on intake:needs-info: {item.detail}"
+
+
+def render_wake(call, report: str, all_: bool, as_json: bool) -> None:
+    """Print one ``bh work wake`` (human or ``--json``); non-zero on a refusal, or when the
+    sweep failed for any report (every other report was still handled)."""
+    value = call.value if not call.code else None
+    items = () if value is None else (value.items if all_ else (value,))
+    failed = bool(call.code) or any(item.error for item in items)
+    if as_json:
+        payload: dict = {
+            "ok": not failed,
+            "verb": "wake",
+            "all": all_,
+            "report": report,
+            "reason": call.reason,
+            "error": call.error,
+        }
+        if value is not None and all_:
+            payload["items"] = [_wake_row(item) for item in items]
+            payload["woken"] = [item.report for item in items if item.woken]
+        elif value is not None:
+            payload.update(_wake_row(value))
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if failed:
+            raise typer.Exit(call.code or 1)
+        return
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ wake refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+    if all_ and not items:
+        typer.echo("no report is waiting for its reporter")
+    for item in items:
+        line = _wake_line(item)
+        typer.echo(line, err=bool(item.error))
+    if failed:
+        raise typer.Exit(1)
+
+
+def needs_info(bead: str, ask: str, as_: str = "", hive: str = "", as_json: bool = False):
+    """Put a bound report on ``intake:needs-info`` and draft the question as a reply (never
+    sent without an operator); off unless ``intake.external.needs_info.enabled``."""
+    otel.set_bead(bead)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    call = intake_services.needs_info(
+        cfg, entry, Path(registry.hive_dir(entry)), bead, ask, actor, hive=hive
+    )
+    render_needs_info(call, bead, as_json)
+
+
+def wake(bead: str = "", all_: bool = False, as_: str = "", hive: str = "", as_json: bool = False):
+    """Wake a waiting report its reporter answered (or ``--all`` of them, opt-in); off unless
+    ``intake.external.needs_info.enabled``."""
+    if bool(bead) == all_:
+        typer.echo("✗ pass exactly one of <report> or --all", err=True)
+        raise typer.Exit(2)
+    if bead:
+        otel.set_bead(bead)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    call = intake_services.wake(
+        cfg, entry, Path(registry.hive_dir(entry)), bead, actor, all_=all_, hive=hive
+    )
+    render_wake(call, bead, all_, as_json)

@@ -474,6 +474,7 @@ and no key can enable or pre-approve a tracker write.
 | `milestones.draft_on_merge` | `false` | draft a `merged` outbox record when linked work merges |
 | `milestones.draft_on_release` | `false` | draft a `released` outbox record when `bh work delivery release <tag>` verifies a release |
 | `milestones.append_release_to_closed` | `false` | also draft the `released` record for a report that is already closed |
+| `milestones.catch_up_on_link` | `false` | when `bh work link` (or `accept --work`) links a report to work that already merged, give it the milestones it missed from the merge (and verified release) another tracking report recorded: `delivery:merged` / `released`, a record where drafting is on, then the completion policy. Off, such a report stays `delivery:pending` |
 | `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
 | `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
@@ -481,6 +482,8 @@ and no key can enable or pre-approve a tracker write.
 | `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |
 | `comments.purge_deleted_bodies` | `true` | drop a tombstoned comment's latest body (its digest is kept; not erasure) |
 | `comments.max_body_chars` | unset | optional cap on a stored comment body (the digest is of the full body) |
+| `needs_info.enabled` | `false` | allow `bh work needs-info <report> --ask <text>` (draft the question as a supervised reply and move a bound report to `intake:needs-info`; also needs `outbox.enabled` and `comments.enabled`) and `bh work wake <report>` (back to `intake:untriaged` once its ingested thread holds a reply from the reporter). Nothing is sent: the question posts only after an operator approves it. Off refuses naming this key |
+| `needs_info.sweep` | `false` | allow `bh work wake --all` over every waiting report; needs `needs_info.enabled` too |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
 plugin's `read.issues.enabled` ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md));
@@ -517,6 +520,13 @@ operator's per-operation approval minting a single-use grant.
 
 The `comments.*` keys are new (bh-o9rep): as above, nothing in a shared config should set them
 until the schema has rotated to every host (`bh-tfko9`).
+
+The `needs_info.*` and `milestones.catch_up_on_link` keys are new (bh-61xkc), and so is the
+`intake:needs-info` value they write: an older host rejects both the keys (`extra=forbid`) and the
+label (`bh label validate`), so nothing in a shared config should set them, and no hive should use
+the value, until the release has rotated to every host (`bh-hmtjn`, the `bh-tfko9` pattern). A
+report on `intake:needs-info` keeps its `intake-hold:` gate (never ready, never claimable), leaves
+the untriaged queue, and every triage disposition fields it as it fields an untriaged report.
 
 ### `backfill.judge` {#backfill-judge}
 
