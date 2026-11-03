@@ -17314,6 +17314,180 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "work.delivery.blocked",
+      "parameters": [
+        {
+          "name": "work",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "reason",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "work",
+            "reason",
+            "as_",
+            "hive",
+            "as_json"
+          ],
+          "path": "work delivery blocked",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "work.delivery.deprioritised",
+      "parameters": [
+        {
+          "name": "work",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "reason",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "work",
+            "reason",
+            "as_",
+            "hive",
+            "as_json"
+          ],
+          "path": "work delivery deprioritised",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "work.delivery.release",
       "parameters": [
         {

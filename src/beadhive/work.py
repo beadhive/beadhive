@@ -533,6 +533,45 @@ def delivery_release_cmd(
     return work_intake.delivery_release(tag, as_, hive, as_json)
 
 
+_NOTICE_WORK = typer.Argument(..., metavar="<work>", help="the work bead the reports track")
+_NOTICE_REASON = typer.Option(
+    ...,
+    "--reason",
+    help="the public reason posted to each reporter after approval (leak-checked; no bead ids)",
+)
+
+
+def delivery_blocked_cmd(
+    work: str = _NOTICE_WORK,
+    reason: str = _NOTICE_REASON,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Tell the reporters of tracked work it is blocked: draft a `blocked` record (fixed wording
+    plus your public reason) for every report that tracks <work> and is still
+    `delivery:pending`, superseding an unsent older milestone. A reason naming a bead id, branch
+    or path leaves the record held by the leak check. Nothing is sent: an operator approves and
+    sends it with `bh work outbox`. Off unless `intake.external.milestones.draft_on_blocked`."""
+    return work_intake.delivery_notice("blocked", work, reason, as_, hive, as_json)
+
+
+def delivery_deprioritised_cmd(
+    work: str = _NOTICE_WORK,
+    reason: str = _NOTICE_REASON,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Tell the reporters of tracked work it was deprioritised: draft a `deprioritised` record
+    (fixed wording plus your public reason) for every report that tracks <work> and is still
+    `delivery:pending`, superseding an unsent older milestone. A reason naming a bead id, branch
+    or path leaves the record held by the leak check. Nothing is sent: an operator approves and
+    sends it with `bh work outbox`. Off unless
+    `intake.external.milestones.draft_on_deprioritised`."""
+    return work_intake.delivery_notice("deprioritised", work, reason, as_, hive, as_json)
+
+
 _OUTBOX_ID = typer.Argument(..., metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_ID_OPT = typer.Argument("", metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_KIND = typer.Option(
@@ -1609,6 +1648,9 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         f"✓ started {epic} as {actor}; opened container {branch}; seat worktree {target} — "
         f"assign children onto it"
     )
+    # the started milestone (bh-dev42) for reports tracking the epic: free unless opted in,
+    # never fails the start, and keyed on the epic so re-starting it drafts nothing new
+    work_intake.on_work_claimed(cfg, entry, Path(main), [epic], actor, hive)
 
 
 def finish(
@@ -2026,6 +2068,8 @@ CLI_HANDLERS = {
     "work.link": link_cmd,
     "work.needs-info": needs_info_cmd,
     "work.wake": wake_cmd,
+    "work.delivery.blocked": delivery_blocked_cmd,
+    "work.delivery.deprioritised": delivery_deprioritised_cmd,
     "work.delivery.release": delivery_release_cmd,
     "work.outbox.approve": outbox_approve_cmd,
     "work.outbox.discard": outbox_discard_cmd,
@@ -2088,6 +2132,8 @@ discover_cmd = _CLI_CALLBACKS["work.discover"]
 link_cmd = _CLI_CALLBACKS["work.link"]
 needs_info_cmd = _CLI_CALLBACKS["work.needs-info"]
 wake_cmd = _CLI_CALLBACKS["work.wake"]
+delivery_blocked_cmd = _CLI_CALLBACKS["work.delivery.blocked"]
+delivery_deprioritised_cmd = _CLI_CALLBACKS["work.delivery.deprioritised"]
 delivery_release_cmd = _CLI_CALLBACKS["work.delivery.release"]
 outbox_approve_cmd = _CLI_CALLBACKS["work.outbox.approve"]
 outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]

@@ -3227,6 +3227,28 @@ class IntakeMilestonesConfig(_QuietSection):
             "on, then the completion policy (default off: the report stays `delivery:pending`)."
         ),
     )
+    draft_on_start: StrictBool = Field(
+        False,
+        description=(
+            "Draft a `started` record for each report that tracks work when that work is claimed "
+            "for the first time; a re-claim, a resume or a claim after an abandon drafts nothing "
+            "(default off; a failure never fails the claim)."
+        ),
+    )
+    draft_on_blocked: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` "
+            "record for each report that tracks the work (default off)."
+        ),
+    )
+    draft_on_deprioritised: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work delivery deprioritised <work> --reason <public text>` to draft a "
+            "`deprioritised` record for each report that tracks the work (default off)."
+        ),
+    )
 
 
 class IntakeNeedsInfoConfig(_QuietSection):

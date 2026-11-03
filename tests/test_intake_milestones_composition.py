@@ -482,7 +482,7 @@ def test_the_command_is_the_catalogued_three_token_verb() -> None:
     assert list(work.CLI_HANDLERS).count("work.delivery.release") == 1
     from beadhive.kernel import operations
 
-    (spec,) = [s for s in operations.operations() if "delivery" in s.name]
+    (spec,) = [s for s in operations.operations() if s.name == "work.delivery.release"]
     assert spec.name == "work.delivery.release"
     assert spec.surfaces["cli"]["path"] == "work delivery release"
 

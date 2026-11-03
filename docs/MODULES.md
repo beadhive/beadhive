@@ -669,14 +669,28 @@ release <tag>` is registered in the operation catalog (wire 2.16.0, bh-73td2; `w
 `tests/test_intake_milestones_composition.py`, `tests/test_work_merge_milestones.py` and
 `tests/test_intake_milestones_int.py` (`integration`).
 
+The progress milestones (bh-dev42) are the same service: `IntakePort.on_work_started(StartFact)`
+(free under `NullIntake`) drafts a `started` record for every report that tracks newly claimed
+work, keyed on the work so only its first claim drafts, and `IntakePort.delivery_notice(NoticeFact)`
+drafts a `blocked` / `deprioritised` record from an operator's public reason under fixed wording
+(`domain/milestones.py`: `STARTED_MESSAGE`, `notice_draft`, `notice_reason_problem`). Both draft
+only while delivery is `pending`, never move a dimension or close a report, and are gated by
+`intake.external.milestones.draft_on_start` / `.draft_on_blocked` / `.draft_on_deprioritised`
+beside `outbox.enabled`. The work layer calls `work_intake.on_work_claimed` after a fresh claim
+(`work_lifecycle.claim_single_bead` on the `claimed` disposition, `provision_claim` for `bh work
+next`, `work.start` and `work_group.claim_group`): a pure config read when off, never failing the
+claim, output on stderr only. `bh work delivery blocked|deprioritised <work> --reason <text>` are
+additive leaves of wire 2.21.0. Tests: `tests/unit/modules/intake/test_intake_progress_milestones.py`,
+`tests/test_intake_progress_milestones_composition.py` and `tests/test_work_claim_milestones.py`.
+
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
-(`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so
-`bh label validate` accepts those values and refuses any other; nothing writes them yet. An
-`intake-hold:` gate (`guard.INTAKE_HOLD_GATE_MARKER`) classifies as gate kind `intake-hold`, and
-no seat resolves it through `bh work approve`. The operator views count only `blocks`,
-`conditional-blocks` and `waits-for` edges as blockers, so a `tracks` edge or any unknown edge type
-never blocks. `bd set-state` cannot clear a dimension, so unlinking keeps the `delivery` value
-(`delivery_after_unlink`).
+(`replied|merged|released|corrected|started|blocked|deprioritised`) dimensions are registered in
+`INTAKE_DIMENSIONS`, so `bh label validate` accepts those values and refuses any other; nothing
+writes them yet. An `intake-hold:` gate (`guard.INTAKE_HOLD_GATE_MARKER`) classifies as gate kind
+`intake-hold`, and no seat resolves it through `bh work approve`. The operator views count only
+`blocks`, `conditional-blocks` and `waits-for` edges as blockers, so a `tracks` edge or any unknown
+edge type never blocks. `bd set-state` cannot clear a dimension, so unlinking keeps the `delivery`
+value (`delivery_after_unlink`).
 
 A bound report is held for life (`domain/hold.py`, `external-intake-module-adr.md` section 8): its
 `ReportStore.create` opens an `intake-hold:` human gate, so it is never in `bd ready` or `bh work

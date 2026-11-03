@@ -80,8 +80,9 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    # + work thread show / ingest / considered (bh-o9rep), then needs-info and wake (bh-61xkc)
-    assert len(declarations) == 281
+    # + work thread show / ingest / considered (bh-o9rep), then needs-info and wake (bh-61xkc),
+    # then work delivery blocked / deprioritised (bh-dev42)
+    assert len(declarations) == 283
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -197,13 +198,17 @@ def test_naming_adr_is_a_generator_gate_and_generated_traces_are_exact() -> None
 
 def test_three_token_paths_mount_on_nested_groups_without_changing_two_token_leaves() -> None:
     assert "work delivery release" in work.CLI_PROJECTION.paths
+    # the progress notices (bh-dev42) join the same nested group, additively
+    assert {"work delivery blocked", "work delivery deprioritised"} <= set(
+        work.CLI_PROJECTION.paths
+    )
     assert {path for path in work.CLI_PROJECTION.paths if path.startswith("work outbox ")} == {
         f"work outbox {verb}"
         for verb in ("approve", "discard", "draft", "reconcile", "retry", "send", "show")
     }
     nested = get_command(work.app)
     assert {"delivery", "outbox"} <= set(nested.commands)
-    assert set(nested.commands["delivery"].commands) == {"release"}
+    assert set(nested.commands["delivery"].commands) == {"blocked", "deprioritised", "release"}
     # a two-token leaf stays directly under its group; a scratch regeneration agrees
     scratch = typer.Typer(no_args_is_help=True)
     report = project_cli_group(scratch, "work", _handlers("work"))

@@ -344,7 +344,8 @@ def _milestone_item_lines(items) -> list[str]:
         if item.delivery:
             parts.append(f"delivery:{item.delivery}")
         if item.drafted:
-            parts.append(f"drafted record {item.drafted} (nothing is sent)")
+            held = ", held by the leak check" if getattr(item, "held", False) else ""
+            parts.append(f"drafted record {item.drafted}{held} (nothing is sent)")
         if item.closed:
             parts.append("complete: closed")
         if item.note:
@@ -474,6 +475,121 @@ def delivery_release(tag: str, as_: str = "", hive: str = "", as_json: bool = Fa
         cfg, entry, Path(registry.hive_dir(entry)), tag, actor, hive=hive
     )
     render_delivery_release(result, tag, as_json)
+
+
+# -- the progress milestones (bh-dev42): they draft, they never send ---------------------------
+
+
+def on_work_claimed(cfg, entry, main, beads, actor: str, hive: str = "") -> None:
+    """The claim hook, called by ``work claim`` / ``start`` / ``claim --group`` / ``next`` after a
+    FRESH claim of each of ``beads``: a ``started`` record for every report that tracks one and is
+    still ``delivery:pending`` (once per work: the record is keyed on it, so a later claim drafts
+    nothing).
+
+    **Never fails the claim, and costs nothing unless opted in.** It returns after a pure config
+    read, with no bd call, no git call and no lock, unless ``intake.external.enabled``, the outbox
+    and ``intake.external.milestones.draft_on_start`` are all on. Any failure, an unexpected
+    exception included, becomes a warning on stderr and the claim stands. Every line goes to
+    stderr, so the claim's own output is unchanged. It sends nothing and writes no tracker.
+    """
+    try:
+        if not intake_services.draft_on_start(cfg):
+            return
+    except Exception:  # noqa: BLE001 - a malformed section must never fail a claim
+        return
+    for work in beads:
+        try:
+            result = intake_services.work_started(
+                cfg, entry, Path(main), work, actor or identity.resolve_actor(""), hive=hive
+            )
+        except Exception as exc:  # noqa: BLE001 - a milestone must never fail a claim
+            typer.echo(
+                f"⚠ intake started milestone did not run for {work} (the claim stands): {exc}",
+                err=True,
+            )
+            continue
+        if result.code:
+            why = f" ({result.reason})" if result.reason else ""
+            typer.echo(
+                f"⚠ intake started milestone did not complete for {work}{why}: {result.error} "
+                "(the claim stands)",
+                err=True,
+            )
+            continue
+        items = result.outcome.items if result.outcome is not None else ()
+        if items:
+            typer.echo(f"intake: the started milestone for {work}", err=True)
+        for line in _milestone_item_lines(items):
+            typer.echo(line, err=True)
+
+
+def _notice_row(item) -> dict:
+    return {
+        "report": item.report,
+        "drafted": item.drafted,
+        "held": item.held,
+        "note": item.note,
+        "error": item.error,
+    }
+
+
+def render_delivery_notice(result, verb: str, work: str, as_json: bool) -> None:
+    """Print one ``bh work delivery blocked|deprioritised`` (human or ``--json``); non-zero on a
+    refusal or when any report failed (every other report was still handled)."""
+    outcome = result.outcome
+    items = outcome.items if outcome is not None else ()
+    failed = bool(result.code) or any(item.error for item in items)
+    if as_json:
+        payload = {
+            "ok": not failed,
+            "verb": verb,
+            "work": work,
+            "reason": result.reason,
+            "error": result.error,
+            "reports": [_notice_row(item) for item in items],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if failed:
+            raise typer.Exit(result.code or 1)
+        return
+    if result.code:
+        code = f" ({result.reason})" if result.reason else ""
+        typer.echo(f"✗ {verb} notice not drafted{code}: {result.error}", err=True)
+        raise typer.Exit(result.code)
+    if not items:
+        typer.echo(f"  no report tracks {work}; nothing drafted")
+    for line in _milestone_item_lines(items):
+        typer.echo(line, err=line.lstrip().startswith("⚠"))
+    held = [item for item in items if item.held]
+    for item in held:
+        typer.echo(
+            f"⚠ {item.drafted} is held by the leak check: fix it with `bh work outbox show "
+            f"{item.drafted}` (edit, or publish a finding deliberately) before it can be approved",
+            err=True,
+        )
+    if any(item.drafted for item in items):
+        typer.echo(
+            "  → nothing is sent: an operator renders, approves and sends with `bh work outbox`"
+        )
+    if failed:
+        raise typer.Exit(1)
+
+
+def delivery_notice(
+    verb: str, work: str, reason: str, as_: str = "", hive: str = "", as_json: bool = False
+):
+    """``bh work delivery blocked|deprioritised <work> --reason <text>``: draft the public reason
+    under the event's fixed wording for every report that tracks ``work`` (still
+    ``delivery:pending``). Nothing is sent; off unless ``intake.external.enabled``, the outbox
+    and ``intake.external.milestones.draft_on_<verb>``."""
+    otel.set_bead(work)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    result = intake_services.delivery_notice(
+        cfg, entry, Path(registry.hive_dir(entry)), work, verb, reason, actor, hive=hive
+    )
+    render_delivery_notice(result, verb, work, as_json)
 
 
 # -- the supervised outbox (bh work outbox ...): operator seat, off by default ------------------

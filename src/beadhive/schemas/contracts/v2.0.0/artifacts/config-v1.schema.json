@@ -2685,6 +2685,18 @@
           "title": "Catch Up On Link",
           "type": "boolean"
         },
+        "draft_on_blocked": {
+          "default": false,
+          "description": "Allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` record for each report that tracks the work (default off).",
+          "title": "Draft On Blocked",
+          "type": "boolean"
+        },
+        "draft_on_deprioritised": {
+          "default": false,
+          "description": "Allow `bh work delivery deprioritised <work> --reason <public text>` to draft a `deprioritised` record for each report that tracks the work (default off).",
+          "title": "Draft On Deprioritised",
+          "type": "boolean"
+        },
         "draft_on_merge": {
           "default": false,
           "description": "Draft a `merged` record when linked work merges (default off).",
@@ -2695,6 +2707,12 @@
           "default": false,
           "description": "Draft a `released` record when a release is verified (default off).",
           "title": "Draft On Release",
+          "type": "boolean"
+        },
+        "draft_on_start": {
+          "default": false,
+          "description": "Draft a `started` record for each report that tracks work when that work is claimed for the first time; a re-claim, a resume or a claim after an abandon drafts nothing (default off; a failure never fails the claim).",
+          "title": "Draft On Start",
           "type": "boolean"
         }
       },
