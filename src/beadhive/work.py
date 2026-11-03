@@ -606,6 +606,46 @@ def outbox_show_cmd(
     return work_intake.outbox_show(outbox_id, bead, open_only, hive, as_json)
 
 
+_THREAD_REPORT = typer.Argument(..., metavar="<report>", help="the bound report bead")
+
+
+def thread_show_cmd(
+    bead: str = _THREAD_REPORT,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Show a bound report's ingested issue thread: its seq, the comments that are new evidence
+    since the last triage read, and anything flagged. Reads the stored thread only (no tracker
+    request); off unless `intake.external.comments.enabled`."""
+    return work_intake.thread_show(bead, hive, as_json)
+
+
+def thread_ingest_cmd(
+    bead: str = _THREAD_REPORT,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Read a bound report's issue comments since its checkpoint into its thread, then reconcile
+    deletions. Reads the tracker only (needs the tracker plugin's `read.comments.enabled`); off
+    unless `intake.external.comments.enabled`."""
+    return work_intake.thread_ingest(bead, as_, hive, as_json)
+
+
+def thread_considered_cmd(
+    bead: str = _THREAD_REPORT,
+    through: int = typer.Option(
+        ..., "--through", help="the thread seq that `thread show` printed when you read it"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Record that a triage pass read the thread as it stood at `--through`, so only comments
+    that arrived later stay new evidence. Idempotent; never changes the report's intake state."""
+    return work_intake.thread_considered(bead, through, as_, hive, as_json)
+
+
 def _refuse_public(verb: str, *values) -> None:
     """Refuse an operational verb aimed at a PUBLIC projection bead (bh-lniwf.5).
 
@@ -1959,6 +1999,9 @@ CLI_HANDLERS = {
     "work.outbox.retry": outbox_retry_cmd,
     "work.outbox.send": outbox_send_cmd,
     "work.outbox.show": outbox_show_cmd,
+    "work.thread.considered": thread_considered_cmd,
+    "work.thread.ingest": thread_ingest_cmd,
+    "work.thread.show": thread_show_cmd,
     "work.assign": assign,
     "work.claim": claim,
     "work.next": next_,
@@ -1987,6 +2030,7 @@ CLI_PROJECTION = _project_cli_group(
     group_help={
         "work delivery": "Record delivery milestones for imported external reports.",
         "work outbox": "Supervised replies to external issues: draft, review, approve, send.",
+        "work thread": "Imported reports' issue comments: show, ingest, mark considered.",
     },
 )
 _CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)

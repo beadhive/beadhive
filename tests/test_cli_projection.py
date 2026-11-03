@@ -80,7 +80,7 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 276
+    assert len(declarations) == 279  # + work thread show / ingest / considered (bh-o9rep)
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -90,7 +90,7 @@ def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
         next(row for row in declarations if row.operation == "host.eligible").path
         == "host eligible"
     )
-    assert len(parents) == 41
+    assert len(parents) == 42  # + work thread (bh-o9rep)
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
     assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)
@@ -143,9 +143,11 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     # requiredness, hidden state, passthrough context, command ordering, and parameter types.
     # the intake verbs (bh-73td2) only ADD: dropping `import`, `discover`, `link`, the `delivery`
     # and `outbox` groups and accept's `--work` / `--new-work` leaves the pre-2.16.0 digest
-    # 523f92a84e7bb9b61787123ef9918065a04d4b32e81bf3b1ff67be078f47dcb9.
+    # 523f92a84e7bb9b61787123ef9918065a04d4b32e81bf3b1ff67be078f47dcb9. The `thread` group
+    # (bh-o9rep) only ADDS too: dropping it leaves the pre-2.21.0 digest
+    # 1ec6138a3f83c91abe367be7f62148ec783f2cd809016a07fa009f8ee5543c5d.
     assert _digest(_click_inventory(work.app)) == (
-        "1ec6138a3f83c91abe367be7f62148ec783f2cd809016a07fa009f8ee5543c5d"
+        "155573cc23c82872f9a40e11ce552758576708d92b0fe492d63fe271a534afe4"
     )
     assert _digest(_click_inventory(plan.app)) == (
         "7156c6aeee559e071428f3e3856586da7500742420cbec3286bbf95db4493f19"
@@ -157,8 +159,8 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
         # The `backfill` group (bh-xxmb1) joins the Hive panel beside `backfill-complexity`.
         (): "9252c456cb560e585f93551b32452e5adef4e924b964937bc415d2faae5da8ab",
         # `work backup` (state/work pairing, bh-cqvj6) joins the command list; the intake verbs
-        # and the `delivery` / `outbox` groups (bh-73td2) join after it.
-        ("work",): "d725b168f0343c2296b31bc0f35e2f1d5d7956037c8aa3e269b577c62afa179f",
+        # and the `delivery` / `outbox` groups (bh-73td2) join after it, then `thread` (bh-o9rep).
+        ("work",): "145c874a190b8c290d71ac1166ffe0b6552a1887991e8deaad312189829b3c2e",
         ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
     }
     for path, digest in expected_help.items():

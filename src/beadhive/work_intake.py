@@ -493,12 +493,26 @@ def _record_row(report: str, record) -> dict:
     }
 
 
+def _stored_operation_row(op) -> dict:
+    row: dict = {"kind": op.kind.value, "state": op.state.value}
+    if op.labels is not None:
+        row["add"], row["remove"] = sorted(op.labels.add), sorted(op.labels.remove)
+    return row
+
+
 def _outbox_payload(call, verb: str) -> dict:
     value = call.value
     payload: dict = {"ok": call.code == 0, "verb": verb, "reason": call.reason, "error": call.error}
     if value is None:
         return payload
-    if hasattr(value, "renders"):  # a RenderedRecord
+    if isinstance(value, intake_services.StoredOutboxRecord):  # no tracker wired (bh-fehna)
+        payload["record"] = _record_row(value.report, value.record)
+        payload["stored"] = {
+            "text": value.text,
+            "note": value.note,
+            "operations": [_stored_operation_row(op) for op in value.record.operations],
+        }
+    elif hasattr(value, "renders"):  # a RenderedRecord
         payload["record"] = _record_row(value.report, value.record)
         payload["renders"] = [_rendered_row(r) for r in value.renders]
     elif hasattr(value, "entries"):  # an OutboxListing
@@ -535,6 +549,21 @@ def _rendered_lines(rendered) -> list[str]:
     return lines
 
 
+def _stored_lines(stored) -> list[str]:
+    record = stored.record
+    lines = [f"{record.outbox_id} on {stored.report} ({record.event.value}, stored draft)"]
+    for op in record.operations:
+        line = f"{op.kind.value}: {op.state.value}"
+        if op.labels is not None:
+            changes = [f"+{label}" for label in sorted(op.labels.add)]
+            changes += [f"-{label}" for label in sorted(op.labels.remove)]
+            line += f" ({' '.join(changes)})" if changes else ""
+        lines.append(line)
+    lines += [f"  | {line}" for line in stored.text.splitlines() or [""]]
+    lines.append(f"  → {stored.note}")
+    return lines
+
+
 def render_outbox(call, verb: str, as_json: bool) -> None:
     """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal."""
     if as_json:
@@ -544,7 +573,10 @@ def render_outbox(call, verb: str, as_json: bool) -> None:
         return
     value = call.value
     done = value if isinstance(value, tuple) else ((value,) if value is not None else ())
-    if hasattr(value, "renders"):
+    if isinstance(value, intake_services.StoredOutboxRecord):
+        for line in _stored_lines(value):
+            typer.echo(line)
+    elif hasattr(value, "renders"):
         typer.echo(f"{value.record.outbox_id} on {value.report} ({value.record.event.value})")
         for rendered in value.renders:
             for line in _rendered_lines(rendered):
@@ -690,5 +722,209 @@ def outbox_retry(
         as_json,
         lambda cfg, entry, directory: intake_services.outbox_retry(
             cfg, entry, directory, outbox_id, kind, actor, hive=hive
+        ),
+    )
+
+
+# -- the conversation (bh work thread ...): comment ingestion, off by default -------------------
+
+
+def _actor_row(actor) -> dict | None:
+    if actor is None:
+        return None
+    return {"id": actor.id, "kind": actor.kind, "display": actor.display}
+
+
+def _comment_row(record, new: bool, flagged: bool) -> dict:
+    return {
+        "id": record.id,
+        "role": record.role.value,
+        "evidence": record.evidence.value,
+        "state": record.state.value,
+        "author": _actor_row(record.author),
+        "created_at": record.created_at.isoformat(),
+        "rev": record.rev,
+        "considered_rev": record.considered_rev,
+        "outbox_id": record.outbox_id,
+        "flags": sorted(record.flags),
+        "body": record.body,
+        "new_evidence": new,
+        "flagged": flagged,
+    }
+
+
+def _thread_row(view) -> dict:
+    thread = view.thread
+    new, flagged = set(view.new_evidence), set(view.flagged)
+    return {
+        "report": view.report,
+        "seq": thread.seq,
+        "state": thread.state.value,
+        "considered_seq": thread.considered_seq,
+        "tracker": thread.tracker,
+        "project": thread.project,
+        "issue_url": thread.issue.url,
+        "new_evidence": list(view.new_evidence),
+        "flagged": list(view.flagged),
+        "comments": [
+            _comment_row(record, record.id in new, record.id in flagged)
+            for record in thread.records.values()
+        ],
+    }
+
+
+def _outcome_row(outcome, step: str = "") -> dict:
+    row = {
+        "report": outcome.report,
+        "seq": outcome.seq,
+        "written": outcome.written,
+        "complete": outcome.complete,
+        "checkpoint_advanced": outcome.checkpoint_advanced,
+        "events": [
+            {"kind": e.kind.value, "comment": e.comment, "seq": e.seq, "outbox_id": e.outbox_id}
+            for e in outcome.events
+        ],
+        "detail": outcome.detail,
+    }
+    if step:
+        row["step"] = step
+    return row
+
+
+def _incomplete(call) -> tuple:
+    value = call.value if isinstance(call.value, tuple) else (call.value,)
+    return tuple(o for o in value if o is not None and not getattr(o, "complete", True))
+
+
+def _thread_payload(call, verb: str, report: str) -> dict:
+    payload: dict = {
+        "ok": call.code == 0 and not _incomplete(call),
+        "verb": verb,
+        "report": report,
+        "reason": call.reason,
+        "error": call.error,
+    }
+    if call.code:
+        return payload
+    value = call.value
+    if verb == "show":
+        payload["thread"] = None if value is None else _thread_row(value)
+    elif verb == "ingest":
+        payload["outcomes"] = [
+            _outcome_row(outcome, step)
+            for step, outcome in zip(("ingest", "reconcile"), value, strict=True)
+        ]
+    else:
+        payload["outcome"] = _outcome_row(value)
+    return payload
+
+
+def _event_summary(outcome) -> str:
+    counts: dict[str, int] = {}
+    for event in outcome.events:
+        counts[event.kind.value] = counts.get(event.kind.value, 0) + 1
+    if not counts:
+        return "no change"
+    return ", ".join(f"{kind} {n}" for kind, n in sorted(counts.items()))
+
+
+def _thread_lines(view) -> list[str]:
+    thread = view.thread
+    lines = [f"{view.report} thread seq {thread.seq} ({thread.state.value}) → {thread.issue.url}"]
+    lines.append(f"  new evidence: {', '.join(view.new_evidence) or 'none'}")
+    if view.flagged:
+        lines.append(f"  flagged: {', '.join(view.flagged)}")
+    new, flagged = set(view.new_evidence), set(view.flagged)
+    for record in thread.records.values():
+        who = (record.author.display or record.author.id) if record.author else "?"
+        marks = [
+            m for m, on in (("new", record.id in new), ("flagged", record.id in flagged)) if on
+        ]
+        state = "" if record.state.value == "live" else f" {record.state.value}"
+        tail = f"  [{', '.join(marks)}]" if marks else ""
+        lines.append(f"{record.id}  {record.role.value}  {who}  rev {record.rev}{state}{tail}")
+        body = record.body if record.body is not None else "(body purged)"
+        lines += [f"  | {line}" for line in body.splitlines() or [""]]
+    return lines
+
+
+def render_thread(call, verb: str, report: str, as_json: bool) -> None:
+    """Print one ``bh work thread <verb>`` result (human or ``--json``); non-zero on a refusal or
+    on an ingest whose tracker read failed part-way (what was read before it is kept)."""
+    incomplete = () if call.code else _incomplete(call)
+    if as_json:
+        typer.echo(json.dumps(_thread_payload(call, verb, report), sort_keys=True))
+        if call.code or incomplete:
+            raise typer.Exit(call.code or 1)
+        return
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ thread {verb} refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+    value = call.value
+    if verb == "show":
+        if value is None:
+            typer.echo(f"no thread recorded for {report} (run `bh work thread ingest {report}`)")
+        else:
+            for line in _thread_lines(value):
+                typer.echo(line)
+    elif verb == "ingest":
+        for step, outcome in zip(("ingested", "reconciled"), value, strict=True):
+            typer.echo(f"✓ {step} {outcome.report}: seq {outcome.seq}, {_event_summary(outcome)}")
+    else:
+        typer.echo(f"✓ considered {value.report} through seq {value.seq}: {_event_summary(value)}")
+    for outcome in incomplete:
+        typer.echo(f"⚠ {outcome.report}: incomplete read: {outcome.detail}", err=True)
+    if incomplete:
+        raise typer.Exit(1)
+
+
+def _thread(verb: str, report: str, hive: str, as_json: bool, run) -> None:
+    otel.set_bead(report)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    call = run(cfg, entry, Path(registry.hive_dir(entry)))
+    render_thread(call, verb, report, as_json)
+
+
+def thread_show(bead: str, hive: str = "", as_json: bool = False):
+    """The stored thread of a bound report (no tracker request)."""
+    _thread(
+        "show",
+        bead,
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.thread_show(
+            cfg, entry, directory, bead, hive=hive
+        ),
+    )
+
+
+def thread_ingest(bead: str, as_: str = "", hive: str = "", as_json: bool = False):
+    """Ingest a bound report's comments, then reconcile deletions (reads only)."""
+    actor = identity.resolve_actor(as_)
+    _thread(
+        "ingest",
+        bead,
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.thread_ingest(
+            cfg, entry, directory, bead, actor, hive=hive
+        ),
+    )
+
+
+def thread_considered(
+    bead: str, through: int, as_: str = "", hive: str = "", as_json: bool = False
+):
+    """Mark the thread considered through ``through`` (no tracker request)."""
+    actor = identity.resolve_actor(as_)
+    _thread(
+        "considered",
+        bead,
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.thread_considered(
+            cfg, entry, directory, bead, through, actor, hive=hive
         ),
     )

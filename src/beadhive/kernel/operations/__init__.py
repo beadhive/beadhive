@@ -298,6 +298,9 @@ work resume|bead:string:r,as_:string:o,hive:string:o
 work review|bead:string:r,run_validate:boolean:o,demo:boolean:o,fresh:boolean:o,view:array:o,hive:string:o
 work schedule|epic:string:r,hive:string:o,as_json:boolean:o
 work show|bead:string:r,view:array:o,as_json:boolean:o,hive:string:o
+work thread considered|bead:string:r,through:integer:r,as_:string:o,hive:string:o,as_json:boolean:o
+work thread ingest|bead:string:r,as_:string:o,hive:string:o,as_json:boolean:o
+work thread show|bead:string:r,hive:string:o,as_json:boolean:o
 work start|epic:string:r,as_:string:o,hive:string:o
 work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o,override_validation:string:o,override_as:string:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
@@ -447,6 +450,7 @@ toolchain|false|Hive
 work|false|Integration plane
 work delivery|false|
 work outbox|false|
+work thread|false|
 worktree|false|Integration plane
 wt|true|
 """.strip()

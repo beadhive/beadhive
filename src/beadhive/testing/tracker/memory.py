@@ -4,8 +4,8 @@
 no consumer test needs a plugin package, an HTTP client or a network. It is also the port's
 second implementation: it passes the same :data:`~beadhive.testing.tracker.cases.TRACKER_CASES`
 a real adapter must pass. It implements the required :class:`TrackerAdapter` plus every optional
-Protocol (``CommentWriter``, ``LabelWriter``, ``IssueResolver``); :func:`without_resolver` hides
-the resolver to exercise a consumer's fallback.
+Protocol (``CommentWriter``, ``LabelWriter``, ``IssueResolver``, ``MarkerCodec``);
+:func:`without_resolver` hides the resolver to exercise a consumer's fallback.
 
 Deterministic: no clock (every timestamp is supplied by the world), and a rate-limit wait calls
 the injected ``sleep`` (recorded by default, never blocking).
@@ -78,8 +78,14 @@ def _since(checkpoint: Checkpoint | None) -> datetime | None:
     return datetime.fromisoformat(checkpoint.token.removeprefix(_CHECKPOINT_PREFIX))
 
 
+#: The footer line :meth:`MemoryTracker.marker_line` renders: the same shape as the first-party
+#: GitHub adapter's ``bh:v1`` line, so a consumer test sees realistic posted bytes.
+_MARKER_FORMAT = "<!-- bh:v1 hive={hive} install={install} outbox={outbox} -->"
+
+
 class MemoryTracker:
-    """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter`` and ``IssueResolver``.
+    """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter``, ``IssueResolver`` and
+    ``MarkerCodec``.
 
     ``enabled`` is the resolved set of enabled operations, as a composition root would hand it to
     a real adapter. The default enables the two reads and no write. A disabled operation is
@@ -260,6 +266,17 @@ class MemoryTracker:
         }
         return CapabilityReport(actor=self._me, credential_source=None, states=states)
 
+    # -- MarkerCodec (pure) -------------------------------------------------------------------
+
+    def marker_line(self, marker: OwnMarker) -> str:
+        """The footer line this fake "appends" (it stores the marker structurally instead)."""
+        for value in (marker.hive, marker.install, marker.outbox_id):
+            if not value or any(c.isspace() for c in value) or "--" in value:
+                raise ValueError("marker fields must be non-empty tokens without spaces or '--'")
+        return _MARKER_FORMAT.format(
+            hive=marker.hive, install=marker.install, outbox=marker.outbox_id
+        )
+
     # -- writes -------------------------------------------------------------------------------
 
     def _authorise(self, op: Operation, issue: IssueKey, grant: WriteGrant) -> None:
@@ -347,6 +364,9 @@ class _WithoutResolver:
 
     def probe_capabilities(self) -> CapabilityReport:
         return self._inner.probe_capabilities()
+
+    def marker_line(self, marker: OwnMarker) -> str:
+        return self._inner.marker_line(marker)
 
     def post_comment(
         self, issue: IssueKey, body: str, *, marker: OwnMarker, grant: WriteGrant

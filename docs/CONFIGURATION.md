@@ -477,6 +477,10 @@ and no key can enable or pre-approve a tracker write.
 | `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
 | `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
+| `comments.enabled` | `false` | ingest bound reports' issue comments: `bh work thread ingest` (needs `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`), `thread show` and `thread considered`. Reads only; off refuses naming this key |
+| `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |
+| `comments.purge_deleted_bodies` | `true` | drop a tombstoned comment's latest body (its digest is kept; not erasure) |
+| `comments.max_body_chars` | unset | optional cap on a stored comment body (the digest is of the full body) |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
 plugin's `read.issues.enabled` ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md));
@@ -498,6 +502,21 @@ tracker write still needs the adapter's own write flag. With every default, merg
 behave exactly as before. `outbox.labels_enabled` is a new key: `BeadhiveConfig` forbids unknown
 keys, so nothing in a shared config should set it until the schema has rotated to every host
 (`bh-tfko9`).
+
+The `bh work outbox` verbs that reach the tracker (`draft`, `approve`, `send`, `reconcile`,
+`discard`, `retry`, and `show <id>`'s dry run) build it from the same binding as import: with
+`enabled`, `outbox.enabled` and `plugins.tracker-github.enabled` all on, the tracker is the hive's
+bound adapter, the own-message identity is the bound `owner/repo` plus this hive's install id (a
+random id minted once into the private `.bh/intake/install-id`; never configuration), the marker
+line is the adapter's own codec, and the owned label prefixes are
+`plugins.tracker-github.write.labels.owned_prefixes` (only while `write.labels.enabled`). Any
+switch off refuses naming it. Without a tracker, `bh work outbox show <id>` prints the stored
+draft, its event and its operations' states instead of the dry run (no digest, so nothing can be
+approved from it). Nothing here posts: a send still needs the adapter's write flag and an
+operator's per-operation approval minting a single-use grant.
+
+The `comments.*` keys are new (bh-o9rep): as above, nothing in a shared config should set them
+until the schema has rotated to every host (`bh-tfko9`).
 
 ### `backfill.judge` {#backfill-judge}
 

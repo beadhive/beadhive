@@ -615,10 +615,21 @@ thread recognition reads. The root (`intake_services`) adds `FlockIntakeLock` (`
 `store_posture` and `outbox_service_for`, which binds no sender unless an enabled `OutboxPolicy` is
 passed and takes the tracker adapter and its marker codec injected. The seven `bh work outbox`
 verbs (wire 2.16.0, bh-73td2) call it through `intake_services.outbox_call`; they need
-`intake.external.enabled` and `intake.external.outbox.enabled`, and refuse saying the outbox
-tracker is not wired until `outbox_wiring` supplies the tracker, identity and marker codec. Tests:
-`tests/unit/modules/intake/test_intake_outbox_sender.py` and
-`tests/test_intake_outbox_root.py`.
+`intake.external.enabled` and `intake.external.outbox.enabled`. `outbox_wiring` (bh-uavc2) builds
+the tracker, identity and marker codec from the hive's public-store binding when
+`plugins.tracker-github.enabled` is on too: the tracker is the bound, narrowed port, the marker
+codec is that port's optional `MarkerCodec` (so root never imports the plugin package), and the
+identity is the bound `owner/repo` plus `install_id` (`.bh/intake/install-id`). Without a tracker,
+`outbox show <id>` prints the stored record (`StoredOutboxRecord`) instead of the dry run
+(bh-fehna). Tests: `tests/unit/modules/intake/test_intake_outbox_sender.py`,
+`tests/test_intake_outbox_root.py` and `tests/test_intake_outbox_wiring.py`.
+
+`ThreadService` is composed in production by `intake_services.thread_call` (bh-o9rep) when
+`intake.external.comments.enabled`: over the operational store, the root lock, `StoreOutboxView`
+and, for ingestion, the same binding requesting `comments.read`. The `bh work thread show`,
+`ingest` and `considered --through <seq>` verbs (wire 2.21.0) reach `thread_of`, `ingest_thread`
+plus `reconcile_thread`, and `mark_considered`; the outbox service carries the thread operations
+too while comments are on. Tests: `tests/test_intake_thread_composition.py`.
 
 The same sender also carries `labels.change` (I9b, `bh-88vji`) as its own gate: `OutboxPolicy`
 gains `labels_enabled` (off by default, separate from `enabled`, which gates the outbox and the

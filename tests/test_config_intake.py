@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from beadhive.modules.config.application import partition
 from beadhive.modules.config.contracts import (
     BeadhiveConfig,
+    IntakeCommentsConfig,
     IntakeConfig,
     IntakeDiscoveryConfig,
     IntakeExternalConfig,
@@ -25,6 +26,7 @@ def test_intake_is_absent_by_default_and_every_switch_is_off() -> None:
     assert external.outbox.enabled is False and external.outbox.mode == "supervised"
     assert external.outbox.labels_enabled is False  # the labels.change gate has its own switch
     assert not any(vars(external.milestones).values())  # no milestone drafts unless asked
+    assert external.comments.enabled is False  # comment ingestion is opt-in (bh-o9rep)
 
 
 def test_a_full_documented_section_validates() -> None:
@@ -99,6 +101,10 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "outbox",
         "labels_enabled",
         "mode",
+        "comments",
+        "deletion_confirmations",
+        "purge_deleted_bodies",
+        "max_body_chars",
     }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
 
@@ -207,3 +213,52 @@ def test_the_labels_gate_is_its_own_host_owned_strict_switch() -> None:
     assert config.intake is not None
     assert config.intake.external.outbox.labels_enabled is True
     assert partition.partition_of("intake.external.outbox.labels_enabled") == partition.HOST
+
+
+# -- intake.external.comments (bh-o9rep): comment ingestion, off by default --
+
+
+def test_comments_are_off_by_default_with_the_adr_defaults() -> None:
+    comments = IntakeConfig().external.comments
+
+    assert comments == IntakeCommentsConfig()
+    assert (comments.enabled, comments.deletion_confirmations) == (False, 2)
+    assert (comments.purge_deleted_bodies, comments.max_body_chars) == (True, None)
+
+
+def test_a_comments_section_validates() -> None:
+    config = BeadhiveConfig.model_validate(
+        {
+            "intake": {
+                "external": {
+                    "comments": {
+                        "enabled": True,
+                        "deletion_confirmations": 3,
+                        "purge_deleted_bodies": False,
+                        "max_body_chars": 4000,
+                    }
+                }
+            }
+        }
+    )
+
+    assert config.intake is not None
+    comments = config.intake.external.comments
+    assert (comments.enabled, comments.deletion_confirmations) == (True, 3)
+    assert (comments.purge_deleted_bodies, comments.max_body_chars) == (False, 4000)
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        {"enabled": "true"},
+        {"deletion_confirmations": 0},
+        {"max_body_chars": -1},
+        {"purge_deleted_bodies": 1},
+        {"reconcile_every": 3},  # no timer cadence ships with the verbs
+        {"tracker": "github"},
+    ],
+)
+def test_bad_comments_values_and_unknown_keys_fail_closed(comments) -> None:
+    with pytest.raises(ValidationError):
+        BeadhiveConfig.model_validate({"intake": {"external": {"comments": comments}}})

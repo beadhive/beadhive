@@ -2,9 +2,10 @@
 
 Small capability interfaces: :class:`TrackerReader` and :class:`TrackerIdentity` are required
 and together form :class:`TrackerAdapter`, the one Protocol the plugin wiring binds.
-:class:`CommentWriter`, :class:`LabelWriter` and :class:`IssueResolver` are optional and are
-discovered with ``isinstance`` on the bound object. A writer's presence is necessary, never
-sufficient: the operation must also be enabled and each call must carry a fresh grant.
+:class:`CommentWriter`, :class:`LabelWriter`, :class:`IssueResolver` and :class:`MarkerCodec` are
+optional and are discovered with ``isinstance`` on the bound object. A writer's presence is
+necessary, never sufficient: the operation must also be enabled and each call must carry a fresh
+grant.
 """
 
 from __future__ import annotations
@@ -88,10 +89,25 @@ class IssueResolver(Protocol):
     def get(self, key: IssueKey) -> TrackerIssue: ...
 
 
+@runtime_checkable
+class MarkerCodec(Protocol):
+    """Optional: the adapter's own-message marker line, as it would append it (additive; the API
+    version stays 1).
+
+    ``marker_line`` is pure (no request, no clock): it returns the exact footer line the adapter's
+    ``CommentWriter.post_comment`` appends for ``marker``, so a consumer can render, digest and
+    show the bytes an approved write would post without importing the adapter's package. It
+    raises ``ValueError`` for a marker field its grammar cannot carry. The encoding stays
+    adapter-owned and versioned; the port carries only :class:`OwnMarker`."""
+
+    def marker_line(self, marker: OwnMarker) -> str: ...
+
+
 __all__ = [
     "CommentWriter",
     "IssueResolver",
     "LabelWriter",
+    "MarkerCodec",
     "TrackerAdapter",
     "TrackerIdentity",
     "TrackerReader",

@@ -3165,6 +3165,42 @@ class IntakeDiscoveryConfig(_QuietSection):
         return self
 
 
+class IntakeCommentsConfig(_QuietSection):
+    """``intake.external.comments`` — comment ingestion for bound reports (everything off).
+
+    With ``enabled`` (and ``intake.external.enabled``) `bh work thread ingest` reads a bound
+    report's issue comments into its private thread record and `bh work thread show` reports what
+    is new since the last triage read. It only ever READS the tracker (it also needs the tracker
+    plugin's ``read.comments.enabled``) and never writes the public store; replies stay the
+    outbox's, each approved by an operator.
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Ingest the comments of bound reports' issues (default off)."
+    )
+    deletion_confirmations: int = Field(
+        2,
+        ge=1,
+        le=100,
+        description=(
+            "Complete comment-id snapshots that must agree a comment is gone before it is "
+            "tombstoned."
+        ),
+    )
+    purge_deleted_bodies: StrictBool = Field(
+        True,
+        description=(
+            "Drop a tombstoned comment's latest body (its digest is kept; this is not erasure)."
+        ),
+    )
+    max_body_chars: int | None = Field(
+        None,
+        ge=0,
+        le=10_000_000,
+        description="Optional cap on a stored comment body (its digest is of the full body).",
+    )
+
+
 class IntakeMilestonesConfig(_QuietSection):
     """``intake.external.milestones`` — which delivery milestones DRAFT an outbox record.
 
@@ -3235,6 +3271,7 @@ class IntakeExternalConfig(_QuietSection):
     )
     milestones: IntakeMilestonesConfig = Field(default_factory=IntakeMilestonesConfig)
     outbox: IntakeOutboxConfig = Field(default_factory=IntakeOutboxConfig)
+    comments: IntakeCommentsConfig = Field(default_factory=IntakeCommentsConfig)
 
 
 class IntakeConfig(_QuietSection):

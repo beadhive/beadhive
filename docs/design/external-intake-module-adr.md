@@ -688,6 +688,16 @@ Adopted as `bh-fptob` R1 to R8, stored in `intake.thread`:
 - **Triage watermark** `considered_rev` derives "new evidence"; it never changes the `intake`
   dimension (wake-on-reply waits for `bh-elkv`, D3).
 
+**Composed in production (`bh-o9rep`, wire 2.21.0).** `intake.external.comments` ships
+`enabled` (default `false`), `deletion_confirmations` (2), `purge_deleted_bodies` (`true`) and
+`max_body_chars` (unset); `reconcile_every` is not shipped (no timer ingests yet).
+`intake_services.thread_call` composes `ThreadService` over the operational store, the root lock,
+`StoreOutboxView` and, for ingestion, the binding requesting `comments.read`, with the outbox's
+`OwnIdentity`. The CLI spelling is `bh work thread show <report>` (`thread_of`), `bh work thread
+ingest <report>` (`ingest_thread` then `reconcile_thread`) and `bh work thread considered <report>
+--through <seq>` (`mark_considered`; `--through` is required, so the watermark is always the seq
+the reader saw).
+
 **How triage marks `considered_rev` (decided in I7, `bh-rkmq1`; was open).** Through an explicit
 module operation, `IntakePort.mark_considered(ConsiderRequest(report, actor, through_seq))`, and
 **never** as a side effect of a disposition. Triage reads `IntakePort.thread_of(report)` (the
@@ -888,12 +898,26 @@ decided before any write or tracker request: `intake.external.enabled` (`intake_
 saying the outbox tracker is not wired; tests patch that one seam). The listing form of `show` (no
 id) makes no tracker request and works without wiring.
 
-**Not done here (`bh-kzs0b`).** `outbox_wiring` is empty. Building the outbox's `tracker` (a
-`TrackerAdapters.for_store` bound port narrowed to the writers), `OwnIdentity` (hive and install
-UUID) and the adapter's `marker_line` codec from the plugin binding is not done: the marker codec
-lives in the plugin package, which root may not import. Until it lands, `bh work outbox show <id>`
-(a dry run against the tracker) and every sending verb refuse; `bh-kzs0b` built the process
-`TrackerAdapters` for import and discover only, so it does not make `bh-fehna` moot.
+**Done by `bh-uavc2` (absorbing `bh-fehna`).** `outbox_wiring` now builds all four from the
+hive's public-store binding when `intake.external.enabled`, `intake.external.outbox.enabled` and
+`plugins.tracker-github.enabled` are on: the tracker is `TrackerAdapters.for_store`'s bound,
+narrowed port (a writer only with its write flag on); the marker codec is that port's new optional
+`MarkerCodec.marker_line` (an additive port Protocol beside A1 that the GitHub adapter implements
+with its `bh:v1` codec and `narrow` passes through), so root still never imports the plugin;
+`OwnIdentity` is the bound `owner/repo` plus `install_id`, a random 32-hex id minted once into the
+hive's private `.bh/intake/install-id` (never configuration, never derived from a host or bead
+id); `owned_label_prefixes` is `write.labels.owned_prefixes` while `labels.change` is enabled. A
+binding refusal is carried as the refusal of every verb that needs the tracker. Without a tracker,
+`bh work outbox show <id>` prints the stored record (draft text, event, operation states, no
+digest) instead of refusing. O5 and O9 are unchanged: operator-only, one grant per operation.
+
+**Was not done here (`bh-kzs0b`; superseded by the paragraph above).** `outbox_wiring` was
+empty. Building the outbox's `tracker` (a `TrackerAdapters.for_store` bound port narrowed to the
+writers), `OwnIdentity` (hive and install UUID) and the adapter's `marker_line` codec from the
+plugin binding was not done: the marker codec lives in the plugin package, which root may not
+import. Until then, `bh work outbox show <id>` (a dry run against the tracker) and every sending
+verb refused; `bh-kzs0b` built the process `TrackerAdapters` for import and discover only, so it
+did not make `bh-fehna` moot.
 
 Interpretations, to be confirmed by the operator:
 
@@ -1105,7 +1129,7 @@ semantics and the defaults are the decision. Every key is per hive; everything i
 | `comments.deletion_confirmations` | `2` | Complete snapshots before a tombstone | `bh-fptob` |
 | `comments.purge_deleted_bodies` | `true` | Drop the latest body on tombstone | `bh-fptob` |
 | `comments.max_body_chars` | unset | Optional body cap (digest kept) | `bh-fptob` |
-| `comments.reconcile_every` | unset | Full comment-id pass cadence, in ingest passes | `bh-fptob` |
+| `comments.reconcile_every` | unset | Full comment-id pass cadence, in ingest passes (not shipped by `bh-o9rep`: `thread ingest` reconciles every pass) | `bh-fptob` |
 | `privacy.allow_published_operational_store` | `false` | Acknowledgement to enable on a single-store or `git-origin` hive | `bh-fptob` |
 | `outbox.enabled` | `false` | The per-hive egress opt-in (`bh-o2mjz`) | `bh-6wj9y` R15 |
 | `outbox.mode` | `supervised` | The only accepted value in v1 (D2); anything else fails validation | `bh-6wj9y` |
