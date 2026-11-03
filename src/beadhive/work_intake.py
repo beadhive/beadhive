@@ -302,6 +302,112 @@ def accept_to_work(
     render_link(result, bead, as_json)
 
 
+# -- reproduction work (bh work investigate, bh-u3a53) -----------------------------------------
+
+
+def _relations_row(relations) -> dict:
+    return {
+        "tracks": relations.tracks,
+        "progress": relations.progress.value,
+        "investigated_by": list(relations.investigated_by),
+    }
+
+
+def _relations_lines(relations) -> list[str]:
+    tracks = f"{relations.tracks} ({relations.progress.value})" if relations.tracks else "none"
+    return [
+        f"  tracks: {tracks}",
+        f"  investigated by: {', '.join(relations.investigated_by) or 'none'}",
+    ]
+
+
+def render_investigate(result, report: str, as_json: bool) -> None:
+    """Print one ``bh work investigate`` result (human or ``--json``); non-zero exit on refusal."""
+    outcome, relations = result.outcome, result.relations
+    if as_json:
+        payload = {
+            "ok": result.code == 0,
+            "reason": result.reason,
+            "error": result.error,
+            "report": report,
+            "kind": outcome.kind.value if outcome else "",
+            "work": outcome.work if outcome else "",
+            "created_work": bool(outcome and outcome.created_work),
+            "relations": _relations_row(relations) if relations is not None else None,
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if result.code:
+            raise typer.Exit(result.code)
+        return
+    if result.code:
+        code = f" ({result.reason})" if result.reason else ""
+        typer.echo(f"✗ investigate refused{code}: {result.error}", err=True)
+        raise typer.Exit(result.code)
+    if outcome is None:
+        typer.echo(f"{report} links:")
+    else:
+        kind, work = outcome.kind.value, outcome.work
+        if kind == "unlinked" and not work:
+            typer.echo(f"nothing to remove: that bead does not investigate {report}")
+        elif kind == "unlinked":
+            typer.echo(f"✓ {work} no longer investigates {report}")
+        elif kind == "already_linked":
+            typer.echo(f"✓ {work} already investigates {report}")
+        else:
+            made = "created " if outcome.created_work else ""
+            typer.echo(f"✓ {made}{work} now investigates {report}")
+            typer.echo(
+                "  → it does not track the report: closing or merging it drafts no delivery "
+                "milestone and never closes the report"
+            )
+    if relations is not None:
+        for line in _relations_lines(relations):
+            typer.echo(line)
+
+
+def investigate(
+    bead: str,
+    work: str = "",
+    new_work: bool = False,
+    remove: bool = False,
+    issue_type: str = "",
+    priority: str = "",
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Link reproduction work to a report with the ``investigates`` relation (never ``tracks``),
+    remove one such link, or with neither ``--work`` nor ``--new-work`` list the report's links.
+    Off unless ``intake.external.enabled``; never touches a tracker."""
+    otel.set_bead(bead)
+    if work and new_work:
+        typer.echo("✗ pass at most one of --work <id> or --new-work", err=True)
+        raise typer.Exit(2)
+    if remove and not work:
+        typer.echo("✗ --remove needs --work <id>: the bead to stop investigating", err=True)
+        raise typer.Exit(2)
+    if (issue_type or priority) and not new_work:
+        typer.echo("✗ --type and --priority apply to the bead --new-work creates", err=True)
+        raise typer.Exit(2)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    result = intake_services.investigate_report(
+        cfg,
+        entry,
+        Path(registry.hive_dir(entry)),
+        bead,
+        actor,
+        work=work,
+        new_work=new_work,
+        remove=remove,
+        issue_type=issue_type,
+        priority=priority,
+        hive=hive,
+    )
+    render_investigate(result, bead, as_json)
+
+
 def import_issue(
     url: str, hive: str = "", dry_run: bool = False, as_json: bool = False, as_: str = ""
 ):
@@ -962,6 +1068,8 @@ def _thread_payload(call, verb: str, report: str) -> dict:
     value = call.value
     if verb == "show":
         payload["thread"] = None if value is None else _thread_row(value)
+        links = getattr(call, "links", None)
+        payload["links"] = None if links is None else _relations_row(links)
     elif verb == "ingest":
         payload["outcomes"] = [
             _outcome_row(outcome, step)
@@ -1020,6 +1128,11 @@ def render_thread(call, verb: str, report: str, as_json: bool) -> None:
             typer.echo(f"no thread recorded for {report} (run `bh work thread ingest {report}`)")
         else:
             for line in _thread_lines(value):
+                typer.echo(line)
+        links = getattr(call, "links", None)
+        if links is not None:
+            typer.echo("links:")
+            for line in _relations_lines(links):
                 typer.echo(line)
     elif verb == "ingest":
         for step, outcome in zip(("ingested", "reconciled"), value, strict=True):

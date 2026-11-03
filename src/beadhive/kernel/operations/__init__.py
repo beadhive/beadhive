@@ -276,6 +276,7 @@ work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o
 work finish|epic:string:r,hive:string:o,override_validation:string:o,override_as:string:o
 work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o
 work intake|hive:string:o,source:string:o,as_json:boolean:o,no_dupes:boolean:o
+work investigate|bead:string:r,work:string:o,new_work:boolean:o,remove:boolean:o,type_:string:o,priority:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work issue|bead:string:r,hive:string:o
 work land|bead:string:r,hive:string:o
 work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o

@@ -683,14 +683,31 @@ claim, output on stderr only. `bh work delivery blocked|deprioritised <work> --r
 additive leaves of wire 2.21.0. Tests: `tests/unit/modules/intake/test_intake_progress_milestones.py`,
 `tests/test_intake_progress_milestones_composition.py` and `tests/test_work_claim_milestones.py`.
 
+Reproduction work (bh-u3a53) is a second report-to-work relation beside `tracks`:
+`IntakePort.investigate(InvestigateRequest)`, `uninvestigate` and `relations` (`LinkService`, pure
+rules `check_investigate` / `check_investigable` in `domain/link.py`). A bead that investigates a
+report is linked by its own native edge (`ReportStore.investigate` / `uninvestigate` /
+`investigations_of`; on bd 1.3.0, which refuses a custom type, the built-in `validates` edge from
+the work to the report, `INVESTIGATES_EDGE`), so it never appears in `trackers_of`, which is all
+the milestone triggers, the claim hook, the link catch-up, `reports_for_work` and `work_progress`
+read: closing, merging, claiming or releasing it drafts nothing, writes no `delivery` value and
+never closes the report. Investigating writes the edge and nothing else; several beads may
+investigate one report, the work it tracks may not (`tracked_work`).
+`intake_services.investigate_report` composes it with no milestone service bound. `bh work
+investigate <report>` with `--work <id>`, `--new-work [--type --priority]` or `--work <id>
+--remove` (with neither: the report's links) is an additive leaf of wire 2.21.0, off unless
+`intake.external.enabled`; `bh work thread show` lists both kinds of link. Tests: `tests/unit/modules/intake/test_intake_investigate.py`,
+`tests/test_intake_investigate_composition.py` and `tests/test_intake_investigate_int.py`
+(`integration`), plus the `store.investigates-is-not-tracks` contract case.
+
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
 (`replied|merged|released|corrected|started|blocked|deprioritised`) dimensions are registered in
 `INTAKE_DIMENSIONS`, so `bh label validate` accepts those values and refuses any other; nothing
 writes them yet. An `intake-hold:` gate (`guard.INTAKE_HOLD_GATE_MARKER`) classifies as gate kind
 `intake-hold`, and no seat resolves it through `bh work approve`. The operator views count only
-`blocks`, `conditional-blocks` and `waits-for` edges as blockers, so a `tracks` edge or any unknown
-edge type never blocks. `bd set-state` cannot clear a dimension, so unlinking keeps the `delivery`
-value (`delivery_after_unlink`).
+`blocks`, `conditional-blocks` and `waits-for` edges as blockers, so a `tracks` or `validates`
+(investigates) edge or any unknown edge type never blocks. `bd set-state` cannot clear a
+dimension, so unlinking keeps the `delivery` value (`delivery_after_unlink`).
 
 A bound report is held for life (`domain/hold.py`, `external-intake-module-adr.md` section 8): its
 `ReportStore.create` opens an `intake-hold:` human gate, so it is never in `bd ready` or `bh work
