@@ -69,7 +69,15 @@ def test_state_dimensions_are_intake_dimensions_plus_the_entries_state_keeps() -
         "dispatch",
     ]
     assert state.STATE_DIMENSIONS["delivery"] == {"pending", "merged", "released", "reverted"}
-    assert state.STATE_DIMENSIONS["notified"] == {"replied", "merged", "released", "corrected"}
+    assert state.STATE_DIMENSIONS["notified"] == {
+        "replied",
+        "merged",
+        "released",
+        "corrected",
+        "started",  # the progress milestones (bh-dev42)
+        "blocked",
+        "deprioritised",
+    }
     assert state.STATE_DIMENSIONS["outbound"] == {"pending"}
     assert state.STATE_DIMENSIONS["publish"] == {"approved"}
     assert state.STATE_DIMENSIONS["escalation"] == {"raised", "resolved"}

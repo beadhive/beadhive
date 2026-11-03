@@ -268,3 +268,9 @@ __all__ += [
     "WakeRequest",
     "WakeSweep",
 ]
+
+# -- the progress milestones (bh-dev42) --------------------------------------------------------
+
+from ..domain import NoticeFact, StartFact  # noqa: E402
+
+__all__ += ["NoticeFact", "StartFact"]

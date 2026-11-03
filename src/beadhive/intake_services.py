@@ -106,8 +106,11 @@ from .modules.intake.domain import (  # the composition root may (gap G7)
     MergeFact,
     MilestoneOutcome,
     MilestonePolicy,
+    NoticeFact,
+    OutboxEvent,
     OutboxPolicy,
     ReleaseFact,
+    StartFact,
     dupes_touching,
     mint_grant_id,
     mint_outbox_id,
@@ -1088,6 +1091,9 @@ def milestone_settings(cfg: Mapping[str, Any]) -> tuple[OutboxPolicy, MilestoneP
             draft_on_release=milestones.get("draft_on_release") is True,
             append_release_to_closed=milestones.get("append_release_to_closed") is True,
             completion=completion,
+            draft_on_start=milestones.get("draft_on_start") is True,
+            draft_on_blocked=milestones.get("draft_on_blocked") is True,
+            draft_on_deprioritised=milestones.get("draft_on_deprioritised") is True,
         ),
     )
 
@@ -1273,6 +1279,112 @@ def delivery_release(
     except store_target.StoreResolutionError as exc:
         return MilestoneResult(1, str(exc), "store_unresolved", tag=tag, commit=commit)
     return MilestoneResult(0, outcome=outcome, tag=tag, commit=commit)
+
+
+# -- the progress milestones (bh-dev42): started from the claim hook, blocked and deprioritised
+# -- from operator verbs. They draft, they never send ------------------------------------------
+
+
+def draft_on_start(cfg: Mapping[str, Any]) -> bool:
+    """Whether the claim hook can draft anything at all: ``intake.external.enabled``, the outbox
+    and ``milestones.draft_on_start`` all on (each off by default). A pure config read, so a claim
+    on a hive that did not opt in pays for nothing else."""
+    enabled, _default_type = external_intake_settings(cfg)
+    if not enabled:
+        return False
+    outbox, milestones = milestone_settings(cfg)
+    return outbox.enabled and milestones.draft_on_start
+
+
+def work_started(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    work: str,
+    actor: str,
+    *,
+    lock: IntakeLock | None = None,
+    hive: str = "",
+    ids: Any = None,
+    sanitizer: Any = None,
+) -> MilestoneResult:
+    """The claim hook: a ``started`` record for every report that tracks ``work`` whose delivery
+    is still ``pending``, once per work (a re-claim finds the record's key and drafts nothing).
+    Nothing is sent. The caller checks :func:`draft_on_start` first and wraps this so a failure
+    never fails the claim."""
+    try:
+        port = _milestone_port(
+            cfg, entry, directory, lock, hive, "work claim", None, ids, sanitizer
+        )
+        outcome = port.on_work_started(StartFact(work, actor))
+    except IntakeRefused as exc:
+        return MilestoneResult(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return MilestoneResult(exc.returncode, milestone_message(exc), "store_error")
+    except store_target.StoreResolutionError as exc:
+        return MilestoneResult(1, str(exc), "store_unresolved")
+    return MilestoneResult(0, outcome=outcome)
+
+
+#: The operator notices ``bh work delivery <event>`` drafts, by verb.
+NOTICE_VERBS = {"blocked": OutboxEvent.BLOCKED, "deprioritised": OutboxEvent.DEPRIORITISED}
+
+
+def delivery_notice(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    work: str,
+    verb: str,
+    reason: str,
+    actor: str,
+    *,
+    lock: IntakeLock | None = None,
+    hive: str = "",
+    ids: Any = None,
+    sanitizer: Any = None,
+) -> MilestoneResult:
+    """``bh work delivery blocked|deprioritised <work> --reason <text>``: draft the operator's
+    public reason, under the event's fixed wording, for every report that tracks ``work`` whose
+    delivery is still ``pending``. A reason the leak check flags (a bead id, a branch, a path)
+    leaves the record held. Nothing is sent. Off unless ``intake.external.enabled``, the outbox
+    and ``milestones.draft_on_<verb>`` are all on; each off switch refuses naming its key before
+    any store is built."""
+    event = NOTICE_VERBS.get(verb)
+    if event is None:
+        return MilestoneResult(
+            1, f"unknown delivery notice {verb!r}", RefusalReason.INVALID_REQUEST.value
+        )
+    enabled, _default_type = external_intake_settings(cfg)
+    if not enabled:
+        return _intake_off_call(MilestoneResult)
+    outbox, milestones = milestone_settings(cfg)
+    if not outbox.enabled:
+        return MilestoneResult(
+            1,
+            "the outbox is off for this hive (intake.external.outbox.enabled; it is opt-in), so "
+            "nothing can be drafted",
+            RefusalReason.OUTBOX_DISABLED.value,
+        )
+    if not milestones.drafts(event.value):
+        return MilestoneResult(
+            1,
+            f"{verb} notices are off for this hive "
+            f"(intake.external.milestones.draft_on_{verb}; it is opt-in)",
+            RefusalReason.INTAKE_DISABLED.value,
+        )
+    try:
+        port = _milestone_port(
+            cfg, entry, directory, lock, hive, f"work delivery {verb}", None, ids, sanitizer
+        )
+        outcome = port.delivery_notice(NoticeFact(work, event, reason, actor))
+    except IntakeRefused as exc:
+        return MilestoneResult(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return MilestoneResult(exc.returncode, milestone_message(exc), "store_error")
+    except store_target.StoreResolutionError as exc:
+        return MilestoneResult(1, str(exc), "store_unresolved")
+    return MilestoneResult(0, outcome=outcome)
 
 
 # -- the supervised outbox verbs (bh work outbox ...): operator seat, off by default -------------

@@ -368,6 +368,9 @@ def claim_single_bead(cfg: Any, hive: str, bead: str, as_: str) -> Any:
         outcome = lifecycle.claim(bead, actor)
     checkout = outcome.checkout
     entry = checkout.handle or entry
+    if outcome.disposition == "claimed":  # a re-attach of a held claim is not a first claim
+        # the started milestone (bh-dev42): free unless opted in, never fails the claim
+        work.work_intake.on_work_claimed(cfg, entry, Path(main), [bead], actor, hive)
     return work.ClaimResult(
         entry=entry,
         main=Path(main),
@@ -398,6 +401,8 @@ def provision_claim(cfg: Any, hive: str, main: Path, bead: str, actor: str) -> t
     entry = work.worktree.locate(cfg, hive, bead)[0]
     with commands(cfg, hive, main, entry) as lifecycle:
         checkout = lifecycle.provision_claim(bead, actor)
+    # the started milestone (bh-dev42): free unless opted in, never fails the claim
+    work.work_intake.on_work_claimed(cfg, checkout.handle or entry, Path(main), [bead], actor, hive)
     return (str(checkout.target), _identity(cfg, checkout.handle or entry, actor))
 
 

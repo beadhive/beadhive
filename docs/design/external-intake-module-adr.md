@@ -1150,6 +1150,61 @@ reported on its item and never fails the link. `LinkOutcome` / `DispositionOutco
 `milestones`, and `bh work link --json` carries a `milestones` key only when a catch-up ran. Tests:
 `tests/unit/modules/intake/test_intake_link_catch_up.py`.
 
+**As built: the progress milestones (`bh-dev42`).** The v1 scope above left `started`, `blocked`
+and `deprioritised` out; the supervised triage loop (`bh-vhct2`, operator decisions 2026-11-02)
+adds them as drafts only, with `started` from a claim hook and `blocked` / `deprioritised` from
+explicit operator verbs, never polling. Nothing above changes: the merge and release triggers,
+their wording, keys and close rule are as built.
+
+- **Vocabulary.** `OutboxEvent` gains `STARTED`, `BLOCKED` and `DEPRIORITISED`, and `notified`
+  gains `started`, `blocked` and `deprioritised` (`NOTIFIED_BY_EVENT` maps each to its own value).
+  All three are milestone events (not `reply`), so they land in the `milestone` group and O6
+  supersedes an unsent older milestone, and a later `merged` supersedes an unsent progress record.
+  The sender's completion hook still runs only for `merged` / `released`, and `_COVERS` is
+  unchanged, so a progress comment never completes a report or masks `notification_behind`.
+  Rotation-gated like `intake:needs-info` (`bh-hmtjn`): an older host cannot decode a document
+  holding such a record, so no hive drafts one until the release has rolled to every host.
+- **Wording and keys.** `started` is a constant (`STARTED_MESSAGE`) keyed on the work
+  (`DraftKey.source_revision` is the work id), so only the FIRST claim of that work drafts a
+  record per report: a re-claim, a resume after a bounce and a claim after an abandon find the key
+  (O2). `blocked` / `deprioritised` are a fixed lead sentence followed by the operator's public
+  reason, keyed on the work plus a digest of the reason: the same words re-run draft nothing, new
+  words draft a record that supersedes the unsent older one. The reason is the one free text a
+  milestone carries, so it is validated before anything is written (required, at most 1000
+  characters, no `{placeholder}` the renderer would rewrite) and then leak-checked like every
+  render: a reason naming a bead id, branch, path or seat leaves the record `held`.
+- **Only while `pending`.** Each drafts only for a report whose `delivery` is `pending`; anything
+  else is reported on the item and left alone, so a progress note can never supersede an unsent
+  `merged` or `released` record with stale news. Reports are those that track the work (open or
+  closed, like the merge trigger). No dimension moves and the completion policy is not evaluated.
+- **Where.** `MilestoneService.on_work_started(StartFact)` and `delivery_notice(NoticeFact)`,
+  behind the new `IntakePort` operations of the same names (`NullIntake`: the hook is free, the
+  verb refuses `INTAKE_DISABLED`). The root adds `intake_services.draft_on_start`, `work_started`
+  and `delivery_notice`; the work layer adds `work_intake.on_work_claimed`, `delivery_notice` and
+  `render_delivery_notice`.
+- **The claim seam.** `work_intake.on_work_claimed` runs after a fresh claim in
+  `work_lifecycle.claim_single_bead` (only on the core's `claimed` disposition, not `reattached`),
+  `work_lifecycle.provision_claim` (`bh work next`'s won claim), `work.start` (an epic) and
+  `work_group.claim_group` (every member). It returns after a pure config read unless
+  `intake.external.enabled`, `outbox.enabled` and `milestones.draft_on_start` are all on; any
+  failure, an unexpected exception included, is one stderr warning and the claim stands. All its
+  output goes to stderr, so `bh work claim` / `next --json` stdout is unchanged. Not hooked:
+  `claim --collapse` (the collapsed batch session).
+- **The verbs (wire 2.21.0, additive).** `bh work delivery blocked <work> --reason <text>` and
+  `bh work delivery deprioritised <work> --reason <text>` (`[--as] [--hive] [--json]`), catalog
+  rows `work delivery blocked|work:string:r,reason:string:r,as_:string:o,hive:string:o,as_json:boolean:o`
+  and the same for `deprioritised`, mounted on the existing `work delivery` group. Each refuses
+  before any store is built while `intake.external.enabled`, `outbox.enabled` or its own
+  `milestones.draft_on_blocked` / `.draft_on_deprioritised` is off, naming the key; unknown work is
+  `not_found`. Drafting may be done by any seat; approve and send stay operator-only.
+- **Config (all off, host-owned).** `milestones.draft_on_start`, `.draft_on_blocked`,
+  `.draft_on_deprioritised`; only a literal `true` enables.
+- **Tests.** `tests/unit/modules/intake/test_intake_progress_milestones.py` (first claim, re-claim,
+  bounce, abandon, supersession, the leak hold, `write_requests() == 0`),
+  `tests/test_intake_progress_milestones_composition.py` (the root and the command bodies) and
+  `tests/test_work_claim_milestones.py` (the claim, start, group and `next` seams; a hook failure
+  never fails the claim).
+
 ### 13. Leak check and sanitizer seam
 
 Adopted as `bh-6wj9y` R10: a pure `domain.leaks.check(rendered, policy)` runs at O1, at every
@@ -1199,6 +1254,7 @@ semantics and the defaults are the decision. Every key is per hive; everything i
 | `outbox.mode` | `supervised` | The only accepted value in v1 (D2); anything else fails validation | `bh-6wj9y` |
 | `completion_policy` | `close-on-merge` | Or `close-on-release` | `bh-6wj9y` |
 | `milestones.draft_on_merge`, `.draft_on_release`, `.append_release_to_closed` | `false` | Which milestones draft records | `bh-6wj9y` |
+| `milestones.draft_on_start`, `.draft_on_blocked`, `.draft_on_deprioritised` | `false` | The progress milestones: the claim hook and the two operator verbs | `bh-dev42` |
 | `outbox.labels.on_delivery` | unset | Delivery value to owned labels; must lie inside `owned_prefixes` | `bh-6wj9y` |
 | `outbox.public_evidence.commit_links` | `false` | Allow public commit or PR URLs in `PublicFacts` | `bh-6wj9y` |
 | `outbox.reconcile.absent_confirmations` | `2` | k in O16 | `bh-6wj9y` |
@@ -1420,7 +1476,8 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
   "I2 measurement" below.
 - ~~The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).~~ Landed in `bh-61xkc`
   (section 9, "As built: needs-info and wake-on-reply"); `bh-elkv` keeps its rename and queue.
-- Started, blocked and deprioritised milestones; revert detection.
+- ~~Started, blocked and deprioritised milestones~~: landed in `bh-dev42` (section 12, "As
+  built: the progress milestones"). Revert detection stays open.
 - A closing-keyword lint on merge commits.
 - Issue identity across a transfer or key change (port ADR O3): v1 refuses a transferred URL as
   `OTHER_PROJECT` and marks a thread `missing` for a human; no automatic re-binding.

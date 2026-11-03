@@ -19,6 +19,13 @@
   ``ReportStore.close``, the only way a report closes. Merged but unreleased under
   ``close-on-release`` keeps the report open and held with ``delivery:merged``.
 
+The progress milestones (bh-dev42) only draft and never touch a dimension or the completion
+policy: ``on_work_started`` (the claim hook) drafts a ``started`` record for every report that
+tracks the claimed work, keyed on the work so only its first claim drafts; ``delivery_notice``
+(``bh work delivery blocked|deprioritised``) drafts the operator's public reason under fixed
+wording. Both draft only while a report's delivery is ``pending`` and only with their own switch
+on; the leak check runs on the drafted text, so a reason naming a bead id leaves a held record.
+
 **Nothing here sends.** This service holds no tracker, no grant and no writer: the most a milestone
 can do is leave a ``drafted`` (or ``held``) record for an operator to render, approve and send
 through the supervised sender. It is free to call from the work layer: a failure for one report is
@@ -43,12 +50,16 @@ from ..domain import (
     MilestoneItem,
     MilestoneOutcome,
     MilestonePolicy,
+    NoticeFact,
+    OpKind,
+    OpState,
     OutboxDocument,
     OutboxPolicy,
     RefusalReason,
     ReleasedFact,
     ReleaseFact,
     RenderContext,
+    StartFact,
     StorePosture,
     ThreadState,
     Verdict,
@@ -60,15 +71,20 @@ from ..domain import (
     is_awaiting_triage,
     merged_draft,
     merged_facts,
+    notice_draft,
+    notice_reason_problem,
     released_draft,
     released_facts,
     require_private_store,
+    started_draft,
 )
 from ..domain import outbox as machine
+from ..domain.milestones import NOTICE_EVENTS, PROGRESS_DELIVERY
 from .threads import binding_key
 
 MERGED = "merged"
 RELEASED = "released"
+STARTED = "started"
 
 
 def _why(exc: IntakeRefused | IntakeStoreError) -> str:
@@ -311,6 +327,98 @@ class MilestoneService:
 
         return self._released(view, ReleaseFact(released.tag, released.commit, actor), verdict_of)
 
+    # -- the progress milestones (bh-dev42): started, blocked, deprioritised -----------------
+
+    def on_work_started(self, fact: StartFact) -> MilestoneOutcome:
+        """The claim hook: a ``started`` record for every report (open or closed) that tracks
+        ``fact.work`` and whose delivery is still ``pending``. Keyed on the work, so only the
+        FIRST claim drafts: a re-claim, a resume after a bounce or a claim after an abandon finds
+        the key and drafts nothing (O2). Free (no store read at all) unless the outbox and
+        ``draft_on_start`` are both on. Never changes a dimension, never closes a report."""
+        if not (self._outbox.enabled and self._ms.drafts(STARTED)):
+            return MilestoneOutcome()
+        items = [
+            self._guarded(
+                report,
+                STARTED,
+                lambda r=report: self._progress(r, STARTED, lambda b: started_draft(b, fact)),
+            )
+            for report in self._store.trackers_of(fact.work)
+        ]
+        return MilestoneOutcome(tuple(items))
+
+    def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome:
+        """``bh work delivery blocked|deprioritised``: draft the operator's public ``reason``
+        under the event's fixed wording for every report (open or closed) that tracks
+        ``fact.work`` and whose delivery is still ``pending``. The leak check runs on the drafted
+        text, so a reason naming a bead id (or a branch, a path, a seat) leaves the record
+        ``held`` for the operator to fix or deliberately publish. Refused before any write for an
+        event that is not a notice, a reason that cannot be posted, the outbox or the event's
+        switch off, or work this store does not hold."""
+        if fact.event not in NOTICE_EVENTS:
+            raise IntakeRefused(
+                RefusalReason.INVALID_REQUEST,
+                f"{fact.event.value!r} is not an operator delivery notice (blocked, deprioritised)",
+            )
+        problem = notice_reason_problem(fact.reason)
+        if problem:
+            reason = (
+                RefusalReason.REASON_REQUIRED
+                if not fact.reason.strip()
+                else RefusalReason.INVALID_DRAFT
+            )
+            raise IntakeRefused(reason, problem)
+        if not self._outbox.enabled:
+            raise IntakeRefused(
+                RefusalReason.OUTBOX_DISABLED,
+                "intake.external.outbox.enabled is off (the default), so nothing can be drafted",
+            )
+        event = fact.event.value
+        if not self._ms.drafts(event):
+            raise IntakeRefused(
+                RefusalReason.INTAKE_DISABLED,
+                f"intake.external.milestones.draft_on_{event} is off (the default)",
+            )
+        if self._store.get(fact.work) is None:
+            raise IntakeRefused(RefusalReason.NOT_FOUND, f"no work {fact.work!r} in this store")
+        items = [
+            self._guarded(
+                report,
+                event,
+                lambda r=report: self._progress(r, event, lambda b: notice_draft(b, fact)),
+            )
+            for report in self._store.trackers_of(fact.work)
+        ]
+        return MilestoneOutcome(tuple(items))
+
+    def _progress(
+        self, report: str, event: str, request: Callable[[IssueBinding], DraftRequest]
+    ) -> MilestoneItem:
+        """One report of a progress milestone: draft ``request(binding)`` in ONE document write
+        when the report's delivery is ``pending``; anything else is reported and left alone."""
+        view = self._store.get(report)
+        if view is None or view.binding is None:
+            return MilestoneItem(report, event, note="not a bound report")
+        binding = view.binding
+        current = delivery_of(view.labels)
+        if current != PROGRESS_DELIVERY:
+            return MilestoneItem(report, event, note=_no_progress(current, event))
+        draft = request(binding)
+        with self._lock.hold(binding_key(binding)):
+            doc = self._store.read_outbox(report) or OutboxDocument()
+            after, drafted, refused = self._draft(doc, view, binding, draft, event)
+            if after is not doc:
+                self._store.write_outbox(report, after, expect_seq=doc.seq, actor=draft.actor)
+        note = "" if drafted or refused else f"a {event} record for this work already exists"
+        return MilestoneItem(
+            report,
+            event,
+            drafted=drafted,
+            held=bool(drafted) and _is_held(after, drafted),
+            note=note,
+            error=refused,
+        )
+
     # -- the completion policy -----------------------------------------------------------------
 
     def complete(self, report: str, actor: str) -> bool:
@@ -415,6 +523,18 @@ def _unchanged(delivery: str | None) -> str:
     if delivery is None:
         return "no delivery state (not linked with `link`); nothing to advance"
     return f"already delivery:{delivery}; nothing to advance"
+
+
+def _no_progress(delivery: str | None, event: str) -> str:
+    if delivery is None:
+        return f"no delivery state (not linked with `link`); no {event} record drafted"
+    return f"already delivery:{delivery}; a {event} record would be stale news, none drafted"
+
+
+def _is_held(doc: OutboxDocument, outbox_id: str) -> bool:
+    record = doc.records.get(outbox_id)
+    op = record.op(OpKind.COMMENT) if record is not None else None
+    return op is not None and op.state is OpState.HELD
 
 
 def _not_verified(verdict: Verdict, tag: str) -> str:

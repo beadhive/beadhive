@@ -57,6 +57,7 @@ from ..domain import (
     MilestoneOutcome,
     NeedsInfoOutcome,
     NeedsInfoRequest,
+    NoticeFact,
     OpKind,
     OpState,
     OutboxApprove,
@@ -73,6 +74,7 @@ from ..domain import (
     RenderedRecord,
     ReplyDraft,
     ReportDraft,
+    StartFact,
     ThreadOutcome,
     ThreadRequest,
     ThreadView,
@@ -607,6 +609,12 @@ class IntakeService:
     def on_release(self, fact: ReleaseFact) -> MilestoneOutcome:
         return self._milestone_service().on_release(fact)
 
+    def on_work_started(self, fact: StartFact) -> MilestoneOutcome:
+        return self._milestone_service().on_work_started(fact)
+
+    def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome:
+        return self._milestone_service().delivery_notice(fact)
+
     # -- discovery (I6) ----------------------------------------------------------------------
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
@@ -753,6 +761,12 @@ class NullIntake:
 
     def on_release(self, fact: ReleaseFact) -> MilestoneOutcome:
         return MilestoneOutcome()
+
+    def on_work_started(self, fact: StartFact) -> MilestoneOutcome:
+        return MilestoneOutcome()  # free: the claim hook reads, writes and drafts nothing
+
+    def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome:
+        raise _disabled()
 
 
 def _disabled() -> IntakeRefused:
