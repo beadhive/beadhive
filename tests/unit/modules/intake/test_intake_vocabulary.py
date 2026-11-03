@@ -15,6 +15,7 @@ def test_intake_dimensions_are_the_closed_sets() -> None:
         "rejected",
         "rerouted",
         "promoted",
+        "needs-info",  # bh-61xkc: a bound report waiting for its reporter (not terminal)
     }
     assert vocab.INTAKE_DIMENSIONS["origin"] == {
         "report",
@@ -33,6 +34,7 @@ def test_label_constants_agree_with_the_dimensions() -> None:
     for label in (
         vocab.INTAKE_UNTRIAGED,
         vocab.INTAKE_PROMOTED,
+        vocab.INTAKE_NEEDS_INFO,
         vocab.ORIGIN_REPORT,
         vocab.ORIGIN_GITHUB,
         vocab.ORIGIN_IMPORT,
@@ -88,6 +90,12 @@ def test_queue_predicates() -> None:
     assert vocab.is_promoted(["intake:promoted"]) and not vocab.is_promoted([])
     assert vocab.is_report_origin(["origin:report"]) and not vocab.is_report_origin(None)
     assert vocab.is_escalation_origin(["origin:escalation"])
+    # bh-61xkc: needs-info is out of the untriaged queue but still awaiting triage
+    assert vocab.is_needs_info(["intake:needs-info"]) and not vocab.is_needs_info(None)
+    assert not vocab.is_untriaged_intake(["intake:needs-info"])
+    assert vocab.is_awaiting_triage(["intake:needs-info"])
+    assert vocab.is_awaiting_triage(["intake:untriaged"])
+    assert not vocab.is_awaiting_triage(["intake:accepted"]) and not vocab.is_awaiting_triage(None)
 
 
 def test_origin_of_reads_only_registered_values() -> None:

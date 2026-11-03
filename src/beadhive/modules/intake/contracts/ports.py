@@ -34,6 +34,8 @@ from ..domain import (
     LinkRequest,
     MergeFact,
     MilestoneOutcome,
+    NeedsInfoOutcome,
+    NeedsInfoRequest,
     OpKind,
     OutboxApprove,
     OutboxDocument,
@@ -57,6 +59,9 @@ from ..domain import (
     ThreadRequest,
     ThreadView,
     Verdict,
+    WakeOutcome,
+    WakeRequest,
+    WakeSweep,
     WorkDraft,
     WorkProgress,
 )
@@ -145,6 +150,16 @@ class IntakePort(Protocol):
     def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome: ...  # work.merge, work.finish
 
     def on_release(self, fact: ReleaseFact) -> MilestoneOutcome: ...  # bh work delivery release
+
+    # waiting for the reporter (bh-61xkc): a bound report asks, waits on ``intake:needs-info`` and
+    # wakes back to ``intake:untriaged`` on a reply. The question is a drafted reply (supervised:
+    # an operator approves and sends it); waking reads the stored thread only.
+
+    def needs_info(self, request: NeedsInfoRequest) -> NeedsInfoOutcome: ...  # bh work needs-info
+
+    def wake(self, request: WakeRequest) -> WakeOutcome: ...  # bh work wake <report>
+
+    def wake_all(self, *, actor: str) -> WakeSweep: ...  # bh work wake --all (opt-in)
 
 
 @runtime_checkable

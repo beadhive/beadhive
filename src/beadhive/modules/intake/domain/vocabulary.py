@@ -10,6 +10,11 @@ The lifecycle states are modelled through native ``bd set-state <bead> <dim>=<va
 - ``intake:untriaged`` is untriaged inbound; a triage disposition moves it to a terminal value
   (``accepted``, ``rejected``, ``rerouted``, ``promoted``), which clears ``untriaged`` while
   recording which disposition fielded the report. ``intake:promoted`` is also the adopt queue key.
+- ``intake:needs-info`` (bh-61xkc) is a bound report waiting for its reporter: triage asked a
+  question (a drafted, supervised reply) and the report left the untriaged queue. It is NOT
+  terminal: a reporter's reply wakes it back to ``untriaged``, and every disposition fields it
+  exactly as it fields an untriaged report. Only a report bound to an external issue can wait
+  (a born-native report has no thread to reply on and no ``intake-hold:`` gate).
 - ``origin:<channel>`` is the CLOSED intake channel a bead entered through. ``intake`` is queue
   membership (cleared on triage); ``origin`` is a durable source tag.
 
@@ -34,7 +39,12 @@ NOTIFIED_DIM = "notified"
 #: splices these into ``STATE_DIMENSIONS``, so ``registry.closed_dimensions`` validates them
 #: fleet-wide (``bh label validate`` accepts these values and refuses any other).
 INTAKE_DIMENSIONS: Mapping[str, frozenset[str]] = {
-    INTAKE_DIM: frozenset({"untriaged", "accepted", "rejected", "rerouted", "promoted"}),
+    # `needs-info` (bh-61xkc) is the one non-terminal value besides `untriaged`: a bound report
+    # waiting for its reporter. A new closed value is rotation-gated (bh-tfko9 pattern, rollout
+    # bh-hmtjn): every reader accepts it before any hive writes it.
+    INTAKE_DIM: frozenset(
+        {"untriaged", "accepted", "rejected", "rerouted", "promoted", "needs-info"}
+    ),
     # `escalation` is the fire-and-forget HQ channel; `factory-seed` is the synthetic-identity
     # channel the HQ factory stamps; `backfill` is the historical-reconstruction channel (bh-vfx9).
     # The companion `source:<kind>` facet stays intentionally OPEN: closed dimensions are reserved
@@ -56,6 +66,7 @@ TRACKS_EDGE = "tracks"
 # Canonical `<dim>:<value>` label-cache entries (what `bd set-state` writes).
 INTAKE_UNTRIAGED = "intake:untriaged"
 INTAKE_PROMOTED = "intake:promoted"  # handed to the planner (adopt queue key)
+INTAKE_NEEDS_INFO = "intake:needs-info"  # a bound report waiting for its reporter (bh-61xkc)
 ORIGIN_REPORT = "origin:report"
 ORIGIN_GITHUB = "origin:github"
 ORIGIN_IMPORT = "origin:import"
@@ -118,6 +129,18 @@ def is_untriaged_intake(labels) -> bool:
     """True while a bead is untriaged inbound (`intake:untriaged`). Triage clears the
     intake dimension, so this predicate drives the triage queue."""
     return INTAKE_UNTRIAGED in (labels or [])
+
+
+def is_needs_info(labels) -> bool:
+    """True while a bound report waits for its reporter (`intake:needs-info`). Such a report is
+    out of the untriaged queue; a reporter's reply wakes it back to `intake:untriaged`."""
+    return INTAKE_NEEDS_INFO in (labels or [])
+
+
+def is_awaiting_triage(labels) -> bool:
+    """True while triage still owes a report a disposition: untriaged, or waiting for the
+    reporter (`intake:needs-info`). Every disposition fields both the same way."""
+    return is_untriaged_intake(labels) or is_needs_info(labels)
 
 
 def is_promoted(labels) -> bool:
@@ -185,6 +208,7 @@ __all__ = [
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
+    "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
     "NOTIFIED_CORRECTED",
@@ -205,7 +229,9 @@ __all__ = [
     "delivery_after_unlink",
     "delivery_of",
     "disposition_state",
+    "is_awaiting_triage",
     "is_escalation_origin",
+    "is_needs_info",
     "is_promoted",
     "is_report_origin",
     "is_untriaged_intake",

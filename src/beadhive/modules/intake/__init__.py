@@ -82,6 +82,7 @@ from .domain import (
     INTAKE_HOLD_GATE_TYPE,
     INTAKE_HOLD_MARKER,
     INTAKE_HOLD_REASON,
+    INTAKE_NEEDS_INFO,
     INTAKE_PROMOTED,
     INTAKE_UNTRIAGED,
     NOTIFIED_DIM,
@@ -106,8 +107,10 @@ from .domain import (
     delivery_after_unlink,
     disposition_state,
     hold_findings,
+    is_awaiting_triage,
     is_escalation_origin,
     is_hold_gate,
+    is_needs_info,
     is_promoted,
     is_report_origin,
     is_untriaged_intake,
@@ -132,6 +135,7 @@ __all__ = [
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
+    "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
     "NOTIFIED_DIM",
@@ -201,7 +205,9 @@ __all__ = [
     "checkpoint_key",
     "delivery_after_unlink",
     "disposition_state",
+    "is_awaiting_triage",
     "is_escalation_origin",
+    "is_needs_info",
     "is_promoted",
     "is_report_origin",
     "is_untriaged_intake",
@@ -227,4 +233,22 @@ __all__ += [
     "OutboxDocumentError",
     "Sanitizer",
     "SanitizerFinding",
+]
+
+# -- waiting for the reporter (bh-61xkc) -------------------------------------------------------
+
+from .contracts import (  # noqa: E402
+    NeedsInfoOutcome,
+    NeedsInfoRequest,
+    WakeOutcome,
+    WakeRequest,
+    WakeSweep,
+)
+
+__all__ += [
+    "NeedsInfoOutcome",
+    "NeedsInfoRequest",
+    "WakeOutcome",
+    "WakeRequest",
+    "WakeSweep",
 ]
