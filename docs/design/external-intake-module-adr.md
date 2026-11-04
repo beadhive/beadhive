@@ -369,8 +369,9 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   no-op, an unreadable token is refreshed rather than frozen. Repairs of an interrupted create
   (`hold`, `origin`, `intake`, `source`) are reported in `ImportOutcome.repaired`, fix only the
   missing piece and never touch an existing disposition; a closed report is never given a hold.
-  The hold repair is a targeted `holds()` check for this report, not `sweep_holds`, so a re-import
-  does not scan every report.
+  The hold repair is the targeted `is_held(report)` check (one read of that report's own blocking
+  dependencies), not `holds()` and not `sweep_holds`, so a re-import never scans every gate: an
+  unchanged upsert makes the same few `bd` calls however many reports and holds exist.
 - **Lock and config.** Import uses the root's one `FlockIntakeLock` (`intake_services.intake_lock`,
   the same lock the outbox sender holds): `guard_primary` first (`NOT_PRIMARY`, naming `bh work
   import`), then an advisory never-waiting `flock` under the hive's `.bh/intake/locks/`
