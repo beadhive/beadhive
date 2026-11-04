@@ -4,7 +4,8 @@
 no consumer test needs a plugin package, an HTTP client or a network. It is also the port's
 second implementation: it passes the same :data:`~beadhive.testing.tracker.cases.TRACKER_CASES`
 a real adapter must pass. It implements the required :class:`TrackerAdapter` plus every optional
-Protocol (``CommentWriter``, ``LabelWriter``, ``IssueResolver``, ``MarkerCodec``);
+Protocol (``CommentWriter``, ``LabelWriter``, ``LabelReader``, ``LabelDefiner``,
+``IssueResolver``, ``MarkerCodec``);
 :func:`without_resolver` hides the resolver to exercise a consumer's fallback.
 
 Deterministic: no clock (every timestamp is supplied by the world), and a rate-limit wait calls
@@ -33,6 +34,7 @@ from beadhive.modules.tracker.contracts import (
     IssueKey,
     IssueQuery,
     IssueState,
+    LabelDefinition,
     LabelNotOwned,
     LabelOwnership,
     NotVisible,
@@ -83,13 +85,19 @@ def _since(checkpoint: Checkpoint | None) -> datetime | None:
 _MARKER_FORMAT = "<!-- bh:v1 hive={hive} install={install} outbox={outbox} -->"
 
 
+#: The label namespace the adapter owns when it defines repository labels (it takes no
+#: ``LabelOwnership`` per call, unlike ``change_labels``).
+_DEFAULT_OWNERSHIP = LabelOwnership(prefixes=("bh:",))
+
+
 class MemoryTracker:
-    """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter``, ``IssueResolver`` and
-    ``MarkerCodec``.
+    """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter``, ``LabelReader``,
+    ``LabelDefiner``, ``IssueResolver`` and ``MarkerCodec``.
 
     ``enabled`` is the resolved set of enabled operations, as a composition root would hand it to
-    a real adapter. The default enables the two reads and no write. A disabled operation is
-    refused with ``OperationNotEnabled`` before any request.
+    a real adapter. The default enables the three reads and no write. A disabled operation is
+    refused with ``OperationNotEnabled`` before any request. ``ownership`` is the label namespace
+    ``define_labels`` may touch (default ``bh:``).
     """
 
     def __init__(
@@ -101,6 +109,7 @@ class MemoryTracker:
         budget: RetryBudget | None = None,
         sleep: Callable[[float], None] | None = None,
         me: Actor | None = None,
+        ownership: LabelOwnership = _DEFAULT_OWNERSHIP,
     ) -> None:
         self.world = world
         self._enabled = frozenset(enabled)
@@ -108,6 +117,7 @@ class MemoryTracker:
         self._budget = budget or RetryBudget()
         self._sleep = sleep or world.sleep
         self._me = me or MemoryWorld.actor("maintainer")
+        self._ownership = ownership
         self._used_grants: set[str] = set()
 
     # -- request gate: the fake's model of a remote call and its rate limit -------------------
@@ -227,6 +237,14 @@ class MemoryTracker:
         window, nxt = self._window(ids, query.cursor, query.page_size)
         return IdPage(tuple(window), nxt)
 
+    # -- LabelReader --------------------------------------------------------------------------
+
+    def list_label_definitions(self) -> tuple[LabelDefinition, ...]:
+        """One read: every label definition of the repository, owned or not, ordered by name."""
+        self._require(Operation.LABELS_READ)
+        self._request()
+        return self.world.label_definitions()
+
     # -- IssueResolver (amendment A1) ---------------------------------------------------------
 
     def resolve(self, url: str) -> IssueKey:
@@ -279,14 +297,14 @@ class MemoryTracker:
 
     # -- writes -------------------------------------------------------------------------------
 
-    def _authorise(self, op: Operation, issue: IssueKey, grant: WriteGrant) -> None:
+    def _authorise(self, op: Operation, target: IssueKey | ProjectRef, grant: WriteGrant) -> None:
         self._require(op)
-        if grant.operation is not op or grant.target != issue:
+        if grant.operation is not op or grant.target != target:
             raise OperationNotEnabled(f"grant {grant.grant_id} does not cover {op.value}")
         if grant.grant_id in self._used_grants:
             raise OperationNotEnabled(f"grant {grant.grant_id} was already used")
-        if issue.identifier not in self.world.issues:
-            raise NotVisible(f"{issue.identifier} is not visible")
+        if isinstance(target, IssueKey) and target.identifier not in self.world.issues:
+            raise NotVisible(f"{target.identifier} is not visible")
         self._used_grants.add(grant.grant_id)
 
     def _when(self) -> datetime:
@@ -336,6 +354,33 @@ class MemoryTracker:
             raise WriteOutcomeUnknown("the tracker did not confirm the label change")
         return WriteReceipt(grant.grant_id, grant.operation, issue, labels_after=frozenset(labels))
 
+    def define_labels(
+        self, definitions: tuple[LabelDefinition, ...], *, grant: WriteGrant
+    ) -> WriteReceipt:
+        """Create or update repository label definitions under a ``ProjectRef`` grant.
+
+        Owned names only, checked for the whole batch before anything is written. Idempotent: a
+        definition the repository already holds identically is a no-op, and a batch that changes
+        nothing sends no write. An existing owned name with another color or description is
+        updated in place."""
+        foreign = sorted(d.name for d in definitions if not self._ownership.owns(d.name))
+        if foreign:
+            raise LabelNotOwned(f"labels outside the owned set: {', '.join(foreign)}")
+        project = self.describe().project
+        self._authorise(Operation.LABELS_DEFINE, project, grant)
+        self._request(write=True)
+        changed = [d for d in definitions if self.world.label_defs.get(d.name) != d]
+        if changed:
+            self.world.writes += 1
+            ambiguous, self.world.ambiguous_next_write = self.world.ambiguous_next_write, None
+            if ambiguous is False:  # cut off before the tracker applied anything (K1)
+                raise WriteOutcomeUnknown("the tracker did not confirm the label definitions")
+            for definition in changed:
+                self.world.label_defs[definition.name] = definition
+            if ambiguous:  # applied, but the caller cannot know
+                raise WriteOutcomeUnknown("the tracker did not confirm the label definitions")
+        return WriteReceipt(grant.grant_id, grant.operation, project)
+
 
 class _WithoutResolver:
     """Delegates every port operation except the optional ``IssueResolver`` pair."""
@@ -367,6 +412,14 @@ class _WithoutResolver:
 
     def marker_line(self, marker: OwnMarker) -> str:
         return self._inner.marker_line(marker)
+
+    def list_label_definitions(self) -> tuple[LabelDefinition, ...]:
+        return self._inner.list_label_definitions()
+
+    def define_labels(
+        self, definitions: tuple[LabelDefinition, ...], *, grant: WriteGrant
+    ) -> WriteReceipt:
+        return self._inner.define_labels(definitions, grant=grant)
 
     def post_comment(
         self, issue: IssueKey, body: str, *, marker: OwnMarker, grant: WriteGrant

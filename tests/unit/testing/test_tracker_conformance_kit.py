@@ -7,6 +7,7 @@ here reads a clock, sleeps or opens a socket.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import socket
 import time
@@ -23,7 +24,11 @@ from beadhive.modules.tracker.contracts import (
     IssueKey,
     IssueQuery,
     IssueResolver,
+    LabelDefiner,
+    LabelDefinition,
+    LabelNotOwned,
     LabelOwnership,
+    LabelReader,
     LabelWriter,
     Operation,
     OperationNotEnabled,
@@ -31,6 +36,7 @@ from beadhive.modules.tracker.contracts import (
     TrackerAdapter,
     UrlNotRecognized,
     WriteOutcomeUnknown,
+    WriteReceipt,
 )
 from beadhive.testing import ConformanceFailure
 from beadhive.testing.tracker import (
@@ -75,12 +81,19 @@ def test_memory_tracker_conforms(impl: str, case: TrackerCase) -> None:
 
 def test_case_set_covers_the_acceptance_scenarios() -> None:
     ids = {case.case_id for case in TRACKER_CASES}
-    assert len(ids) == len(TRACKER_CASES) == 28
+    assert len(ids) == len(TRACKER_CASES) == 35
     assert {
         "issues.closed-included",
         "issues.checkpoint-incremental",
         "comments.deletion-needs-id-snapshot",
         "write.ambiguous-not-applied",
+        "labels.read-lists-every-definition",
+        "labels.define-only-owned",
+        "labels.define-grant-matches-and-single-use",
+        "labels.define-refused-when-not-enabled",
+        "labels.define-is-idempotent",
+        "labels.define-ambiguous-not-retried",
+        "labels.define-ambiguous-not-applied",
         "resolver.resolve-is-pure-and-canonical",
         "resolver.refusals",
         "resolver.get-reads-one-issue",
@@ -96,6 +109,7 @@ def test_memory_tracker_implements_every_optional_protocol_and_the_view_hides_th
     for adapter in (tracker, view):
         assert isinstance(adapter, TrackerAdapter)
         assert isinstance(adapter, CommentWriter) and isinstance(adapter, LabelWriter)
+        assert isinstance(adapter, LabelReader) and isinstance(adapter, LabelDefiner)
     assert isinstance(tracker, IssueResolver) and not isinstance(view, IssueResolver)
 
 
@@ -110,6 +124,7 @@ def test_default_enables_reads_only_and_a_disabled_read_is_refused_before_any_re
         lambda: closed.list_issues(IssueQuery()),
         lambda: closed.list_comments(CommentQuery()),
         lambda: closed.list_ids(IdQuery(IdSubject.ISSUES)),
+        lambda: closed.list_label_definitions(),
         lambda: closed.get(IssueKey("#1", world.issue_url(1))),
     ):
         with pytest.raises(OperationNotEnabled):
@@ -185,6 +200,21 @@ def test_k1_default_is_applied_and_not_applied_stores_nothing() -> None:
             )
         assert (world.write_requests(), world.comment_count(issue)) == (1, stored)
         assert world.ambiguous_next_write is None  # one-shot
+
+
+def test_a_define_that_changes_nothing_sends_no_write_and_keeps_a_pending_ambiguity() -> None:
+    """A no-op define is converged, not a request: it does not consume the one-shot K1 flag."""
+    world = MemoryWorld()
+    world.seed_label_definition(LabelDefinition("bh:accepted", "0e8a16", "Accepted"))
+    tracker = MemoryTracker(world, enabled=READ_OPERATIONS | {Operation.LABELS_DEFINE})
+    project = tracker.describe().project
+    world.fail_next_write_ambiguously(applied=False)
+    receipt = tracker.define_labels(
+        (LabelDefinition("bh:accepted", "0e8a16", "Accepted"),),
+        grant=grant(Operation.LABELS_DEFINE, project),
+    )
+    assert receipt.target == project and world.write_requests() == 0
+    assert world.ambiguous_next_write is False  # still armed for the next real write
 
 
 # ---- mutation controls: each broken variant is rejected by its named case -------------------
@@ -306,6 +336,91 @@ class _SnapshotListsNothing(MemoryTracker):
         return type(page)(page.ids[:1], page.next_cursor)
 
 
+class _DefinesForeignLabels(MemoryTracker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ownership = LabelOwnership(prefixes=("",))
+
+
+class _DefinesPartially(MemoryTracker):
+    """Applies each definition as it goes, so a foreign name leaves the owned ones behind."""
+
+    def define_labels(self, definitions, *, grant):
+        for n, definition in enumerate(definitions):
+            if not self._ownership.owns(definition.name):
+                raise LabelNotOwned(f"outside the owned set: {definition.name}")
+            one = dataclasses.replace(grant, grant_id=f"{grant.grant_id}-{n}")
+            super().define_labels((definition,), grant=one)
+        return WriteReceipt(grant.grant_id, grant.operation, self.describe().project)
+
+
+class _DefineIgnoresGrantTarget(MemoryTracker):
+    def define_labels(self, definitions, *, grant):
+        widened = dataclasses.replace(grant, target=self.describe().project)
+        return super().define_labels(definitions, grant=widened)
+
+
+class _DefineIgnoresEnabled(MemoryTracker):
+    def _require(self, operation):
+        if operation is not Operation.LABELS_DEFINE:
+            super()._require(operation)
+
+
+class _DefineIsNotIdempotent(MemoryTracker):
+    def define_labels(self, definitions, *, grant):
+        before = dict(self.world.label_defs)
+        receipt = super().define_labels(definitions, grant=grant)
+        if self.world.label_defs == before:
+            self.world.writes += 1  # sends the write again for a definition it already holds
+        return receipt
+
+
+class _DefineNeverUpdates(MemoryTracker):
+    def define_labels(self, definitions, *, grant):
+        fresh = tuple(d for d in definitions if d.name not in self.world.label_defs)
+        return super().define_labels(fresh, grant=grant)
+
+
+class _DefineRetriesAmbiguousWrite(MemoryTracker):
+    def define_labels(self, definitions, *, grant):
+        try:
+            return super().define_labels(definitions, grant=grant)
+        except WriteOutcomeUnknown:
+            self._used_grants.discard(grant.grant_id)
+            return super().define_labels(definitions, grant=grant)
+
+
+class _DefineAppliesAnyway(MemoryTracker):
+    def define_labels(self, definitions, *, grant):
+        if self.world.ambiguous_next_write is False:
+            self.world.ambiguous_next_write = True
+        return super().define_labels(definitions, grant=grant)
+
+
+class _DefineRefundsAmbiguousGrant(MemoryTracker):
+    def define_labels(self, definitions, *, grant):
+        try:
+            return super().define_labels(definitions, grant=grant)
+        except WriteOutcomeUnknown:
+            self._used_grants.discard(grant.grant_id)
+            raise
+
+
+class _ListsOnlyOwnedDefinitions(MemoryTracker):
+    def list_label_definitions(self):
+        return tuple(d for d in super().list_label_definitions() if self._ownership.owns(d.name))
+
+
+class _ProbeEnablesLabelsDefine(MemoryTracker):
+    def probe_capabilities(self):
+        report = super().probe_capabilities()
+        states = dict(report.states)
+        states[Operation.LABELS_DEFINE] = dataclasses.replace(
+            states[Operation.LABELS_DEFINE], enabled=True
+        )
+        return dataclasses.replace(report, states=states)
+
+
 def _variant_factory(cls: type[MemoryTracker]):
     def factory(*, enabled=frozenset(), page_size=2, budget=None) -> TrackerSubject:
         world = MemoryWorld()
@@ -336,6 +451,20 @@ _CASES = {case.case_id: case for case in TRACKER_CASES}
         (_ResolveSendsARequest, "resolver.resolve-is-pure-and-canonical"),
         (_GetSkipsTheRead, "resolver.get-reads-one-issue"),
         (_SnapshotListsNothing, "comments.deletion-needs-id-snapshot"),
+        (_ProbeEnablesLabelsDefine, "capability.default-read-only"),
+        (_ListsOnlyOwnedDefinitions, "labels.read-lists-every-definition"),
+        (_DefinesForeignLabels, "labels.define-only-owned"),
+        (_DefinesPartially, "labels.define-only-owned"),
+        (_DefineIgnoresGrantTarget, "labels.define-grant-matches-and-single-use"),
+        (_ReusableGrants, "labels.define-grant-matches-and-single-use"),
+        (_DefineIgnoresEnabled, "labels.define-refused-when-not-enabled"),
+        (_IgnoresEnabled, "labels.define-refused-when-not-enabled"),
+        (_DefineIsNotIdempotent, "labels.define-is-idempotent"),
+        (_DefineNeverUpdates, "labels.define-is-idempotent"),
+        (_DefineRetriesAmbiguousWrite, "labels.define-ambiguous-not-retried"),
+        (_DefineRefundsAmbiguousGrant, "labels.define-ambiguous-not-retried"),
+        (_DefineAppliesAnyway, "labels.define-ambiguous-not-applied"),
+        (_DefineRefundsAmbiguousGrant, "labels.define-ambiguous-not-applied"),
     ],
     ids=lambda value: value if isinstance(value, str) else value.__name__.lstrip("_"),
 )

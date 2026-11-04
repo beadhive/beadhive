@@ -32,6 +32,7 @@ from typing import Any, Protocol
 from beadhive.modules.tracker.application import iterate, snapshot_ids
 from beadhive.modules.tracker.contracts import (
     READ_OPERATIONS,
+    WRITE_OPERATIONS,
     Actor,
     ActorKind,
     ChangeRequestUrl,
@@ -44,14 +45,18 @@ from beadhive.modules.tracker.contracts import (
     IssueQuery,
     IssueResolver,
     IssueState,
+    LabelDefiner,
+    LabelDefinition,
     LabelNotOwned,
     LabelOwnership,
+    LabelReader,
     LabelWriter,
     NotVisible,
     Operation,
     OperationNotEnabled,
     OtherProject,
     OwnMarker,
+    ProjectRef,
     RateLimited,
     RetryBudget,
     TrackerAdapter,
@@ -133,7 +138,7 @@ def find_by_listing(adapter: TrackerReader, url: str) -> TrackerIssue | None:
     return next((issue for issue in items if issue.key.url == url), None)
 
 
-def grant(op: Operation, target: IssueKey, grant_id: str = "g-1") -> WriteGrant:
+def grant(op: Operation, target: IssueKey | ProjectRef, grant_id: str = "g-1") -> WriteGrant:
     return WriteGrant(grant_id=grant_id, operation=op, target=target)
 
 
@@ -372,7 +377,7 @@ def _capabilities_default_read_only(factory: TrackerFactory) -> None:
     assert report.actor is not None and report.actor == s.adapter.whoami()
     for op in READ_OPERATIONS & s.adapter.describe().supported:  # labels.read is optional
         assert report.states[op].usable
-    for op in (Operation.COMMENT_CREATE, Operation.LABELS_CHANGE):
+    for op in WRITE_OPERATIONS & s.adapter.describe().supported:  # labels.define is optional
         state = report.states[op]
         assert not state.enabled and not state.usable  # every write is off by default
         assert state.probe in (Tri.YES, Tri.NO, Tri.UNKNOWN)
@@ -528,6 +533,187 @@ def _labels_only_owned(factory: TrackerFactory) -> None:
     assert receipt.labels_after == expected == s.world.server_labels(issue)
 
 
+# ---- cases: repository label definitions (labels.read / labels.define) ---------------------
+#
+# Both operations are optional: a case whose operation is not in ``describe().supported`` returns
+# (an adapter that predates them is not failed), but an adapter that DECLARES one must expose the
+# matching ``LabelReader`` / ``LabelDefiner`` and pass every case below.
+
+ACCEPTED = LabelDefinition("bh:accepted", "0e8a16", "Accepted for triage")
+TRIAGE = LabelDefinition("bh:triage", "fbca04", "Waiting for triage")
+HUMAN_BUG = LabelDefinition("bug", "d73a4a", "Something is not working")
+
+
+def _definer_subject(factory: TrackerFactory, **kwargs: Any) -> TrackerSubject | None:
+    """A subject with labels.define enabled, or ``None`` when the adapter does not support it."""
+    if Operation.LABELS_DEFINE not in factory().adapter.describe().supported:
+        return None
+    s = factory(enabled=frozenset({Operation.LABELS_DEFINE}), **kwargs)
+    assert isinstance(s.adapter, LabelDefiner), "labels.define is supported but has no definer"
+    return s
+
+
+def _define_grant(s: TrackerSubject, grant_id: str = "g-1") -> WriteGrant:
+    """The repository-scoped grant a define needs: its target is the adapter's project."""
+    return grant(Operation.LABELS_DEFINE, s.adapter.describe().project, grant_id)
+
+
+def _labels_read_lists_every_definition(factory: TrackerFactory) -> None:
+    s = factory()
+    if Operation.LABELS_READ not in s.adapter.describe().supported:
+        return
+    assert isinstance(s.adapter, LabelReader), "labels.read is supported but has no reader"
+    assert s.adapter.list_label_definitions() == ()
+    for definition in (HUMAN_BUG, TRIAGE):  # a read is not limited to the owned namespace
+        s.world.seed_label_definition(definition)
+    before = s.world.read_requests()
+    listed = s.adapter.list_label_definitions()
+    assert_contract_only(listed)
+    assert len(listed) == 2 and set(listed) == {HUMAN_BUG, TRIAGE}
+    assert s.world.read_requests() > before  # it is a request, like every read
+    assert s.world.write_requests() == 0
+
+
+def _labels_define_only_owned(factory: TrackerFactory) -> None:
+    s = _definer_subject(factory)
+    if s is None:
+        return
+    s.world.seed_label_definition(HUMAN_BUG)
+    foreign = LabelDefinition("wontfix", "ffffff", "Not ours")
+    lookalike = LabelDefinition("x-bh:accepted", "ffffff", "Prefix in the middle")
+    for n, batch in enumerate(((foreign,), (lookalike,), (ACCEPTED, foreign))):
+        _refused(
+            lambda batch=batch, n=n: s.adapter.define_labels(
+                batch, grant=_define_grant(s, f"g-{n}")
+            ),
+            LabelNotOwned,
+            "a label definition outside the owned set was written",
+        )
+    assert s.world.write_requests() == 0
+    assert s.world.label_definitions() == (HUMAN_BUG,)  # nothing partially applied
+    receipt = s.adapter.define_labels((ACCEPTED, TRIAGE), grant=_define_grant(s, "g-ok"))
+    assert_contract_only(receipt)
+    assert receipt.grant_id == "g-ok" and receipt.operation is Operation.LABELS_DEFINE
+    assert receipt.target == s.adapter.describe().project
+    assert set(s.world.label_definitions()) == {HUMAN_BUG, ACCEPTED, TRIAGE}  # theirs untouched
+
+
+def _labels_define_grant_matches_and_single_use(factory: TrackerFactory) -> None:
+    s = _definer_subject(factory)
+    if s is None:
+        return
+    project = s.adapter.describe().project
+    issue = s.world.add_issue("thread", at=at(2))
+    wrong = [
+        grant(Operation.LABELS_DEFINE, issue, "g-issue"),  # a define is not issue-scoped
+        grant(
+            Operation.LABELS_DEFINE, ProjectRef(project.tracker, "someone-else/elsewhere"), "g-2"
+        ),
+        grant(Operation.LABELS_CHANGE, project, "g-op"),  # another operation
+    ]
+    for bad in wrong:
+        _refused(
+            lambda bad=bad: s.adapter.define_labels((ACCEPTED,), grant=bad),
+            OperationNotEnabled,
+            f"a mismatched grant was accepted: {bad}",
+        )
+    assert s.world.write_requests() == 0 and s.world.label_definitions() == ()
+    good = _define_grant(s, "g-once")
+    s.adapter.define_labels((ACCEPTED,), grant=good)
+    _refused(
+        lambda: s.adapter.define_labels((TRIAGE,), grant=good),
+        OperationNotEnabled,
+        "a grant was used twice",
+    )
+    assert s.world.write_requests() == 1 and s.world.label_definitions() == (ACCEPTED,)
+
+
+def _labels_define_refused_when_not_enabled(factory: TrackerFactory) -> None:
+    s = factory()  # no write enabled
+    if Operation.LABELS_DEFINE not in s.adapter.describe().supported:
+        return
+    s.world.seed_label_definition(HUMAN_BUG)
+    if isinstance(s.adapter, LabelDefiner):  # an absent definer is the structural refusal
+        _refused(
+            lambda: s.adapter.define_labels((ACCEPTED,), grant=_define_grant(s)),
+            OperationNotEnabled,
+            "a label was defined with labels.define disabled",
+        )
+    assert s.world.write_requests() == 0
+    assert s.world.label_definitions() == (HUMAN_BUG,)
+
+
+def _labels_define_is_idempotent(factory: TrackerFactory) -> None:
+    """The same definition again is a no-op (no write, no duplicate); a changed color or
+    description of an owned label updates it in place."""
+    s = _definer_subject(factory)
+    if s is None:
+        return
+    s.adapter.define_labels((ACCEPTED, TRIAGE), grant=_define_grant(s, "g-1"))
+    writes = s.world.write_requests()
+    assert writes >= 1 and set(s.world.label_definitions()) == {ACCEPTED, TRIAGE}
+    s.adapter.define_labels((ACCEPTED, TRIAGE), grant=_define_grant(s, "g-2"))
+    assert s.world.write_requests() == writes  # converged: nothing sent
+    assert len(s.world.label_definitions()) == 2 and set(s.world.label_definitions()) == {
+        ACCEPTED,
+        TRIAGE,
+    }
+    changed = LabelDefinition(ACCEPTED.name, "000000", "Re-described")
+    s.adapter.define_labels((changed,), grant=_define_grant(s, "g-3"))
+    assert s.world.write_requests() > writes
+    assert len(s.world.label_definitions()) == 2 and set(s.world.label_definitions()) == {
+        changed,
+        TRIAGE,
+    }
+
+
+def _labels_define_ambiguous_not_retried(factory: TrackerFactory) -> None:
+    """Applied, but the caller cannot know: surfaced, never retried, the grant is spent, and a
+    fresh-grant retry converges on the same single definition."""
+    s = _definer_subject(factory)
+    if s is None:
+        return
+    s.world.fail_next_write_ambiguously()
+    first = _define_grant(s, "g-first")
+    _refused(
+        lambda: s.adapter.define_labels((ACCEPTED,), grant=first),
+        WriteOutcomeUnknown,
+        "an ambiguous write outcome was not surfaced",
+    )
+    assert s.world.write_requests() == 1  # never retried by the adapter
+    assert s.world.label_definitions() == (ACCEPTED,)
+    _refused(
+        lambda: s.adapter.define_labels((ACCEPTED,), grant=first),
+        OperationNotEnabled,
+        "the grant of an ambiguous write was reused",
+    )
+    s.adapter.define_labels((ACCEPTED,), grant=_define_grant(s, "g-retry"))
+    assert s.world.write_requests() == 1 and s.world.label_definitions() == (ACCEPTED,)
+
+
+def _labels_define_ambiguous_not_applied(factory: TrackerFactory) -> None:
+    """Kit extension K1 for labels.define: cut off before being applied. Surfaced as unknown,
+    never retried, the grant is spent, nothing is defined; a fresh grant then succeeds."""
+    s = _definer_subject(factory)
+    if s is None:
+        return
+    s.world.fail_next_write_ambiguously(applied=False)
+    first = _define_grant(s, "g-first")
+    _refused(
+        lambda: s.adapter.define_labels((ACCEPTED,), grant=first),
+        WriteOutcomeUnknown,
+        "an ambiguous write outcome was not surfaced",
+    )
+    assert s.world.write_requests() == 1 and s.world.label_definitions() == ()
+    _refused(
+        lambda: s.adapter.define_labels((ACCEPTED,), grant=first),
+        OperationNotEnabled,
+        "the grant of an ambiguous write was reused",
+    )
+    s.adapter.define_labels((ACCEPTED,), grant=_define_grant(s, "g-retry"))
+    assert s.world.write_requests() == 2 and s.world.label_definitions() == (ACCEPTED,)
+
+
 # ---- cases: rate limits --------------------------------------------------------------------
 
 
@@ -673,6 +859,15 @@ TRACKER_CASES: tuple[TrackerCase, ...] = (
     TrackerCase("write.ambiguous-not-retried", _ambiguous_write_not_retried),
     TrackerCase("write.ambiguous-not-applied", _ambiguous_write_not_applied),
     TrackerCase("labels.only-owned", _labels_only_owned),
+    TrackerCase("labels.read-lists-every-definition", _labels_read_lists_every_definition),
+    TrackerCase("labels.define-only-owned", _labels_define_only_owned),
+    TrackerCase(
+        "labels.define-grant-matches-and-single-use", _labels_define_grant_matches_and_single_use
+    ),
+    TrackerCase("labels.define-refused-when-not-enabled", _labels_define_refused_when_not_enabled),
+    TrackerCase("labels.define-is-idempotent", _labels_define_is_idempotent),
+    TrackerCase("labels.define-ambiguous-not-retried", _labels_define_ambiguous_not_retried),
+    TrackerCase("labels.define-ambiguous-not-applied", _labels_define_ambiguous_not_applied),
     TrackerCase("rate-limit.within-budget", _rate_limit_within_budget),
     TrackerCase("rate-limit.beyond-budget", _rate_limit_beyond_budget),
     TrackerCase("rate-limit.wait-cap", _rate_limit_wait_cap),

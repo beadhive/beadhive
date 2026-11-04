@@ -24,6 +24,7 @@ from beadhive.modules.tracker.contracts import (
     IntegrationRef,
     IssueKey,
     IssueState,
+    LabelDefinition,
     OwnMarker,
 )
 
@@ -74,6 +75,15 @@ class TrackerWorld(Protocol):
     def server_labels(self, issue: IssueKey) -> frozenset[str]: ...
 
     def comment_count(self, issue: IssueKey) -> int: ...
+
+    def seed_label_definition(self, definition: LabelDefinition) -> None:
+        """Create (or replace, by name) a repository label definition, as a human would on the
+        tracker: owned or not, with no grant and no request counted."""
+        ...
+
+    def label_definitions(self) -> tuple[LabelDefinition, ...]:
+        """What the tracker holds right now, ordered by name (observation only: no request)."""
+        ...
 
     def throttle(self, requests: int, retry_after_seconds: float) -> None: ...
 
@@ -137,6 +147,8 @@ class MemoryWorld:
     locator: str = "acme/widgets"
     issues: dict[str, _Issue] = field(default_factory=dict)
     comments: dict[str, _Comment] = field(default_factory=dict)
+    #: The repository's label definitions, by name.
+    label_defs: dict[str, LabelDefinition] = field(default_factory=dict)
     sleeps: list[float] = field(default_factory=list)
     writes: int = 0
     reads: int = 0
@@ -237,6 +249,12 @@ class MemoryWorld:
 
     def comment_count(self, issue: IssueKey) -> int:
         return sum(1 for c in self.comments.values() if c.issue == issue)
+
+    def seed_label_definition(self, definition: LabelDefinition) -> None:
+        self.label_defs[definition.name] = definition
+
+    def label_definitions(self) -> tuple[LabelDefinition, ...]:
+        return tuple(self.label_defs[name] for name in sorted(self.label_defs))
 
     def throttle(self, requests: int, retry_after_seconds: float) -> None:
         self.throttled, self.retry_after = requests, retry_after_seconds
