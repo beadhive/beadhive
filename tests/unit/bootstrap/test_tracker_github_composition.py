@@ -288,9 +288,14 @@ def test_the_adapter_settings_parse_the_two_label_flags():
     from beadhive_tracker_github.adapter.settings import parse_settings
 
     assert parse_settings({}).enabled == frozenset()
-    parsed = parse_settings(
-        {"read": {"labels": {"enabled": True}}, "write": {"label_definitions": {"enabled": True}}}
-    )
+    flags = {
+        "read": {"labels": {"enabled": True}},
+        "write": {"label_definitions": {"enabled": True}},
+    }
+    # labels.define only ever writes owned names, so it is off without an owned prefix.
+    assert parse_settings(flags).enabled == {Operation.LABELS_READ}
+    owned = {**flags, "write": {**flags["write"], "labels": {"owned_prefixes": ["bh:"]}}}
+    parsed = parse_settings(owned)
     assert parsed.enabled == {Operation.LABELS_READ, Operation.LABELS_DEFINE}
     with pytest.raises(ValueError):
         parse_settings({"read": {"labels": {"enabled": "true"}}})
