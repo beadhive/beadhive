@@ -304,3 +304,35 @@ __all__ += [
     "proposal_to_document",
     "validate_proposal",
 ]
+
+# -- the deterministic pre-apply checks (bh-hrx2r) ---------------------------------------------
+
+from .contracts import (  # noqa: E402
+    DEFAULT_REPORTER_TEXT_LIMIT,
+    CheckContext,
+    CheckFinding,
+    CheckKind,
+    LeakPolicy,
+    ProposalCheck,
+    TargetFact,
+    adopt_computed_fix,
+    check_proposal,
+    check_run,
+    cited_paths,
+    version_key,
+)
+
+__all__ += [
+    "DEFAULT_REPORTER_TEXT_LIMIT",
+    "CheckContext",
+    "CheckFinding",
+    "CheckKind",
+    "LeakPolicy",
+    "ProposalCheck",
+    "TargetFact",
+    "adopt_computed_fix",
+    "check_proposal",
+    "check_run",
+    "cited_paths",
+    "version_key",
+]

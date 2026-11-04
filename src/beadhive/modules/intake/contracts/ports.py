@@ -4,7 +4,9 @@
 ones: :class:`ReportStore` (the bead store holding report beads), :class:`CheckpointStore` (opaque
 resume tokens), :class:`LabelPolicy` (the closed label vocabulary), :class:`IntakeLock` (the one
 per-binding lock), :class:`OutboxView` (what own-message recognition reads of the outbox),
-:class:`Sanitizer` (the egress secret scan) and :class:`IdSource` (the outbox's opaque ids).
+:class:`Sanitizer` (the egress secret scan), :class:`IdSource` (the outbox's opaque ids),
+:class:`ReleaseVerifier` (what a tag contains) and :class:`RepoFacts` (what the proposal checks
+read of the repository).
 No bd argv, label string or store path crosses :class:`IntakePort`. Standard library plus this
 module's domain records.
 """
@@ -403,6 +405,26 @@ class ReleaseVerifier(Protocol):
 
 
 @runtime_checkable
+class RepoFacts(Protocol):
+    """The repository facts the pre-apply proposal checks read (bh-hrx2r), read-only.
+
+    ``is_ancestor`` answers whether ``commit`` is in ``branch``'s history: only ``Verdict.YES`` is
+    proof, and ``NO`` and ``UNKNOWN`` both fail a fix claim. ``first_tag_containing`` is the first
+    tag, in version order, whose history contains ``commit`` (``None``: no tag yet, or no
+    answer), so a fix version is COMPUTED, never claimed. ``changed_paths`` lists the paths
+    ``until`` changed since it diverged from ``since`` (``None``: no answer), which tells a
+    proposal analysed at ``since`` that a path its evidence cites has moved. The root implements it
+    with ``git`` (copying :class:`ReleaseVerifier`'s pattern); tests inject a fake. The domain's
+    ``RepoQueries`` is the same three questions, structurally."""
+
+    def is_ancestor(self, commit: str, branch: str) -> Verdict: ...
+
+    def first_tag_containing(self, commit: str) -> str | None: ...
+
+    def changed_paths(self, since: str, until: str) -> tuple[str, ...] | None: ...
+
+
+@runtime_checkable
 class CheckpointStore(Protocol):
     """Opaque, local, non-secret resume tokens keyed per binding (not configuration)."""
 
@@ -426,6 +448,7 @@ __all__ = [
     "LabelPolicy",
     "OutboxView",
     "ReleaseVerifier",
+    "RepoFacts",
     "ReportStore",
     "Sanitizer",
 ]

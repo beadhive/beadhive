@@ -69,6 +69,15 @@ def test_round_trip_keeps_corrections_and_every_status() -> None:
         assert proposal_from_document(proposal_to_document(proposal)) == proposal
 
 
+def test_round_trip_keeps_a_fix_claim_and_reads_a_document_without_one() -> None:
+    claim = new_proposal(ProposalDisposition.FIXED, fixed_in="v0.34.0", fix_commit="abc1234")
+    assert proposal_from_document(proposal_to_document(claim)) == claim
+    older = proposal_to_document(make())
+    del older["fixed_in"], older["fix_commit"]  # written before the fix claim fields existed
+    assert proposal_from_document(older) == make()
+    assert amend(claim, fixed_in="v0.35.0").fixed_in == "v0.35.0"
+
+
 def test_new_proposal_starts_proposed_at_seq_one() -> None:
     proposal = make()
     assert (proposal.status, proposal.seq, proposal.reviews) == (ProposalStatus.PROPOSED, 1, ())

@@ -109,6 +109,7 @@ def test_intake_module_and_kit_run_without_higher_layers_or_effects(monkeypatch)
         assert [item.id for item in service.queue(intake.QueueQuery()).items] == [report]
         assert isinstance(intake.bind_intake(False, lambda: service), intake.NullIntake)
         _ingest_one_thread(intake, kit)
+        _check_one_proposal(intake, kit)
         loaded = {name for name in sys.modules if name.startswith(_FORBIDDEN_IMPORTS)}
         assert not loaded, sorted(loaded)
     finally:
@@ -134,6 +135,32 @@ def _ingest_one_thread(intake, kit) -> None:
     )
     assert threads.ingest_thread(intake.ThreadRequest(report, "dev/test")).written
     assert world.write_requests() == 0
+
+
+def _check_one_proposal(intake, kit) -> None:
+    """The pre-apply proposal checks (bh-xhww6) under the same sentinel: git only through the
+    injected ``RepoFacts`` fake, never a process."""
+    repo = kit.FakeRepoFacts(
+        branches={"main": frozenset({"f1f1f1f"})},
+        releases=(("v1.0.0", frozenset({"f1f1f1f"})),),
+        unchanged_by_default=True,
+    )
+    context = intake.CheckContext(
+        branch="main",
+        repo=repo,
+        leak_policy=intake.LeakPolicy(bead_prefixes=frozenset({"acme"})),
+        sanitizer=kit.RecordingSanitizer(),
+        targets={"acme-1": intake.TargetFact("acme-1", "closed", commits=("f1f1f1f",))},
+    )
+    proposal = intake.new_proposal(
+        intake.ProposalDisposition.FIXED,
+        targets=(intake.ProposalTarget("acme-1"),),
+        evidence=("src/app.py:3",),
+        analysed_commit="a0a0a0a",
+    )
+    (check,) = intake.check_run({"acme-9": proposal}, context)
+    assert check.passed and check.computed_fixed_in == "v1.0.0", check.findings
+    assert repo.asked
 
 
 # -- gap G7: legacy importers of intake internals ----------------------------------------------
