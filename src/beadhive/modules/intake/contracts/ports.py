@@ -57,6 +57,9 @@ from ..domain import (
     ReplyDraft,
     ReportDraft,
     ReportRelations,
+    ReviewMetrics,
+    ReviewRequest,
+    ReviewRun,
     SanitizerFinding,
     SourceSnapshot,
     StartFact,
@@ -186,6 +189,15 @@ class IntakePort(Protocol):
     def uninvestigate(self, report: str, work: str, *, actor: str) -> InvestigateOutcome: ...
 
     def relations(self, report: str) -> ReportRelations: ...  # tracks + investigated by
+
+    # review-gated triage (bh-hrx2r): cluster-aware review packets over the pending reports, each
+    # with its full thread (ingested first; refused, naming both switches, while comment ingestion
+    # is off), its proposal and review history and the global index; and the triage-quality
+    # metrics, computed from the reviews stored on the proposals.
+
+    def review_packets(self, request: ReviewRequest) -> ReviewRun: ...  # triage review
+
+    def review_metrics(self) -> ReviewMetrics: ...  # read-only
 
 
 @runtime_checkable

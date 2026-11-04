@@ -84,6 +84,9 @@ def test_port_names_match_the_adr() -> None:
         "investigate",
         "uninvestigate",
         "relations",
+        # review packets and triage-quality metrics (bh-hrx2r), additive
+        "review_packets",
+        "review_metrics",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",

@@ -659,3 +659,57 @@ __all__ += [
     "cited_paths",
     "version_key",
 ]
+
+# -- review packets (bh-hrx2r): duplicate clusters, cluster-aware batches and review metrics -----
+
+from .clusters import (  # noqa: E402
+    DEFAULT_BATCH_SIZE,
+    Cluster,
+    ClusterBatch,
+    ClusterItem,
+    ClusterLink,
+    ClusterPolicy,
+    ClusterSignal,
+    batches,
+    cluster,
+)
+from .review import (  # noqa: E402
+    COMMENTS_ENABLED_KEY,
+    COMMENTS_READ_KEY,
+    REPORTER_VISIBLE_DISPOSITIONS,
+    IndexEntry,
+    PassMetrics,
+    ReviewBatch,
+    ReviewMetrics,
+    ReviewPacket,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewRun,
+    is_reporter_visible,
+    review_metrics,
+)
+
+__all__ += [
+    "COMMENTS_ENABLED_KEY",
+    "COMMENTS_READ_KEY",
+    "DEFAULT_BATCH_SIZE",
+    "REPORTER_VISIBLE_DISPOSITIONS",
+    "Cluster",
+    "ClusterBatch",
+    "ClusterItem",
+    "ClusterLink",
+    "ClusterPolicy",
+    "ClusterSignal",
+    "IndexEntry",
+    "PassMetrics",
+    "ReviewBatch",
+    "ReviewMetrics",
+    "ReviewPacket",
+    "ReviewPolicy",
+    "ReviewRequest",
+    "ReviewRun",
+    "batches",
+    "cluster",
+    "is_reporter_visible",
+    "review_metrics",
+]

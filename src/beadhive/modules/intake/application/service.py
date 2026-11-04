@@ -77,6 +77,10 @@ from ..domain import (
     ReplyDraft,
     ReportDraft,
     ReportRelations,
+    ReviewMetrics,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewRun,
     StartFact,
     ThreadOutcome,
     ThreadRequest,
@@ -100,6 +104,7 @@ from .discovery import IssueDiscoverer
 from .importer import IssueImporter
 from .linker import LinkService
 from .milestones import MilestoneService
+from .review import ReviewService
 from .sender import OutboxService
 from .threads import ThreadService
 
@@ -131,7 +136,9 @@ class IntakeService:
     discover`` refuse without it). ``lock`` is the
     per-binding lock a link or unlink holds while it writes (none: a single in-process writer).
     ``catch_up_on_link`` (``intake.external.milestones.catch_up_on_link``, off by default) lets a
-    link to already merged work run the bound ``milestones`` service's catch-up."""
+    link to already merged work run the bound ``milestones`` service's catch-up. ``review`` is the
+    host's :class:`ReviewPolicy` for review packets (the comment switches, read by the root; the
+    default has both off, so ``review_packets`` refuses and names them)."""
 
     def __init__(
         self,
@@ -146,6 +153,7 @@ class IntakeService:
         discoverer: IssueDiscoverer | None = None,
         milestones: MilestoneService | None = None,
         catch_up_on_link: bool = False,
+        review: ReviewPolicy | None = None,
     ) -> None:
         self._store = store
         self._catch_up = catch_up_on_link
@@ -157,6 +165,7 @@ class IntakeService:
         self._discoverer = discoverer
         self._milestones = milestones
         self._linker = LinkService(store, lock)
+        self._review = ReviewService(store, threads, review)
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -662,6 +671,14 @@ class IntakeService:
     def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome:
         return self._milestone_service().delivery_notice(fact)
 
+    # -- review packets (bh-hrx2r): ingest every pending thread, then cluster-aware batches -----
+
+    def review_packets(self, request: ReviewRequest) -> ReviewRun:
+        return self._review.packets(request)
+
+    def review_metrics(self) -> ReviewMetrics:
+        return self._review.metrics()
+
     # -- discovery (I6) ----------------------------------------------------------------------
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
@@ -839,6 +856,12 @@ class NullIntake:
 
     def relations(self, report: str) -> ReportRelations:
         return ReportRelations(report)  # an empty read, like ``work_progress``
+
+    def review_packets(self, request: ReviewRequest) -> ReviewRun:
+        raise _disabled()  # review ingests threads: a write
+
+    def review_metrics(self) -> ReviewMetrics:
+        return ReviewMetrics()  # an empty read
 
 
 def _disabled() -> IntakeRefused:
