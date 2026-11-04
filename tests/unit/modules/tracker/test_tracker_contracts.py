@@ -28,13 +28,17 @@ from beadhive.modules.tracker.contracts import (
     CommentWriter,
     IssueKey,
     IssueResolver,
+    LabelDefiner,
+    LabelDefinition,
     LabelNotOwned,
     LabelOwnership,
+    LabelReader,
     LabelWriter,
     MarkerCodec,
     Operation,
     OperationNotEnabled,
     OtherProject,
+    ProjectRef,
     RateLimited,
     Revision,
     TrackerAdapter,
@@ -44,6 +48,7 @@ from beadhive.modules.tracker.contracts import (
     TransientFailure,
     Tri,
     UrlNotRecognized,
+    WriteGrant,
     WriteOutcomeUnknown,
 )
 
@@ -157,12 +162,12 @@ def test_public_surface_is_complete_and_resolvable() -> None:
 
 
 def test_writes_require_a_keyword_only_grant_and_reads_do_not() -> None:
-    for protocol in (CommentWriter, LabelWriter):
+    for protocol in (CommentWriter, LabelWriter, LabelDefiner):
         for method_name, method in vars(protocol).items():
             if callable(method) and not method_name.startswith("_"):
                 param = inspect.signature(method).parameters["grant"]
                 assert param.kind is inspect.Parameter.KEYWORD_ONLY
-    for protocol in (TrackerReader, TrackerIdentity, IssueResolver):
+    for protocol in (TrackerReader, TrackerIdentity, IssueResolver, LabelReader):
         for method_name, method in vars(protocol).items():
             if callable(method) and not method_name.startswith("_"):
                 assert "grant" not in inspect.signature(method).parameters
@@ -223,6 +228,43 @@ def test_optional_protocols_are_detected_by_isinstance_only() -> None:
     assert not isinstance(plain, IssueResolver) and isinstance(resolving, IssueResolver)
     assert not isinstance(plain, CommentWriter) and not isinstance(plain, LabelWriter)
     assert "resolve" not in dir(TrackerAdapter)  # A1 never widens the required port
+
+
+class _Labelling(_ReaderOnly):
+    def list_label_definitions(self): ...
+
+    def define_labels(self, definitions, *, grant): ...
+
+
+def test_label_definition_operations_are_optional_and_never_widen_the_required_port() -> None:
+    plain, labelling = _ReaderOnly(), _Labelling()
+
+    assert isinstance(labelling, LabelReader) and isinstance(labelling, LabelDefiner)
+    assert not isinstance(plain, LabelReader) and not isinstance(plain, LabelDefiner)
+    assert "list_label_definitions" not in dir(TrackerAdapter)
+    assert "define_labels" not in dir(TrackerAdapter)
+
+
+def test_label_reads_are_a_read_and_label_definitions_are_a_write() -> None:
+    assert Operation.LABELS_READ.value == "labels.read"
+    assert Operation.LABELS_DEFINE.value == "labels.define"
+    assert Operation.LABELS_READ in READ_OPERATIONS
+    assert Operation.LABELS_DEFINE in WRITE_OPERATIONS
+
+
+def test_label_definition_is_a_frozen_value() -> None:
+    definition = LabelDefinition("intake:new", "ededed", "fresh report")
+
+    assert definition == LabelDefinition("intake:new", "ededed", "fresh report")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        definition.color = "000000"  # type: ignore[misc]
+
+
+def test_a_write_grant_targets_an_issue_or_a_project() -> None:
+    issue, project = IssueKey("#1", "u"), ProjectRef("t", "l")
+
+    assert WriteGrant("g1", Operation.COMMENT_CREATE, issue).target == issue
+    assert WriteGrant("g2", Operation.LABELS_DEFINE, project).target == project
 
 
 def test_error_taxonomy() -> None:

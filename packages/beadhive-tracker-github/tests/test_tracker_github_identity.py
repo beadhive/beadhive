@@ -116,7 +116,8 @@ def test_a_classic_token_with_repo_scope_is_yes_but_a_disabled_write_is_not_usab
         state = report.states[op]
         assert not state.enabled and not state.usable
     assert report.states[LABELS].supported  # the labels.change writer has landed (W9)
-    for op in READ_OPERATIONS:
+    # the label-definition operations (bh-w8vg3) have no GitHub implementation yet
+    for op in READ_OPERATIONS - {Operation.LABELS_READ}:
         assert report.states[op].supported and report.states[op].usable
 
 

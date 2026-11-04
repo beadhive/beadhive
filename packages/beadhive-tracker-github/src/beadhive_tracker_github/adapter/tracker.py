@@ -97,7 +97,14 @@ __all__ = ["CHECKPOINT_PREFIX", "SUPPORTED_OPERATIONS", "GitHubTrackerAdapter"]
 CHECKPOINT_PREFIX = "github:"
 
 #: What this adapter implements: the read path plus each landed writer (composed when enabled).
-SUPPORTED_OPERATIONS = READ_OPERATIONS | {Operation.COMMENT_CREATE, Operation.LABELS_CHANGE}
+SUPPORTED_OPERATIONS = frozenset(
+    {
+        Operation.ISSUES_READ,
+        Operation.COMMENTS_READ,
+        Operation.COMMENT_CREATE,
+        Operation.LABELS_CHANGE,
+    }
+)
 
 _NEXT = re.compile(r'<([^<>]+)>\s*;\s*rel="next"')
 

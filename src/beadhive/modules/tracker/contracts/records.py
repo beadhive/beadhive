@@ -247,10 +247,14 @@ class Operation(StrEnum):
     COMMENTS_READ = "comments.read"
     COMMENT_CREATE = "comment.create"
     LABELS_CHANGE = "labels.change"
+    LABELS_READ = "labels.read"
+    LABELS_DEFINE = "labels.define"
 
 
-READ_OPERATIONS = frozenset({Operation.ISSUES_READ, Operation.COMMENTS_READ})
-WRITE_OPERATIONS = frozenset({Operation.COMMENT_CREATE, Operation.LABELS_CHANGE})
+READ_OPERATIONS = frozenset({Operation.ISSUES_READ, Operation.COMMENTS_READ, Operation.LABELS_READ})
+WRITE_OPERATIONS = frozenset(
+    {Operation.COMMENT_CREATE, Operation.LABELS_CHANGE, Operation.LABELS_DEFINE}
+)
 
 
 class Tri(StrEnum):
@@ -291,11 +295,23 @@ class TrackerDescriptor:
 
 @dataclass(frozen=True)
 class WriteGrant:
-    """One operator-approved write, scoped to one operation and one target, usable once."""
+    """One operator-approved write, scoped to one operation and one target, usable once.
+
+    ``target`` is an :class:`IssueKey` for an issue-scoped write and a :class:`ProjectRef` for a
+    repository-scoped one such as ``labels.define`` (additive; the API version stays 1)."""
 
     grant_id: str
     operation: Operation
-    target: IssueKey
+    target: IssueKey | ProjectRef
+
+
+@dataclass(frozen=True)
+class LabelDefinition:
+    """One label as defined on the tracker repository: its name, color and description."""
+
+    name: str
+    color: str
+    description: str
 
 
 @dataclass(frozen=True)

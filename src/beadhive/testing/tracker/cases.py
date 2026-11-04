@@ -370,7 +370,7 @@ def _capabilities_default_read_only(factory: TrackerFactory) -> None:
     report = s.adapter.probe_capabilities()
     assert_contract_only(report)
     assert report.actor is not None and report.actor == s.adapter.whoami()
-    for op in READ_OPERATIONS:
+    for op in READ_OPERATIONS & s.adapter.describe().supported:  # labels.read is optional
         assert report.states[op].usable
     for op in (Operation.COMMENT_CREATE, Operation.LABELS_CHANGE):
         state = report.states[op]

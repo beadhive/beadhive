@@ -168,6 +168,9 @@ def test_the_disabled_default_renders_these_exact_lines():
         "[operator-approved single-use grant per use]",
         "               labels.change   disabled  probe=not-probed  "
         "[operator-approved single-use grant per use]",
+        "               labels.read     disabled  probe=not-probed",
+        "               labels.define   disabled  probe=not-probed  "
+        "[operator-approved single-use grant per use]",
     ]
     rows = tracker_doctor(doc)
     assert codes(rows) == [("disabled-plugin", "info")]
@@ -208,6 +211,9 @@ def test_an_enabled_probed_store_renders_identity_credential_and_the_tri_state()
         "[operator-approved single-use grant per use]",
         "               labels.change   disabled  probe=no         not usable  "
         "[operator-approved single-use grant per use]",
+        "               labels.read     disabled  probe=yes        not usable",
+        "               labels.define   disabled  probe=yes        not usable  "
+        "[operator-approved single-use grant per use]",
     ]
     parsed = json.loads(render_json(doc))
     assert parsed["schema"] == STATUS_SCHEMA
@@ -216,7 +222,14 @@ def test_an_enabled_probed_store_renders_identity_credential_and_the_tri_state()
         "kind": "human",
         "display": "maintainer",
     }
-    assert [op["probe"] for op in parsed["operations"]] == ["yes", "unknown", "yes", "no"]
+    assert [op["probe"] for op in parsed["operations"]] == [
+        "yes",
+        "unknown",
+        "yes",
+        "no",
+        "yes",
+        "yes",
+    ]
     assert parsed["credential"]["legs"] == [
         {"source": "env:GH_TOKEN", "present": False},
         {"source": "env:GITHUB_TOKEN", "present": True},
