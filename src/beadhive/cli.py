@@ -35,6 +35,7 @@ from . import (
     hq_authority_cli,
     hq_placement_cli,
     hq_release_catalog_cli,
+    identity,
     jsonout,
     log,
     otel,
@@ -521,6 +522,11 @@ def _resolve_hive_routing_mode(ctx: typer.Context, all_hives: bool, hive: str) -
     return mode
 
 
+#: Verbs that run for the life of a service. They must not freeze ``GIT_WORKSPACE`` for the
+#: process lifetime, so they never opt into ``identity.process_config_memo`` (bh-olnhf).
+_LONG_LIVED_VERBS = frozenset({"host", "mcp"})
+
+
 @app.callback()
 def _root(
     ctx: typer.Context,
@@ -535,6 +541,11 @@ def _root(
     ),
 ):
     """Workspace beads CLI. -a/-r route `bd`/`git` across hives (need git_workspace)."""
+    if ctx.invoked_subcommand not in _LONG_LIVED_VERBS:
+        # One-shot verb: resolve the effective config once for every child it spawns instead of
+        # re-qualifying the SQL fleet snapshot per `bd`/`git` launch (bh-olnhf). The serving
+        # verbs stay on the uncached path; see identity._ProcessConfigMemo.
+        ctx.with_resource(identity.process_config_memo())
     if ctx.invoked_subcommand == "bd":
         # A bead read/write needs only hive-local config: in trusted mode a transient HQ
         # config outage may degrade to the bounded-age cached verified snapshot (bh-kjxe9).
