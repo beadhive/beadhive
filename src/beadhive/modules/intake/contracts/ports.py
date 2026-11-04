@@ -5,8 +5,8 @@ ones: :class:`ReportStore` (the bead store holding report beads), :class:`Checkp
 resume tokens), :class:`LabelPolicy` (the closed label vocabulary), :class:`IntakeLock` (the one
 per-binding lock), :class:`OutboxView` (what own-message recognition reads of the outbox),
 :class:`Sanitizer` (the egress secret scan), :class:`IdSource` (the outbox's opaque ids),
-:class:`ReleaseVerifier` (what a tag contains) and :class:`RepoFacts` (what the proposal checks
-read of the repository).
+:class:`ReleaseVerifier` (what a tag contains), :class:`RepoFacts` (what the proposal checks
+read of the repository) and :class:`LandedCommits` (the commits that landed a work bead).
 No bd argv, label string or store path crosses :class:`IntakePort`. Standard library plus this
 module's domain records.
 """
@@ -18,6 +18,8 @@ from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from ..domain import (
+    ApplyOutcome,
+    ApplyRequest,
     BeadView,
     Checkpoint,
     ConsiderRequest,
@@ -57,6 +59,10 @@ from ..domain import (
     PresenceOutcome,
     PresenceRequest,
     Proposal,
+    ProposalReviewOutcome,
+    ProposalReviewRequest,
+    ProposeOutcome,
+    ProposeRequest,
     QueueQuery,
     QueueView,
     ReleaseFact,
@@ -219,6 +225,20 @@ class IntakePort(Protocol):
     def review_label_batch(self) -> LabelBatch: ...  # labels review; read-only
 
     def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome: ...
+
+    # propose, review and apply-reviewed (bh-9aqmv): an analyst's proposal and a verifier's
+    # verdict are stored on the report (codec and leak lint first: a refusal writes nothing);
+    # apply runs every pre-apply check, then maps each proposal a review stands behind onto the
+    # triage verbs above, canonicals first, drafting replies and questions and never sending.
+    # An applied proposal is skipped, so a second apply changes nothing.
+
+    def propose(self, request: ProposeRequest) -> ProposeOutcome: ...  # triage propose
+
+    def review_proposal(
+        self, request: ProposalReviewRequest
+    ) -> ProposalReviewOutcome: ...  # triage propose --review-of
+
+    def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome: ...  # triage apply --reviewed
 
 
 @runtime_checkable
@@ -458,6 +478,16 @@ class RepoFacts(Protocol):
 
 
 @runtime_checkable
+class LandedCommits(Protocol):
+    """The commits that landed a work bead (bh-9aqmv), read-only: its ``git.commits`` linkage,
+    oldest first (``()``: none recorded). A closed fixing bead's landed commits are what the
+    pre-apply checks prove on the integration branch and compute the fix version from. The root
+    reads the linkage; tests inject a fake."""
+
+    def landed_commits(self, bead: str) -> tuple[str, ...]: ...
+
+
+@runtime_checkable
 class AuditLog(Protocol):
     """A local, append-only audit trail of an operator-approved repository-level write
     (``bh-uim9i``): ``labels define --approve`` notes what it applied, under which grants and by
@@ -489,6 +519,7 @@ __all__ = [
     "IntakeLock",
     "IntakePort",
     "LabelPolicy",
+    "LandedCommits",
     "OutboxView",
     "ReleaseVerifier",
     "RepoFacts",

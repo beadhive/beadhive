@@ -18,7 +18,9 @@ optional :class:`~.milestones.MilestoneService` (they only draft; without one th
 report to ``intake:needs-info``, ``wake`` reads the thread and moves a report its reporter answered
 back to ``intake:untriaged``; each refuses without the service it needs. With
 ``catch_up_on_link`` (and a milestone service) a link to work that already merged catches the
-report up on the milestones it missed.
+report up on the milestones it missed. Propose, review and apply-reviewed (bh-9aqmv) delegate to a
+:class:`~.proposals.ProposalService` over this service's own verbs; without a ``triage`` binding
+they refuse with ``INTAKE_DISABLED``.
 Presentation, hive resolution, clone-on-demand and push stay with the legacy callers.
 """
 
@@ -35,6 +37,8 @@ from ..domain import (
     NEEDS_INFO,
     REPORT_TYPES,
     UNTRIAGED,
+    ApplyOutcome,
+    ApplyRequest,
     BeadView,
     ConsiderRequest,
     DiscoveryOutcome,
@@ -75,6 +79,10 @@ from ..domain import (
     OutboxResult,
     PresenceOutcome,
     PresenceRequest,
+    ProposalReviewOutcome,
+    ProposalReviewRequest,
+    ProposeOutcome,
+    ProposeRequest,
     QueueItem,
     QueueQuery,
     QueueView,
@@ -112,6 +120,7 @@ from .importer import IssueImporter
 from .labels import LabelProjection
 from .linker import LinkService
 from .milestones import MilestoneService
+from .proposals import ProposalService, TriageBinding
 from .review import ReviewService
 from .sender import OutboxService
 from .threads import ThreadService
@@ -148,7 +157,10 @@ class IntakeService:
     host's :class:`ReviewPolicy` for review packets (the comment switches, read by the root; the
     default has both off, so ``review_packets`` refuses and names them). ``projection``
     (the label projection, bound only when ``intake.external.labels.enabled``) serves label sync
-    and define; without it they refuse with ``INTAKE_DISABLED``. The label batch is the outbox's."""
+    and define; without it they refuse with ``INTAKE_DISABLED``. The label batch is the outbox's.
+    ``triage`` binds propose, review and apply-reviewed (the repository facts, landed commits,
+    branch, leak policy and re-filer); without it they refuse with ``INTAKE_DISABLED``. Apply
+    refreshes the touched reports' labels through ``projection`` when it is bound."""
 
     def __init__(
         self,
@@ -165,6 +177,7 @@ class IntakeService:
         catch_up_on_link: bool = False,
         review: ReviewPolicy | None = None,
         projection: LabelProjection | None = None,
+        triage: TriageBinding | None = None,
     ) -> None:
         self._store = store
         self._catch_up = catch_up_on_link
@@ -178,6 +191,7 @@ class IntakeService:
         self._linker = LinkService(store, lock)
         self._review = ReviewService(store, threads, review)
         self._projection = projection
+        self._proposals = ProposalService(store, self, triage, projection=projection)
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -711,6 +725,17 @@ class IntakeService:
     def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome:
         return self._outbox_service().approve_label_batch(request)
 
+    # -- propose, review and apply-reviewed (bh-9aqmv) ----------------------------------------
+
+    def propose(self, request: ProposeRequest) -> ProposeOutcome:
+        return self._proposals.propose(request)
+
+    def review_proposal(self, request: ProposalReviewRequest) -> ProposalReviewOutcome:
+        return self._proposals.review(request)
+
+    def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome:
+        return self._proposals.apply_reviewed(request)
+
     # -- discovery (I6) ----------------------------------------------------------------------
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
@@ -913,6 +938,15 @@ class NullIntake:
 
     def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome:
         raise _disabled()
+
+    def propose(self, request: ProposeRequest) -> ProposeOutcome:
+        raise _disabled()
+
+    def review_proposal(self, request: ProposalReviewRequest) -> ProposalReviewOutcome:
+        raise _disabled()
+
+    def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome:
+        raise _disabled()  # even a dry run reads a store intake does not have
 
 
 def _disabled() -> IntakeRefused:

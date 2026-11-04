@@ -536,7 +536,9 @@ __all__ += [
 # -- review-gated triage proposals (bh-hrx2r): the proposal, its status machine and codec ------
 
 from .proposal import (  # noqa: E402
+    ANALYST_FIELDS,
     PROPOSAL_SCHEMA,
+    REOPENABLE,
     Proposal,
     ProposalDisposition,
     ProposalReview,
@@ -546,9 +548,12 @@ from .proposal import (  # noqa: E402
     TargetRole,
     add_review,
     amend,
+    check_rewrite,
     mark_applied,
     mark_stale,
+    may_reopen,
     new_proposal,
+    new_round,
     validate_proposal,
 )
 from .proposal_checks import (  # noqa: E402
@@ -567,14 +572,27 @@ from .proposal_checks import (  # noqa: E402
 )
 from .proposal_document import (  # noqa: E402
     PROPOSAL_KEY,
+    VERDICT_FIELDS,
     ProposalDocumentError,
+    VerdictInput,
+    content_from_document,
     proposal_from_document,
     proposal_to_document,
+    verdict_from_document,
 )
 
 __all__ += [
+    "ANALYST_FIELDS",
     "PROPOSAL_KEY",
     "PROPOSAL_SCHEMA",
+    "REOPENABLE",
+    "VERDICT_FIELDS",
+    "VerdictInput",
+    "check_rewrite",
+    "content_from_document",
+    "may_reopen",
+    "new_round",
+    "verdict_from_document",
     "Proposal",
     "ProposalDisposition",
     "ProposalDocumentError",
@@ -754,4 +772,46 @@ __all__ += [
     "definitions_digest",
     "plan_definitions",
     "progress_facts",
+]
+
+# -- propose, review and apply-reviewed (bh-9aqmv) ---------------------------------------------
+
+from .triage import (  # noqa: E402
+    ApplyItem,
+    ApplyOutcome,
+    ApplyPlan,
+    ApplyRequest,
+    ApplyStatus,
+    ApplyStep,
+    ProposalReviewOutcome,
+    ProposalReviewRequest,
+    ProposeKind,
+    ProposeOutcome,
+    ProposeRequest,
+    apply_order,
+    duplicate_text,
+    fixed_text,
+    owner_of,
+    plan_apply,
+    verification_gap,
+)
+
+__all__ += [
+    "ApplyItem",
+    "ApplyOutcome",
+    "ApplyPlan",
+    "ApplyRequest",
+    "ApplyStatus",
+    "ApplyStep",
+    "ProposalReviewOutcome",
+    "ProposalReviewRequest",
+    "ProposeKind",
+    "ProposeOutcome",
+    "ProposeRequest",
+    "apply_order",
+    "duplicate_text",
+    "fixed_text",
+    "owner_of",
+    "plan_apply",
+    "verification_gap",
 ]

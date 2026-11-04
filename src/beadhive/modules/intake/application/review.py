@@ -2,7 +2,9 @@
 
 The pending set is every open report triage still owes a disposition and that has no APPLIED
 proposal: each ``intake:untriaged`` report (a report its reporter woke is back there), and each
-``intake:needs-info`` report whose thread now holds a reply (woken, or about to be). Review first
+``intake:needs-info`` report whose thread now holds a reply (woken, or about to be). The one
+applied proposal that does not exclude a report is a ``needs-info`` one (bh-9aqmv): once its
+reporter answers, the report is pending again and a new proposal round may follow it. Review first
 INGESTS every bound candidate's thread through the :class:`~.threads.ThreadService`, so every packet
 carries the full, current thread; with comment ingestion off, or the tracker's ``comments.read``
 unusable, it refuses before reading anything and names both switches. Then it clusters the pending
@@ -28,6 +30,7 @@ from ..domain import (
     ThreadIssue,
     ThreadRequest,
     ThreadView,
+    may_reopen,
     new_thread,
     version_key,
     wakes,
@@ -116,8 +119,12 @@ class ReviewService:
         candidates: dict[str, BeadView] = {}
         for label in (INTAKE_UNTRIAGED, INTAKE_NEEDS_INFO):
             for view in self._store.list_open_labeled(label):
-                applied = proposals.get(view.id)
-                if applied is None or applied.status is not ProposalStatus.APPLIED:
+                stored = proposals.get(view.id)
+                if (
+                    stored is None
+                    or stored.status is not ProposalStatus.APPLIED
+                    or may_reopen(stored)  # applied as needs-info: pending again once woken
+                ):
                     candidates.setdefault(view.id, view)
         ordered = sorted(candidates.values(), key=_order)
 
