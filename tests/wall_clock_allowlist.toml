@@ -722,6 +722,18 @@ kind = "sleep"
 reason = "process-lifetime/readiness poll: a deadline-bounded handshake loop on a real server, socket, pid or file; the sleep is only the poll interval, never the synchronization"
 
 [[allow]]
+path = "tests/test_intake_api_store_real_service.py"
+anchor = "_reap"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
+path = "tests/test_intake_api_store_real_service.py"
+anchor = "scratch"
+kind = "sleep"
+reason = "real-time window against a real process, server or Dolt server clock where neither FakeClock nor time-machine reaches; the window is a race-forcing hold, not a sync"
+
+[[allow]]
 path = "tests/test_work_queue.py"
 anchor = "_reap_owned_scratch_hive"
 kind = "sleep"

@@ -7,12 +7,18 @@ unchanged upsert cost O(holds) calls and a pass over N reports O(N^2). These cas
 instead of any duration: an unchanged upsert makes the same few calls however many reports and
 holds exist, a created one makes the same fixed sequence, and a pass is linear in its issues.
 
-No clock, no sleep, no process, no network: counts of recorded argv only.
+The same counts are pinned for the API route (bh-9o12j): with the Beads service serving the
+store, an unchanged upsert makes NO ``bd`` call at all (it is two reads of the service) and a pass
+is still linear; a created one makes only the calls the service cannot serve (the create, the hold
+gate and the two ``set-state`` stamps), plus the one confirming ``external_ref`` lookup of a miss.
+
+No clock, no sleep, no process, no network: counts of recorded argv and requests only.
 """
 
 from __future__ import annotations
 
 import pytest
+from tests.test_intake_api_store import _rig
 from tests.test_intake_bead_store import _store
 
 from beadhive.modules.intake import (
@@ -39,10 +45,14 @@ class _Labels:
 
 
 class Rig:
-    def __init__(self, existing: int) -> None:
+    def __init__(self, existing: int, *, api: bool = False) -> None:
         self.world = MemoryWorld()
         self.tracker = MemoryTracker(self.world)
-        self.store, self.bd = _store()
+        self.service = None
+        if api:
+            self.store, self.bd, self.service = _rig()
+        else:
+            self.store, self.bd = _store()
         lock = InProcessIntakeLock()
         self.importer = IssueImporter(
             self.store, _Labels(), self.tracker, lock, origin=ORIGIN_GITHUB
@@ -67,6 +77,8 @@ class Rig:
 
     def counted(self, action) -> list[str]:
         self.bd.calls.clear()
+        if self.service is not None:
+            self.service.requests.clear()
         action()
         return self.verbs()
 
@@ -144,3 +156,60 @@ def test_a_discovery_pass_is_linear_in_its_issues() -> None:
     assert small == 4 * len(UNCHANGED) + 1
     assert large == 12 * len(UNCHANGED) + 1
     assert (large - small) / (12 - 4) == len(UNCHANGED)
+
+
+# -- the API route -------------------------------------------------------------------------------
+
+#: What an upsert asks the service for: the lookup's one row and the hold check's one row.
+API_UNCHANGED = ["GET /v0/beads/issues/{}", "GET /v0/beads/issues/{}"]
+
+
+def _operations(rig: Rig) -> list[str]:
+    """The service operations since the last ``counted``, one id placeholder per bead row."""
+    return [
+        op.rsplit("/", 1)[0] + "/{}" if op.startswith("GET /v0/beads/issues/") else op
+        for op in rig.service.operations()
+    ]
+
+
+@pytest.mark.parametrize("existing", [1, 3, 12])
+def test_an_unchanged_upsert_over_the_api_makes_no_bd_call_however_many_reports_exist(
+    existing,
+) -> None:
+    rig = Rig(existing, api=True)
+    issue = rig.tracker.get(rig.tracker.resolve(rig.keys[0].url))
+
+    verbs = rig.counted(lambda: rig.importer.upsert(issue, ACTOR))
+
+    assert verbs == []  # not one subprocess
+    assert _operations(rig) == API_UNCHANGED  # the lookup's row and the hold check's row
+
+
+@pytest.mark.parametrize("existing", [1, 12])
+def test_a_created_upsert_over_the_api_runs_only_what_the_service_cannot_serve(existing) -> None:
+    rig = Rig(existing, api=True)
+    key = rig.world.add_issue("Brand new", at=at(25))
+    issue = rig.tracker.get(rig.tracker.resolve(key.url))
+
+    verbs = rig.counted(lambda: rig.importer.upsert(issue, ACTOR))
+
+    # the lookup's miss is confirmed on the CLI (the service has no external_ref filter); then
+    # the create, the hold gate and the two stamps; the racing-create guard is a service read
+    assert verbs == ["list", "create", "gate create", "set-state", "set-state"]
+    assert "--external-ref" in rig.bd.calls[0]["args"]
+
+
+def test_a_discovery_pass_over_the_api_is_linear_and_spawns_no_bd() -> None:
+    def pass_(issues: int) -> tuple[int, int]:
+        rig = Rig(issues, api=True)
+        rig.bd.calls.clear()
+        rig.service.requests.clear()
+        rig.discover(full=True)
+        return len(rig.bd.calls), len(rig.service.operations())
+
+    (small_bd, small), (large_bd, large) = pass_(4), pass_(12)
+
+    assert small_bd == large_bd == 0
+    # the bound-report index (one read, paged), a row per lookup and per hold check, then the
+    # full pass's one bound-report read
+    assert (large - small) / (12 - 4) == len(API_UNCHANGED)

@@ -916,7 +916,7 @@ def _data_intake_holds(cfg) -> list[dict]:
         if not has_binding([e]) or not path.is_dir():
             continue
         hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
-        for f in intake_services.sweep_holds(path).findings:
+        for f in intake_services.sweep_holds(path, entry=e).findings:
             findings.append(
                 {
                     "hive": hive_id,
