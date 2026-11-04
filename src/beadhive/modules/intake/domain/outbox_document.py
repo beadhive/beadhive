@@ -18,6 +18,7 @@ from typing import Any
 from .leaks import LeakFinding, LeakKind, Override
 from .models import IssueBinding
 from .outbox import (
+    LABELS_GROUP,
     OUTBOX_SCHEMA,
     Approval,
     Attempt,
@@ -291,6 +292,15 @@ def _decode_record(outbox_id: str, value: Any) -> OutboxRecord:
     operations = tuple(_decode_operation(op) for op in raw["operations"])
     if not operations:
         raise OutboxDocumentError(f"record {outbox_id} has no operation")
+    event = OutboxEvent(raw["event"])  # an event this host does not know fails closed
+    group = str(raw["group"])
+    if event is OutboxEvent.LABELS and (
+        group != LABELS_GROUP or any(op.kind is not OpKind.LABELS for op in operations)
+    ):
+        raise OutboxDocumentError(
+            f"record {outbox_id} is a labels record outside the {LABELS_GROUP} group or with a "
+            "comment"
+        )
     return OutboxRecord(
         outbox_id=outbox_id,
         draft_key=DraftKey(
@@ -303,8 +313,8 @@ def _decode_record(outbox_id: str, value: Any) -> OutboxRecord:
             str(b["url"]),
             str(b["identifier"]),
         ),
-        event=OutboxEvent(raw["event"]),
-        group=str(raw["group"]),
+        event=event,
+        group=group,
         facts=PublicFacts(
             str(facts.get("tag", "")),
             str(facts.get("version", "")),
