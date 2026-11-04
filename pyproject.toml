@@ -90,18 +90,23 @@ release-verify = ["sigstore>=4,<5"]
 # no import crash, an actionable "install beadhive[pants]" hint, degrade to native-full.
 pants = ["beadhive-pants"]
 # `beadhive[github]` — the GitHub tracker adapter plugin (bh-h8kab, tracker-adapter-plugin-adr.md
-# section 1). githubkit is the package's own dependency, never the root's, and is imported only
+# section 1). The plugin's import package (`beadhive_tracker_github`, with its plugin.json) is
+# VENDORED in the root wheel (see the wheel packages below), so this extra carries only the
+# third-party dependency and resolves from PyPI alone (bh-lrs9v). githubkit is imported only
 # lazily under `beadhive_tracker_github/adapter/`, so the root wheel installs and `import beadhive`
-# works without it. Installing it enables nothing: `plugins.tracker-github.enabled` is false by
-# default and a store binding never turns it on.
-github = ["beadhive-tracker-github"]
+# works without it; with the plugin enabled but this extra absent, bootstrap refuses cleanly
+# naming `beadhive[github]`. Installing it enables nothing: `plugins.tracker-github.enabled` is
+# false by default and a store binding never turns it on.
+github = ["githubkit>=0.16.1,<1"]
 # `beadhive[xtdb]` — the XTDB BeadLog store plugin (beadlog-format-adr.md amendment A6): binds the
 # `beadlog-xtdb` loader into `bh backfill apply|export --store xtdb` through the `beadlog.store`
-# capability. Opt-in twice over: installing it enables nothing (`plugins.beadlog-xtdb.enabled` is
-# false by default) and root imports it only lazily, after manifest selection. It brings psycopg
-# (LGPL-3.0, outside `license_allow`): deliberately an EXTRA, never a default group, so the
-# `--no-dev`, extras-free license SBOM (`just sbom`) never carries it.
-xtdb = ["beadhive-beadlog-xtdb"]
+# capability. The plugin and loader import packages (`beadhive_beadlog_xtdb`, `beadlog_xtdb`) are
+# VENDORED in the root wheel (bh-lrs9v), so this extra carries only psycopg. Opt-in twice over:
+# installing it enables nothing (`plugins.beadlog-xtdb.enabled` is false by default) and root
+# imports it only lazily, after manifest selection and a psycopg presence probe. psycopg
+# (LGPL-3.0, outside `license_allow`) is deliberately an EXTRA, never a default group or base
+# dependency, so the `--no-dev`, extras-free license SBOM (`just sbom`) never carries it.
+xtdb = ["psycopg[binary]>=3.2,<4"]
 
 [project.scripts]
 bh = "beadhive.bootstrap.cli:main"
@@ -148,6 +153,12 @@ packages = [
     "packages/beadlog/src/beadlog",
     "packages/beadlog-sources/src/beadlog_sources",
     "packages/beadhive-backfill/src/beadhive_backfill",
+    # The plugin import packages behind `beadhive[github]` / `beadhive[xtdb]` (bh-lrs9v): vendored so
+    # the extras carry only third-party dependencies and resolve from PyPI alone. Each ships its
+    # plugin.json and py.typed; none imports githubkit or psycopg until a verb binds the plugin.
+    "packages/beadhive-tracker-github/src/beadhive_tracker_github",
+    "packages/beadhive-beadlog-xtdb/src/beadhive_beadlog_xtdb",
+    "packages/beadlog-xtdb/src/beadlog_xtdb",
 ]
 
 # In-repo packages (bh-3fcl0.1): every packages/<name>/ is its own distribution and import name.
@@ -185,8 +196,10 @@ default-groups = ["dev", "pants", "github", "core", "plugins", "worktrees", "hq-
 # never hard-requires an unpublished package. `beadhive[pants]` (the extra, above) is the
 # separate public spelling for once `beadhive-pants` ships to PyPI (bh-9mfg8).
 pants = ["beadhive-pants"]
-# The GitHub tracker adapter plugin, for dev/CI only (bh-h8kab), exactly like `pants` above:
-# `beadhive[github]` is the public spelling and the published wheel never hard-requires it.
+# The GitHub tracker adapter plugin, editable from the workspace for dev/CI (bh-h8kab). The
+# published wheel vendors its import package instead (see the wheel packages) and
+# `beadhive[github]` carries only its third-party dependency (githubkit), so nothing published
+# hard-requires this unpublished member (bh-lrs9v).
 github = ["beadhive-tracker-github"]
 # The API-first core and its Beads client, editable from the workspace for dev/CI (bh-bwnys.4,
 # bh-bwnys.1). The published wheel vendors their import packages instead (see the wheel packages).
@@ -259,11 +272,12 @@ dev = [
     # The XTDB BeadLog loader library (beadlog-format-adr.md amendment A6), editable from the
     # workspace for DEV/CI ONLY, so the offline package gate finds its psycopg wheels in the uv
     # cache. psycopg is LGPL-3.0, outside `license_allow`: `--no-dev` keeps it out of the license
-    # SBOM, and nothing shipped depends on it (root never imports it, the wheel does not vendor
-    # it).
+    # SBOM. The wheel vendors this import package (bh-lrs9v) but not psycopg: only the opt-in
+    # `beadhive[xtdb]` extra brings that.
     "beadlog-xtdb",
     # The opt-in plugin that binds it (bh-qjrj9), editable for DEV/CI ONLY on the same terms: the
-    # public spelling is the `beadhive[xtdb]` extra; never add it to `default-groups` or to
+    # public spelling is the `beadhive[xtdb]` extra (psycopg only; the wheel vendors the plugin
+    # packages); never add it to `default-groups` or to
     # `license_allow` (operator decision 2026-11-02).
     "beadhive-beadlog-xtdb",
 ]

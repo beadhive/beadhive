@@ -36,6 +36,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from importlib import import_module
+from importlib.util import find_spec
 from types import MappingProxyType
 from typing import Any
 
@@ -221,6 +222,10 @@ class TrackerAdapterProvider:
     #: What the operator installs to get the package, named in the R9 refusal.
     install_hint: str
     loader: Callable[[TrackerAdapterRequest], object] = field(repr=False, compare=False)
+    #: Third-party top-level modules the adapter needs at run time. The plugin's own import
+    #: package ships in the root wheel, so its presence says nothing: a missing requirement is
+    #: the "extra not installed" signal, probed before the loader runs (R9).
+    requires: tuple[str, ...] = ()
 
 
 def _github_adapter(request: TrackerAdapterRequest) -> object:
@@ -233,8 +238,18 @@ def _github_adapter(request: TrackerAdapterRequest) -> object:
 #: Built-in runtime bindings for manifests that provide ``tracker.adapter``. A row is inert
 #: until a discovered, enabled, selected manifest has its id.
 BUILTIN_TRACKER_PROVIDERS: tuple[TrackerAdapterProvider, ...] = (
-    TrackerAdapterProvider("tracker-github", "beadhive[github]", _github_adapter),
+    TrackerAdapterProvider(
+        "tracker-github", "beadhive[github]", _github_adapter, requires=("githubkit",)
+    ),
 )
+
+
+def _module_missing(name: str) -> bool:
+    """Whether top-level module *name* cannot be found (located, never imported)."""
+    try:
+        return find_spec(name) is None
+    except (ImportError, ValueError):
+        return True
 
 
 # --------------------------------------------------------------------------------------------
@@ -814,6 +829,8 @@ class TrackerAdapters:
             plugin_id=adapter_id,
         )
         if provider is None:
+            raise missing_package
+        if any(_module_missing(name) for name in provider.requires):
             raise missing_package
         request = TrackerAdapterRequest(
             adapter_id,

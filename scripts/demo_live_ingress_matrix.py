@@ -358,8 +358,8 @@ def parity(root: Path, *, python_executable: str | None = None) -> dict:
     (site / "_beadhive_parity_dependencies.pth").write_text("\n".join(dependency_paths) + "\n")
     # The installed site carries exactly the import packages the published wheel vendors, derived
     # from [tool.hatch.build.targets.wheel].packages in the committed pyproject.toml so a newly
-    # vendored package cannot drift out of this probe (bh-ygq8n).  Unvendored workspace members
-    # (e.g. beadlog_xtdb) are deliberately absent, exactly as in the wheel.
+    # vendored package cannot drift out of this probe (bh-ygq8n).  Workspace members the wheel
+    # does not vendor (e.g. beadhive_pants) are deliberately absent, exactly as in the wheel.
     for package in wheel_packages(source / "pyproject.toml"):
         shutil.copytree(source / package, site / Path(package).name)
     bootstrap = f"import site,sys;sys.path.insert(0,{str(site)!r});site.addsitedir({str(site)!r});"

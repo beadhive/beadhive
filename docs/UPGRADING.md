@@ -5,6 +5,36 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.33.0 → 0.33.1 — `beadhive[github]` and `beadhive[xtdb]` install from PyPI
+
+0.33.0 published `beadhive[github]` and `beadhive[xtdb]` extras that named unpublished
+workspace packages (`beadhive-tracker-github`, `beadhive-beadlog-xtdb`), so
+`uv tool install 'beadhive[otel,github]==0.33.0'` failed to resolve ("beadhive-tracker-github was
+not found in the package registry"). 0.33.1 ships those plugin import packages
+(`beadhive_tracker_github`, `beadhive_beadlog_xtdb`, `beadlog_xtdb`, each with its `plugin.json`)
+inside the root wheel, like `beadhive-core`, and the extras now carry only the third-party
+dependency: `beadhive[github]` is `githubkit`, `beadhive[xtdb]` is `psycopg[binary]` (LGPL-3.0).
+
+What you need to do:
+
+- **Installed the adapter with `--with ./packages/beadhive-tracker-github`** (the 0.33.0
+  workaround)? Reinstall plainly; the `--with` is no longer needed and would shadow the wheel's
+  copy:
+
+  ```sh
+  uv tool install --force 'beadhive[otel,github]==0.33.1'
+  ```
+
+- **Want the XTDB store?** `uv tool install --force 'beadhive[xtdb]==0.33.1'` (add `otel,github`
+  as needed).
+- **Bare install?** Nothing changes. `import beadhive` still never imports githubkit or psycopg,
+  and no plugin is enabled by installing either extra.
+
+A plugin that is **enabled without its extra** now refuses cleanly, naming the extra (for example
+``install `beadhive[github]` ``), instead of failing later on an `ImportError`;
+`bh plugin beadlog-xtdb doctor` reports the missing `psycopg` dependency. No config key, CLI verb or
+wire format changed.
+
 ## 0.15.x → 0.16.0 — private state moves under the canonical roots
 
 0.16.0 stops writing `.git/bh-validation-ledger.json` and `.bh/testreport/<tree>/` immediately.

@@ -270,6 +270,25 @@ def test_store_xtdb_enabled_but_not_installed_names_the_extra(hive, tmp_path, mo
     assert "its package is not installed — install `beadhive[xtdb]`" in result.output
 
 
+def test_store_xtdb_enabled_without_psycopg_names_the_extra(hive, tmp_path, monkeypatch) -> None:  # noqa: F811
+    """The plugin packages ship in the root wheel (bh-lrs9v): a bare install has them but not
+    psycopg, so the refusal comes from the dependency probe, never an ImportError traceback."""
+    monkeypatch.setattr(
+        backfill_cli.config,
+        "load",
+        lambda *a, **k: {"plugins": {"beadlog-xtdb": {"enabled": True}}},
+    )
+    monkeypatch.setattr(
+        composition, "find_spec", lambda name: None if name == "psycopg" else object()
+    )
+    monkeypatch.setattr(
+        composition, "import_module", lambda name: pytest.fail("the loader must not run")
+    )
+    result = _fails("backfill", "export", "--store", "xtdb")
+    assert "its package is not installed — install `beadhive[xtdb]`" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_an_unknown_store_is_refused(hive) -> None:  # noqa: F811
     result = _fails("backfill", "export", "--store", "nope")
     assert "--store must be one of bd, xtdb (got 'nope')" in result.output

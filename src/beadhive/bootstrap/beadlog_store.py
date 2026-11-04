@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import import_module
+from importlib.util import find_spec
 from types import MappingProxyType
 from typing import Any
 
@@ -89,6 +90,22 @@ class BeadlogStoreProvider:
     #: What the operator installs to get the package, named in the refusal.
     install_hint: str
     loader: Callable[[BeadlogStoreRequest], object] = field(repr=False, compare=False)
+    #: Third-party top-level modules the store needs at run time. The plugin's own import
+    #: packages ship in the root wheel, so their presence says nothing: a missing requirement is
+    #: the "extra not installed" signal, probed before the loader runs.
+    requires: tuple[str, ...] = ()
+
+    def missing_requirements(self) -> tuple[str, ...]:
+        """The :attr:`requires` modules that cannot be found (located, never imported)."""
+        return tuple(name for name in self.requires if module_missing(name))
+
+
+def module_missing(name: str) -> bool:
+    """Whether top-level module *name* cannot be found (located, never imported)."""
+    try:
+        return find_spec(name) is None
+    except (ImportError, ValueError):
+        return True
 
 
 def _xtdb_store(request: BeadlogStoreRequest) -> object:
@@ -99,7 +116,9 @@ def _xtdb_store(request: BeadlogStoreRequest) -> object:
 #: Built-in runtime bindings for manifests that provide ``beadlog.store``. A row is inert until a
 #: discovered, enabled, selected manifest has its id.
 BUILTIN_STORE_PROVIDERS: tuple[BeadlogStoreProvider, ...] = (
-    BeadlogStoreProvider("xtdb", "beadlog-xtdb", "beadhive[xtdb]", _xtdb_store),
+    BeadlogStoreProvider(
+        "xtdb", "beadlog-xtdb", "beadhive[xtdb]", _xtdb_store, requires=("psycopg",)
+    ),
 )
 
 
@@ -383,6 +402,8 @@ class BeadlogStores:
         request = BeadlogStoreRequest(
             plugin_id, settings.values, password_source_for(settings.values)
         )
+        if provider.missing_requirements():
+            raise BeadlogStoreUnavailable(f"{what}, but its package is not installed — {install}")
         try:
             port = provider.loader(request)
         except ModuleNotFoundError:

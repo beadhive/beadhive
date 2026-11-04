@@ -81,6 +81,30 @@ def test_status_defaults_to_disabled_and_offline(monkeypatch) -> None:
     assert any("bh config set plugins.beadlog-xtdb.enabled true" in line for line in lines)
 
 
+def test_installed_means_psycopg_is_importable_not_the_vendored_package(monkeypatch) -> None:
+    """The plugin packages ship in the root wheel (bh-lrs9v); only the extra's dependency says
+    whether ``beadhive[xtdb]`` is installed."""
+    from beadhive.bootstrap import beadlog_store
+
+    probed: list[str] = []
+
+    def find(name: str):
+        probed.append(name)
+        return None
+
+    monkeypatch.setattr(beadlog_store, "find_spec", find)
+    assert cli.package_installed() is False
+    assert probed == ["psycopg"]
+
+    def blocked(name: str):
+        raise ImportError(name)
+
+    monkeypatch.setattr(beadlog_store, "find_spec", blocked)
+    assert cli.package_installed() is False
+    monkeypatch.setattr(beadlog_store, "find_spec", lambda name: object())
+    assert cli.package_installed() is True
+
+
 def test_status_json_names_the_fnox_entry_never_the_value(monkeypatch) -> None:
     use_config(monkeypatch, {"plugins": {"beadlog-xtdb": ON}})
     monkeypatch.setattr(cli, "_password_source", lambda values: pytest.fail("status resolved"))
@@ -156,5 +180,8 @@ def test_doctor_enabled_without_the_package_is_an_install_error(monkeypatch) -> 
     monkeypatch.setattr(cli, "package_installed", lambda: False)
     result = invoke("doctor")
     assert result.exit_code == 1
-    assert "error    package: the beadlog-xtdb plugin package is not installed" in result.output
+    assert (
+        "error    package: the beadlog-xtdb plugin's dependency psycopg is not installed"
+        in result.output
+    )
     assert "beadhive[xtdb]" in result.output

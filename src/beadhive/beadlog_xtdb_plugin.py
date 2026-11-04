@@ -4,8 +4,9 @@ A thin Typer projection (mounted lazily from ``PLUGIN_CLI_RUNTIME_CATALOG``, dec
 manifest's ``presentation.cli``). It lives in root because it composes root-owned pieces (the
 config loader and the fnox secret broker behind the password port), and it never imports the
 plugin package or psycopg at import time: ``status`` is configuration only and works with the
-package absent; ``doctor`` imports the package's checks (``beadhive_beadlog_xtdb.doctor``) only
-when the package is installed.
+extra absent; ``doctor`` imports the package's checks (``beadhive_beadlog_xtdb.doctor``) only
+when the extra's dependency (psycopg) is installed. The plugin's own import packages ship in the
+root wheel, so "installed" means the ``beadhive[xtdb]`` dependency is importable, not the package.
 
 Neither verb starts, stops or writes to the node, and neither prints the password: ``status``
 shows only whether a fnox entry is configured (its profile and key names), and ``doctor``
@@ -18,13 +19,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from importlib import import_module, util
+from importlib import import_module
 from typing import Any
 
 import typer
 
 PLUGIN_ID = "beadlog-xtdb"
 PACKAGE = "beadhive_beadlog_xtdb"
+#: The third-party module the ``beadhive[xtdb]`` extra brings; its absence is "not installed".
+DEPENDENCY = "psycopg"
 INSTALL_HINT = "beadhive[xtdb]"
 SCHEMA = "beadlog-store-status/1"
 
@@ -47,8 +50,11 @@ def _load_config() -> Mapping[str, Any]:
 
 
 def package_installed() -> bool:
-    """Whether the plugin package is importable (found, not imported)."""
-    return util.find_spec(PACKAGE) is not None
+    """Whether the ``beadhive[xtdb]`` extra is installed: the plugin packages ship in the root
+    wheel, so this probes the dependency the extra adds (found, not imported)."""
+    from .bootstrap.beadlog_store import module_missing
+
+    return not module_missing(DEPENDENCY)
 
 
 def _password_source(values: Mapping[str, Any]):
@@ -168,7 +174,7 @@ def doctor_rows(doc: Mapping[str, Any]) -> list[dict[str, str]]:
             {
                 "check": "package",
                 "severity": "error" if doc["enabled"] else "info",
-                "detail": f"the {PLUGIN_ID} plugin package is not installed",
+                "detail": f"the {PLUGIN_ID} plugin's dependency {DEPENDENCY} is not installed",
                 "remedy": f"install `{INSTALL_HINT}` (`uv sync --extra xtdb` in a checkout)",
             }
         )
