@@ -285,6 +285,8 @@ def test_default_settings_enable_nothing():
         {"timeout_seconds": "30"},
         {"timeout_seconds": float("inf")},
         {"timeout_seconds": float("nan")},
+        {"timeout_seconds": 301},
+        {"timeout_seconds": 1e9},
         {"base_url": "http://ghe.example/api/v3"},
         {"base_url": "https://ghe.example/api/v3?x=1"},
     ],
@@ -315,7 +317,12 @@ def _record_client_timeouts(monkeypatch) -> list[object]:
 
 @pytest.mark.parametrize(
     ("settings", "expected"),
-    [({}, 30.0), ({"timeout_seconds": 7}, 7.0), ({"timeout_seconds": 0.25}, 0.25)],
+    [
+        ({}, 30.0),
+        ({"timeout_seconds": 7}, 7.0),
+        ({"timeout_seconds": 0.25}, 0.25),
+        ({"timeout_seconds": 300}, 300.0),
+    ],
 )
 def test_the_configured_timeout_is_the_one_the_client_is_built_with(
     monkeypatch, settings, expected
@@ -334,19 +341,47 @@ def test_the_configured_timeout_is_the_one_the_client_is_built_with(
     assert seen and set(seen) == {expected}
 
 
-@pytest.mark.parametrize("seconds", [0, -1, 0.0, True, float("inf"), float("nan"), None, "30"])
-def test_the_transport_itself_refuses_a_timeout_that_is_not_finite_and_positive(seconds):
+def _transport(seconds):
     from beadhive_tracker_github.adapter.transport import Transport
 
+    return Transport(
+        token_source=lambda: None,
+        api_base="https://api.github.com",
+        budget=RetryBudget(),
+        sleep=lambda _s: None,
+        clock=lambda: datetime.now(UTC),
+        timeout_seconds=seconds,
+    )
+
+
+@pytest.mark.parametrize(
+    "seconds",
+    [0, -1, 0.0, True, float("inf"), float("nan"), None, "30", 300.0001, 301, 1e9],
+)
+def test_the_transport_itself_refuses_a_timeout_outside_zero_to_the_cap(seconds):
     with pytest.raises(ValueError):
-        Transport(
-            token_source=lambda: None,
-            api_base="https://api.github.com",
-            budget=RetryBudget(),
-            sleep=lambda _s: None,
-            clock=lambda: datetime.now(UTC),
-            timeout_seconds=seconds,
-        )
+        _transport(seconds)
+
+
+@pytest.mark.parametrize("seconds", [301, 300.0001, 1e9])
+def test_the_transport_refusal_names_the_cap_and_not_the_value(seconds):
+    with pytest.raises(ValueError) as caught:
+        _transport(seconds)
+    assert "300" in str(caught.value)
+    assert str(seconds) not in str(caught.value)
+
+
+@pytest.mark.parametrize("seconds", [0.5, 30, 299.9999, 300, 300.0])
+def test_the_transport_accepts_a_timeout_up_to_and_including_the_cap(seconds):
+    assert _transport(seconds).timeout_seconds == seconds
+
+
+def test_the_transport_cap_is_the_shared_port_constant():
+    from beadhive.modules.tracker.contracts import MAX_REQUEST_TIMEOUT_SECONDS
+
+    assert MAX_REQUEST_TIMEOUT_SECONDS == 300
+    with pytest.raises(ValueError, match="at most 300"):
+        _transport(MAX_REQUEST_TIMEOUT_SECONDS + 1)
 
 
 # ---- the planted-token leak check ---------------------------------------------------------------

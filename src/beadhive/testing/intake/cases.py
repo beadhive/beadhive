@@ -568,6 +568,26 @@ def _holds_open_and_resolve_one_at_a_time(factory: ReportStoreFactory) -> None:
     assert store.holds() == ()
 
 
+def _is_held_is_the_targeted_holds(factory: ReportStoreFactory) -> None:
+    """``is_held(report)`` answers ``report in any hold.blocks`` for one report, hold by hold."""
+    store = factory()
+    native, bound, other = (
+        store.create(draft("born native")),
+        store.create(draft(bound=True)),
+        store.create(draft(bound=True)),
+    )
+    assert not store.is_held(native)
+    assert store.is_held(bound) and store.is_held(other)
+    store.open_hold(bound, actor="dev/test")
+    first, second = (h.gate for h in store.holds() if h.blocks == (bound,))
+    store.resolve_hold(first, actor="dev/test")
+    assert store.is_held(bound)  # one open hold is enough
+    store.resolve_hold(second, actor="dev/test")
+    assert not store.is_held(bound) and store.is_held(other)  # another report's hold is not its
+    store.close(other, reason="done", actor="dev/test")
+    assert not store.is_held(other)  # the held close resolved it
+
+
 REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.scope-is-stable", _scope_is_stable),
     ReportStoreCase("store.create-reads-back", _create_reads_back),
@@ -602,6 +622,7 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
         "store.bound-create-opens-a-hold", _bound_create_opens_a_hold_and_a_native_one_does_not
     ),
     ReportStoreCase("store.close-is-the-held-close", _close_is_the_held_close),
+    ReportStoreCase("store.is-held-is-the-targeted-holds", _is_held_is_the_targeted_holds),
     ReportStoreCase("store.outbox-absent-reads-none", _outbox_absent_reads_none),
     ReportStoreCase("store.outbox-round-trips-whole", _outbox_round_trips_whole),
     ReportStoreCase("store.outbox-write-rechecks-seq", _outbox_write_rechecks_seq),

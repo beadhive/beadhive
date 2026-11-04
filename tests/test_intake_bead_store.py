@@ -198,7 +198,7 @@ class FakeBd:
         if "--type" in flags:
             row["issue_type"] = flags["--type"]
         if "--priority" in flags:
-            row["priority"] = int(flags["--priority"])
+            row["priority"] = int(flags["--priority"].lstrip("pP"))  # bd: 0-4 or P0-P4
         if "--metadata" in flags:
             assert flags["--metadata"] == "@/dev/stdin"
             row.setdefault("metadata", {}).update(json.loads(stdin or "{}"))
@@ -225,6 +225,7 @@ class FakeBd:
                 "(use --force to override)"
             )
         row["status"] = "closed"
+        row["close_reason"] = self._flags(rest[1:]).get("--reason", "")
         return ""
 
     def _dep(self, rest, stdin):

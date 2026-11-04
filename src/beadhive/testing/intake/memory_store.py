@@ -251,6 +251,9 @@ class MemoryReportStore:
             if gate.open
         )
 
+    def is_held(self, report: str) -> bool:
+        return bool(self._open_gates(report))
+
     def bound_reports(self) -> tuple[BeadView, ...]:
         return tuple(r.view for r in self._rows.values() if r.view.binding is not None)
 

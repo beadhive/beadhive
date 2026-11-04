@@ -152,7 +152,7 @@ wheels = [
 
 [[package]]
 name = "beadhive"
-version = "0.32.0"
+version = "0.33.1"
 source = { editable = "." }
 dependencies = [
     { name = "attrs" },
@@ -173,7 +173,7 @@ dependencies = [
 
 [package.optional-dependencies]
 github = [
-    { name = "beadhive-tracker-github" },
+    { name = "githubkit" },
 ]
 otel = [
     { name = "opentelemetry-exporter-otlp" },
@@ -187,7 +187,7 @@ release-verify = [
     { name = "sigstore" },
 ]
 xtdb = [
-    { name = "beadhive-beadlog-xtdb" },
+    { name = "psycopg", extra = ["binary"] },
 ]
 
 [package.dev-dependencies]
@@ -241,17 +241,17 @@ worktrees = [
 [package.metadata]
 requires-dist = [
     { name = "attrs", specifier = ">=23" },
-    { name = "beadhive-beadlog-xtdb", marker = "extra == 'xtdb'", editable = "packages/beadhive-beadlog-xtdb" },
     { name = "beadhive-pants", marker = "extra == 'pants'", editable = "packages/beadhive-pants" },
-    { name = "beadhive-tracker-github", marker = "extra == 'github'", editable = "packages/beadhive-tracker-github" },
     { name = "cryptography", specifier = ">=45" },
     { name = "fastmcp", specifier = ">=3.4,<4" },
+    { name = "githubkit", marker = "extra == 'github'", specifier = ">=0.16.1,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "joserfc", specifier = ">=1.7,<2" },
     { name = "jsonschema", specifier = ">=4" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.37,<2" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.37,<2" },
     { name = "packaging", specifier = ">=24" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'xtdb'", specifier = ">=3.2,<4" },
     { name = "pydantic-settings", specifier = ">=2.11" },
     { name = "pymysql", specifier = "==1.1.2" },
     { name = "ruamel-yaml", specifier = ">=0.18" },

@@ -13,6 +13,67 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.33.1 (2026-11-04)
+
+### Fix
+
+- **doctor**: sweep intake holds on the bd CLI so doctor never needs the Beads service
+- **intake**: serve the report store from the Beads service under work.beads.route
+- **beads**: pass the list filters and include_dependents through BeadsSession
+- **run**: resolve the effective config once per bh process for the child-env GIT_WORKSPACE fill
+- **tracker-github**: cap timeout_seconds at 300 and refuse larger values at config load, set and the transport
+- **packaging**: vendor the github and xtdb plugin packages into the root wheel so their extras resolve from PyPI
+- **intake**: check an existing report's hold with one targeted read, not a scan of every gate
+
+## v0.33.0 (2026-11-03)
+
+### Feat
+
+- **backfill**: --since-cursor on the published backfill timeline verb
+- **backfill**: beadhive-beadlog-xtdb plugin and the beadlog.store capability, wire 2.20.0
+- **backfill**: incremental cursors and opt-in continuous backfill after merges
+- **backfill**: advisory coverage check in bh doctor and bh hive ready
+- **backfill**: hive apply passes for the commits, docs and planning strategies
+- **backfill**: bh backfill coverage with cached link-coverage state, wire 2.19.0
+- **backfill**: XTDB BeadLog loader with monotone initial load, incremental mode and loss report
+- **backfill**: XTDB as-of reader exports store state and history as BeadLog events
+- **backfill**: beadlog-xtdb library with connection, layout (b) rows, transit and type discipline
+- **beadlog**: add the erase-logical loader capability and its conformance rule
+- **backfill**: planning source strategy in beadlog-sources
+- **backfill**: docs source strategy in beadlog-sources
+- **backfill**: git-commits source strategy in beadlog-sources
+- **backfill**: run the gap fill from export --history when configured
+- **backfill**: opt-in bounded dolt_history gap fill for pre-events-table beads
+- **config**: add the default-off backfill.timeline.gapfill section
+- **backfill**: bh backfill timeline and export --history, wire 2.18.0
+- **backfill**: lifecycle timeline pass proposing metadata.lifecycle keys
+- **backfill**: neutral bd events-table to BeadLog history events
+- **backfill**: first-parent land parser and run-journal reader
+- **backfill**: bd events-table and commit-date readers in beadlog-sources
+- **backfill**: bh backfill command group and wire 2.17.0
+- **backfill**: root bd StoreLoader with loss reporting over the neutral bd reader
+- **beadlog-sources**: neutral bd baseline strategy re-emitting stored BeadLog ids
+- **backfill**: generic plan/apply/audit engine lifted from complexity_backfill
+- **beadlog-sources**: reconcile, judgment engines and the standalone beadlog CLI
+- **config**: add the default-off backfill.judge section
+- **beadlog**: loader-conformance kit and in-memory reference store
+- **beadlog**: reproducible .bdlg archive writer and streaming untrusted-input reader
+- **backfill**: scaffold beadlog, beadlog-sources and beadhive-backfill packages; BeadLog domain with merge and diff
+
+### Fix
+
+- **sync**: opt-in overlap re-pull so an edit bd's last_sync skips still lands
+- **sync**: reproduce bd's end-of-sync GitHub checkpoint skip against real bd
+- **sync**: report and optionally commit the rows a tracker pull leaves uncommitted
+- **ci**: derive installed-parity vendored packages from the wheel list
+- **backfill**: a same-second commit must strictly win the git.commits fold
+- **plan**: carry the epic's priority when filing; default an omitted one to P2
+
+### Refactor
+
+- **scripts**: turn the commit-linkage scripts into deprecation shims over git-commits
+- **backfill**: port the complexity backfill onto the engine as pass #1
+
 ## v0.32.0 (2026-10-30)
 
 ### Feat

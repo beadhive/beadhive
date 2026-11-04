@@ -633,12 +633,29 @@ def test_the_request_timeout_defaults_to_thirty_seconds_and_is_finite():
 
 
 @pytest.mark.parametrize(
-    "value", [0, -1, -0.5, True, False, "30", None, [], float("inf"), float("nan")]
+    "value",
+    [0, -1, -0.5, True, False, "30", None, [], float("inf"), float("nan"), 301, 300.0001, 1e9],
 )
-def test_the_request_timeout_must_be_a_finite_positive_number(value):
+def test_the_request_timeout_must_be_a_finite_positive_number_within_the_cap(value):
     problems = validate_config(_doc(plugins={"tracker-github": {"timeout_seconds": value}}))
     assert [p["path"] if "path" in p else p["message"] for p in problems]
     assert all("timeout_seconds" in p["message"] for p in problems)
+
+
+@pytest.mark.parametrize("value", [0.5, 30, 299.9999, 300, 300.0])
+def test_the_request_timeout_accepts_the_cap_itself(value):
+    assert validate_config(_doc(plugins={"tracker-github": {"timeout_seconds": value}})) == []
+    assert TrackerGithubConfig.model_validate({"timeout_seconds": value}).timeout_seconds == value
+
+
+@pytest.mark.parametrize("value", [301, 300.0001, 1e9])
+def test_the_request_timeout_refusal_names_the_bound_and_not_the_value(value):
+    from beadhive.modules.tracker.contracts import MAX_REQUEST_TIMEOUT_SECONDS
+
+    (problem,) = validate_config(_doc(plugins={"tracker-github": {"timeout_seconds": value}}))
+    assert "timeout_seconds" in problem["message"]
+    assert str(MAX_REQUEST_TIMEOUT_SECONDS) in problem["message"]
+    assert str(value) not in problem["message"]
 
 
 @pytest.mark.parametrize(

@@ -4,10 +4,11 @@ version = "0.1.0"
 description = "GitHub issue tracker adapter plugin for Beadhive (tracker.adapter v1)"
 requires-python = ">=3.11"
 # A PLUGIN package (it carries plugin.json): root resolves it lazily, by name, only after
-# manifest selection (docs/design/tracker-adapter-plugin-adr.md section 1). githubkit is this
-# distribution's own dependency, never the root's: the root wheel installs without it, and it
-# is imported only lazily under beadhive_tracker_github/adapter/ (the `beadhive[github]` extra
-# is the public spelling; the `github` dependency group is the dev/CI one, as for `pants`).
+# manifest selection (docs/design/tracker-adapter-plugin-adr.md section 1). The root wheel VENDORS
+# this import package (bh-lrs9v), so this distribution is never published on its own: the public
+# `beadhive[github]` extra carries only githubkit, which is this distribution's own dependency,
+# never the root's base one, and is imported only lazily under beadhive_tracker_github/adapter/
+# (the `github` dependency group is the editable dev/CI spelling).
 # The transitive `hishel` needs the osv-scanner.toml licence override (bh-h8kab).
 dependencies = ["beadhive", "githubkit>=0.16.1,<1"]
 classifiers = ["Private :: Do Not Upload"]

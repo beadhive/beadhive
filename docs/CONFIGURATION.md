@@ -407,9 +407,11 @@ are **host-owned**: a fleet push cannot switch a plugin on. Both are absent by d
 `plugins.tracker-github` configures the GitHub tracker adapter. Every switch is off and every
 boolean is strict (`"false"` is invalid, not truthy). There is no `repo` key: owner and
 repository come from the bound hive's `provider`/`org`/`repo`. No key holds a credential, a
-command or an approval; credentials stay ambient. The adapter ships as the optional
-`beadhive-tracker-github` package (install `beadhive[github]`); installing it enables nothing,
-and `import beadhive` never needs or imports its `githubkit` dependency.
+command or an approval; credentials stay ambient. The adapter's import package ships inside the
+`beadhive` wheel; the optional `beadhive[github]` extra adds its one third-party dependency,
+`githubkit` (`uv tool install 'beadhive[otel,github]'`, or `uv sync --extra github` in a
+checkout). Installing the extra enables nothing, `import beadhive` never imports `githubkit`, and
+enabling the plugin without the extra refuses naming `beadhive[github]`.
 
 | Key (under `plugins.tracker-github`) | Default | Meaning |
 |---|---|---|
@@ -420,7 +422,7 @@ and `import beadhive` never needs or imports its `githubkit` dependency.
 | `read.include_closed` | `true` | scope within a read, not a feature switch |
 | `read.page_size` | unset | listing page size, 1 to 100 |
 | `http_cache.enabled` | `false` | conditional requests for the id-reconcile pass |
-| `timeout_seconds` | `30` | seconds before a connect or read is abandoned; a number greater than zero (an integer or a float), finite by construction: zero, negative, boolean, non-numeric and `inf`/`nan` values are refused, and there is no way to disable the timeout |
+| `timeout_seconds` | `30` | seconds before a connect or read is abandoned; a number in the range `(0, 300]` (an integer or a float): zero, negative, boolean, non-numeric, `inf`/`nan` and any value above 300 are refused at config load, by `bh config validate` and by `bh config set` (nothing is written), never clamped, and the refusal does not repeat the value. There is no way to disable the timeout, and 300 s is a hard maximum rather than a default: an effectively unbounded timeout would reopen that hole, and one hung request would stall `bh work discover`, the host-daemon discovery timer and the outbox sender for that tracker binding. GitHub API calls do not legitimately need longer, and `retry.max_total_wait_seconds` already bounds the waits between attempts. The adapter's transport enforces the same bound from the same constant |
 | `retry.max_retries` / `retry.max_single_wait_seconds` / `retry.max_total_wait_seconds` | `3` / `60` / `120` | the retry budget; single wait at most the total |
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
@@ -442,9 +444,11 @@ to every host (`bh-uf986`).
 capability, and `bh plugin beadlog-xtdb status|doctor` report on it. It is **host-owned** and off
 by default. bh never starts, stops or upgrades the node. No key holds the password: it is the
 node's `XTDB_PASSWORD`, resolved from the host's fnox secret broker through `credential`, and a
-`dsn` that embeds one is refused. The plugin ships as the optional `beadhive-beadlog-xtdb`
-package (install `beadhive[xtdb]`; it brings psycopg, LGPL-3.0); installing it enables nothing,
-and `import beadhive` never needs or imports it.
+`dsn` that embeds one is refused. The plugin's import packages ship inside the `beadhive` wheel;
+the optional `beadhive[xtdb]` extra adds its one third-party dependency, `psycopg` (LGPL-3.0;
+`uv tool install 'beadhive[xtdb]'`, or `uv sync --extra xtdb` in a checkout). Installing the
+extra enables nothing, `import beadhive` never imports psycopg, and enabling the plugin without
+the extra refuses naming `beadhive[xtdb]`.
 
 | Key (under `plugins.beadlog-xtdb`) | Default | Meaning |
 |---|---|---|
@@ -479,7 +483,7 @@ and no key can enable or pre-approve a tracker write.
 | `milestones.draft_on_blocked` | `false` | allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` record (fixed wording plus the reason) for every report that tracks the work and is still `delivery:pending`. Off refuses naming this key |
 | `milestones.draft_on_deprioritised` | `false` | the same for `bh work delivery deprioritised <work> --reason <public text>` and a `deprioritised` record |
 | `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
-| `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request |
+| `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request. Only `approve` and `send` are gated by this flag: `render`, `discard` and `retry --kind labels` are local state moves that make no tracker request, so they are deliberately not blocked. A retried label operation still cannot reach GitHub without a new `approve` and `send`, and both of those are gated |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
 | `comments.enabled` | `false` | ingest bound reports' issue comments: `bh work thread ingest` (needs `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`), `thread show` and `thread considered`. Reads only; off refuses naming this key |
 | `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |

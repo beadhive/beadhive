@@ -39,7 +39,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 29
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 30
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -146,6 +146,20 @@ class _SilentOnUnknown(MemoryReportStore):
     def close(self, bead, *, reason, actor):
         if bead in self._rows:
             super().close(bead, reason=reason, actor=actor)
+
+
+class _IsHeldIgnoresResolution(MemoryReportStore):
+    """Reads any hold ever opened as still blocking, resolved or not."""
+
+    def is_held(self, report):
+        return any(g.blocks == report for g in self._gates.values())
+
+
+class _IsHeldAnyoneIsHeld(MemoryReportStore):
+    """Reads a hold on another report as this one's."""
+
+    def is_held(self, report):
+        return any(g.open for g in self._gates.values())
 
 
 class _SnapshotDropped(MemoryReportStore):
@@ -337,6 +351,8 @@ _BROKEN = [
     (_NativeCreateHeld, "store.bound-create-opens-a-hold"),
     (_CloseLeavesTheHold, "store.close-is-the-held-close"),
     (_CloseRefusedWhileHeld, "store.close-is-the-held-close"),
+    (_IsHeldIgnoresResolution, "store.is-held-is-the-targeted-holds"),
+    (_IsHeldAnyoneIsHeld, "store.is-held-is-the-targeted-holds"),
     (_ResolveClosesEveryHold, "store.holds-open-and-resolve-one-at-a-time"),
     (_OpenHoldIgnored, "store.holds-open-and-resolve-one-at-a-time"),
     (_OutboxSeqUnchecked, "store.outbox-write-rechecks-seq"),

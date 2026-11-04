@@ -288,9 +288,7 @@ class IssueImporter:
     def _missing(self, view: BeadView) -> tuple[str, ...]:
         """The pieces an interrupted earlier create left out (never an existing disposition)."""
         missing: list[str] = []
-        if view.status != "closed" and not any(
-            view.id in hold.blocks for hold in self._store.holds()
-        ):
+        if view.status != "closed" and not self._store.is_held(view.id):
             missing.append(REPAIR_HOLD)
         if channel_of(view.labels, view.source_system) is None:
             missing.append(REPAIR_ORIGIN)

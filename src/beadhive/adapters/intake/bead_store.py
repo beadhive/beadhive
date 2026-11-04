@@ -203,7 +203,7 @@ class BdReportStore:
             if not (isinstance(row, dict) and row.get("status") == "open" and is_hold_gate(row)):
                 continue
             gate = str(row.get("id", ""))
-            edges = self._routes.dependency_list(gate, direction="up", type_="blocks")
+            edges = self._edges(gate, direction="up", type_="blocks")
             blocked = (
                 tuple(sorted(str(r.get("id", "")) for r in edges if isinstance(r, dict)))
                 if isinstance(edges, list)
@@ -211,6 +211,19 @@ class BdReportStore:
             )
             holds.append(HoldGate(gate, blocked))
         return tuple(holds)
+
+    def is_held(self, report: str) -> bool:
+        """Whether ``report`` has an open ``intake-hold:`` gate blocking it: ONE read of the
+        report's own blocking dependencies (``bd dep list <report> --direction down``), whose rows
+        carry each gate's status and reason. The answer :meth:`holds` gives for this report, at a
+        cost that does not grow with the number of gates."""
+        edges = self._edges(report, direction="down", type_="blocks")
+        if not isinstance(edges, list):
+            return False
+        return any(
+            isinstance(row, dict) and row.get("status") == "open" and is_hold_gate(row)
+            for row in edges
+        )
 
     def bound_reports(self) -> tuple[BeadView, ...]:
         rows = self._routes.issue_list(has_metadata_key=SOURCE_KEY, all_=True, limit=0)
@@ -322,10 +335,9 @@ class BdReportStore:
             raise IntakeStoreError(f"{bead} not found", bead=bead, operation="record_snapshot")
         document = current_source(data)
         document.update(source_document(None, snapshot))
-        result = self._routes.issue_set_metadata_document(
-            bead, SOURCE_KEY, document, actor=actor, capture=True
+        self._set_document(
+            bead, SOURCE_KEY, document, row=data, actor=actor, operation="record_snapshot"
         )
-        self._check(result, "record_snapshot", bead)
 
     def update_fields(self, bead: str, *, issue_type: str, priority: str, actor: str) -> None:
         if not (issue_type or priority):
@@ -423,10 +435,14 @@ class BdReportStore:
             raise IntakeStoreError(
                 f"{bead} is not bound to {thread.issue.url}", bead=bead, operation="write_thread"
             )
-        result = self._routes.issue_set_metadata_document(
-            bead, THREAD_KEY, thread_to_document(thread), actor=actor, capture=True
+        self._set_document(
+            bead,
+            THREAD_KEY,
+            thread_to_document(thread),
+            row=row,
+            actor=actor,
+            operation="write_thread",
         )
-        self._check(result, "write_thread", bead)
 
     def write_outbox(
         self, bead: str, document: OutboxDocument, *, expect_seq: int, actor: str
@@ -453,10 +469,14 @@ class BdReportStore:
             raise IntakeStoreError(
                 f"{bead} is not bound to an external issue", bead=bead, operation="write_outbox"
             )
-        result = self._routes.issue_set_metadata_document(
-            bead, OUTBOX_KEY, outbox_to_document(document), actor=actor, capture=True
+        self._set_document(
+            bead,
+            OUTBOX_KEY,
+            outbox_to_document(document),
+            row=row,
+            actor=actor,
+            operation="write_outbox",
         )
-        self._check(result, "write_outbox", bead)
 
     # -- helpers -----------------------------------------------------------------------------
 
@@ -502,10 +522,26 @@ class BdReportStore:
         return tuple(bead_view(row) for row in rows if isinstance(row, dict))
 
     def _edge_ids(self, bead: str, *, direction: str, type_: str = "tracks") -> tuple[str, ...]:
-        rows = self._routes.dependency_list(bead, direction=direction, type_=type_)
+        rows = self._edges(bead, direction=direction, type_=type_)
         if not isinstance(rows, list):
             return ()
         return tuple(sorted(str(r.get("id", "")) for r in rows if isinstance(r, dict)))
+
+    def _edges(self, bead: str, *, direction: str, type_: str) -> Any:
+        """The beads ``bead`` points at (``down``) or that point at it (``up``) over ``type_``
+        edges, as ``bd dep list`` rows: the one dependency read every hold and tracking query
+        shares, so a sibling store serving the same port from another route overrides only it."""
+        return self._routes.dependency_list(bead, direction=direction, type_=type_)
+
+    def _set_document(
+        self, bead: str, key: str, document: Any, *, row: dict, actor: str, operation: str
+    ) -> None:
+        """Rewrite the metadata key ``key`` of ``bead`` whole with ``document``. ``row`` is the
+        bead's row the caller just read (a sibling store compares against it)."""
+        result = self._routes.issue_set_metadata_document(
+            bead, key, document, actor=actor, capture=True
+        )
+        self._check(result, operation, bead)
 
 
 __all__ = ["BdReportStore", "ReportRoutes"]

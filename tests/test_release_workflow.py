@@ -152,6 +152,21 @@ def test_build_smoke_asserts_wheel_digest_equals_installed_release() -> None:
     )
 
 
+def test_build_smokes_the_bare_and_extra_installs_before_publication() -> None:
+    """bh-lrs9v: `publish` needs `build`, and the extras smoke runs in `build` before the
+    distributions are transferred, so a failing isolated install fails the tag pre-publish."""
+    workflow = _workflow()
+    steps = workflow["jobs"]["build"]["steps"]
+    step = next(s for s in steps if "release-extras-smoke.py" in str(s.get("run", "")))
+
+    assert step["run"].strip() == "python3 scripts/release-extras-smoke.py dist/*.whl"
+    assert "continue-on-error" not in step
+    assert steps.index(step) < next(
+        i for i, s in enumerate(steps) if _uses(s, "actions/upload-artifact")
+    )
+    assert workflow["jobs"]["publish"]["needs"] == "build"
+
+
 def test_attest_job_signs_manifest_on_tags_only_with_least_privilege() -> None:
     job = _workflow()["jobs"]["attest"]
     attest = next(s for s in job["steps"] if _uses(s, "actions/attest"))

@@ -43,7 +43,8 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
   (githubkit renders a `datetime` with `str()`). A page cursor's `next` URL is followed verbatim
   only on the API origin, so a tampered cursor cannot send the credential elsewhere.
 * The connect/read timeout is finite (30 s by default, configurable with `timeout_seconds`, a
-  number greater than zero; githubkit's own default is none, and none is never allowed).
+  number in `(0, 300]`; githubkit's own default is none, and none is never allowed, nor is a
+  value above the 300 s cap, which is refused rather than clamped).
 * **`comment.create`** posts the body plus the `bh:v1` marker line. Refused before any request
   (and before the credential is resolved) when the operation is off, the grant is missing, names
   another operation or issue, or was already presented. A missing credential is refused next and

@@ -233,6 +233,14 @@ class ReportStore(Protocol):
         """Every OPEN ``intake-hold:`` gate and the beads it blocks (none: an orphaned gate)."""
         ...
 
+    def is_held(self, report: str) -> bool:
+        """True when ``report`` has at least one OPEN ``intake-hold:`` gate blocking it.
+
+        The targeted form of :meth:`holds` for ONE report: a constant number of store reads however
+        many reports and gates exist, where :meth:`holds` reads every gate. Same answer as
+        ``any(report in hold.blocks for hold in holds())``."""
+        ...
+
     def bound_reports(self) -> tuple[BeadView, ...]:
         """Every bound report, of every status (those carrying the ``intake.source`` document)."""
         ...

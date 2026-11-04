@@ -122,7 +122,7 @@ figures).
 | Package | `beadhive.modules.intake` with `domain/`, `contracts/`, `application/` (the `modules/hives` shape), layout as in `bh-mj7cl` section 1 |
 | Consumer port | `beadhive.modules.intake.contracts.IntakePort` (`Protocol`); `IntakeService` its one implementation; `NullIntake` bound when intake is off (empty queue reads, `reports_for_work` returns `()`, every write raises `IntakeRefused(INTAKE_DISABLED)`) |
 | Outbound ports | `ReportStore` (intake's own narrow bead-store port), `CheckpointStore`, `LabelPolicy`, `Sanitizer`, `ReleaseVerifier`, `IntakeLock` (section 4), `IdSource`; plus the tracker port's `TrackerReader`, `CommentWriter`, `LabelWriter` and the optional `IssueResolver` (A1) |
-| Adapters | `beadhive.adapters.intake`: `BdReportStore` over an injected `beadhive_bd_cli.CliRoutes`, a file-backed `CheckpointStore` in the hive's private `.bh/` state |
+| Adapters | `beadhive.adapters.intake`: `BdReportStore` over an injected `beadhive_bd_cli.CliRoutes`, `ApiReportStore` (the same store served from the supervised Beads service under `work.beads.route`, bh-9o12j; creates, gates, `set-state` and `find-duplicates` stay on the CLI), a file-backed `CheckpointStore` in the hive's private `.bh/` state |
 | Test kit | `beadhive.testing.intake`: `MemoryReportStore` and `ReportStore` contract cases run against both implementations; consumer tests use `MemoryTracker` from `beadhive.testing.tracker` |
 | Composition | `beadhive.intake_services`, a legacy composition root (the `hive_services.py` precedent: neither `bootstrap` nor an adapter may import legacy) |
 | Tests | `tests/unit/modules/intake/` under `_unit_tests("modules/intake", ...)`, `attest:unit`, with `test_intake_independence.py`; one bd-binary integration test replaying `bh-6wj9y` E4 |
@@ -369,8 +369,9 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   no-op, an unreadable token is refreshed rather than frozen. Repairs of an interrupted create
   (`hold`, `origin`, `intake`, `source`) are reported in `ImportOutcome.repaired`, fix only the
   missing piece and never touch an existing disposition; a closed report is never given a hold.
-  The hold repair is a targeted `holds()` check for this report, not `sweep_holds`, so a re-import
-  does not scan every report.
+  The hold repair is the targeted `is_held(report)` check (one read of that report's own blocking
+  dependencies), not `holds()` and not `sweep_holds`, so a re-import never scans every gate: an
+  unchanged upsert makes the same few `bd` calls however many reports and holds exist.
 - **Lock and config.** Import uses the root's one `FlockIntakeLock` (`intake_services.intake_lock`,
   the same lock the outbox sender holds): `guard_primary` first (`NOT_PRIMARY`, naming `bh work
   import`), then an advisory never-waiting `flock` under the hive's `.bh/intake/locks/`

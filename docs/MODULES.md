@@ -524,7 +524,14 @@ AST test: no legacy file except the composition root `intake_services.py` import
 
 `bh report`, `bh escalate` and the triage verbs (`bh work intake|accept|reject|reroute|promote`)
 now run through the port. `beadhive.adapters.intake.BdReportStore` implements `ReportStore` over
-injected `beadhive-bd-cli` routes (it never imports the package or builds argv); the binding and
+injected `beadhive-bd-cli` routes (it never imports the package or builds argv);
+`ApiReportStore` is the same store served from the hive's supervised Beads service
+(`beadhive.intake_beads`, bh-9o12j) under `work.beads.route` exactly as the work verbs are: reads,
+type/priority/assignee updates, tracking edges, the close and the three metadata documents go to
+the service (the documents by compare-and-set), while the creates (the service cannot record
+`created_by`), the gates, `bd set-state` and `bd find-duplicates` stay on the CLI, and the
+`external_ref` lookup confirms an index miss on the CLI because the service has no such filter.
+A command that needs only the CLI (`bh report`) never opens a session. The binding and
 last issue snapshot of a bound report live in the flat top-level metadata key `intake.source`, the
 issue URL in the bead's native `external_ref`. `beadhive.intake_services` is the legacy
 composition root: it binds the store to the hive's operational store (`store_target.operational_store`
@@ -720,7 +727,10 @@ store binds a tracker adapter, and `IntakeService.sweep_holds(repair=True)` repa
 Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
 pass `beadhive.testing.intake.REPORT_STORE_CASES`: `BdReportStore` passes them on an in-process
 fake bd (`tests/test_intake_bead_store.py`) and on a real bd store
-(`tests/test_intake_bead_store_int.py`, `integration`). Module-internal tests are
+(`tests/test_intake_bead_store_int.py`, `integration`); `ApiReportStore` passes them over a fake
+Beads service (`tests/test_intake_api_store.py`) and has a real-service parity proof
+(`tests/test_intake_api_store_real_service.py`, opt-in `BEADS_INTAKE_SCRATCH=1`).
+Module-internal tests are
 `tests/unit/modules/intake`, `tests/unit/testing/test_intake_report_store_kit.py` and, for G5 and
 G6, `tests/test_intake_import_boundaries.py`; the composition is pinned by
 `tests/test_intake_services.py`.

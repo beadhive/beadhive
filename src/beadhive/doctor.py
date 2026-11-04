@@ -906,7 +906,10 @@ def _hold_remediation(hive_id: str, finding) -> str:
 
 def _data_intake_holds(cfg) -> list[dict]:
     """One row per finding across the hives whose public store binds a tracker adapter and that
-    have a local checkout (an uncloned hive is skipped)."""
+    have a local checkout (an uncloned hive is skipped).
+
+    The sweep reads on the ``bd`` CLI whatever ``work.beads.route`` says (bh-9o12j): a diagnostic
+    must not fail, or need a running Beads service, on the thing it diagnoses."""
     from . import intake_services
     from .bootstrap.tracker_readiness import has_binding
 
@@ -916,7 +919,7 @@ def _data_intake_holds(cfg) -> list[dict]:
         if not has_binding([e]) or not path.is_dir():
             continue
         hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
-        for f in intake_services.sweep_holds(path).findings:
+        for f in intake_services.sweep_holds(path, cli_only=True).findings:
             findings.append(
                 {
                     "hive": hive_id,

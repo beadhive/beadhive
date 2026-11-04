@@ -55,9 +55,11 @@ def test_parity_does_not_require_venv_or_ensurepip(tmp_path) -> None:
     assert not (tmp_path / "must-not-exist").exists()
 
 
-def test_wheel_packages_cover_backfill_libraries_and_exclude_xtdb() -> None:
+def test_wheel_packages_cover_backfill_libraries_and_the_vendored_plugin_extras() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     names = {Path(p).name for p in demo_live_ingress_matrix.wheel_packages(pyproject)}
 
     assert {"beadhive", "beadlog", "beadlog_sources", "beadhive_backfill"} <= names
-    assert "beadlog_xtdb" not in names
+    # bh-lrs9v: the github/xtdb plugin packages ship in the wheel (the extras add only psycopg /
+    # githubkit), so the installed-parity site must carry them too.
+    assert {"beadhive_tracker_github", "beadhive_beadlog_xtdb", "beadlog_xtdb"} <= names
