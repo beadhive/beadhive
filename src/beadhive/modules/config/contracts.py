@@ -2904,6 +2904,10 @@ class TrackerGithubRead(_QuietSection):
     comments: TrackerGithubFlag = Field(
         default_factory=TrackerGithubFlag, description="`comments.read` (default off)."
     )
+    labels: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag,
+        description="`labels.read`: read the repository's label definitions (default off).",
+    )
     include_closed: StrictBool = Field(
         True, description="Scope within a read: include closed issues. Not a feature switch."
     )
@@ -2970,6 +2974,11 @@ class TrackerGithubWrite(_QuietSection):
         default_factory=TrackerGithubFlag, description="`comment.create` (default off)."
     )
     labels: TrackerGithubLabels = Field(default_factory=TrackerGithubLabels)
+    label_definitions: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag,
+        description="`labels.define`: create or update repository label definitions "
+        "(default off; each use needs an operator-approved single-use grant).",
+    )
 
 
 class TrackerGithubConfig(_QuietSection):
@@ -3319,6 +3328,120 @@ class IntakeOutboxConfig(_QuietSection):
     )
 
 
+#: The label dimensions the registry-derived projection may name (the registry's own axes).
+INTAKE_LABEL_DIMENSIONS: tuple[str, ...] = (
+    "intake",
+    "delivery",
+    "progress",
+    "type",
+    "priority",
+    "component",
+)
+_LABEL_COLOR_RE = re.compile(r"[0-9a-fA-F]{6}")
+
+
+class IntakeLabelOverride(_QuietSection):
+    """One projected label's display override; every field is optional."""
+
+    name: str | None = Field(None, description="The label name, replacing the derived one.")
+    description: str | None = Field(None, description="The label description.")
+    color: str | None = Field(None, description="Six hex digits, no leading `#`.")
+
+    @field_validator("name", "description")
+    @classmethod
+    def _nonblank(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError("an override name and description must not be blank when set")
+        return value
+
+    @field_validator("color")
+    @classmethod
+    def _hex_color(cls, value):
+        if value is not None and not _LABEL_COLOR_RE.fullmatch(value):
+            raise ValueError("an override color must be six hex digits")
+        return value
+
+
+class IntakeLabelsConfig(_QuietSection):
+    """``intake.external.labels`` — the registry-derived GitHub label projection (host-owned, off).
+
+    Nothing here reads or writes a repository: it only shapes the label catalog the application
+    derives from the registry. Writing it still needs ``plugins.tracker-github.read.labels`` /
+    ``write.label_definitions`` and a per-use operator-approved grant, and the ``prefix`` must be
+    listed in ``plugins.tracker-github.write.labels.owned_prefixes`` (checked where both are
+    known, by `bh config validate`).
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Enable the label projection for external intake (default off)."
+    )
+    prefix: str = Field(
+        "bh:",
+        description="The namespace prefix of every projected label; must be one of "
+        "`plugins.tracker-github.write.labels.owned_prefixes` when labels are written.",
+    )
+    project: list[str] = Field(
+        default_factory=lambda: list(INTAKE_LABEL_DIMENSIONS),
+        description="The registry dimensions projected as labels, in order (a subset of: "
+        + ", ".join(INTAKE_LABEL_DIMENSIONS)
+        + ").",
+    )
+    aliases: dict[str, str] = Field(
+        default_factory=dict,
+        description="Dimension -> display group, replacing the dimension name in a label.",
+    )
+    colors: dict[str, str] = Field(
+        default_factory=dict,
+        description="Dimension -> six hex digits (no `#`): the label color of that dimension.",
+    )
+    overrides: dict[str, IntakeLabelOverride] = Field(
+        default_factory=dict,
+        description="`dimension/value` -> name, description or color overriding one label.",
+    )
+    on_transition: StrictBool = Field(
+        False, description="Reflect a state change onto the label at transition time (default off)."
+    )
+
+    @field_validator("prefix")
+    @classmethod
+    def _prefix_trimmed(cls, value):
+        if not value or value != value.strip():
+            raise ValueError("intake.external.labels.prefix must be non-empty and trimmed")
+        return value
+
+    @field_validator("project")
+    @classmethod
+    def _known_dimensions(cls, value):
+        unknown = [d for d in value if d not in INTAKE_LABEL_DIMENSIONS]
+        if unknown or len(set(value)) != len(value):
+            raise ValueError(
+                "intake.external.labels.project must be unique members of: "
+                + ", ".join(INTAKE_LABEL_DIMENSIONS)
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _keys_and_colors(self):
+        for key, group in self.aliases.items():
+            if key not in INTAKE_LABEL_DIMENSIONS:
+                raise ValueError("intake.external.labels.aliases names an unknown dimension")
+            if not group.strip() or group != group.strip():
+                raise ValueError("intake.external.labels.aliases values must be non-empty, trimmed")
+        for key, color in self.colors.items():
+            if key not in INTAKE_LABEL_DIMENSIONS:
+                raise ValueError("intake.external.labels.colors names an unknown dimension")
+            if not _LABEL_COLOR_RE.fullmatch(color):
+                raise ValueError("intake.external.labels.colors values must be six hex digits")
+        for key in self.overrides:
+            dimension, sep, value = key.partition("/")
+            if not sep or not value.strip() or dimension not in INTAKE_LABEL_DIMENSIONS:
+                raise ValueError(
+                    "intake.external.labels.overrides keys must be `dimension/value` "
+                    "with a known dimension"
+                )
+        return self
+
+
 class IntakeExternalConfig(_QuietSection):
     """``intake.external`` — external issue intake (host-owned; everything off).
 
@@ -3347,6 +3470,7 @@ class IntakeExternalConfig(_QuietSection):
     outbox: IntakeOutboxConfig = Field(default_factory=IntakeOutboxConfig)
     comments: IntakeCommentsConfig = Field(default_factory=IntakeCommentsConfig)
     needs_info: IntakeNeedsInfoConfig = Field(default_factory=IntakeNeedsInfoConfig)
+    labels: IntakeLabelsConfig = Field(default_factory=IntakeLabelsConfig)
 
 
 class IntakeConfig(_QuietSection):
@@ -4066,6 +4190,26 @@ class BeadhiveConfig(BaseSettings):
         errors = fleet_store_problems(self.managed_repos)
         if errors:
             raise ValueError("; ".join(errors))
+        return self
+
+    @model_validator(mode="after")
+    def _label_projection_prefix_is_owned(self):
+        """``intake.external.labels.prefix`` must be an owned label namespace whenever the label
+        projection is on and the tracker plugin may write labels (``write.labels.enabled`` or
+        ``write.label_definitions.enabled``): Beadhive never writes a label it does not own."""
+        labels = self.intake.external.labels if self.intake is not None else None
+        github = self.plugins.tracker_github if self.plugins is not None else None
+        if labels is None or github is None or not labels.enabled:
+            return self
+        write = github.write
+        if not (write.labels.enabled or write.label_definitions.enabled):
+            return self
+        if not any(labels.prefix.startswith(owned) for owned in write.labels.owned_prefixes):
+            raise ValueError(
+                "intake.external.labels.prefix is not covered by "
+                "plugins.tracker-github.write.labels.owned_prefixes (list the prefix there: "
+                "a label write only touches owned labels)"
+            )
         return self
 
     @model_validator(mode="after")

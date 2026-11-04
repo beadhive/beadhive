@@ -37,6 +37,8 @@ OPERATION_FLAG_KEYS: Mapping[Operation, str] = {
     Operation.COMMENTS_READ: "read.comments.enabled",
     Operation.COMMENT_CREATE: "write.comment.enabled",
     Operation.LABELS_CHANGE: "write.labels.enabled",
+    Operation.LABELS_READ: "read.labels.enabled",
+    Operation.LABELS_DEFINE: "write.label_definitions.enabled",
 }
 
 _MISSING = object()
