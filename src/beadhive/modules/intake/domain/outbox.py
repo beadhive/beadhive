@@ -676,14 +676,22 @@ def group_of(event: OutboxEvent, seq: int) -> str:
     return MILESTONE_GROUP
 
 
-def labels_revision(doc: OutboxDocument, binding_url: str, intent: LabelIntent) -> str:
+def labels_revision(
+    doc: OutboxDocument,
+    binding_url: str,
+    intent: LabelIntent,
+    *,
+    base_owned: frozenset[str] | None = None,
+) -> str:
     """The ``source_revision`` of a label-projection record (``OutboxEvent.LABELS``).
 
     While the newest labels record for ``binding_url`` is still open with this very intent, its
     own revision (so a re-sync is O2, a no-op). Otherwise ``<intent digest>@<n>``, where ``n``
     counts every labels record the document already holds for the binding: a new key can never
     equal an earlier one, so an A to B to A flip (sent or superseded in between) drafts a fresh
-    record instead of finding a retired one under the same key."""
+    record instead of finding a retired one under the same key. With ``base_owned`` (the owned
+    labels the issue carries now), the open record is reused only while it was drafted on those
+    same owned labels: one drafted on labels a human has since changed is refreshed, not kept."""
     mine = sorted(
         (
             r
@@ -700,6 +708,7 @@ def labels_revision(doc: OutboxDocument, binding_url: str, intent: LabelIntent) 
             and op is not None
             and op.labels is not None
             and (op.labels.add, op.labels.remove) == (intent.add, intent.remove)
+            and (base_owned is None or op.labels.base_owned == base_owned)
         ):
             return newest.draft_key.source_revision
     canonical = json.dumps(

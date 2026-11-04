@@ -406,3 +406,33 @@ __all__ += [
     "ReviewRequest",
     "ReviewRun",
 ]
+
+# -- the label projection (bh-uim9i) ------------------------------------------------------------
+
+from ..domain import (  # noqa: E402
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchItem,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefinePlan,
+    LabelDefineRequest,
+    LabelSyncItem,
+    LabelSyncOutcome,
+    LabelSyncRequest,
+)
+from .ports import AuditLog  # noqa: E402
+
+__all__ += [
+    "AuditLog",
+    "LabelBatch",
+    "LabelBatchApprove",
+    "LabelBatchItem",
+    "LabelBatchOutcome",
+    "LabelDefineOutcome",
+    "LabelDefinePlan",
+    "LabelDefineRequest",
+    "LabelSyncItem",
+    "LabelSyncOutcome",
+    "LabelSyncRequest",
+]
