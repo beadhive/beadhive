@@ -5,7 +5,7 @@ no consumer test needs a plugin package, an HTTP client or a network. It is also
 second implementation: it passes the same :data:`~beadhive.testing.tracker.cases.TRACKER_CASES`
 a real adapter must pass. It implements the required :class:`TrackerAdapter` plus every optional
 Protocol (``CommentWriter``, ``LabelWriter``, ``LabelReader``, ``LabelDefiner``,
-``IssueResolver``, ``MarkerCodec``);
+``LabelPruner``, ``IssueResolver``, ``MarkerCodec``);
 :func:`without_resolver` hides the resolver to exercise a consumer's fallback.
 
 Deterministic: no clock (every timestamp is supplied by the world), and a rate-limit wait calls
@@ -92,7 +92,7 @@ _DEFAULT_OWNERSHIP = LabelOwnership(prefixes=("bh:",))
 
 class MemoryTracker:
     """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter``, ``LabelReader``,
-    ``LabelDefiner``, ``IssueResolver`` and ``MarkerCodec``.
+    ``LabelDefiner``, ``LabelPruner``, ``IssueResolver`` and ``MarkerCodec``.
 
     ``enabled`` is the resolved set of enabled operations, as a composition root would hand it to
     a real adapter. The default enables the three reads and no write. A disabled operation is
@@ -381,6 +381,28 @@ class MemoryTracker:
                 raise WriteOutcomeUnknown("the tracker did not confirm the label definitions")
         return WriteReceipt(grant.grant_id, grant.operation, project)
 
+    def delete_labels(self, names: tuple[str, ...], *, grant: WriteGrant) -> WriteReceipt:
+        """Delete repository label definitions under a ``labels.define`` ``ProjectRef`` grant.
+
+        Owned names only, checked for the whole batch before anything is written. As on GitHub,
+        deleting a definition also takes the label off every issue carrying it. A name the
+        repository does not hold is already deleted; a batch that deletes nothing sends no
+        write."""
+        foreign = sorted(name for name in names if not self._ownership.owns(name))
+        if foreign:
+            raise LabelNotOwned(f"labels outside the owned set: {', '.join(foreign)}")
+        project = self.describe().project
+        self._authorise(Operation.LABELS_DEFINE, project, grant)
+        self._request(write=True)
+        gone = [name for name in names if name in self.world.label_defs]
+        if gone:
+            self.world.writes += 1
+            for name in gone:
+                del self.world.label_defs[name]
+                for issue in self.world.issues.values():
+                    issue.labels.discard(name)
+        return WriteReceipt(grant.grant_id, grant.operation, project)
+
 
 class _WithoutResolver:
     """Delegates every port operation except the optional ``IssueResolver`` pair."""
@@ -420,6 +442,9 @@ class _WithoutResolver:
         self, definitions: tuple[LabelDefinition, ...], *, grant: WriteGrant
     ) -> WriteReceipt:
         return self._inner.define_labels(definitions, grant=grant)
+
+    def delete_labels(self, names: tuple[str, ...], *, grant: WriteGrant) -> WriteReceipt:
+        return self._inner.delete_labels(names, grant=grant)
 
     def post_comment(
         self, issue: IssueKey, body: str, *, marker: OwnMarker, grant: WriteGrant

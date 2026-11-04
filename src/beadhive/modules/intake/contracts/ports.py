@@ -34,6 +34,13 @@ from ..domain import (
     InvestigateOutcome,
     InvestigateRequest,
     IssueBinding,
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefineRequest,
+    LabelSyncOutcome,
+    LabelSyncRequest,
     LinkOutcome,
     LinkRequest,
     MergeFact,
@@ -198,6 +205,20 @@ class IntakePort(Protocol):
     def review_packets(self, request: ReviewRequest) -> ReviewRun: ...  # triage review
 
     def review_metrics(self) -> ReviewMetrics: ...  # read-only
+
+    # the label projection (bh-uim9i): bead state onto the issue's OWNED labels. ``sync`` reads
+    # live labels fresh (one listing per run) and DRAFTS at most one ``labels`` record per issue;
+    # ``define`` converges the repository's label definitions, approved in the command by digest;
+    # the batch renders every drafted labels operation and approving its digest mints one
+    # single-use grant per item. Nothing here sends: ``send`` does, per record, as for comments.
+
+    def sync_labels(self, request: LabelSyncRequest) -> LabelSyncOutcome: ...  # labels sync
+
+    def define_labels(self, request: LabelDefineRequest) -> LabelDefineOutcome: ...  # define
+
+    def review_label_batch(self) -> LabelBatch: ...  # labels review; read-only
+
+    def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome: ...
 
 
 @runtime_checkable
@@ -437,6 +458,15 @@ class RepoFacts(Protocol):
 
 
 @runtime_checkable
+class AuditLog(Protocol):
+    """A local, append-only audit trail of an operator-approved repository-level write
+    (``bh-uim9i``): ``labels define --approve`` notes what it applied, under which grants and by
+    whom. The root keeps it locally; it never reaches the tracker. Tests record the notes."""
+
+    def note(self, text: str, *, actor: str) -> None: ...
+
+
+@runtime_checkable
 class CheckpointStore(Protocol):
     """Opaque, local, non-secret resume tokens keyed per binding (not configuration)."""
 
@@ -453,6 +483,7 @@ class LabelPolicy(Protocol):
 
 
 __all__ = [
+    "AuditLog",
     "CheckpointStore",
     "IdSource",
     "IntakeLock",

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from .discovery import ISSUES_CHECKPOINT, IssueDiscoverer, checkpoint_key
 from .importer import IssueImporter, revision_token, snapshot_of
+from .labels import LabelProjection
 from .linker import LinkService
 from .milestones import MilestoneService
 from .paging import collect_snapshot, iterate_pages
@@ -18,6 +19,7 @@ __all__ = [
     "IssueDiscoverer",
     "IntakeService",
     "IssueImporter",
+    "LabelProjection",
     "LinkService",
     "MilestoneService",
     "NullIntake",

@@ -380,3 +380,35 @@ __all__ += [
     "ReviewRun",
     "ReviewService",
 ]
+
+# -- the label projection (bh-uim9i) ------------------------------------------------------------
+
+from .application import LabelProjection  # noqa: E402
+from .contracts import (  # noqa: E402
+    AuditLog,
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchItem,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefinePlan,
+    LabelDefineRequest,
+    LabelSyncItem,
+    LabelSyncOutcome,
+    LabelSyncRequest,
+)
+
+__all__ += [
+    "AuditLog",
+    "LabelBatch",
+    "LabelBatchApprove",
+    "LabelBatchItem",
+    "LabelBatchOutcome",
+    "LabelDefineOutcome",
+    "LabelDefinePlan",
+    "LabelDefineRequest",
+    "LabelProjection",
+    "LabelSyncItem",
+    "LabelSyncOutcome",
+    "LabelSyncRequest",
+]

@@ -53,6 +53,13 @@ from ..domain import (
     InvestigateOutcome,
     InvestigateRequest,
     IssueBinding,
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefineRequest,
+    LabelSyncOutcome,
+    LabelSyncRequest,
     LinkOutcome,
     LinkRequest,
     MergeFact,
@@ -102,6 +109,7 @@ from ..domain import (
 )
 from .discovery import IssueDiscoverer
 from .importer import IssueImporter
+from .labels import LabelProjection
 from .linker import LinkService
 from .milestones import MilestoneService
 from .review import ReviewService
@@ -138,7 +146,9 @@ class IntakeService:
     ``catch_up_on_link`` (``intake.external.milestones.catch_up_on_link``, off by default) lets a
     link to already merged work run the bound ``milestones`` service's catch-up. ``review`` is the
     host's :class:`ReviewPolicy` for review packets (the comment switches, read by the root; the
-    default has both off, so ``review_packets`` refuses and names them)."""
+    default has both off, so ``review_packets`` refuses and names them). ``projection``
+    (the label projection, bound only when ``intake.external.labels.enabled``) serves label sync
+    and define; without it they refuse with ``INTAKE_DISABLED``. The label batch is the outbox's."""
 
     def __init__(
         self,
@@ -154,6 +164,7 @@ class IntakeService:
         milestones: MilestoneService | None = None,
         catch_up_on_link: bool = False,
         review: ReviewPolicy | None = None,
+        projection: LabelProjection | None = None,
     ) -> None:
         self._store = store
         self._catch_up = catch_up_on_link
@@ -166,6 +177,7 @@ class IntakeService:
         self._milestones = milestones
         self._linker = LinkService(store, lock)
         self._review = ReviewService(store, threads, review)
+        self._projection = projection
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -679,6 +691,26 @@ class IntakeService:
     def review_metrics(self) -> ReviewMetrics:
         return self._review.metrics()
 
+    # -- the label projection (bh-uim9i): sync and define draft or apply; the batch is the
+    # outbox's own approval, so it needs the outbox, not the projection --------------------------
+
+    def _projection_service(self) -> LabelProjection:
+        if self._projection is None:
+            raise _labels_off()
+        return self._projection
+
+    def sync_labels(self, request: LabelSyncRequest) -> LabelSyncOutcome:
+        return self._projection_service().sync(request)
+
+    def define_labels(self, request: LabelDefineRequest) -> LabelDefineOutcome:
+        return self._projection_service().define(request)
+
+    def review_label_batch(self) -> LabelBatch:
+        return self._outbox_service().review_label_batch()
+
+    def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome:
+        return self._outbox_service().approve_label_batch(request)
+
     # -- discovery (I6) ----------------------------------------------------------------------
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryOutcome:
@@ -740,6 +772,13 @@ def _outbox_off() -> IntakeRefused:
     return IntakeRefused(
         RefusalReason.OUTBOX_DISABLED,
         "the outbox is off for this hive (intake.external.outbox.enabled; opt-in)",
+    )
+
+
+def _labels_off() -> IntakeRefused:
+    return IntakeRefused(
+        RefusalReason.INTAKE_DISABLED,
+        "the label projection is off for this hive (intake.external.labels.enabled; opt-in)",
     )
 
 
@@ -862,6 +901,18 @@ class NullIntake:
 
     def review_metrics(self) -> ReviewMetrics:
         return ReviewMetrics()  # an empty read
+
+    def sync_labels(self, request: LabelSyncRequest) -> LabelSyncOutcome:
+        raise _disabled()
+
+    def define_labels(self, request: LabelDefineRequest) -> LabelDefineOutcome:
+        raise _disabled()
+
+    def review_label_batch(self) -> LabelBatch:
+        return LabelBatch()  # an empty read, like ``outbox``
+
+    def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome:
+        raise _disabled()
 
 
 def _disabled() -> IntakeRefused:

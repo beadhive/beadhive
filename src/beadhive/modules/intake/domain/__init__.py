@@ -713,3 +713,45 @@ __all__ += [
     "is_reporter_visible",
     "review_metrics",
 ]
+
+# -- the label projection service (bh-uim9i): sync, define and batch-digest approval ---------
+
+from .label_sync import (  # noqa: E402
+    DEFINE_VERB,
+    KeptLabel,
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchItem,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefinePlan,
+    LabelDefineRequest,
+    LabelSyncItem,
+    LabelSyncOutcome,
+    LabelSyncRequest,
+    LiveLabel,
+    batch_digest,
+    definitions_digest,
+    plan_definitions,
+    progress_facts,
+)
+
+__all__ += [
+    "DEFINE_VERB",
+    "KeptLabel",
+    "LabelBatch",
+    "LabelBatchApprove",
+    "LabelBatchItem",
+    "LabelBatchOutcome",
+    "LabelDefineOutcome",
+    "LabelDefinePlan",
+    "LabelDefineRequest",
+    "LabelSyncItem",
+    "LabelSyncOutcome",
+    "LabelSyncRequest",
+    "LiveLabel",
+    "batch_digest",
+    "definitions_digest",
+    "plan_definitions",
+    "progress_facts",
+]

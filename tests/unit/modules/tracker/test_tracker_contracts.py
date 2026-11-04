@@ -32,6 +32,7 @@ from beadhive.modules.tracker.contracts import (
     LabelDefinition,
     LabelNotOwned,
     LabelOwnership,
+    LabelPruner,
     LabelReader,
     LabelWriter,
     MarkerCodec,
@@ -162,7 +163,7 @@ def test_public_surface_is_complete_and_resolvable() -> None:
 
 
 def test_writes_require_a_keyword_only_grant_and_reads_do_not() -> None:
-    for protocol in (CommentWriter, LabelWriter, LabelDefiner):
+    for protocol in (CommentWriter, LabelWriter, LabelDefiner, LabelPruner):
         for method_name, method in vars(protocol).items():
             if callable(method) and not method_name.startswith("_"):
                 param = inspect.signature(method).parameters["grant"]
