@@ -14,7 +14,8 @@
 - :class:`FakeReleaseVerifier` (``release``): a scripted ``ReleaseVerifier`` (tags and ancestry
   as plain data) for the milestone triggers.
 - :class:`FakeRepoFacts` (``repo_facts``): a scripted ``RepoFacts`` (branch ancestry, releases in
-  version order and changed paths as plain data) for the proposal checks.
+  version order and changed paths as plain data) for the proposal checks, and
+  :class:`FakeLandedCommits` (``repo_facts``): a scripted ``LandedCommits`` for apply.
 
 It imports the intake module's contracts, so it is imported explicitly, never from
 :mod:`beadhive.testing`.
@@ -37,12 +38,13 @@ from .lock import InProcessIntakeLock, MemoryCheckpointStore, MemoryOutboxView
 from .memory_store import MemoryReportStore
 from .outbox import RecordingSanitizer, SequentialIdSource
 from .release import FakeReleaseVerifier
-from .repo_facts import FakeRepoFacts
+from .repo_facts import FakeLandedCommits, FakeRepoFacts
 
 __all__ = [
     "REPORT_STORE_CASES",
     "SCOPE",
     "URL",
+    "FakeLandedCommits",
     "FakeReleaseVerifier",
     "FakeRepoFacts",
     "InProcessIntakeLock",

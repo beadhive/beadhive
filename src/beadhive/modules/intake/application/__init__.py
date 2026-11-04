@@ -9,6 +9,7 @@ from .labels import LabelProjection
 from .linker import LinkService
 from .milestones import MilestoneService
 from .paging import collect_snapshot, iterate_pages
+from .proposals import ProposalService, TriageBinding
 from .review import ReviewService
 from .sender import OutboxService, StoreOutboxView
 from .service import IntakeService, NullIntake, bind_intake
@@ -24,9 +25,11 @@ __all__ = [
     "MilestoneService",
     "NullIntake",
     "OutboxService",
+    "ProposalService",
     "ReviewService",
     "StoreOutboxView",
     "ThreadService",
+    "TriageBinding",
     "bind_intake",
     "checkpoint_key",
     "collect_snapshot",

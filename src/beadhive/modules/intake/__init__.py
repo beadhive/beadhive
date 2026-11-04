@@ -412,3 +412,36 @@ __all__ += [
     "LabelSyncOutcome",
     "LabelSyncRequest",
 ]
+
+# -- propose, review and apply-reviewed (bh-9aqmv) ---------------------------------------------
+
+from .application import ProposalService, TriageBinding  # noqa: E402
+from .contracts import (  # noqa: E402
+    ApplyItem,
+    ApplyOutcome,
+    ApplyRequest,
+    ApplyStatus,
+    ApplyStep,
+    LandedCommits,
+    ProposalReviewOutcome,
+    ProposalReviewRequest,
+    ProposeKind,
+    ProposeOutcome,
+    ProposeRequest,
+)
+
+__all__ += [
+    "ApplyItem",
+    "ApplyOutcome",
+    "ApplyRequest",
+    "ApplyStatus",
+    "ApplyStep",
+    "LandedCommits",
+    "ProposalReviewOutcome",
+    "ProposalReviewRequest",
+    "ProposalService",
+    "ProposeKind",
+    "ProposeOutcome",
+    "ProposeRequest",
+    "TriageBinding",
+]

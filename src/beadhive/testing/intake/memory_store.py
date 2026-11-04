@@ -36,7 +36,6 @@ from beadhive.modules.intake.contracts import (
     OutboxDocumentError,
     Proposal,
     ProposalDocumentError,
-    ProposalStatus,
     RefusalReason,
     ReportDraft,
     SourceSnapshot,
@@ -44,6 +43,7 @@ from beadhive.modules.intake.contracts import (
     Thread,
     ThreadDocumentError,
     WorkDraft,
+    check_rewrite,
     outbox_from_document,
     outbox_to_document,
     proposal_from_document,
@@ -378,11 +378,10 @@ class MemoryReportStore:
         row = self._row(bead)
         stored = self.read_proposal(bead)
         current = stored.seq if stored is not None else 0
-        if stored is not None and stored.status is ProposalStatus.APPLIED:
-            raise IntakeRefused(
-                RefusalReason.PROPOSAL_IMMUTABLE,
-                f"{bead}'s proposal is applied and cannot be rewritten",
-            )
+        try:
+            check_rewrite(stored, proposal)
+        except IntakeRefused as exc:
+            raise IntakeRefused(exc.reason, f"{bead}: {exc.detail}") from None
         if current != expect_seq:
             raise IntakeRefused(
                 RefusalReason.PROPOSAL_MOVED,

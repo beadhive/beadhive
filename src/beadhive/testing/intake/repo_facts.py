@@ -1,4 +1,5 @@
-"""``FakeRepoFacts``: a scripted :class:`~beadhive.modules.intake.contracts.RepoFacts`.
+"""``FakeRepoFacts``: a scripted :class:`~beadhive.modules.intake.contracts.RepoFacts`, and
+``FakeLandedCommits``, a scripted ``LandedCommits``.
 
 Branch ancestry, releases and changed paths are plain data, so a check scenario states exactly
 which commits landed on which branch, which release first contains each, and what changed since a
@@ -45,4 +46,17 @@ class FakeRepoFacts:
         return () if self.unchanged_by_default and since not in self.unknown else None
 
 
-__all__ = ["FakeRepoFacts"]
+@dataclass
+class FakeLandedCommits:
+    """A scripted :class:`~beadhive.modules.intake.contracts.LandedCommits`: ``commits`` maps a
+    work bead to the commits that landed it, oldest first. Every bead asked is recorded."""
+
+    commits: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    asked: list[str] = field(default_factory=list)
+
+    def landed_commits(self, bead: str) -> tuple[str, ...]:
+        self.asked.append(bead)
+        return tuple(self.commits.get(bead, ()))
+
+
+__all__ = ["FakeLandedCommits", "FakeRepoFacts"]
