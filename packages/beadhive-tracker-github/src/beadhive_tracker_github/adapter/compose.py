@@ -18,6 +18,7 @@ from typing import Any
 from beadhive.modules.tracker.contracts import Operation
 
 from .comments import CommentCreate
+from .label_definitions import LabelDefining
 from .labels import LabelWriting
 from .tracker import GitHubTrackerAdapter
 
@@ -27,6 +28,7 @@ __all__ = ["WRITERS", "adapter_class", "new_adapter"]
 WRITERS: tuple[tuple[Operation, type], ...] = (
     (Operation.COMMENT_CREATE, CommentCreate),
     (Operation.LABELS_CHANGE, LabelWriting),
+    (Operation.LABELS_DEFINE, LabelDefining),
 )
 
 _CLASSES: dict[frozenset[Operation], type[GitHubTrackerAdapter]] = {}

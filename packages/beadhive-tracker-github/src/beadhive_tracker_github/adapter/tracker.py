@@ -8,7 +8,8 @@ no configuration and imports no plugin kernel. Root's lazy factory row builds it
 
 **This class is the read path; writers are mixins.** It has no write method itself. Each write
 operation is its own module (``comment.create``: :mod:`.comments`; ``labels.change``:
-:mod:`.labels`), composed onto this class by :mod:`.compose` only when that operation is enabled,
+:mod:`.labels`; ``labels.define``: :mod:`.label_definitions`), composed onto this class by
+:mod:`.compose` only when that operation is enabled,
 so the built object structurally lacks a disabled write's method. A present writer is necessary,
 never sufficient: it refuses before any request unless its operation is in ``enabled`` and the
 call carries a fresh, matching ``WriteGrant``. ``describe().supported`` names what the package
@@ -41,7 +42,6 @@ not gated by a read flag: it is the read-only evidence ``doctor --probe`` shows.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -84,9 +84,10 @@ from beadhive_plugins.credentials import TokenSource
 from . import mapping
 from .grants import GrantLedger
 from .identity import RepositoryFacts, probe_operation
+from .label_definitions import LabelDefinitionReading
 from .marker import marker_line
 from .transport import DEFAULT_TIMEOUT_SECONDS, Reply, Session, Transport
-from .urls import GitHubLocation
+from .urls import GitHubLocation, next_link
 
 if TYPE_CHECKING:
     import httpx
@@ -103,10 +104,10 @@ SUPPORTED_OPERATIONS = frozenset(
         Operation.COMMENTS_READ,
         Operation.COMMENT_CREATE,
         Operation.LABELS_CHANGE,
+        Operation.LABELS_READ,
+        Operation.LABELS_DEFINE,
     }
 )
-
-_NEXT = re.compile(r'<([^<>]+)>\s*;\s*rel="next"')
 
 
 def _utc_now() -> datetime:
@@ -114,8 +115,7 @@ def _utc_now() -> datetime:
 
 
 def _next_link(reply: Reply) -> str | None:
-    match = _NEXT.search(reply.headers.get("link", "") or "")
-    return match.group(1) if match else None
+    return next_link(reply.headers.get("link"))
 
 
 def _budget(reply: Reply) -> RateBudget | None:
@@ -135,9 +135,10 @@ def _rows(reply: Reply) -> list[Any]:
     return reply.body
 
 
-class GitHubTrackerAdapter:
-    """Implements ``TrackerAdapter`` (reader plus identity) and ``IssueResolver`` for GitHub; the
-    optional writers are composed onto it by :mod:`.compose`."""
+class GitHubTrackerAdapter(LabelDefinitionReading):
+    """Implements ``TrackerAdapter`` (reader plus identity), ``IssueResolver`` and
+    ``LabelReader`` (``labels.read``, gated like every read) for GitHub; the optional writers are
+    composed onto it by :mod:`.compose`."""
 
     def __init__(
         self,

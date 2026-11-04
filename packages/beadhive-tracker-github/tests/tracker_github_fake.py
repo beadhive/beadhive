@@ -25,6 +25,12 @@ behaviour it reproduces (API version 2022-11-28):
   missing repository label) and ``DELETE /issues/{n}/labels/{name}`` removes (``404 Label does
   not exist`` when absent), both answering the issue's complete label list, so a human's
   concurrent label is never lost;
+* repository label definitions: ``GET /labels`` (paged by ``per_page``/``page`` with a
+  ``Link: rel="next"``, ``description`` ``null`` when unset), ``POST /labels`` (``201``; ``422
+  Validation Failed`` with ``code: already_exists`` for a name already defined in any case),
+  ``PATCH /labels/{name}`` (``200``, ``new_name`` renames, also on every issue carrying it) and
+  ``DELETE /labels/{name}`` (``204`` with no body, also removing it from every issue), the last
+  two ``404 Not Found`` for an undefined name; names match case-insensitively, as on GitHub;
 * an ambiguous write (:meth:`FakeGitHub.fail_next_write_ambiguously`): the next write times out
   (``httpx.ReadTimeout``) after it was stored (``applied``) or before (not applied);
 * any other write answers ``405``: its endpoint lands with its own bead.
@@ -51,6 +57,7 @@ from beadhive.modules.tracker.contracts import (
     CommentKey,
     IssueKey,
     IssueState,
+    LabelDefinition,
     ProjectRef,
 )
 from beadhive.testing.tracker import TrackerSubject
@@ -140,6 +147,8 @@ class FakeGitHub:
     retry_after: float = 0.0
     ambiguous_next_write: bool | None = None
     write_time: datetime | None = None
+    #: Repository label definitions by exact name (GitHub matches them case-insensitively).
+    label_defs: dict[str, dict[str, Any]] = field(default_factory=dict)
     _ids: int = 0
 
     # -- plumbing ---------------------------------------------------------------------------
@@ -226,6 +235,8 @@ class FakeGitHub:
         return self._key(row)
 
     def _label(self, name: str) -> dict[str, Any]:
+        if (defined := self._defined(name)) is not None:
+            return copy.deepcopy(defined)
         return {
             "id": 5000 + sum(map(ord, name)),
             "node_id": f"LA_{name}",
@@ -334,6 +345,20 @@ class FakeGitHub:
         suffix = f"/issues/{issue.identifier[1:]}"
         return sum(1 for c in self.comments if c["issue_url"].endswith(suffix))
 
+    def seed_label_definition(self, definition: LabelDefinition) -> None:
+        existing = self._defined(definition.name)
+        if existing is not None:
+            del self.label_defs[existing["name"]]
+        self.label_defs[definition.name] = self._label_row(
+            definition.name, definition.color, definition.description or None
+        )
+
+    def label_definitions(self) -> tuple[LabelDefinition, ...]:
+        return tuple(
+            LabelDefinition(row["name"], row["color"], row["description"] or "")
+            for row in sorted(self.label_defs.values(), key=lambda r: r["name"])
+        )
+
     def throttle(self, requests: int, retry_after_seconds: float) -> None:
         self.throttled, self.retry_after = requests, retry_after_seconds
 
@@ -428,6 +453,13 @@ class FakeGitHub:
             return self._list(rest, rows, query, sort_default="created", dir_default="desc")
         if rest == "/issues/comments":
             return self._list(rest, list(self.comments), query)
+        if rest == "/labels":
+            return self._list_labels(rest, query)
+        if rest.startswith("/labels/"):
+            defined = self._defined(rest.removeprefix("/labels/"))
+            if defined is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json=defined)
         parts = rest.removeprefix("/issues/").split("/")
         if not parts[0].isdigit():
             return httpx.Response(404, json={"message": "Not Found"})
@@ -472,6 +504,8 @@ class FakeGitHub:
             return self._post_comment(request, int(match.group(1)))
         if match := re.fullmatch(rf"{issue}/labels(?:/(.+))?", path):
             return self._change_labels(request, int(match.group(1)), match.group(2))
+        if match := re.fullmatch(rf"{re.escape(self.root)}/labels(?:/(.+))?", path):
+            return self._define_label(request, match.group(1))
         return httpx.Response(405, json={"message": "fake: this write endpoint is not served"})
 
     def _missing(self, number: int) -> httpx.Response | None:
@@ -509,6 +543,9 @@ class FakeGitHub:
             if not isinstance(wanted, list) or not all(isinstance(n, str) for n in wanted):
                 return httpx.Response(422, json={"message": "Validation Failed"})
             present = {label["name"] for label in row["labels"]}
+            for n in wanted:  # GitHub creates a repository label that does not exist yet
+                if self._defined(n) is None:
+                    self.label_defs[n] = self._label(n)
             row["labels"] += [self._label(n) for n in wanted if n not in present]
         elif request.method == "DELETE" and name is not None:
             if name not in {label["name"] for label in row["labels"]}:
@@ -519,11 +556,84 @@ class FakeGitHub:
         row["updated_at"] = iso(self.write_time or self.clock.now())
         return httpx.Response(200, json=row["labels"])
 
+    # -- repository label definitions ----------------------------------------------------------
+
+    def _defined(self, name: str) -> dict[str, Any] | None:
+        """The definition named ``name`` in any case (GitHub label names are case-insensitive)."""
+        folded = name.casefold()
+        return next((r for n, r in self.label_defs.items() if n.casefold() == folded), None)
+
+    def _label_row(self, name: str, color: str, description: str | None) -> dict[str, Any]:
+        return {
+            "id": 5000 + sum(map(ord, name)),
+            "node_id": f"LA_{name}",
+            "url": f"{self.api}/repos/{self.owner}/{self.repo}/labels/{name}",
+            "name": name,
+            "color": color,
+            "default": False,
+            "description": description,
+        }
+
+    def _list_labels(self, rest: str, query: dict[str, str]) -> httpx.Response:
+        rows = sorted(self.label_defs.values(), key=lambda r: r["name"].casefold())
+        per_page = min(int(query.get("per_page", "30")), 100)
+        page = int(query.get("page", "1"))
+        headers = {}
+        if page * per_page < len(rows):
+            params = {**query, "page": str(page + 1), "per_page": str(per_page)}
+            target = f"{self.api}/repositories/{REPOSITORY_ID}{rest}"
+            headers["link"] = f'<{target}?{urlencode(params)}>; rel="next"'
+        window = rows[(page - 1) * per_page : page * per_page]
+        return httpx.Response(200, json=window, headers=headers)
+
+    def _define_label(self, request: httpx.Request, name: str | None) -> httpx.Response:
+        if self.repo_meta.get("archived"):
+            return httpx.Response(403, json={"message": "Repository was archived so is read-only."})
+        sent = json.loads(request.content or b"{}") if request.content else {}
+        if request.method == "POST" and name is None:
+            wanted = sent.get("name")
+            if not isinstance(wanted, str) or not wanted or not isinstance(sent.get("color"), str):
+                return httpx.Response(422, json={"message": "Validation Failed"})
+            if self._defined(wanted) is not None:
+                errors = [{"resource": "Label", "code": "already_exists", "field": "name"}]
+                return httpx.Response(422, json={"message": "Validation Failed", "errors": errors})
+            row = self._label_row(wanted, sent["color"], sent.get("description") or None)
+            self.label_defs[wanted] = row
+            return httpx.Response(201, json=row)
+        if name is None or request.method not in ("PATCH", "DELETE"):
+            return httpx.Response(405, json={"message": "fake: this write endpoint is not served"})
+        existing = self._defined(name)
+        if existing is None:
+            return httpx.Response(404, json={"message": "Not Found"})
+        del self.label_defs[existing["name"]]
+        if request.method == "DELETE":
+            for issue in self.issues:
+                issue["labels"] = [
+                    lab for lab in issue["labels"] if lab["name"] != existing["name"]
+                ]
+            return httpx.Response(204)
+        new_name = sent.get("new_name", existing["name"])
+        row = self._label_row(
+            new_name,
+            sent.get("color", existing["color"]),
+            sent.get("description", existing["description"]) or None,
+        )
+        self.label_defs[new_name] = row
+        for issue in self.issues:
+            issue["labels"] = [
+                copy.deepcopy(row) if lab["name"] == existing["name"] else lab
+                for lab in issue["labels"]
+            ]
+        return httpx.Response(200, json=row)
+
     def _copy_state(self) -> dict[str, Any]:
-        return copy.deepcopy({"issues": self.issues, "comments": self.comments})
+        return copy.deepcopy(
+            {"issues": self.issues, "comments": self.comments, "label_defs": self.label_defs}
+        )
 
     def _restore(self, state: dict[str, Any]) -> None:
         self.issues, self.comments = state["issues"], state["comments"]
+        self.label_defs = state["label_defs"]
 
     def _moved_or_missing(self, path: str) -> httpx.Response:
         for number, row in self.moved.items():
@@ -605,10 +715,19 @@ def adapter_for(
     )
 
 
+#: The ``write.labels.owned_prefixes`` a conformance subject is configured with (the kit's
+#: ``OWNED`` namespace): ``define_labels`` takes no ownership, so the adapter's own is the rule.
+OWNED_PREFIXES = ("bh:",)
+
+
 def github_subject(*, enabled=frozenset(), page_size: int = 2, budget=None, ghes: bool = False):
-    """A conformance ``TrackerFactory``: both reads on, plus the WRITE operations named."""
+    """A conformance ``TrackerFactory``: every read on, plus the WRITE operations named."""
     world = FakeGitHub(**GHES) if ghes else FakeGitHub()
     adapter = adapter_for(
-        world, enabled=READ_OPERATIONS | enabled, page_size=page_size, budget=budget
+        world,
+        enabled=READ_OPERATIONS | enabled,
+        page_size=page_size,
+        budget=budget,
+        label_prefixes=OWNED_PREFIXES,
     )
     return TrackerSubject(adapter, world)

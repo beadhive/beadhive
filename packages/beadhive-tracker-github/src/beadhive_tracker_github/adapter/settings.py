@@ -37,6 +37,8 @@ OPERATION_FLAG_KEYS: Mapping[Operation, str] = {
     Operation.COMMENTS_READ: "read.comments.enabled",
     Operation.COMMENT_CREATE: "write.comment.enabled",
     Operation.LABELS_CHANGE: "write.labels.enabled",
+    Operation.LABELS_READ: "read.labels.enabled",
+    Operation.LABELS_DEFINE: "write.label_definitions.enabled",
 }
 
 _MISSING = object()
@@ -101,6 +103,7 @@ def parse_settings(settings: Mapping[str, Any]) -> AdapterSettings:
     prefixes = _lookup(settings, "write.labels.owned_prefixes")
     if not (isinstance(prefixes, list | tuple) and prefixes):
         enabled.discard(Operation.LABELS_CHANGE)  # no owned label: no label write is possible
+        enabled.discard(Operation.LABELS_DEFINE)
         prefixes = ()
     elif not all(isinstance(p, str) and p and p == p.strip() for p in prefixes):
         raise ValueError("plugins.tracker-github.write.labels.owned_prefixes has the wrong type")
