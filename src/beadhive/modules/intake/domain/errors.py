@@ -81,6 +81,10 @@ class RefusalReason(StrEnum):
     UNREAD_EVIDENCE = "unread_evidence"
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
+    # review-gated triage proposals (bh-hrx2r)
+    PROPOSAL_INVALID = "proposal_invalid"  # an inconsistent proposal or review
+    PROPOSAL_IMMUTABLE = "proposal_immutable"  # an applied proposal cannot change
+    PROPOSAL_TRANSITION = "proposal_transition"  # the status move is not allowed from here
 
 
 class IntakeRefused(Exception):

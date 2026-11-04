@@ -532,3 +532,49 @@ __all__ += [
     "check_wake",
     "wakes",
 ]
+
+# -- review-gated triage proposals (bh-hrx2r): the proposal, its status machine and codec ------
+
+from .proposal import (  # noqa: E402
+    PROPOSAL_SCHEMA,
+    Proposal,
+    ProposalDisposition,
+    ProposalReview,
+    ProposalStatus,
+    ProposalTarget,
+    ReviewVerdict,
+    TargetRole,
+    add_review,
+    amend,
+    mark_applied,
+    mark_stale,
+    new_proposal,
+    validate_proposal,
+)
+from .proposal_document import (  # noqa: E402
+    PROPOSAL_KEY,
+    ProposalDocumentError,
+    proposal_from_document,
+    proposal_to_document,
+)
+
+__all__ += [
+    "PROPOSAL_KEY",
+    "PROPOSAL_SCHEMA",
+    "Proposal",
+    "ProposalDisposition",
+    "ProposalDocumentError",
+    "ProposalReview",
+    "ProposalStatus",
+    "ProposalTarget",
+    "ReviewVerdict",
+    "TargetRole",
+    "add_review",
+    "amend",
+    "mark_applied",
+    "mark_stale",
+    "new_proposal",
+    "proposal_from_document",
+    "proposal_to_document",
+    "validate_proposal",
+]
