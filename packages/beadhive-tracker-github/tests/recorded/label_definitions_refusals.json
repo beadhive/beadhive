@@ -1,0 +1,240 @@
+{
+  "description": "Refused labels.define writes, one exchange per case GitHub's Labels documentation is SILENT on: the duplicate-name refusal of Create a label, the permission refusal of a token without write access, and a delete answered 404 for a label that still exists (GitHub reports 'forbidden' as 'not found'). Each follows one read of the live definitions. Used by tests/test_tracker_github_label_definitions.py.",
+  "provenance": "Synthetic replay; NOTHING here was captured from a live request or write (no test ever reaches GitHub). Shapes follow the documented GitHub REST 'Labels' endpoints, API version 2022-11-28 (List labels for a repository, Create a label, Delete a label) and the generic REST error forms. Live re-verification is pending the first operator-approved labels.define, recorded on bead bh-uv09p.",
+  "cases": {
+    "duplicate-name": [
+      {
+        "provenance": "Documented form only (List labels for a repository); re-verify on the first live labels.define.",
+        "request": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/acme/widgets/labels?per_page=100"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": []
+        }
+      },
+      {
+        "provenance": "Undocumented: the Create a label page lists 422 'Validation failed' without its detail. This is the generic REST validation-error form with code 'already_exists' (a concurrent create of the same name, compared case-insensitively). Re-verify on the first live labels.define.",
+        "request": {
+          "method": "POST",
+          "url": "https://api.github.com/repos/acme/widgets/labels",
+          "json": {
+            "name": "bh:type/feature",
+            "color": "a2eeef",
+            "description": "New feature or request"
+          }
+        },
+        "response": {
+          "status": 422,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": {
+            "message": "Validation Failed",
+            "errors": [
+              {
+                "resource": "Label",
+                "code": "already_exists",
+                "field": "name"
+              }
+            ],
+            "documentation_url": "https://docs.github.com/rest/issues/labels#create-a-label",
+            "status": "422"
+          }
+        }
+      }
+    ],
+    "no-write-permission": [
+      {
+        "provenance": "Documented form only (List labels for a repository); re-verify on the first live labels.define.",
+        "request": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/acme/widgets/labels?per_page=100"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": []
+        }
+      },
+      {
+        "provenance": "Undocumented for this endpoint: the Create a label page names no 403. This is the generic fine-grained-token refusal form ('Resource not accessible by personal access token' plus X-Accepted-GitHub-Permissions). Re-verify on the first live labels.define.",
+        "request": {
+          "method": "POST",
+          "url": "https://api.github.com/repos/acme/widgets/labels",
+          "json": {
+            "name": "bh:type/feature",
+            "color": "a2eeef",
+            "description": "New feature or request"
+          }
+        },
+        "response": {
+          "status": 403,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json",
+            "x-accepted-github-permissions": "issues=write; pull_requests=write"
+          },
+          "json": {
+            "message": "Resource not accessible by personal access token",
+            "documentation_url": "https://docs.github.com/rest/issues/labels#create-a-label",
+            "status": "403"
+          }
+        }
+      }
+    ],
+    "delete-forbidden-as-not-found": [
+      {
+        "provenance": "Documented form only (List labels for a repository); re-verify on the first live labels.define.",
+        "request": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/acme/widgets/labels?per_page=100"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": [
+            {
+              "id": 5,
+              "node_id": "LA_kwDOsynth5",
+              "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale",
+              "name": "bh:stale",
+              "color": "cccccc",
+              "default": false,
+              "description": null
+            }
+          ]
+        }
+      },
+      {
+        "provenance": "Undocumented for this endpoint: the Delete a label page names only 204. A 404 for a write the token may not make is GitHub's general 'forbidden as not found' form. Re-verify on the first live labels.define.",
+        "request": {
+          "method": "DELETE",
+          "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale"
+        },
+        "response": {
+          "status": 404,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": {
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest/issues/labels#delete-a-label",
+            "status": "404"
+          }
+        }
+      },
+      {
+        "provenance": "Documented form only (Get a label: 200 with the label); re-verify on the first live labels.define.",
+        "request": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": {
+            "id": 5,
+            "node_id": "LA_kwDOsynth5",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale",
+            "name": "bh:stale",
+            "color": "cccccc",
+            "default": false,
+            "description": null
+          }
+        }
+      }
+    ],
+    "delete-already-gone": [
+      {
+        "provenance": "Documented form only (List labels for a repository); re-verify on the first live labels.define.",
+        "request": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/acme/widgets/labels?per_page=100"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": [
+            {
+              "id": 5,
+              "node_id": "LA_kwDOsynth5",
+              "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale",
+              "name": "bh:stale",
+              "color": "cccccc",
+              "default": false,
+              "description": null
+            }
+          ]
+        }
+      },
+      {
+        "provenance": "Documented form only (a deleted label is Not Found); re-verify on the first live labels.define.",
+        "request": {
+          "method": "DELETE",
+          "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale"
+        },
+        "response": {
+          "status": 404,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": {
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest/issues/labels#delete-a-label",
+            "status": "404"
+          }
+        }
+      },
+      {
+        "provenance": "Documented form only (Get a label: 404 when it does not exist); re-verify on the first live labels.define.",
+        "request": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale"
+        },
+        "response": {
+          "status": 404,
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-media-type": "github.v3; format=json"
+          },
+          "json": {
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest/issues/labels#get-a-label",
+            "status": "404"
+          }
+        }
+      }
+    ]
+  }
+}
