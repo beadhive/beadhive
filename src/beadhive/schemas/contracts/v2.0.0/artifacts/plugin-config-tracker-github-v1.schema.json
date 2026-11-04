@@ -74,6 +74,10 @@
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`issues.read` (default off)."
         },
+        "labels": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`labels.read`: read the repository's label definitions (default off)."
+        },
         "page_size": {
           "anyOf": [
             {
@@ -129,6 +133,10 @@
         "comment": {
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`comment.create` (default off)."
+        },
+        "label_definitions": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`labels.define`: create or update repository label definitions (default off; each use needs an operator-approved single-use grant)."
         },
         "labels": {
           "$ref": "#/$defs/TrackerGithubLabels"

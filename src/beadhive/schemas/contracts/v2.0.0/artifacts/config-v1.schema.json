@@ -2656,6 +2656,9 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "labels": {
+          "$ref": "#/$defs/IntakeLabelsConfig"
+        },
         "milestones": {
           "$ref": "#/$defs/IntakeMilestonesConfig"
         },
@@ -2667,6 +2670,111 @@
         }
       },
       "title": "IntakeExternalConfig",
+      "type": "object"
+    },
+    "IntakeLabelOverride": {
+      "additionalProperties": false,
+      "description": "One projected label's display override; every field is optional.",
+      "properties": {
+        "color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Six hex digits, no leading `#`.",
+          "title": "Color"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The label description.",
+          "title": "Description"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The label name, replacing the derived one.",
+          "title": "Name"
+        }
+      },
+      "title": "IntakeLabelOverride",
+      "type": "object"
+    },
+    "IntakeLabelsConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.labels`` — the registry-derived GitHub label projection (host-owned, off).\n\nNothing here reads or writes a repository: it only shapes the label catalog the application\nderives from the registry. Writing it still needs ``plugins.tracker-github.read.labels`` /\n``write.label_definitions`` and a per-use operator-approved grant, and the ``prefix`` must be\nlisted in ``plugins.tracker-github.write.labels.owned_prefixes`` (checked where both are\nknown, by `bh config validate`).",
+      "properties": {
+        "aliases": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Dimension -> display group, replacing the dimension name in a label.",
+          "title": "Aliases",
+          "type": "object"
+        },
+        "colors": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Dimension -> six hex digits (no `#`): the label color of that dimension.",
+          "title": "Colors",
+          "type": "object"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable the label projection for external intake (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "on_transition": {
+          "default": false,
+          "description": "Reflect a state change onto the label at transition time (default off).",
+          "title": "On Transition",
+          "type": "boolean"
+        },
+        "overrides": {
+          "additionalProperties": {
+            "$ref": "#/$defs/IntakeLabelOverride"
+          },
+          "description": "`dimension/value` -> name, description or color overriding one label.",
+          "title": "Overrides",
+          "type": "object"
+        },
+        "prefix": {
+          "default": "bh:",
+          "description": "The namespace prefix of every projected label; must be one of `plugins.tracker-github.write.labels.owned_prefixes` when labels are written.",
+          "title": "Prefix",
+          "type": "string"
+        },
+        "project": {
+          "description": "The registry dimensions projected as labels, in order (a subset of: intake, delivery, progress, type, priority, component).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Project",
+          "type": "array"
+        }
+      },
+      "title": "IntakeLabelsConfig",
       "type": "object"
     },
     "IntakeMilestonesConfig": {
@@ -3896,6 +4004,10 @@
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`issues.read` (default off)."
         },
+        "labels": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`labels.read`: read the repository's label definitions (default off)."
+        },
         "page_size": {
           "anyOf": [
             {
@@ -3951,6 +4063,10 @@
         "comment": {
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`comment.create` (default off)."
+        },
+        "label_definitions": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`labels.define`: create or update repository label definitions (default off; each use needs an operator-approved single-use grant)."
         },
         "labels": {
           "$ref": "#/$defs/TrackerGithubLabels"
@@ -5115,6 +5231,10 @@
                   "$ref": "#/$defs/TrackerGithubFlag",
                   "description": "`issues.read` (default off)."
                 },
+                "labels": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`labels.read`: read the repository's label definitions (default off)."
+                },
                 "page_size": {
                   "anyOf": [
                     {
@@ -5170,6 +5290,10 @@
                 "comment": {
                   "$ref": "#/$defs/TrackerGithubFlag",
                   "description": "`comment.create` (default off)."
+                },
+                "label_definitions": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`labels.define`: create or update repository label definitions (default off; each use needs an operator-approved single-use grant)."
                 },
                 "labels": {
                   "$ref": "#/$defs/TrackerGithubLabels"

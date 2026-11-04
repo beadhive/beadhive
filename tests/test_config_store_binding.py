@@ -481,6 +481,8 @@ def test_every_tracker_github_switch_defaults_off():
         "http_cache.enabled": False,
         "write.comment.enabled": False,
         "write.labels.enabled": False,
+        "read.labels.enabled": False,
+        "write.label_definitions.enabled": False,
     }
     assert defaults["base_url"] is None and defaults["write.labels.owned_prefixes"] == []
     assert defaults["credential.sources"] == ["env", "gh"]
