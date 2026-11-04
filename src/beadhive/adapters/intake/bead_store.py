@@ -211,6 +211,19 @@ class BdReportStore:
             holds.append(HoldGate(gate, blocked))
         return tuple(holds)
 
+    def is_held(self, report: str) -> bool:
+        """Whether ``report`` has an open ``intake-hold:`` gate blocking it: ONE read of the
+        report's own blocking dependencies (``bd dep list <report> --direction down``), whose rows
+        carry each gate's status and reason. The answer :meth:`holds` gives for this report, at a
+        cost that does not grow with the number of gates."""
+        edges = self._routes.dependency_list(report, direction="down", type_="blocks")
+        if not isinstance(edges, list):
+            return False
+        return any(
+            isinstance(row, dict) and row.get("status") == "open" and is_hold_gate(row)
+            for row in edges
+        )
+
     def bound_reports(self) -> tuple[BeadView, ...]:
         rows = self._routes.issue_list(has_metadata_key=SOURCE_KEY, all_=True, limit=0)
         return self._views(rows)

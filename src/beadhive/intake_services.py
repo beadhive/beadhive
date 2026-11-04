@@ -40,8 +40,10 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import logging
 import os
 import socket
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -464,6 +466,9 @@ class DiscoverySettings:
     full_reconcile_every: int = 24
 
 
+_LOG = logging.getLogger(__name__)
+
+
 def discovery_settings(cfg: Mapping[str, Any]) -> DiscoverySettings:
     """The discovery timer's settings from the host config: off unless explicitly enabled."""
     section = ((cfg.get("intake") or {}).get("external")) or {}
@@ -551,8 +556,17 @@ def discover(
         discoverer = IssueDiscoverer(store, port, importer, held, marks)
         return IntakeService(store, labels, importer=importer, discoverer=discoverer)
 
+    started = time.monotonic()
     try:
         outcome = bind_intake(enabled, build).discover(DiscoveryRequest(actor, full_reconcile=full))
+        # the whole run holds the binding's IntakeLock, which the outbox sender also needs
+        _LOG.info(
+            "discovery held the intake lock for %.1fs (created=%d updated=%d unchanged=%d)",
+            time.monotonic() - started,
+            outcome.created,
+            outcome.updated,
+            outcome.unchanged,
+        )
     except IntakeRefused as exc:
         return DiscoverResult(1, exc.detail, exc.reason.value, full=full)
     except IntakeStoreError as exc:
