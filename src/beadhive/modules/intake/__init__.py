@@ -336,3 +336,47 @@ __all__ += [
     "cited_paths",
     "version_key",
 ]
+
+# -- review packets (bh-hrx2r) -------------------------------------------------------------------
+
+from .application import ReviewService  # noqa: E402
+from .contracts import (  # noqa: E402
+    COMMENTS_ENABLED_KEY,
+    COMMENTS_READ_KEY,
+    DEFAULT_BATCH_SIZE,
+    Cluster,
+    ClusterBatch,
+    ClusterItem,
+    ClusterLink,
+    ClusterPolicy,
+    ClusterSignal,
+    IndexEntry,
+    PassMetrics,
+    ReviewBatch,
+    ReviewMetrics,
+    ReviewPacket,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewRun,
+)
+
+__all__ += [
+    "COMMENTS_ENABLED_KEY",
+    "COMMENTS_READ_KEY",
+    "DEFAULT_BATCH_SIZE",
+    "Cluster",
+    "ClusterBatch",
+    "ClusterItem",
+    "ClusterLink",
+    "ClusterPolicy",
+    "ClusterSignal",
+    "IndexEntry",
+    "PassMetrics",
+    "ReviewBatch",
+    "ReviewMetrics",
+    "ReviewPacket",
+    "ReviewPolicy",
+    "ReviewRequest",
+    "ReviewRun",
+    "ReviewService",
+]
