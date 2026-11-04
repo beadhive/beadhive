@@ -309,6 +309,44 @@ def test_r9_a_selected_plugin_whose_package_is_absent_names_the_extra():
     assert error.message.endswith("install `beadhive[github]`")
 
 
+def test_r9_a_missing_third_party_requirement_refuses_before_the_loader_runs():
+    # The plugin's own package ships in the root wheel (bh-lrs9v), so absence of the extra shows
+    # up as a missing third-party module, probed before the loader is ever called.
+    built = []
+
+    def loader(request):
+        built.append(request)
+        raise AssertionError("the loader must not run without its requirements")
+
+    adapters = TrackerAdapters(
+        plugins={"tracker-github": plugin()},
+        plugin_kernel=None,
+        token_source=lambda: None,
+        sources=[source("tracker-github")],
+        providers=(
+            TrackerAdapterProvider(
+                "tracker-github",
+                "beadhive[github]",
+                loader,
+                requires=("beadhive_no_such_third_party_module",),
+            ),
+        ),
+    )
+    error = refusal(adapters)
+    assert (error.rule, error.rule_id) == (TrackerRule.PACKAGE_MISSING, "R9")
+    assert error.message.endswith("install `beadhive[github]`")
+    assert built == []
+
+
+def test_the_builtin_github_provider_requires_githubkit():
+    (row,) = BUILTIN_TRACKER_PROVIDERS
+    assert (row.plugin_id, row.install_hint, row.requires) == (
+        "tracker-github",
+        "beadhive[github]",
+        ("githubkit",),
+    )
+
+
 def test_r11_two_enabled_providers_with_no_owner_selected():
     configs = {"tracker-github": plugin(), "tracker-other": plugin()}
     adapters, factory = roots(
