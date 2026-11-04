@@ -1,5 +1,5 @@
 {
-  "description": "labels.define converging one batch: one paged read of the live definitions, then, in sorted name order, PATCH /labels/{name} (update, 200; the name percent-encoded, ':' and '/' included) and POST /labels (create, 201), then DELETE /labels/{name} (prune, 204 No Content with NO body, a known success). The human label 'bug' and the identical 'bh:intake/accepted' send nothing. Used by tests/test_tracker_github_label_definitions.py.",
+  "description": "labels.define converging one batch: one paged read of the live definitions, then, in sorted name order, PATCH /labels/{name} (update, 200; the name percent-encoded, ':' and '/' included) and POST /labels (create, 201). The human label 'bug' and the identical 'bh:intake/accepted' send nothing. Pruning is the separate delete_labels (label_definitions_delete.json). Used by tests/test_tracker_github_label_definitions.py.",
   "provenance": "Synthetic replay; NOTHING here was captured from a live request or write (no test ever reaches GitHub). Shapes follow the documented GitHub REST 'Labels' endpoints, API version 2022-11-28 (List labels for a repository, Create a label, Update a label, Delete a label). Live re-verification is pending the first operator-approved labels.define, recorded on bead bh-uv09p.",
   "interactions": [
     {
@@ -43,15 +43,6 @@
             "color": "FBCA04",
             "default": false,
             "description": "Old description"
-          },
-          {
-            "id": 5,
-            "node_id": "LA_kwDOsynth5",
-            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale%20value",
-            "name": "bh:stale value",
-            "color": "cccccc",
-            "default": false,
-            "description": null
           }
         ]
       }
@@ -114,21 +105,6 @@
           "default": false,
           "description": "New feature or request"
         }
-      }
-    },
-    {
-      "name": "delete",
-      "provenance": "Documented form only (Delete a label: 204 No Content, no body); re-verify on the first live labels.define.",
-      "request": {
-        "method": "DELETE",
-        "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale%20value"
-      },
-      "response": {
-        "status": 204,
-        "headers": {
-          "x-github-api-version-selected": "2022-11-28"
-        },
-        "json": null
       }
     }
   ]
