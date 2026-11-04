@@ -86,6 +86,9 @@ COMMENTS_READ = "comments.read"
 ISSUES_READ = "issues.read"
 #: The supersession scope of milestone records; a reply is its own group.
 MILESTONE_GROUP = "milestone"
+#: The supersession scope of label-projection records (``OutboxEvent.LABELS``): a newer one
+#: retires an unsent older one, and neither touches a milestone record.
+LABELS_GROUP = "labels"
 #: ``fail_reason`` of an operation that k complete snapshots proved absent (O16).
 ABSENT = "absent"
 
@@ -127,6 +130,11 @@ class OutboxEvent(StrEnum):
     STARTED = "started"
     BLOCKED = "blocked"
     DEPRIORITISED = "deprioritised"
+    # the label projection (bh-tppoh): a labels-only record converging the issue's owned labels on
+    # the bead state, in its own ``labels`` group so a re-sync refreshes it and never stacks, and
+    # never supersedes a milestone comment. Rotation-gated like ``started``: every outbox-reading
+    # host decodes it before any hive drafts one (an older host fails closed on the document).
+    LABELS = "labels"
 
 
 class OpKind(StrEnum):
@@ -658,6 +666,49 @@ def render(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> Rendered:
     )
 
 
+def group_of(event: OutboxEvent, seq: int) -> str:
+    """The supersession group a record drafted at ``seq`` for ``event`` joins: a reply is its own
+    group, a label projection is the ``labels`` group, every milestone the ``milestone`` group."""
+    if event is OutboxEvent.REPLY:
+        return f"reply:{seq}"
+    if event is OutboxEvent.LABELS:
+        return LABELS_GROUP
+    return MILESTONE_GROUP
+
+
+def labels_revision(doc: OutboxDocument, binding_url: str, intent: LabelIntent) -> str:
+    """The ``source_revision`` of a label-projection record (``OutboxEvent.LABELS``).
+
+    While the newest labels record for ``binding_url`` is still open with this very intent, its
+    own revision (so a re-sync is O2, a no-op). Otherwise ``<intent digest>@<n>``, where ``n``
+    counts every labels record the document already holds for the binding: a new key can never
+    equal an earlier one, so an A to B to A flip (sent or superseded in between) drafts a fresh
+    record instead of finding a retired one under the same key."""
+    mine = sorted(
+        (
+            r
+            for r in doc.records.values()
+            if r.event is OutboxEvent.LABELS and r.draft_key.binding_url == binding_url
+        ),
+        key=lambda r: r.created_seq,
+    )
+    if mine:
+        newest = mine[-1]
+        op = newest.op(OpKind.LABELS)
+        if (
+            newest.status is RecordStatus.OPEN
+            and op is not None
+            and op.labels is not None
+            and (op.labels.add, op.labels.remove) == (intent.add, intent.remove)
+        ):
+            return newest.draft_key.source_revision
+    canonical = json.dumps(
+        {"add": sorted(intent.add), "remove": sorted(intent.remove)}, separators=(",", ":")
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return f"labels:{digest}@{len(mine)}"
+
+
 def reply_revision(text: str, thread_seq: int) -> str:
     """A reply's ``source_revision``: the composed text's digest plus the thread ``seq`` it
     answers (``bh-6wj9y`` R4)."""
@@ -869,6 +920,11 @@ def draft(
         if not render_text(request.message, request.facts).strip():
             raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a comment needs text")
         operations.append(OutboxOperation(OpKind.COMMENT))
+    if request.event is OutboxEvent.LABELS and (request.comment or request.labels is None):
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT,
+            "a labels record carries one label operation and no comment",
+        )
     if request.labels is not None:
         intent = request.labels
         if not intent.add and not intent.remove:
@@ -891,7 +947,7 @@ def draft(
         raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a record needs an operation")
 
     tx = _Tx(doc)
-    group = MILESTONE_GROUP if request.event is not OutboxEvent.REPLY else f"reply:{tx.seq}"
+    group = group_of(request.event, tx.seq)
     older = sorted(
         (r for r in doc.records.values() if r.group == group),
         key=lambda r: r.created_seq,
@@ -1596,6 +1652,7 @@ __all__ = [
     "COMMENTS_READ",
     "ISSUES_READ",
     "GRANT_ID_PREFIX",
+    "LABELS_GROUP",
     "MILESTONE_GROUP",
     "OUTBOX_ID_PREFIX",
     "OUTBOX_SCHEMA",
@@ -1642,10 +1699,12 @@ __all__ = [
     "discard",
     "draft",
     "edit",
+    "group_of",
     "invalidate",
     "is_grant_id",
     "is_operator_seat",
     "is_outbox_id",
+    "labels_revision",
     "mint_grant_id",
     "mint_outbox_id",
     "observe",

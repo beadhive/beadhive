@@ -578,3 +578,53 @@ __all__ += [
     "proposal_to_document",
     "validate_proposal",
 ]
+
+# -- the label projection (bh-tppoh): registry-derived catalog, desired state, labels records -
+
+from .labels import (  # noqa: E402
+    DEFAULT_PREFIX,
+    DEFAULT_PROJECTED,
+    DesiredLabels,
+    LabelCatalog,
+    LabelOverride,
+    LabelProblem,
+    LabelsDiff,
+    LabelSettings,
+    LabelSpec,
+    Openness,
+    ProgressFacts,
+    RegistryDimension,
+    ReportFacts,
+    Unmapped,
+    UnmappedReason,
+    WorkFacts,
+    derive_progress,
+    desired_labels,
+    diff_labels,
+)
+from .outbox import LABELS_GROUP, group_of, labels_revision  # noqa: E402
+
+__all__ += [
+    "DEFAULT_PREFIX",
+    "DEFAULT_PROJECTED",
+    "LABELS_GROUP",
+    "DesiredLabels",
+    "LabelCatalog",
+    "LabelOverride",
+    "LabelProblem",
+    "LabelSettings",
+    "LabelSpec",
+    "LabelsDiff",
+    "Openness",
+    "ProgressFacts",
+    "RegistryDimension",
+    "ReportFacts",
+    "Unmapped",
+    "UnmappedReason",
+    "WorkFacts",
+    "derive_progress",
+    "desired_labels",
+    "diff_labels",
+    "group_of",
+    "labels_revision",
+]

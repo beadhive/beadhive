@@ -29,8 +29,9 @@ class CompletionPolicy(StrEnum):
     CLOSE_ON_RELEASE = "close-on-release"
 
 
-#: The ``notified`` value a sent comment of each semantic event records.
-NOTIFIED_BY_EVENT = {
+#: The ``notified`` value a sent comment of each semantic event records; ``None`` for an event
+#: that never notifies. Every event has an entry, so a new one cannot slip past it unnoticed.
+NOTIFIED_BY_EVENT: dict[str, str | None] = {
     "reply": "replied",
     "merged": "merged",
     "released": "released",
@@ -39,6 +40,9 @@ NOTIFIED_BY_EVENT = {
     "started": "started",
     "blocked": "blocked",
     "deprioritised": "deprioritised",
+    # the label projection (bh-tppoh): a labels-only record carries no comment, so it never tells
+    # the reporter anything and never moves ``notified``
+    "labels": None,
 }
 #: The ``notified`` values that tell the reporter about each ``delivery`` value (a later
 #: milestone covers an earlier one: being told it was released covers being told it merged).
