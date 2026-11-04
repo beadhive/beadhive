@@ -35,6 +35,12 @@ A plugin that is **enabled without its extra** now refuses cleanly, naming the e
 `bh plugin beadlog-xtdb doctor` reports the missing `psycopg` dependency. No config key, CLI verb or
 wire format changed.
 
+**Intake follows `work.beads.route`.** The intake verbs (`import`, `discover`, `intake`, `accept`,
+`reject`, `link` and the rest) now follow `work.beads.route` like the work verbs, so under the
+default `api` they need the hive's Beads service (`bh host beads start --hive <hive>`) or
+`work.beads.route: api+cli-fallback`. `bh report` / `bh escalate` and `bh doctor`'s intake-hold
+sweep stay on the `bd` CLI.
+
 ## 0.15.x → 0.16.0 — private state moves under the canonical roots
 
 0.16.0 stops writing `.git/bh-validation-ledger.json` and `.bh/testreport/<tree>/` immediately.

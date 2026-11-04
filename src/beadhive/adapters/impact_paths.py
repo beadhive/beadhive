@@ -65,6 +65,8 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_beads_routing.py",
         "tests/test_github_checkpoint_repro_int.py",
         "tests/test_guard_primary.py",
+        "tests/test_intake_api_store.py",
+        "tests/test_intake_api_store_real_service.py",
         "tests/test_intake_bead_store.py",
         "tests/test_intake_bead_store_int.py",
         "tests/test_intake_hold_int.py",
@@ -75,6 +77,8 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
     "beadhive-beads-client": (
         "tests/test_beads_routing.py",
         "tests/test_dispatch_state.py",
+        "tests/test_intake_api_store.py",
+        "tests/test_intake_api_store_real_service.py",
         "tests/test_plan.py",
         "tests/test_work_lifecycle_shell.py",
         "tests/test_work_queue.py",

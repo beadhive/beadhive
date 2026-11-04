@@ -49,8 +49,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import bd, bd_cli, registry, store_target, validate
-from .adapters.intake import BdReportStore, FileCheckpointStore
+from . import bd, bd_cli, intake_beads, registry, store_target, validate
+from .adapters.intake import ApiReportStore, BdReportStore, FileCheckpointStore
 from .modules.intake import (
     ORIGIN_GITHUB,
     ORIGIN_REPORT,
@@ -131,10 +131,23 @@ def store_scope(cfg: Mapping[str, Any], entry: Mapping[str, Any]) -> StoreScope:
     )
 
 
-def report_store(directory, scope: StoreScope | Callable[[], StoreScope]) -> BdReportStore:
-    """A :class:`BdReportStore` over bd's named routes for ``directory`` (a hive checkout, or the
-    hub cache of a clone-on-demand hive)."""
-    return BdReportStore(bd_cli.routes(directory), scope, error_line=bd.err_line)
+def report_store(
+    directory, scope: StoreScope | Callable[[], StoreScope], *, entry=None, cli_only=False
+) -> BdReportStore:
+    """The report store for ``directory`` (a hive checkout, or the hub cache of a clone-on-demand
+    hive): served from the hive's supervised Beads service or from bd's named routes, as
+    ``work.beads.route`` says (:mod:`beadhive.intake_beads`). ``entry`` is the hive's registry
+    entry when the caller holds it; a caller with only the directory leaves it ``None`` and the
+    entry is looked up if the store ever needs the route. ``cli_only`` is the plain ``bd`` store
+    whatever ``work.beads.route`` says, for a read-only diagnostic that must never depend on the
+    service it may be diagnosing."""
+    if cli_only:
+        return BdReportStore(bd_cli.routes(directory), scope, error_line=bd.err_line)
+    select = intake_beads.ApiSelector(
+        directory,
+        entry if entry is not None else (lambda: intake_beads.entry_of_directory(directory)),
+    )
+    return ApiReportStore(bd_cli.routes(directory), scope, api=select, error_line=bd.err_line)
 
 
 def service_for(
@@ -142,7 +155,7 @@ def service_for(
 ) -> IntakeService:
     """The intake service for ``entry``, writing into ``directory``. ``binary`` is the CLI alias
     the recorded history names (``filed via <binary> report``)."""
-    store = report_store(directory, lambda: store_scope(cfg, entry))
+    store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
     labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
     return IntakeService(store, labels, binary=binary)
 
@@ -151,15 +164,18 @@ def _no_scope() -> StoreScope:  # pragma: no cover - guards a misuse
     raise RuntimeError("a directory-scoped intake store has no store scope")
 
 
-def directory_store(directory) -> BdReportStore:
+def directory_store(directory, *, entry=None, cli_only=False) -> BdReportStore:
     """A store for reads and dispositions of the hive at ``directory``: none of them reads the
-    scope, so no hive entry is needed."""
-    return report_store(directory, _no_scope)
+    scope, so no hive entry is needed for that (``entry``, when the caller holds it, only spares
+    the route a lookup)."""
+    return report_store(directory, _no_scope, entry=entry, cli_only=cli_only)
 
 
-def service_for_directory(directory) -> IntakeService:
+def service_for_directory(directory, *, entry=None, cli_only=False) -> IntakeService:
     """A service for the queue and the dispositions of the hive at ``directory``."""
-    return IntakeService(directory_store(directory), _NoLabelPolicy())
+    return IntakeService(
+        directory_store(directory, entry=entry, cli_only=cli_only), _NoLabelPolicy()
+    )
 
 
 # -- structured failures as the legacy messages ----------------------------------------------
@@ -244,11 +260,15 @@ def duplicate_rows(directory, threshold: float = 0.5, method: str = "mechanical"
 # -- the lifetime intake-hold -----------------------------------------------------------------
 
 
-def sweep_holds(directory, *, repair: bool = False, actor: str = "") -> HoldSweep:
+def sweep_holds(
+    directory, *, repair: bool = False, actor: str = "", entry=None, cli_only: bool = False
+) -> HoldSweep:
     """Compare the bound reports of the store at ``directory`` with its open ``intake-hold:`` gates
     (and, with ``repair``, open a missing hold and resolve a stale one). Reads only the operational
     store; a hive that never imported a report has none and sweeps clean."""
-    return service_for_directory(directory).sweep_holds(HoldSweepRequest(actor, repair))
+    return service_for_directory(directory, entry=entry, cli_only=cli_only).sweep_holds(
+        HoldSweepRequest(actor, repair)
+    )
 
 
 # -- import (bh work import) ------------------------------------------------------------------
@@ -410,7 +430,7 @@ def import_issue(
 
     def build():
         port = tracker if tracker is not None else _bound_tracker(entry, adapters)
-        store = report_store(directory, lambda: store_scope(cfg, entry))
+        store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
         labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
         importer = IssueImporter(
             store,
@@ -538,7 +558,7 @@ def discover(
 
     def build():
         port = tracker if tracker is not None else _bound_tracker(entry, adapters)
-        store = report_store(directory, lambda: store_scope(cfg, entry))
+        store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
         labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
         held = (
             lock
@@ -628,7 +648,7 @@ def _linking_port(
     enabled, _default_type = external_intake_settings(cfg)
 
     def build():
-        store = report_store(directory, lambda: store_scope(cfg, entry))
+        store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
         labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
         held = lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb)
         return IntakeService(store, labels, lock=held)
@@ -938,7 +958,7 @@ def outbox_service_for(
     approval minting a single-use grant are both required. ``sanitizer`` defaults to the shared
     :class:`~beadhive.adapters.intake.ScrubSanitizer`; the store is the OPERATIONAL one only."""
     policy = policy or OutboxPolicy()
-    store = report_store(directory, lambda: store_scope(cfg, entry))
+    store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
     labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
     if not policy.enabled:
         return IntakeService(store, labels)
@@ -1042,7 +1062,7 @@ def _milestone_port(
     def build():
         from .adapters.intake import ScrubSanitizer
 
-        store = report_store(directory, lambda: store_scope(cfg, entry))
+        store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
         labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
         outbox, milestones = milestone_settings(cfg)
         service = MilestoneService(

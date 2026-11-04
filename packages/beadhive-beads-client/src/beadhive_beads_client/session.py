@@ -327,13 +327,21 @@ class BeadsSession:
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise IndeterminateWrite(f"Beads write outcome unknown: {capability}") from exc
 
-    def get_issue(self, issue_id: str, *, include_comments: bool = False) -> IssueDetails:
-        return self._read(
-            "issues.get",
-            get_issue.sync_detailed,
-            issue_id,
-            include_comments=include_comments,
-        )  # type: ignore[return-value]
+    def get_issue(
+        self,
+        issue_id: str,
+        *,
+        include_comments: bool = False,
+        include_dependents: bool = False,
+    ) -> IssueDetails:
+        """``GET /v0/beads/issues/{id}``. ``include_dependents`` (bh-9o12j) fills the row's
+        ``dependents`` with the issues that depend on this one, each carrying its edge type — the
+        reverse of ``dependencies``, which is always present. Omitted from the request when left
+        ``False``, so a caller that does not ask sends exactly what it always did."""
+        kwargs: dict[str, object] = {"include_comments": include_comments}
+        if include_dependents:
+            kwargs["include_dependents"] = True
+        return self._read("issues.get", get_issue.sync_detailed, issue_id, **kwargs)  # type: ignore[return-value]
 
     def list_issues(
         self,
@@ -345,6 +353,13 @@ class BeadsSession:
         status: list[str] | None = None,
         all_: bool = False,
         include_infra: bool = False,
+        label: list[str] | None = None,
+        label_any: list[str] | None = None,
+        type_: str | None = None,
+        include_gates: bool = False,
+        has_metadata_key: str | None = None,
+        metadata_field: list[str] | None = None,
+        brief: bool = False,
     ) -> IssuesPage:
         """``GET /v0/beads/issues``. ``parent`` restricts to RECURSIVE descendants of the named
         issue (the OpenAPI spec's own wording — not the direct one-level edge ``IssueWithCounts``
@@ -364,7 +379,14 @@ class BeadsSession:
         (``bd``'s ``--all``); ``include_infra=True`` admits the configured infrastructure issue
         types (``bd``'s ``--include-infra``); ``status`` is a narrower alternative to ``all_``
         when only specific statuses are wanted, matching this operation's own ``status`` query
-        parameter (repeatable, replaces rather than adds to the default exclusions)."""
+        parameter (repeatable, replaces rather than adds to the default exclusions).
+
+        ``label`` (every named label, AND), ``label_any`` (at least one), ``type_``,
+        ``include_gates`` (admit gate rows, which the default view drops), ``has_metadata_key``
+        (a flat top-level key, its dot part of the name), ``metadata_field`` (``key=value``
+        pairs) and ``brief`` (bh-9o12j) pass this operation's own query parameters through
+        unchanged; each is omitted from the request when left at its default, so an existing
+        caller sends exactly what it always did."""
         kwargs: dict[str, object] = {"limit": limit}
         if cursor is not None:
             kwargs["cursor"] = cursor
@@ -378,6 +400,20 @@ class BeadsSession:
             kwargs["all_"] = True
         if include_infra:
             kwargs["include_infra"] = True
+        if label is not None:
+            kwargs["label"] = label
+        if label_any is not None:
+            kwargs["label_any"] = label_any
+        if type_ is not None:
+            kwargs["type_"] = type_
+        if include_gates:
+            kwargs["include_gates"] = True
+        if has_metadata_key is not None:
+            kwargs["has_metadata_key"] = has_metadata_key
+        if metadata_field is not None:
+            kwargs["metadata_field"] = metadata_field
+        if brief:
+            kwargs["brief"] = True
         return self._read("issues.list", list_issues.sync_detailed, **kwargs)  # type: ignore[return-value]
 
     def list_ready(
