@@ -3280,6 +3280,28 @@ def test_intake_holds_sweep_reads_only_hives_that_bind_a_tracker_adapter(
     ]
 
 
+def test_the_hold_sweep_never_needs_the_beads_service(monkeypatch, tmp_path) -> None:
+    """bh-9o12j: under the default ``api`` route with no service running, doctor's read-only
+    sweep reads on the bd CLI instead of failing the whole run on the thing it diagnoses."""
+    from beadhive import intake_beads, intake_services
+
+    class Routes:
+        def issue_list(self, **kwargs):
+            return []
+
+        def gate_list(self, **kwargs):
+            return []
+
+    def no_service(main, entry):
+        raise AssertionError("the diagnostic must not resolve a Beads session")
+
+    monkeypatch.setattr(intake_beads, "session_factory", no_service)
+    monkeypatch.setattr(intake_services.bd_cli, "routes", lambda directory: Routes())
+    monkeypatch.setattr(doctor.registry, "hive_dir", lambda entry: Path(entry["path"]))
+
+    assert doctor._data_intake_holds(_hold_cfg(tmp_path)) == []
+
+
 def test_each_finding_carries_the_exact_command_that_fixes_it(
     monkeypatch, tmp_path, capsys
 ) -> None:

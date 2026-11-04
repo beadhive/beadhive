@@ -132,13 +132,17 @@ def store_scope(cfg: Mapping[str, Any], entry: Mapping[str, Any]) -> StoreScope:
 
 
 def report_store(
-    directory, scope: StoreScope | Callable[[], StoreScope], *, entry=None
+    directory, scope: StoreScope | Callable[[], StoreScope], *, entry=None, cli_only=False
 ) -> BdReportStore:
     """The report store for ``directory`` (a hive checkout, or the hub cache of a clone-on-demand
     hive): served from the hive's supervised Beads service or from bd's named routes, as
     ``work.beads.route`` says (:mod:`beadhive.intake_beads`). ``entry`` is the hive's registry
     entry when the caller holds it; a caller with only the directory leaves it ``None`` and the
-    entry is looked up if the store ever needs the route."""
+    entry is looked up if the store ever needs the route. ``cli_only`` is the plain ``bd`` store
+    whatever ``work.beads.route`` says, for a read-only diagnostic that must never depend on the
+    service it may be diagnosing."""
+    if cli_only:
+        return BdReportStore(bd_cli.routes(directory), scope, error_line=bd.err_line)
     select = intake_beads.ApiSelector(
         directory,
         entry if entry is not None else (lambda: intake_beads.entry_of_directory(directory)),
@@ -160,16 +164,18 @@ def _no_scope() -> StoreScope:  # pragma: no cover - guards a misuse
     raise RuntimeError("a directory-scoped intake store has no store scope")
 
 
-def directory_store(directory, *, entry=None) -> BdReportStore:
+def directory_store(directory, *, entry=None, cli_only=False) -> BdReportStore:
     """A store for reads and dispositions of the hive at ``directory``: none of them reads the
     scope, so no hive entry is needed for that (``entry``, when the caller holds it, only spares
     the route a lookup)."""
-    return report_store(directory, _no_scope, entry=entry)
+    return report_store(directory, _no_scope, entry=entry, cli_only=cli_only)
 
 
-def service_for_directory(directory, *, entry=None) -> IntakeService:
+def service_for_directory(directory, *, entry=None, cli_only=False) -> IntakeService:
     """A service for the queue and the dispositions of the hive at ``directory``."""
-    return IntakeService(directory_store(directory, entry=entry), _NoLabelPolicy())
+    return IntakeService(
+        directory_store(directory, entry=entry, cli_only=cli_only), _NoLabelPolicy()
+    )
 
 
 # -- structured failures as the legacy messages ----------------------------------------------
@@ -254,11 +260,13 @@ def duplicate_rows(directory, threshold: float = 0.5, method: str = "mechanical"
 # -- the lifetime intake-hold -----------------------------------------------------------------
 
 
-def sweep_holds(directory, *, repair: bool = False, actor: str = "", entry=None) -> HoldSweep:
+def sweep_holds(
+    directory, *, repair: bool = False, actor: str = "", entry=None, cli_only: bool = False
+) -> HoldSweep:
     """Compare the bound reports of the store at ``directory`` with its open ``intake-hold:`` gates
     (and, with ``repair``, open a missing hold and resolve a stale one). Reads only the operational
     store; a hive that never imported a report has none and sweeps clean."""
-    return service_for_directory(directory, entry=entry).sweep_holds(
+    return service_for_directory(directory, entry=entry, cli_only=cli_only).sweep_holds(
         HoldSweepRequest(actor, repair)
     )
 
