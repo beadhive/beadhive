@@ -475,7 +475,7 @@ def test_write_grant_is_scoped_to_one_operation_and_the_records_issue() -> None:
 
 def test_capabilities_reads_only_usable_operations() -> None:
     reads = translate.capabilities(MemoryTracker(MemoryWorld()).probe_capabilities())
-    assert reads.usable == {"issues.read", "comments.read"}
+    assert reads.usable == {"issues.read", "comments.read", "labels.read"}  # every default read
 
 
 def test_marked_comments_need_this_hive_and_install() -> None:

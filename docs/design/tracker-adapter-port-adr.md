@@ -154,6 +154,8 @@ Signatures are as prototyped in
 | `TrackerIdentity` | yes | `whoami() -> Actor or None`, `probe_capabilities() -> CapabilityReport` (read-only requests only) |
 | `CommentWriter` | optional | `post_comment(issue, body, *, marker, grant) -> WriteReceipt` |
 | `LabelWriter` | optional | `change_labels(issue, *, add, remove, ownership, grant) -> WriteReceipt` |
+| `LabelReader` | optional (`bh-w8vg3`; API version stays 1) | `list_label_definitions() -> tuple[LabelDefinition, ...]`: operation `labels.read`, a read (no grant) |
+| `LabelDefiner` | optional (`bh-w8vg3`; API version stays 1) | `define_labels(definitions, *, grant) -> WriteReceipt`: operation `labels.define`, a write. It is repository-scoped, so `WriteGrant.target` widens additively from `IssueKey` to `IssueKey \| ProjectRef` and a define grant names the `ProjectRef`; existing issue grants are unchanged |
 | `IssueResolver` | optional (amendment A1) | `resolve(url) -> IssueKey` (pure), `get(IssueKey) -> TrackerIssue` |
 | `MarkerCodec` | optional (`bh-uavc2`; API version stays 1) | `marker_line(OwnMarker) -> str`: pure, the exact own-message footer `post_comment` appends, so a consumer can show and digest the posted bytes without importing the adapter's package. The body and line are joined by the port's one pure rule `join_marker_line(body, line)` (trailing whitespace stripped, one blank line, the line; an empty body posts the line alone; `bh-crf27`), which the adapter's `post_comment` and the consumer's render both call |
 

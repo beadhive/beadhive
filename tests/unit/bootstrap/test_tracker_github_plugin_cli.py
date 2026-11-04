@@ -103,7 +103,7 @@ def test_status_defaults_to_disabled_offline_and_names_credential_sources_only(m
     assert "  stores       1 bound" in lines
     assert "               github/octo/widgets [public] -> octo/widgets" in lines
     assert all("probe=not-probed" in line for line in lines if "probe=" in line)
-    assert sum("probe=" in line for line in lines) == 4
+    assert sum("probe=" in line for line in lines) == 6
     assert SECRET not in result.output
 
 
@@ -122,6 +122,8 @@ def test_status_json_is_the_generic_document(monkeypatch):
         "comments.read": True,
         "comment.create": False,
         "labels.change": False,
+        "labels.read": False,
+        "labels.define": False,
     }
 
 
