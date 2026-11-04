@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import config, identity, metadata
+from beadhive import cli, config, config_store, identity, metadata, run
 
 
 @pytest.fixture
@@ -306,3 +306,221 @@ def test_config_scope_resolves_from_the_threaded_cfg_without_reloading(_isolated
     with identity.config_scope(None):  # no cfg in hand: unchanged fresh resolution
         identity.workspace_root()
     assert loads == [1, 1]
+
+
+# ---- one config resolution per bh process for the child-env fill (bh-olnhf) ----------
+#
+# One effective-config resolution per bh process for the child-env ``GIT_WORKSPACE`` fill
+# (bh-olnhf).
+#
+# ``run.child_env`` -> ``identity.workspace_root`` used to call ``config.load()`` for every child
+# bh spawned; on a SQL-HQ host that is a committed-snapshot requalification plus a ~66-document
+# YAML parse per launch. These tests pin, by COUNTING ``config.load`` calls through a spy (never by
+# timing):
+#
+#   * N launches inside the process memo resolve the config at most once;
+#   * ``GIT_WORKSPACE`` in the child env is byte-identical with and without the memo, for the
+#     env-set, config-set and default cases (env > config > internal default, blank env = unset);
+#   * a process that outlives one verb does not serve a stale value forever: a changed config
+#     source, an in-process save and the TTL each force a re-resolution, a failed load is never
+#     memoized, and the serving verbs (``host``, ``mcp``) never opt in.
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    """Fresh-install baseline: isolated bh home, no ``GIT_WORKSPACE``, legacy root pointed at a
+    nonexistent tmp dir, and the memo clock under test control."""
+    monkeypatch.delenv("GIT_WORKSPACE", raising=False)
+    monkeypatch.delenv("BH_CONFIG", raising=False)
+    monkeypatch.delenv("WS_HOME", raising=False)
+    root = tmp_path / "bh-home"
+    monkeypatch.setenv("BH_HOME", str(root))
+    monkeypatch.setattr(identity, "_legacy_root", lambda: tmp_path / "home-workspace")
+    root.mkdir()
+    return root
+
+
+def _write_memo_config(git_workspace_root: str | None = None) -> None:
+    body = "providers: [github]\nmanaged_repos: []\n"
+    if git_workspace_root is not None:
+        body += f"git_workspace:\n  root: {git_workspace_root}\n"
+    path = config.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+
+
+@pytest.fixture
+def loads(monkeypatch):
+    """Spy on the store behind ``config.load`` — every ``config.load()`` is exactly one call here,
+    and the count is the assertion, never a duration."""
+    calls: list[int] = []
+    real = config_store.load
+
+    def spy(api):
+        calls.append(1)
+        return real(api)
+
+    monkeypatch.setattr(config_store, "load", spy)
+    return calls
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = _Clock()
+    monkeypatch.setattr(identity, "_clock", fake)
+    return fake
+
+
+def test_n_child_launches_resolve_the_config_once(home, loads, tmp_path):
+    _write_memo_config(str(tmp_path / "ws-root"))
+    with identity.process_config_memo():
+        envs = [run.child_env() for _ in range(8)]
+    assert len(loads) == 1
+    assert {e["GIT_WORKSPACE"] for e in envs} == {str((tmp_path / "ws-root").resolve())}
+
+
+def test_without_the_memo_every_launch_loads_as_before(home, loads, tmp_path):
+    """The default is unchanged: opt-in only, so long-lived processes keep the uncached path."""
+    _write_memo_config(str(tmp_path / "ws-root"))
+    for _ in range(3):
+        run.child_env()
+    assert len(loads) == 3
+
+
+def test_scope_end_drops_the_memo(home, loads, tmp_path):
+    _write_memo_config(str(tmp_path / "a"))
+    with identity.process_config_memo():
+        run.child_env()
+    with identity.process_config_memo():
+        run.child_env()
+    assert len(loads) == 2
+    run.child_env()
+    assert len(loads) == 3
+
+
+def test_nested_scopes_share_one_memo(home, loads, tmp_path):
+    _write_memo_config(str(tmp_path / "a"))
+    with identity.process_config_memo():
+        run.child_env()
+        with identity.process_config_memo():
+            run.child_env()
+        run.child_env()  # outer scope still active
+    assert len(loads) == 1
+
+
+@pytest.mark.parametrize("memo", [False, True], ids=["uncached", "memoized"])
+def test_git_workspace_parity_env_config_default(home, tmp_path, monkeypatch, memo):
+    """env > config > internal default, blank env = unset — identical with and without the memo."""
+    from contextlib import ExitStack
+
+    def child_value() -> str:
+        with ExitStack() as stack:
+            if memo:
+                stack.enter_context(identity.process_config_memo())
+            return run.child_env()["GIT_WORKSPACE"]
+
+    # default: no config at all -> bh-owned internal root
+    assert child_value() == str((home / "ws").resolve())
+
+    # config-set
+    _write_memo_config(str(tmp_path / "from-config"))
+    assert child_value() == str((tmp_path / "from-config").resolve())
+
+    # env-set wins over config, and is read live
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "from-env"))
+    assert child_value() == str((tmp_path / "from-env").resolve())
+
+    # blank env is unset, not the empty path
+    monkeypatch.setenv("GIT_WORKSPACE", "   ")
+    assert child_value() == str((tmp_path / "from-config").resolve())
+
+
+def test_env_change_inside_the_memo_is_seen_without_a_reload(home, loads, tmp_path, monkeypatch):
+    """Only the config is memoized; ``$GIT_WORKSPACE`` is evaluated live on every call."""
+    _write_memo_config(str(tmp_path / "from-config"))
+    with identity.process_config_memo():
+        assert run.child_env()["GIT_WORKSPACE"] == str((tmp_path / "from-config").resolve())
+        monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "from-env"))
+        assert run.child_env()["GIT_WORKSPACE"] == str((tmp_path / "from-env").resolve())
+        monkeypatch.delenv("GIT_WORKSPACE")
+        assert run.child_env()["GIT_WORKSPACE"] == str((tmp_path / "from-config").resolve())
+    assert len(loads) == 1
+
+
+def test_scoped_config_still_outranks_the_memo(home, loads, tmp_path):
+    _write_memo_config(str(tmp_path / "from-config"))
+    with identity.process_config_memo():
+        with identity.config_scope({"git_workspace": {"root": str(tmp_path / "scoped")}}):
+            assert identity.workspace_root() == str((tmp_path / "scoped").resolve())
+        assert loads == []
+
+
+def test_a_changed_config_source_is_seen(home, loads, tmp_path):
+    """The key carries the host + fleet file signatures: an edit by ANOTHER process is picked up."""
+    _write_memo_config(str(tmp_path / "one"))
+    with identity.process_config_memo():
+        assert identity.workspace_root() == str((tmp_path / "one").resolve())
+        _write_memo_config(str(tmp_path / "two-longer-path"))  # new size/mtime, same inode or not
+        assert identity.workspace_root() == str((tmp_path / "two-longer-path").resolve())
+    assert len(loads) == 2
+
+
+def test_an_in_process_config_save_is_seen(home, loads, tmp_path):
+    _write_memo_config(str(tmp_path / "one"))
+    with identity.process_config_memo():
+        assert identity.workspace_root() == str((tmp_path / "one").resolve())
+        cfg = config.load()
+        cfg["git_workspace"] = {"root": str(tmp_path / "saved")}
+        config.save(cfg)
+        assert identity.workspace_root() == str((tmp_path / "saved").resolve())
+
+
+def test_the_ttl_bounds_staleness_of_unkeyed_sources(home, loads, tmp_path, clock):
+    """A committed-SQL fleet snapshot has no cheap identity, so time bounds it."""
+    _write_memo_config(str(tmp_path / "one"))
+    with identity.process_config_memo():
+        identity.workspace_root()
+        clock.now += identity.PROCESS_CONFIG_TTL_SECONDS - 1
+        identity.workspace_root()
+        assert len(loads) == 1
+        clock.now += 2
+        identity.workspace_root()
+        assert len(loads) == 2
+
+
+def test_a_failed_load_is_not_memoized(home, loads, tmp_path):
+    """No config yet -> ``FileNotFoundError`` -> default root; once the file exists it is seen."""
+    with identity.process_config_memo():
+        assert identity.workspace_root() == str((home / "ws").resolve())
+        _write_memo_config(str(tmp_path / "now-configured"))
+        assert identity.workspace_root() == str((tmp_path / "now-configured").resolve())
+
+
+@pytest.mark.parametrize(
+    ("argv", "memoized"),
+    [(["config", "path"], True), (["host", "--help"], False), (["mcp", "--help"], False)],
+)
+def test_serving_verbs_never_opt_in(home, monkeypatch, argv, memoized):
+    from typer.testing import CliRunner
+
+    entered: list[str] = []
+
+    class _Recorder:
+        def __enter__(self):
+            entered.append("in")
+
+        def __exit__(self, *exc):
+            return None
+
+    monkeypatch.setattr(identity, "process_config_memo", lambda: _Recorder())
+    CliRunner().invoke(cli.app, argv)
+    assert bool(entered) is memoized
+    assert {"host", "mcp"} <= cli._LONG_LIVED_VERBS

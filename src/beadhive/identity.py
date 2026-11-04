@@ -9,7 +9,9 @@ explicit choice exists so an upgrade never silently relocates existing clones.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Mapping
+import threading
+import time
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import cache
@@ -47,9 +49,114 @@ def config_scope(cfg: Mapping | None) -> Iterator[None]:
         _scoped_config.reset(token)
 
 
+#: How long a process-memoized effective config may be served before it is re-resolved. This is
+#: the backstop that keeps a process that lives longer than a single verb (a polling loop, a
+#: serving verb that slipped past the explicit exclusion in ``cli._root``) from serving a stale
+#: ``git_workspace`` forever: a committed-SQL fleet snapshot has no cheap identity (reading its
+#: head IS the expensive call), so its staleness is bounded by time rather than keyed.
+PROCESS_CONFIG_TTL_SECONDS = 30.0
+
+#: Injectable monotonic clock so the TTL is tested with a fake, never with sleeps.
+_clock: Callable[[], float] = time.monotonic
+
+
+class _ProcessConfigMemo:
+    """One effective config per (config-source identity, TTL window) — OPT-IN per process.
+
+    Why it exists (bh-olnhf): every child ``bh`` spawns goes ``run.child_env`` ->
+    ``workspace_root`` -> ``config.load()``, and on a SQL-HQ host each load re-qualifies the
+    committed fleet snapshot and parses ~66 YAML documents (0.3-1 s). A ``bh`` verb that shells
+    out to ``bd`` N times paid that N times for one unchanging ``GIT_WORKSPACE``.
+
+    Only the loaded *config* is memoized, never the derived root: ``$GIT_WORKSPACE`` is still
+    read live on every call and the legacy-workspace guard still inspects the filesystem, so
+    env > config > internal-default precedence is evaluated exactly as before.
+
+    Long-lived processes (``bh-host-daemon``, ``bh-mcp``, ``beadhive-frame-bridge``) never
+    enable it — they do not pass through ``cli.main`` — so they stay on the uncached path. The
+    two long-lived verbs that DO go through the CLI (``bh host``, ``bh mcp``) are excluded in
+    ``cli._root``. Anything else that loops is bounded by the memo's own invalidation:
+
+    * the host config file and git fleet file signatures (ino/size/mtime) are part of the key,
+      so an edit — in this process or another — is seen on the next call;
+    * an in-process write (``config.save`` replaces the host file atomically) changes that same
+      signature, so this process's own host-config edits are seen on the next call too;
+    * entries expire after :data:`PROCESS_CONFIG_TTL_SECONDS`, which is the only thing that
+      bounds a change to the SQL-backed fleet snapshot made by ANOTHER process.
+
+    Only successful loads are stored: ``FileNotFoundError`` and every other failure re-raises
+    and is retried by the next call, exactly as the uncached path behaves.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._depth = 0
+        self._entry: tuple[tuple, float, Mapping] | None = None
+
+    @property
+    def enabled(self) -> bool:
+        return self._depth > 0
+
+    def enter(self) -> None:
+        with self._lock:
+            self._depth += 1
+
+    def exit(self) -> None:
+        with self._lock:
+            self._depth -= 1
+            if self._depth <= 0:
+                self._depth = 0
+                self._entry = None
+
+    @staticmethod
+    def _signature(path: Path) -> tuple:
+        try:
+            st = path.stat()
+        except OSError:
+            return (str(path), None)
+        return (str(path), st.st_ino, st.st_size, st.st_mtime_ns)
+
+    def get(self) -> Mapping:
+        key = (
+            self._signature(_config.config_path()),
+            self._signature(_config.fleet_path()),
+        )
+        now = _clock()
+        with self._lock:
+            entry = self._entry
+        if entry is not None and entry[0] == key and now - entry[1] < PROCESS_CONFIG_TTL_SECONDS:
+            return entry[2]
+        cfg = _config.load()
+        with self._lock:
+            # The key was taken BEFORE the load, so a write that lands mid-load bumps the
+            # generation and this entry simply never matches again.
+            if self._depth > 0:
+                self._entry = (key, now, cfg)
+        return cfg
+
+
+_process_memo = _ProcessConfigMemo()
+
+
+@contextmanager
+def process_config_memo() -> Iterator[None]:
+    """Opt this process into resolving the effective config once for ``workspace_root`` (see
+    :class:`_ProcessConfigMemo`). Re-entrant; the memo is dropped when the outermost scope ends.
+    A one-shot CLI verb enters it at the command boundary; a long-lived service never does."""
+    _process_memo.enter()
+    try:
+        yield
+    finally:
+        _process_memo.exit()
+
+
 def _effective_config():
     cfg = _scoped_config.get()
-    return cfg if cfg is not None else _config.load()
+    if cfg is not None:
+        return cfg
+    if _process_memo.enabled:
+        return _process_memo.get()
+    return _config.load()
 
 
 def _legacy_root() -> Path:
