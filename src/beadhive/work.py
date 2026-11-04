@@ -486,6 +486,76 @@ def link_cmd(
     return work_intake.link(bead, to, remove, replace, as_, hive, as_json)
 
 
+def investigate_cmd(
+    bead: str = typer.Argument(..., metavar="<report>", help="the bound (imported) report"),
+    work: str = typer.Option(
+        "", "--work", help="an existing work bead of this hive that investigates the report"
+    ),
+    new_work: bool = typer.Option(
+        False, "--new-work", help="create a reproduction bead (plain work) that investigates it"
+    ),
+    remove: bool = typer.Option(
+        False, "--remove", help="with --work: that bead stops investigating the report"
+    ),
+    issue_type: str = typer.Option(
+        "", "--type", "-t", help="with --new-work: the new bead's type (default task)"
+    ),
+    priority: str = typer.Option(
+        "", "--priority", "-p", help="with --new-work: the new bead's priority (0-4 / P0-P4)"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Link reproduction work to an imported report as `investigates`, never `tracks`, so it
+    fires no delivery milestone.
+
+    Closing, merging, claiming or releasing an investigating bead drafts no milestone, writes no
+    `delivery` value and never closes the report; `bh work link` / `accept --work` link the work
+    whose delivery the reporter should hear about. `--work <id>` links an existing bead of this
+    hive, `--new-work` creates a plain one titled "Reproduce: <report title>", `--work <id>
+    --remove` unlinks one, and with neither it lists the report's tracked work and investigating
+    beads. Several beads may investigate one report; the work it tracks may not. The report stays
+    held and its intake state is untouched. Off unless `intake.external.enabled`; never touches a
+    tracker."""
+    return work_intake.investigate(
+        bead, work, new_work, remove, issue_type, priority, as_, hive, as_json
+    )
+
+
+def needs_info_cmd(
+    bead: str = typer.Argument(..., metavar="<report>", help="the bound (imported) report"),
+    ask: str = typer.Option(
+        ..., "--ask", help="the question for the reporter (drafted as a reply; never auto-sent)"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Ask an imported report's reporter for missing facts: draft the question as a supervised
+    reply (an operator approves and sends it with `bh work outbox`) and move the report to
+    `intake:needs-info`, out of the untriaged queue; it stays held, never work. Refused for a
+    report filed with `bh report` / `bh escalate` (no issue thread, no hold) and while the thread
+    has comments triage has not read. Off unless `intake.external.needs_info.enabled`."""
+    return work_intake.needs_info(bead, ask, as_, hive, as_json)
+
+
+def wake_cmd(
+    bead: str = typer.Argument("", metavar="<report>", help="the waiting report (or --all)"),
+    all_: bool = typer.Option(
+        False, "--all", help="every waiting report (also needs intake.external.needs_info.sweep)"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Move a report waiting on `intake:needs-info` back to `intake:untriaged` once its thread
+    holds a reply from its reporter (run `bh work thread ingest` first); our own messages never
+    wake it. The reply stays unread for triage, and the report stays held, never work. Reads the
+    stored thread only. Off unless `intake.external.needs_info.enabled`."""
+    return work_intake.wake(bead, all_, as_, hive, as_json)
+
+
 def delivery_release_cmd(
     tag: str = typer.Argument(..., metavar="<tag>", help="the release tag to verify and record"),
     as_: str = _AS,
@@ -498,6 +568,45 @@ def delivery_release_cmd(
     `delivery:merged` (reported as not verified). Nothing is sent; off unless
     `intake.external.enabled`."""
     return work_intake.delivery_release(tag, as_, hive, as_json)
+
+
+_NOTICE_WORK = typer.Argument(..., metavar="<work>", help="the work bead the reports track")
+_NOTICE_REASON = typer.Option(
+    ...,
+    "--reason",
+    help="the public reason posted to each reporter after approval (leak-checked; no bead ids)",
+)
+
+
+def delivery_blocked_cmd(
+    work: str = _NOTICE_WORK,
+    reason: str = _NOTICE_REASON,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Tell the reporters of tracked work it is blocked: draft a `blocked` record (fixed wording
+    plus your public reason) for every report that tracks <work> and is still
+    `delivery:pending`, superseding an unsent older milestone. A reason naming a bead id, branch
+    or path leaves the record held by the leak check. Nothing is sent: an operator approves and
+    sends it with `bh work outbox`. Off unless `intake.external.milestones.draft_on_blocked`."""
+    return work_intake.delivery_notice("blocked", work, reason, as_, hive, as_json)
+
+
+def delivery_deprioritised_cmd(
+    work: str = _NOTICE_WORK,
+    reason: str = _NOTICE_REASON,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Tell the reporters of tracked work it was deprioritised: draft a `deprioritised` record
+    (fixed wording plus your public reason) for every report that tracks <work> and is still
+    `delivery:pending`, superseding an unsent older milestone. A reason naming a bead id, branch
+    or path leaves the record held by the leak check. Nothing is sent: an operator approves and
+    sends it with `bh work outbox`. Off unless
+    `intake.external.milestones.draft_on_deprioritised`."""
+    return work_intake.delivery_notice("deprioritised", work, reason, as_, hive, as_json)
 
 
 _OUTBOX_ID = typer.Argument(..., metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
@@ -604,6 +713,46 @@ def outbox_show_cmd(
     """The dry-run render of one record exactly as it would be sent, with the digest to approve;
     without an id, the listing of the hive's records. Reads only; no tracker request."""
     return work_intake.outbox_show(outbox_id, bead, open_only, hive, as_json)
+
+
+_THREAD_REPORT = typer.Argument(..., metavar="<report>", help="the bound report bead")
+
+
+def thread_show_cmd(
+    bead: str = _THREAD_REPORT,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Show a bound report's ingested issue thread: its seq, the comments that are new evidence
+    since the last triage read, and anything flagged. Reads the stored thread only (no tracker
+    request); off unless `intake.external.comments.enabled`."""
+    return work_intake.thread_show(bead, hive, as_json)
+
+
+def thread_ingest_cmd(
+    bead: str = _THREAD_REPORT,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Read a bound report's issue comments since its checkpoint into its thread, then reconcile
+    deletions. Reads the tracker only (needs the tracker plugin's `read.comments.enabled`); off
+    unless `intake.external.comments.enabled`."""
+    return work_intake.thread_ingest(bead, as_, hive, as_json)
+
+
+def thread_considered_cmd(
+    bead: str = _THREAD_REPORT,
+    through: int = typer.Option(
+        ..., "--through", help="the thread seq that `thread show` printed when you read it"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Record that a triage pass read the thread as it stood at `--through`, so only comments
+    that arrived later stay new evidence. Idempotent; never changes the report's intake state."""
+    return work_intake.thread_considered(bead, through, as_, hive, as_json)
 
 
 def _refuse_public(verb: str, *values) -> None:
@@ -1536,6 +1685,9 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
         f"✓ started {epic} as {actor}; opened container {branch}; seat worktree {target} — "
         f"assign children onto it"
     )
+    # the started milestone (bh-dev42) for reports tracking the epic: free unless opted in,
+    # never fails the start, and keyed on the epic so re-starting it drafts nothing new
+    work_intake.on_work_claimed(cfg, entry, Path(main), [epic], actor, hive)
 
 
 def finish(
@@ -1951,6 +2103,11 @@ CLI_HANDLERS = {
     "work.import": import_cmd,
     "work.discover": discover_cmd,
     "work.link": link_cmd,
+    "work.investigate": _bind_cli_handler(investigate_cmd, type_="issue_type"),
+    "work.needs-info": needs_info_cmd,
+    "work.wake": wake_cmd,
+    "work.delivery.blocked": delivery_blocked_cmd,
+    "work.delivery.deprioritised": delivery_deprioritised_cmd,
     "work.delivery.release": delivery_release_cmd,
     "work.outbox.approve": outbox_approve_cmd,
     "work.outbox.discard": outbox_discard_cmd,
@@ -1959,6 +2116,9 @@ CLI_HANDLERS = {
     "work.outbox.retry": outbox_retry_cmd,
     "work.outbox.send": outbox_send_cmd,
     "work.outbox.show": outbox_show_cmd,
+    "work.thread.considered": thread_considered_cmd,
+    "work.thread.ingest": thread_ingest_cmd,
+    "work.thread.show": thread_show_cmd,
     "work.assign": assign,
     "work.claim": claim,
     "work.next": next_,
@@ -1987,6 +2147,7 @@ CLI_PROJECTION = _project_cli_group(
     group_help={
         "work delivery": "Record delivery milestones for imported external reports.",
         "work outbox": "Supervised replies to external issues: draft, review, approve, send.",
+        "work thread": "Imported reports' issue comments: show, ingest, mark considered.",
     },
 )
 _CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
@@ -2007,6 +2168,11 @@ promote_cmd = _CLI_CALLBACKS["work.promote"]
 import_cmd = _CLI_CALLBACKS["work.import"]
 discover_cmd = _CLI_CALLBACKS["work.discover"]
 link_cmd = _CLI_CALLBACKS["work.link"]
+investigate_cmd = _CLI_CALLBACKS["work.investigate"]
+needs_info_cmd = _CLI_CALLBACKS["work.needs-info"]
+wake_cmd = _CLI_CALLBACKS["work.wake"]
+delivery_blocked_cmd = _CLI_CALLBACKS["work.delivery.blocked"]
+delivery_deprioritised_cmd = _CLI_CALLBACKS["work.delivery.deprioritised"]
 delivery_release_cmd = _CLI_CALLBACKS["work.delivery.release"]
 outbox_approve_cmd = _CLI_CALLBACKS["work.outbox.approve"]
 outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]

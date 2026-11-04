@@ -478,9 +478,19 @@ and no key can enable or pre-approve a tracker write.
 | `milestones.draft_on_merge` | `false` | draft a `merged` outbox record when linked work merges |
 | `milestones.draft_on_release` | `false` | draft a `released` outbox record when `bh work delivery release <tag>` verifies a release |
 | `milestones.append_release_to_closed` | `false` | also draft the `released` record for a report that is already closed |
+| `milestones.catch_up_on_link` | `false` | when `bh work link` (or `accept --work`) links a report to work that already merged, give it the milestones it missed from the merge (and verified release) another tracking report recorded: `delivery:merged` / `released`, a record where drafting is on, then the completion policy. Off, such a report stays `delivery:pending` |
+| `milestones.draft_on_start` | `false` | draft a `started` record for every report that tracks work (still `delivery:pending`) when that work is claimed for the first time (`bh work claim`, `claim --group`, `start`, `next`). Keyed on the work: a re-claim, a resume after a bounce or a claim after an abandon drafts nothing. A failure only warns; the claim never fails, and off the claim reads nothing extra |
+| `milestones.draft_on_blocked` | `false` | allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` record (fixed wording plus the reason) for every report that tracks the work and is still `delivery:pending`. Off refuses naming this key |
+| `milestones.draft_on_deprioritised` | `false` | the same for `bh work delivery deprioritised <work> --reason <public text>` and a `deprioritised` record |
 | `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
 | `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request. Only `approve` and `send` are gated by this flag: `render`, `discard` and `retry --kind labels` are local state moves that make no tracker request, so they are deliberately not blocked. A retried label operation still cannot reach GitHub without a new `approve` and `send`, and both of those are gated |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
+| `comments.enabled` | `false` | ingest bound reports' issue comments: `bh work thread ingest` (needs `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`), `thread show` and `thread considered`. Reads only; off refuses naming this key |
+| `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |
+| `comments.purge_deleted_bodies` | `true` | drop a tombstoned comment's latest body (its digest is kept; not erasure) |
+| `comments.max_body_chars` | unset | optional cap on a stored comment body (the digest is of the full body) |
+| `needs_info.enabled` | `false` | allow `bh work needs-info <report> --ask <text>` (draft the question as a supervised reply and move a bound report to `intake:needs-info`; also needs `outbox.enabled` and `comments.enabled`) and `bh work wake <report>` (back to `intake:untriaged` once its ingested thread holds a reply from the reporter). Nothing is sent: the question posts only after an operator approves it. Off refuses naming this key |
+| `needs_info.sweep` | `false` | allow `bh work wake --all` over every waiting report; needs `needs_info.enabled` too |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
 plugin's `read.issues.enabled` ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md));
@@ -502,6 +512,38 @@ tracker write still needs the adapter's own write flag. With every default, merg
 behave exactly as before. `outbox.labels_enabled` is a new key: `BeadhiveConfig` forbids unknown
 keys, so nothing in a shared config should set it until the schema has rotated to every host
 (`bh-tfko9`).
+
+The `bh work outbox` verbs that reach the tracker (`draft`, `approve`, `send`, `reconcile`,
+`discard`, `retry`, and `show <id>`'s dry run) build it from the same binding as import: with
+`enabled`, `outbox.enabled` and `plugins.tracker-github.enabled` all on, the tracker is the hive's
+bound adapter, the own-message identity is the bound `owner/repo` plus this hive's install id (a
+random id minted once into the private `.bh/intake/install-id`; never configuration), the marker
+line is the adapter's own codec, and the owned label prefixes are
+`plugins.tracker-github.write.labels.owned_prefixes` (only while `write.labels.enabled`). Any
+switch off refuses naming it. Without a tracker, `bh work outbox show <id>` prints the stored
+draft, its event and its operations' states instead of the dry run (no digest, so nothing can be
+approved from it). Nothing here posts: a send still needs the adapter's write flag and an
+operator's per-operation approval minting a single-use grant.
+
+The `comments.*` keys are new (bh-o9rep): as above, nothing in a shared config should set them
+until the schema has rotated to every host (`bh-tfko9`).
+
+The `needs_info.*` and `milestones.catch_up_on_link` keys are new (bh-61xkc), and so is the
+`intake:needs-info` value they write: an older host rejects both the keys (`extra=forbid`) and the
+label (`bh label validate`), so nothing in a shared config should set them, and no hive should use
+the value, until the release has rotated to every host (`bh-hmtjn`, the `bh-tfko9` pattern). A
+report on `intake:needs-info` keeps its `intake-hold:` gate (never ready, never claimable), leaves
+the untriaged queue, and every triage disposition fields it as it fields an untriaged report.
+
+The `milestones.draft_on_start`, `.draft_on_blocked` and `.draft_on_deprioritised` keys are new
+(bh-dev42), and so are the outbox events `started`, `blocked` and `deprioritised` and the
+`notified` values of the same names: an older host rejects the keys (`extra=forbid`), cannot decode
+a report's `intake.outbox` holding such a record, and rejects the labels (`bh label validate`), so
+nothing in a shared config should set them until the release has rotated to every host
+(`bh-hmtjn`, the `bh-tfko9` pattern). The three only draft, in the `milestone` group (a newer one
+supersedes an unsent older one), only while a report's delivery is `pending`, never move a
+dimension and never complete a report. The `blocked` / `deprioritised` reason is the one free text
+a milestone carries: the leak check holds a record whose reason names a bead id, branch or path.
 
 ### `backfill.judge` {#backfill-judge}
 

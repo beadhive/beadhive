@@ -3181,6 +3181,42 @@ class IntakeDiscoveryConfig(_QuietSection):
         return self
 
 
+class IntakeCommentsConfig(_QuietSection):
+    """``intake.external.comments`` — comment ingestion for bound reports (everything off).
+
+    With ``enabled`` (and ``intake.external.enabled``) `bh work thread ingest` reads a bound
+    report's issue comments into its private thread record and `bh work thread show` reports what
+    is new since the last triage read. It only ever READS the tracker (it also needs the tracker
+    plugin's ``read.comments.enabled``) and never writes the public store; replies stay the
+    outbox's, each approved by an operator.
+    """
+
+    enabled: StrictBool = Field(
+        False, description="Ingest the comments of bound reports' issues (default off)."
+    )
+    deletion_confirmations: int = Field(
+        2,
+        ge=1,
+        le=100,
+        description=(
+            "Complete comment-id snapshots that must agree a comment is gone before it is "
+            "tombstoned."
+        ),
+    )
+    purge_deleted_bodies: StrictBool = Field(
+        True,
+        description=(
+            "Drop a tombstoned comment's latest body (its digest is kept; this is not erasure)."
+        ),
+    )
+    max_body_chars: int | None = Field(
+        None,
+        ge=0,
+        le=10_000_000,
+        description="Optional cap on a stored comment body (its digest is of the full body).",
+    )
+
+
 class IntakeMilestonesConfig(_QuietSection):
     """``intake.external.milestones`` — which delivery milestones DRAFT an outbox record.
 
@@ -3197,6 +3233,64 @@ class IntakeMilestonesConfig(_QuietSection):
     append_release_to_closed: StrictBool = Field(
         False,
         description="Also draft the `released` record for a report already closed (default off).",
+    )
+    catch_up_on_link: StrictBool = Field(
+        False,
+        description=(
+            "When `bh work link` (or `accept --work`) links a report to work that already merged, "
+            "give it the milestones it missed from the merge (and verified release) another "
+            "tracking report recorded: `delivery:merged`/`released`, a record where drafting is "
+            "on, then the completion policy (default off: the report stays `delivery:pending`)."
+        ),
+    )
+    draft_on_start: StrictBool = Field(
+        False,
+        description=(
+            "Draft a `started` record for each report that tracks work when that work is claimed "
+            "for the first time; a re-claim, a resume or a claim after an abandon drafts nothing "
+            "(default off; a failure never fails the claim)."
+        ),
+    )
+    draft_on_blocked: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` "
+            "record for each report that tracks the work (default off)."
+        ),
+    )
+    draft_on_deprioritised: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work delivery deprioritised <work> --reason <public text>` to draft a "
+            "`deprioritised` record for each report that tracks the work (default off)."
+        ),
+    )
+
+
+class IntakeNeedsInfoConfig(_QuietSection):
+    """``intake.external.needs_info`` — waiting for a bound report's reporter (everything off).
+
+    With ``enabled`` (and ``intake.external.enabled``) `bh work needs-info <report> --ask <text>`
+    drafts the question as a supervised reply (it also needs ``outbox.enabled``, and
+    ``comments.enabled`` so the reply can be heard) and moves the report to
+    ``intake:needs-info``; `bh work wake <report>` moves it back to ``intake:untriaged`` once its
+    thread holds a reporter's reply. ``sweep`` additionally allows `bh work wake --all` over every
+    waiting report. Nothing here sends: the question posts only after an operator approves it.
+    """
+
+    enabled: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work needs-info` and `bh work wake <report>` for bound reports "
+            "(default off)."
+        ),
+    )
+    sweep: StrictBool = Field(
+        False,
+        description=(
+            "Allow `bh work wake --all` to wake every waiting report its reporter answered; "
+            "needs `enabled` too (default off)."
+        ),
     )
 
 
@@ -3251,6 +3345,8 @@ class IntakeExternalConfig(_QuietSection):
     )
     milestones: IntakeMilestonesConfig = Field(default_factory=IntakeMilestonesConfig)
     outbox: IntakeOutboxConfig = Field(default_factory=IntakeOutboxConfig)
+    comments: IntakeCommentsConfig = Field(default_factory=IntakeCommentsConfig)
+    needs_info: IntakeNeedsInfoConfig = Field(default_factory=IntakeNeedsInfoConfig)
 
 
 class IntakeConfig(_QuietSection):

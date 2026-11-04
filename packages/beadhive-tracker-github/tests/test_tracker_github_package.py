@@ -8,8 +8,15 @@ from importlib import resources
 import pytest
 
 import beadhive_tracker_github
-from beadhive.modules.tracker.contracts import IssueResolver, ProjectRef, TrackerAdapter
+from beadhive.modules.tracker.contracts import (
+    IssueResolver,
+    MarkerCodec,
+    OwnMarker,
+    ProjectRef,
+    TrackerAdapter,
+)
 from beadhive_tracker_github import factory
+from beadhive_tracker_github.adapter.marker import encode_marker
 
 
 def _manifest() -> dict:
@@ -64,3 +71,24 @@ def test_a_refused_build_echoes_no_input() -> None:
         with pytest.raises((ValueError, TypeError)) as caught:
             factory.build(settings, lambda: None, project=project, sleep=lambda _seconds: None)
         assert secret not in str(caught.value)
+
+
+def test_the_adapter_offers_its_own_marker_codec_without_a_request() -> None:
+    calls: list[str] = []
+
+    def tokens():
+        calls.append("token")
+        return None
+
+    adapter = factory.build(
+        {}, tokens, project=ProjectRef("github", "acme/widget"), sleep=lambda _seconds: None
+    )
+    marker = OwnMarker("acme/widget", "0" * 32, "ob1_x")
+
+    assert isinstance(adapter, MarkerCodec)
+    line = adapter.marker_line(marker)
+    assert line == f"<!-- bh:v1 hive=acme/widget install={'0' * 32} outbox=ob1_x -->"
+    assert encode_marker("body", marker) == f"body\n\n{line}"  # the posted footer, exactly
+    assert calls == []
+    with pytest.raises(ValueError):
+        adapter.marker_line(OwnMarker("acme/widget", "has space", "ob1_x"))

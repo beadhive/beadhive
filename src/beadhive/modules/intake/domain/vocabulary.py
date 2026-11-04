@@ -10,6 +10,11 @@ The lifecycle states are modelled through native ``bd set-state <bead> <dim>=<va
 - ``intake:untriaged`` is untriaged inbound; a triage disposition moves it to a terminal value
   (``accepted``, ``rejected``, ``rerouted``, ``promoted``), which clears ``untriaged`` while
   recording which disposition fielded the report. ``intake:promoted`` is also the adopt queue key.
+- ``intake:needs-info`` (bh-61xkc) is a bound report waiting for its reporter: triage asked a
+  question (a drafted, supervised reply) and the report left the untriaged queue. It is NOT
+  terminal: a reporter's reply wakes it back to ``untriaged``, and every disposition fields it
+  exactly as it fields an untriaged report. Only a report bound to an external issue can wait
+  (a born-native report has no thread to reply on and no ``intake-hold:`` gate).
 - ``origin:<channel>`` is the CLOSED intake channel a bead entered through. ``intake`` is queue
   membership (cleared on triage); ``origin`` is a durable source tag.
 
@@ -34,7 +39,12 @@ NOTIFIED_DIM = "notified"
 #: splices these into ``STATE_DIMENSIONS``, so ``registry.closed_dimensions`` validates them
 #: fleet-wide (``bh label validate`` accepts these values and refuses any other).
 INTAKE_DIMENSIONS: Mapping[str, frozenset[str]] = {
-    INTAKE_DIM: frozenset({"untriaged", "accepted", "rejected", "rerouted", "promoted"}),
+    # `needs-info` (bh-61xkc) is the one non-terminal value besides `untriaged`: a bound report
+    # waiting for its reporter. A new closed value is rotation-gated (bh-tfko9 pattern, rollout
+    # bh-hmtjn): every reader accepts it before any hive writes it.
+    INTAKE_DIM: frozenset(
+        {"untriaged", "accepted", "rejected", "rerouted", "promoted", "needs-info"}
+    ),
     # `escalation` is the fire-and-forget HQ channel; `factory-seed` is the synthetic-identity
     # channel the HQ factory stamps; `backfill` is the historical-reconstruction channel (bh-vfx9).
     # The companion `source:<kind>` facet stays intentionally OPEN: closed dimensions are reserved
@@ -47,15 +57,31 @@ INTAKE_DIMENSIONS: Mapping[str, frozenset[str]] = {
     DELIVERY_DIM: frozenset({"pending", "merged", "released", "reverted"}),
     # Which milestone the reporter was last told about. Written only by the outbox sender, after a
     # comment operation reaches `sent`. Per-operation outbox states are NOT dimensions.
-    NOTIFIED_DIM: frozenset({"replied", "merged", "released", "corrected"}),
+    # `started`, `blocked` and `deprioritised` (bh-dev42) are the progress milestones' values;
+    # rotation-gated like `needs-info` (rollout bh-hmtjn): every reader accepts them before any
+    # hive sends such a comment.
+    NOTIFIED_DIM: frozenset(
+        {"replied", "merged", "released", "corrected", "started", "blocked", "deprioritised"}
+    ),
 }
 
 #: The link type from a report to the work it tracks (reserved here; used by a later bead).
 TRACKS_EDGE = "tracks"
 
+#: The native edge type of an investigation (bh-u3a53): a reproduction bead ``investigates`` a
+#: report, stored as bd's built-in ``validates`` edge from the WORK to the report (``bd dep add
+#: <work> <report> -t validates``: the work "validates" the report's claim, rendered ``VALIDATES``
+#: on the work and ``VALIDATED BY`` on the report). bd 1.3.0 refuses an unknown edge type, so the
+#: relation reuses a built-in one that bh uses nowhere else, that gates no readiness in bd
+#: (``AffectsReadyWork`` false) or in bh's operator views, and whose direction differs from
+#: ``tracks`` (report to work), so a ``bd dep remove`` of one never removes the other. Only edges
+#: whose target is a bound report count; nothing reads this type for delivery.
+INVESTIGATES_EDGE = "validates"
+
 # Canonical `<dim>:<value>` label-cache entries (what `bd set-state` writes).
 INTAKE_UNTRIAGED = "intake:untriaged"
 INTAKE_PROMOTED = "intake:promoted"  # handed to the planner (adopt queue key)
+INTAKE_NEEDS_INFO = "intake:needs-info"  # a bound report waiting for its reporter (bh-61xkc)
 ORIGIN_REPORT = "origin:report"
 ORIGIN_GITHUB = "origin:github"
 ORIGIN_IMPORT = "origin:import"
@@ -70,6 +96,9 @@ NOTIFIED_REPLIED = "notified:replied"
 NOTIFIED_MERGED = "notified:merged"
 NOTIFIED_RELEASED = "notified:released"
 NOTIFIED_CORRECTED = "notified:corrected"
+NOTIFIED_STARTED = "notified:started"  # the progress milestones (bh-dev42)
+NOTIFIED_BLOCKED = "notified:blocked"
+NOTIFIED_DEPRIORITISED = "notified:deprioritised"
 
 # Triage disposition -> the terminal `intake` value it transitions to. Setting any of these via
 # `bd set-state` clears `untriaged` (leaving the triage queue) while recording the outcome as an
@@ -118,6 +147,18 @@ def is_untriaged_intake(labels) -> bool:
     """True while a bead is untriaged inbound (`intake:untriaged`). Triage clears the
     intake dimension, so this predicate drives the triage queue."""
     return INTAKE_UNTRIAGED in (labels or [])
+
+
+def is_needs_info(labels) -> bool:
+    """True while a bound report waits for its reporter (`intake:needs-info`). Such a report is
+    out of the untriaged queue; a reporter's reply wakes it back to `intake:untriaged`."""
+    return INTAKE_NEEDS_INFO in (labels or [])
+
+
+def is_awaiting_triage(labels) -> bool:
+    """True while triage still owes a report a disposition: untriaged, or waiting for the
+    reporter (`intake:needs-info`). Every disposition fields both the same way."""
+    return is_untriaged_intake(labels) or is_needs_info(labels)
 
 
 def is_promoted(labels) -> bool:
@@ -185,13 +226,17 @@ __all__ = [
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
+    "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
+    "NOTIFIED_BLOCKED",
     "NOTIFIED_CORRECTED",
+    "NOTIFIED_DEPRIORITISED",
     "NOTIFIED_DIM",
     "NOTIFIED_MERGED",
     "NOTIFIED_RELEASED",
     "NOTIFIED_REPLIED",
+    "NOTIFIED_STARTED",
     "ORIGIN_BACKFILL",
     "ORIGIN_DIM",
     "ORIGIN_ESCALATION",
@@ -199,13 +244,16 @@ __all__ = [
     "ORIGIN_GITHUB",
     "ORIGIN_IMPORT",
     "ORIGIN_REPORT",
+    "INVESTIGATES_EDGE",
     "TRACKS_EDGE",
     "DeliveryAfterUnlink",
     "channel_of",
     "delivery_after_unlink",
     "delivery_of",
     "disposition_state",
+    "is_awaiting_triage",
     "is_escalation_origin",
+    "is_needs_info",
     "is_promoted",
     "is_report_origin",
     "is_untriaged_intake",

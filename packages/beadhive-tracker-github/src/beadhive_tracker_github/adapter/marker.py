@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 
-from beadhive.modules.tracker.contracts import OwnMarker
+from beadhive.modules.tracker.contracts import OwnMarker, join_marker_line
 
 __all__ = ["MARKER_VERSION", "decode_marker", "encode_marker", "marker_line"]
 
@@ -53,10 +53,11 @@ def marker_line(marker: OwnMarker) -> str:
 
 
 def encode_marker(body: str, marker: OwnMarker) -> str:
-    """``body`` with the marker appended as its last line (after one blank line)."""
-    line = marker_line(marker)
-    text = body.rstrip()
-    return f"{text}\n\n{line}" if text else line
+    """``body`` with the marker appended as its last line, by the port's one joining rule
+    (:func:`~beadhive.modules.tracker.contracts.join_marker_line`: trailing whitespace removed,
+    one blank line, then the line; an empty body posts the line alone), so a consumer's dry run
+    renders exactly these bytes."""
+    return join_marker_line(body, marker_line(marker))
 
 
 def decode_marker(body: str) -> tuple[str, OwnMarker | None]:

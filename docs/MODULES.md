@@ -622,10 +622,31 @@ thread recognition reads. The root (`intake_services`) adds `FlockIntakeLock` (`
 `store_posture` and `outbox_service_for`, which binds no sender unless an enabled `OutboxPolicy` is
 passed and takes the tracker adapter and its marker codec injected. The seven `bh work outbox`
 verbs (wire 2.16.0, bh-73td2) call it through `intake_services.outbox_call`; they need
-`intake.external.enabled` and `intake.external.outbox.enabled`, and refuse saying the outbox
-tracker is not wired until `outbox_wiring` supplies the tracker, identity and marker codec. Tests:
-`tests/unit/modules/intake/test_intake_outbox_sender.py` and
-`tests/test_intake_outbox_root.py`.
+`intake.external.enabled` and `intake.external.outbox.enabled`. `outbox_wiring` (bh-uavc2) builds
+the tracker, identity and marker codec from the hive's public-store binding when
+`plugins.tracker-github.enabled` is on too: the tracker is the bound, narrowed port, the marker
+codec is that port's optional `MarkerCodec` (so root never imports the plugin package), and the
+identity is the bound `owner/repo` plus `install_id` (`.bh/intake/install-id`). Without a tracker,
+`outbox show <id>` prints the stored record (`StoredOutboxRecord`) instead of the dry run
+(bh-fehna). Tests: `tests/unit/modules/intake/test_intake_outbox_sender.py`,
+`tests/test_intake_outbox_root.py` and `tests/test_intake_outbox_wiring.py`.
+
+`ThreadService` is composed in production by `intake_services.thread_call` (bh-o9rep) when
+`intake.external.comments.enabled`: over the operational store, the root lock, `StoreOutboxView`
+and, for ingestion, the same binding requesting `comments.read`. The `bh work thread show`,
+`ingest` and `considered --through <seq>` verbs (wire 2.21.0) reach `thread_of`, `ingest_thread`
+plus `reconcile_thread`, and `mark_considered`; the outbox service carries the thread operations
+too while comments are on. Tests: `tests/test_intake_thread_composition.py`.
+
+Waiting for the reporter (bh-61xkc): `IntakeService.needs_info` drafts the question through the
+sender as a `reply` record and writes `intake:needs-info`; `wake` / `wake_all` read the stored
+thread and write `intake:untriaged` back exactly when it holds new external evidence (never via
+`mark_considered`). The rules and records are `domain/waiting.py`. `intake_services.needs_info`
+(outbox port) and `wake` (thread port) are gated by `intake.external.needs_info.enabled` (and
+`.sweep` for `bh work wake --all`); `MilestoneService.on_linked` catches a report linked to already
+merged work up on its milestones when `milestones.catch_up_on_link` is on. Tests:
+`tests/unit/modules/intake/test_intake_needs_info.py`, `test_intake_link_catch_up.py` and
+`tests/test_intake_needs_info_composition.py`.
 
 The same sender also carries `labels.change` (I9b, `bh-88vji`) as its own gate: `OutboxPolicy`
 gains `labels_enabled` (off by default, separate from `enabled`, which gates the outbox and the
@@ -655,14 +676,45 @@ release <tag>` is registered in the operation catalog (wire 2.16.0, bh-73td2; `w
 `tests/test_intake_milestones_composition.py`, `tests/test_work_merge_milestones.py` and
 `tests/test_intake_milestones_int.py` (`integration`).
 
+The progress milestones (bh-dev42) are the same service: `IntakePort.on_work_started(StartFact)`
+(free under `NullIntake`) drafts a `started` record for every report that tracks newly claimed
+work, keyed on the work so only its first claim drafts, and `IntakePort.delivery_notice(NoticeFact)`
+drafts a `blocked` / `deprioritised` record from an operator's public reason under fixed wording
+(`domain/milestones.py`: `STARTED_MESSAGE`, `notice_draft`, `notice_reason_problem`). Both draft
+only while delivery is `pending`, never move a dimension or close a report, and are gated by
+`intake.external.milestones.draft_on_start` / `.draft_on_blocked` / `.draft_on_deprioritised`
+beside `outbox.enabled`. The work layer calls `work_intake.on_work_claimed` after a fresh claim
+(`work_lifecycle.claim_single_bead` on the `claimed` disposition, `provision_claim` for `bh work
+next`, `work.start` and `work_group.claim_group`): a pure config read when off, never failing the
+claim, output on stderr only. `bh work delivery blocked|deprioritised <work> --reason <text>` are
+additive leaves of wire 2.21.0. Tests: `tests/unit/modules/intake/test_intake_progress_milestones.py`,
+`tests/test_intake_progress_milestones_composition.py` and `tests/test_work_claim_milestones.py`.
+
+Reproduction work (bh-u3a53) is a second report-to-work relation beside `tracks`:
+`IntakePort.investigate(InvestigateRequest)`, `uninvestigate` and `relations` (`LinkService`, pure
+rules `check_investigate` / `check_investigable` in `domain/link.py`). A bead that investigates a
+report is linked by its own native edge (`ReportStore.investigate` / `uninvestigate` /
+`investigations_of`; on bd 1.3.0, which refuses a custom type, the built-in `validates` edge from
+the work to the report, `INVESTIGATES_EDGE`), so it never appears in `trackers_of`, which is all
+the milestone triggers, the claim hook, the link catch-up, `reports_for_work` and `work_progress`
+read: closing, merging, claiming or releasing it drafts nothing, writes no `delivery` value and
+never closes the report. Investigating writes the edge and nothing else; several beads may
+investigate one report, the work it tracks may not (`tracked_work`).
+`intake_services.investigate_report` composes it with no milestone service bound. `bh work
+investigate <report>` with `--work <id>`, `--new-work [--type --priority]` or `--work <id>
+--remove` (with neither: the report's links) is an additive leaf of wire 2.21.0, off unless
+`intake.external.enabled`; `bh work thread show` lists both kinds of link. Tests: `tests/unit/modules/intake/test_intake_investigate.py`,
+`tests/test_intake_investigate_composition.py` and `tests/test_intake_investigate_int.py`
+(`integration`), plus the `store.investigates-is-not-tracks` contract case.
+
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
-(`replied|merged|released|corrected`) dimensions are registered in `INTAKE_DIMENSIONS`, so
-`bh label validate` accepts those values and refuses any other; nothing writes them yet. An
-`intake-hold:` gate (`guard.INTAKE_HOLD_GATE_MARKER`) classifies as gate kind `intake-hold`, and
-no seat resolves it through `bh work approve`. The operator views count only `blocks`,
-`conditional-blocks` and `waits-for` edges as blockers, so a `tracks` edge or any unknown edge type
-never blocks. `bd set-state` cannot clear a dimension, so unlinking keeps the `delivery` value
-(`delivery_after_unlink`).
+(`replied|merged|released|corrected|started|blocked|deprioritised`) dimensions are registered in
+`INTAKE_DIMENSIONS`, so `bh label validate` accepts those values and refuses any other; nothing
+writes them yet. An `intake-hold:` gate (`guard.INTAKE_HOLD_GATE_MARKER`) classifies as gate kind
+`intake-hold`, and no seat resolves it through `bh work approve`. The operator views count only
+`blocks`, `conditional-blocks` and `waits-for` edges as blockers, so a `tracks` or `validates`
+(investigates) edge or any unknown edge type never blocks. `bd set-state` cannot clear a
+dimension, so unlinking keeps the `delivery` value (`delivery_after_unlink`).
 
 A bound report is held for life (`domain/hold.py`, `external-intake-module-adr.md` section 8): its
 `ReportStore.create` opens an `intake-hold:` human gate, so it is never in `bd ready` or `bh work

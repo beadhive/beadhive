@@ -26,9 +26,11 @@ from .ports import (
     CommentWriter,
     IssueResolver,
     LabelWriter,
+    MarkerCodec,
     TrackerAdapter,
     TrackerIdentity,
     TrackerReader,
+    join_marker_line,
 )
 from .records import (
     MAX_REQUEST_TIMEOUT_SECONDS,
@@ -96,6 +98,7 @@ __all__ = [
     "LabelNotOwned",
     "LabelOwnership",
     "LabelWriter",
+    "MarkerCodec",
     "NotVisible",
     "Operation",
     "OperationNotEnabled",
@@ -124,4 +127,5 @@ __all__ = [
     "WriteGrant",
     "WriteOutcomeUnknown",
     "WriteReceipt",
+    "join_marker_line",
 ]

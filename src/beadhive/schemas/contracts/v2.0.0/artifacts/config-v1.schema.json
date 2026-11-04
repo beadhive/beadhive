@@ -2528,6 +2528,49 @@
       "title": "IdentityConfig",
       "type": "object"
     },
+    "IntakeCommentsConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.comments`` — comment ingestion for bound reports (everything off).\n\nWith ``enabled`` (and ``intake.external.enabled``) `bh work thread ingest` reads a bound\nreport's issue comments into its private thread record and `bh work thread show` reports what\nis new since the last triage read. It only ever READS the tracker (it also needs the tracker\nplugin's ``read.comments.enabled``) and never writes the public store; replies stay the\noutbox's, each approved by an operator.",
+      "properties": {
+        "deletion_confirmations": {
+          "default": 2,
+          "description": "Complete comment-id snapshots that must agree a comment is gone before it is tombstoned.",
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Deletion Confirmations",
+          "type": "integer"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Ingest the comments of bound reports' issues (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_body_chars": {
+          "anyOf": [
+            {
+              "maximum": 10000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional cap on a stored comment body (its digest is of the full body).",
+          "title": "Max Body Chars"
+        },
+        "purge_deleted_bodies": {
+          "default": true,
+          "description": "Drop a tombstoned comment's latest body (its digest is kept; this is not erasure).",
+          "title": "Purge Deleted Bodies",
+          "type": "boolean"
+        }
+      },
+      "title": "IntakeCommentsConfig",
+      "type": "object"
+    },
     "IntakeConfig": {
       "additionalProperties": false,
       "description": "``intake`` — the intake module's host-owned settings.",
@@ -2580,6 +2623,9 @@
       "additionalProperties": false,
       "description": "``intake.external`` — external issue intake (host-owned; everything off).\n\nOff unless configured: with ``enabled`` false `bh work import` refuses and the intake port is\nthe null one. Nothing here binds a tracker, holds a credential, a grant or an approval, and no\nkey can enable or pre-approve a tracker write: a write is only ever the operator's, per record.",
       "properties": {
+        "comments": {
+          "$ref": "#/$defs/IntakeCommentsConfig"
+        },
         "completion_policy": {
           "default": "close-on-merge",
           "description": "Which delivery milestone completes a linked report: `close-on-merge` closes it once the work merged (and its record, if any, settled); `close-on-release` keeps it open and held until the release is verified.",
@@ -2613,6 +2659,9 @@
         "milestones": {
           "$ref": "#/$defs/IntakeMilestonesConfig"
         },
+        "needs_info": {
+          "$ref": "#/$defs/IntakeNeedsInfoConfig"
+        },
         "outbox": {
           "$ref": "#/$defs/IntakeOutboxConfig"
         }
@@ -2630,6 +2679,24 @@
           "title": "Append Release To Closed",
           "type": "boolean"
         },
+        "catch_up_on_link": {
+          "default": false,
+          "description": "When `bh work link` (or `accept --work`) links a report to work that already merged, give it the milestones it missed from the merge (and verified release) another tracking report recorded: `delivery:merged`/`released`, a record where drafting is on, then the completion policy (default off: the report stays `delivery:pending`).",
+          "title": "Catch Up On Link",
+          "type": "boolean"
+        },
+        "draft_on_blocked": {
+          "default": false,
+          "description": "Allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` record for each report that tracks the work (default off).",
+          "title": "Draft On Blocked",
+          "type": "boolean"
+        },
+        "draft_on_deprioritised": {
+          "default": false,
+          "description": "Allow `bh work delivery deprioritised <work> --reason <public text>` to draft a `deprioritised` record for each report that tracks the work (default off).",
+          "title": "Draft On Deprioritised",
+          "type": "boolean"
+        },
         "draft_on_merge": {
           "default": false,
           "description": "Draft a `merged` record when linked work merges (default off).",
@@ -2641,9 +2708,35 @@
           "description": "Draft a `released` record when a release is verified (default off).",
           "title": "Draft On Release",
           "type": "boolean"
+        },
+        "draft_on_start": {
+          "default": false,
+          "description": "Draft a `started` record for each report that tracks work when that work is claimed for the first time; a re-claim, a resume or a claim after an abandon drafts nothing (default off; a failure never fails the claim).",
+          "title": "Draft On Start",
+          "type": "boolean"
         }
       },
       "title": "IntakeMilestonesConfig",
+      "type": "object"
+    },
+    "IntakeNeedsInfoConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.needs_info`` — waiting for a bound report's reporter (everything off).\n\nWith ``enabled`` (and ``intake.external.enabled``) `bh work needs-info <report> --ask <text>`\ndrafts the question as a supervised reply (it also needs ``outbox.enabled``, and\n``comments.enabled`` so the reply can be heard) and moves the report to\n``intake:needs-info``; `bh work wake <report>` moves it back to ``intake:untriaged`` once its\nthread holds a reporter's reply. ``sweep`` additionally allows `bh work wake --all` over every\nwaiting report. Nothing here sends: the question posts only after an operator approves it.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Allow `bh work needs-info` and `bh work wake <report>` for bound reports (default off).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "sweep": {
+          "default": false,
+          "description": "Allow `bh work wake --all` to wake every waiting report its reporter answered; needs `enabled` too (default off).",
+          "title": "Sweep",
+          "type": "boolean"
+        }
+      },
+      "title": "IntakeNeedsInfoConfig",
       "type": "object"
     },
     "IntakeOutboxConfig": {

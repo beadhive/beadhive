@@ -73,6 +73,17 @@ def test_port_names_match_the_adr() -> None:
         "retry",
         "on_work_merged",
         "on_release",
+        # waiting for the reporter (bh-61xkc), additive
+        "needs_info",
+        "wake",
+        "wake_all",
+        # the progress milestones (bh-dev42), additive
+        "on_work_started",
+        "delivery_notice",
+        # reproduction work, the investigates relation (bh-u3a53), additive
+        "investigate",
+        "uninvestigate",
+        "relations",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",
@@ -90,6 +101,9 @@ def test_port_names_match_the_adr() -> None:
         "track",
         "untrack",
         "trackers_of",
+        "investigate",
+        "uninvestigate",
+        "investigations_of",
         "read_thread",
         "write_thread",
         "holds",

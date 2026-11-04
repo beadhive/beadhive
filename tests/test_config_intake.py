@@ -8,9 +8,11 @@ from pydantic import ValidationError
 from beadhive.modules.config.application import partition
 from beadhive.modules.config.contracts import (
     BeadhiveConfig,
+    IntakeCommentsConfig,
     IntakeConfig,
     IntakeDiscoveryConfig,
     IntakeExternalConfig,
+    IntakeNeedsInfoConfig,
     ManagedRepoEntry,
     iter_schema_fields,
 )
@@ -25,6 +27,10 @@ def test_intake_is_absent_by_default_and_every_switch_is_off() -> None:
     assert external.outbox.enabled is False and external.outbox.mode == "supervised"
     assert external.outbox.labels_enabled is False  # the labels.change gate has its own switch
     assert not any(vars(external.milestones).values())  # no milestone drafts unless asked
+    assert external.comments.enabled is False  # comment ingestion is opt-in (bh-o9rep)
+    assert external.needs_info == IntakeNeedsInfoConfig()  # waiting for the reporter (bh-61xkc)
+    assert (external.needs_info.enabled, external.needs_info.sweep) == (False, False)
+    assert external.milestones.catch_up_on_link is False
 
 
 def test_a_full_documented_section_validates() -> None:
@@ -53,7 +59,7 @@ def test_enabled_is_a_strict_boolean(value) -> None:
         {"external": {"outbox": {"mode": "auto"}}},  # supervised is the only mode (D2)
         {"external": {"outbox": {"labels": {"on_delivery": "x"}}}},  # a later bead's key
         {"external": {"completion_policy": "close-never"}},
-        {"external": {"milestones": {"draft_on_start": True}}},
+        {"external": {"milestones": {"draft_on_progress": True}}},  # draft_on_start is bh-dev42
         {"other": {}},
     ],
 )
@@ -99,6 +105,16 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "outbox",
         "labels_enabled",
         "mode",
+        "comments",
+        "deletion_confirmations",
+        "purge_deleted_bodies",
+        "max_body_chars",
+        "catch_up_on_link",
+        "needs_info",
+        "sweep",
+        "draft_on_start",
+        "draft_on_blocked",
+        "draft_on_deprioritised",
     }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
 
@@ -207,3 +223,133 @@ def test_the_labels_gate_is_its_own_host_owned_strict_switch() -> None:
     assert config.intake is not None
     assert config.intake.external.outbox.labels_enabled is True
     assert partition.partition_of("intake.external.outbox.labels_enabled") == partition.HOST
+
+
+# -- intake.external.comments (bh-o9rep): comment ingestion, off by default --
+
+
+def test_comments_are_off_by_default_with_the_adr_defaults() -> None:
+    comments = IntakeConfig().external.comments
+
+    assert comments == IntakeCommentsConfig()
+    assert (comments.enabled, comments.deletion_confirmations) == (False, 2)
+    assert (comments.purge_deleted_bodies, comments.max_body_chars) == (True, None)
+
+
+def test_a_comments_section_validates() -> None:
+    config = BeadhiveConfig.model_validate(
+        {
+            "intake": {
+                "external": {
+                    "comments": {
+                        "enabled": True,
+                        "deletion_confirmations": 3,
+                        "purge_deleted_bodies": False,
+                        "max_body_chars": 4000,
+                    }
+                }
+            }
+        }
+    )
+
+    assert config.intake is not None
+    comments = config.intake.external.comments
+    assert (comments.enabled, comments.deletion_confirmations) == (True, 3)
+    assert (comments.purge_deleted_bodies, comments.max_body_chars) == (False, 4000)
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        {"enabled": "true"},
+        {"deletion_confirmations": 0},
+        {"max_body_chars": -1},
+        {"purge_deleted_bodies": 1},
+        {"reconcile_every": 3},  # no timer cadence ships with the verbs
+        {"tracker": "github"},
+    ],
+)
+def test_bad_comments_values_and_unknown_keys_fail_closed(comments) -> None:
+    with pytest.raises(ValidationError):
+        BeadhiveConfig.model_validate({"intake": {"external": {"comments": comments}}})
+
+
+# -- intake.external.needs_info and milestones.catch_up_on_link (bh-61xkc), off by default --
+
+
+def test_a_needs_info_section_and_the_catch_up_switch_validate_and_are_host_owned() -> None:
+    config = BeadhiveConfig.model_validate(
+        {
+            "intake": {
+                "external": {
+                    "needs_info": {"enabled": True, "sweep": True},
+                    "milestones": {"catch_up_on_link": True},
+                }
+            }
+        }
+    )
+
+    assert config.intake is not None
+    external = config.intake.external
+    assert (external.needs_info.enabled, external.needs_info.sweep) == (True, True)
+    assert external.milestones.catch_up_on_link is True
+    for path in (
+        "intake.external.needs_info.enabled",
+        "intake.external.needs_info.sweep",
+        "intake.external.milestones.catch_up_on_link",
+    ):
+        assert partition.partition_of(path) == partition.HOST
+
+
+@pytest.mark.parametrize(
+    "external",
+    [
+        {"needs_info": {"enabled": "true"}},
+        {"needs_info": {"sweep": 1}},
+        {"needs_info": {"interval_seconds": 60}},  # no timer ships with the sweep
+        {"milestones": {"catch_up_on_link": "yes"}},
+    ],
+)
+def test_bad_needs_info_values_and_unknown_keys_fail_closed(external) -> None:
+    with pytest.raises(ValidationError):
+        BeadhiveConfig.model_validate({"intake": {"external": external}})
+
+
+# -- the progress milestones (bh-dev42): three more draft switches, off by default --
+
+
+def test_the_progress_switches_are_off_validate_and_are_host_owned() -> None:
+    assert not IntakeExternalConfig().milestones.draft_on_start
+    config = BeadhiveConfig.model_validate(
+        {
+            "intake": {
+                "external": {
+                    "milestones": {
+                        "draft_on_start": True,
+                        "draft_on_blocked": True,
+                        "draft_on_deprioritised": True,
+                    }
+                }
+            }
+        }
+    )
+
+    assert config.intake is not None
+    milestones = config.intake.external.milestones
+    assert milestones.draft_on_start and milestones.draft_on_blocked
+    assert milestones.draft_on_deprioritised
+    for key in ("draft_on_start", "draft_on_blocked", "draft_on_deprioritised"):
+        assert partition.partition_of(f"intake.external.milestones.{key}") == partition.HOST
+
+
+@pytest.mark.parametrize(
+    "milestones",
+    [
+        {"draft_on_start": "true"},
+        {"draft_on_blocked": 1},
+        {"draft_on_deprioritized": True},  # the spelling is `deprioritised`, as the event
+    ],
+)
+def test_bad_progress_values_and_unknown_keys_fail_closed(milestones) -> None:
+    with pytest.raises(ValidationError):
+        BeadhiveConfig.model_validate({"intake": {"external": {"milestones": milestones}}})

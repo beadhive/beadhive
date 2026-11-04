@@ -21,7 +21,14 @@ from .hold import (
     hold_findings,
     is_hold_gate,
 )
-from .link import check_link, delivery_at_link, in_operational_store, work_progress_of
+from .link import (
+    check_investigable,
+    check_investigate,
+    check_link,
+    delivery_at_link,
+    in_operational_store,
+    work_progress_of,
+)
 from .models import (
     BeadView,
     Checkpoint,
@@ -35,6 +42,8 @@ from .models import (
     ImportKind,
     ImportOutcome,
     ImportRequest,
+    InvestigateOutcome,
+    InvestigateRequest,
     IssueBinding,
     IssueStatus,
     LinkKind,
@@ -44,6 +53,7 @@ from .models import (
     QueueQuery,
     QueueView,
     ReportDraft,
+    ReportRelations,
     SourceSnapshot,
     StoreScope,
     WorkDraft,
@@ -108,8 +118,10 @@ from .vocabulary import (
     DISPOSITION_STATE,
     INTAKE_DIM,
     INTAKE_DIMENSIONS,
+    INTAKE_NEEDS_INFO,
     INTAKE_PROMOTED,
     INTAKE_UNTRIAGED,
+    INVESTIGATES_EDGE,
     NOTIFIED_DIM,
     ORIGIN_BACKFILL,
     ORIGIN_DIM,
@@ -124,7 +136,9 @@ from .vocabulary import (
     delivery_after_unlink,
     delivery_of,
     disposition_state,
+    is_awaiting_triage,
     is_escalation_origin,
+    is_needs_info,
     is_promoted,
     is_report_origin,
     is_untriaged_intake,
@@ -150,6 +164,7 @@ __all__ = [
     "DISPOSITION_STATE",
     "INTAKE_DIM",
     "INTAKE_DIMENSIONS",
+    "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
     "INTAKE_UNTRIAGED",
     "NOTIFIED_DIM",
@@ -164,6 +179,7 @@ __all__ = [
     "THREAD_KEY",
     "DEFAULT_POLICY",
     "THREAD_SCHEMA",
+    "INVESTIGATES_EDGE",
     "TRACKS_EDGE",
     "TRIAGE_FLAGS",
     "Applied",
@@ -189,6 +205,8 @@ __all__ = [
     "ImportRequest",
     "IntakeRefused",
     "IntakeStoreError",
+    "InvestigateOutcome",
+    "InvestigateRequest",
     "IssueBinding",
     "IssueStatus",
     "LinkKind",
@@ -207,12 +225,15 @@ __all__ = [
     "ReferenceShape",
     "RefusalReason",
     "ReportDraft",
+    "ReportRelations",
     "Role",
     "SourceSnapshot",
     "StorePosture",
     "StoreScope",
     "WorkDraft",
     "WorkProgress",
+    "check_investigable",
+    "check_investigate",
     "check_link",
     "delivery_at_link",
     "in_operational_store",
@@ -244,6 +265,8 @@ __all__ = [
     "is_promoted",
     "is_report_origin",
     "is_untriaged_intake",
+    "is_awaiting_triage",
+    "is_needs_info",
     "mark_considered",
     "marker_bead_ids",
     "may_disposition",
@@ -456,4 +479,56 @@ __all__ += [
     "merged_facts",
     "released_draft",
     "released_facts",
+]
+
+# -- the progress milestones (bh-dev42): started, blocked and deprioritised -----------------
+
+from .milestones import (  # noqa: E402
+    NOTICE_EVENTS,
+    PROGRESS_EVENTS,
+    STARTED_MESSAGE,
+    NoticeFact,
+    StartFact,
+    notice_draft,
+    notice_reason_problem,
+    started_draft,
+)
+
+__all__ += [
+    "NOTICE_EVENTS",
+    "PROGRESS_EVENTS",
+    "STARTED_MESSAGE",
+    "NoticeFact",
+    "StartFact",
+    "notice_draft",
+    "notice_reason_problem",
+    "started_draft",
+]
+
+# -- waiting for the reporter (bh-61xkc): intake:needs-info and wake-on-reply -----------------
+
+from .waiting import (  # noqa: E402
+    NEEDS_INFO,
+    UNTRIAGED,
+    NeedsInfoOutcome,
+    NeedsInfoRequest,
+    WakeOutcome,
+    WakeRequest,
+    WakeSweep,
+    check_ask,
+    check_wake,
+    wakes,
+)
+
+__all__ += [
+    "NEEDS_INFO",
+    "UNTRIAGED",
+    "NeedsInfoOutcome",
+    "NeedsInfoRequest",
+    "WakeOutcome",
+    "WakeRequest",
+    "WakeSweep",
+    "check_ask",
+    "check_wake",
+    "wakes",
 ]

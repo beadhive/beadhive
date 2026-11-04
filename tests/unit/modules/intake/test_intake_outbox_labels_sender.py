@@ -53,6 +53,7 @@ from beadhive.modules.tracker.contracts import (
     Operation,
     OwnMarker,
     TransientFailure,
+    join_marker_line,
 )
 from beadhive.testing.intake import (
     SCOPE,
@@ -164,6 +165,7 @@ class Scene:
             self.sanitizer,
             marker_line=marker_line(OwnMarker(ME.hive, ME.install, oid)),
             labels=LabelBase(view.snapshot.revision, frozenset(view.snapshot.labels)),
+            join_marker_line=join_marker_line,
         )
         request = DraftRequest(
             self.binding,

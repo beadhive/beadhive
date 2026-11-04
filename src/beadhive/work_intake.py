@@ -173,6 +173,9 @@ def render_link(result, report: str, as_json: bool) -> None:
             "created_work": bool(disposition and disposition.created_work),
             "accepted": disposition is not None,
         }
+        caught_up = _caught_up(result)
+        if caught_up:  # only a catch-up adds the key, so every other payload is unchanged
+            payload["milestones"] = [_milestone_row(item) for item in caught_up]
         typer.echo(json.dumps(payload, sort_keys=True))
         if result.code:
             raise typer.Exit(result.code)
@@ -181,12 +184,14 @@ def render_link(result, report: str, as_json: bool) -> None:
         code = f" ({result.reason})" if result.reason else ""
         typer.echo(f"✗ link refused{code}: {result.error}", err=True)
         raise typer.Exit(result.code)
+    caught_up = _caught_up(result)
     if disposition is not None:
         made = "created and tracks" if disposition.created_work else "tracks"
         typer.echo(f"✓ accepted {report}: it {made} {disposition.work} (delivery:pending)")
         typer.echo(
             f"  → {report} stays held (it is a report, not work); {disposition.work} is work"
         )
+        _echo_caught_up(caught_up)
         return
     assert outcome is not None
     kind = outcome.kind.value
@@ -207,6 +212,34 @@ def render_link(result, report: str, as_json: bool) -> None:
         "relinked": f"{report} now tracks {outcome.work} (was {outcome.previous})",
     }
     typer.echo(f"✓ {verbs[kind]} (delivery:{outcome.delivery})")
+    _echo_caught_up(caught_up)
+
+
+def _caught_up(result) -> tuple:
+    """The milestones a link (or linking accept) caught the report up on (bh-61xkc)."""
+    found = result.disposition if result.disposition is not None else result.outcome
+    return tuple(getattr(found, "milestones", ()) or ())
+
+
+def _milestone_row(item) -> dict:
+    return {
+        "report": item.report,
+        "event": item.event,
+        "delivery": item.delivery,
+        "drafted": item.drafted,
+        "verdict": item.verdict.value if item.verdict else "",
+        "closed": item.closed,
+        "note": item.note,
+        "error": item.error,
+    }
+
+
+def _echo_caught_up(items) -> None:
+    if not items:
+        return
+    typer.echo("  the work had already merged; caught up:")
+    for line in _milestone_item_lines(items):
+        typer.echo(line, err=line.lstrip().startswith("⚠"))
 
 
 def link(
@@ -269,6 +302,112 @@ def accept_to_work(
     render_link(result, bead, as_json)
 
 
+# -- reproduction work (bh work investigate, bh-u3a53) -----------------------------------------
+
+
+def _relations_row(relations) -> dict:
+    return {
+        "tracks": relations.tracks,
+        "progress": relations.progress.value,
+        "investigated_by": list(relations.investigated_by),
+    }
+
+
+def _relations_lines(relations) -> list[str]:
+    tracks = f"{relations.tracks} ({relations.progress.value})" if relations.tracks else "none"
+    return [
+        f"  tracks: {tracks}",
+        f"  investigated by: {', '.join(relations.investigated_by) or 'none'}",
+    ]
+
+
+def render_investigate(result, report: str, as_json: bool) -> None:
+    """Print one ``bh work investigate`` result (human or ``--json``); non-zero exit on refusal."""
+    outcome, relations = result.outcome, result.relations
+    if as_json:
+        payload = {
+            "ok": result.code == 0,
+            "reason": result.reason,
+            "error": result.error,
+            "report": report,
+            "kind": outcome.kind.value if outcome else "",
+            "work": outcome.work if outcome else "",
+            "created_work": bool(outcome and outcome.created_work),
+            "relations": _relations_row(relations) if relations is not None else None,
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if result.code:
+            raise typer.Exit(result.code)
+        return
+    if result.code:
+        code = f" ({result.reason})" if result.reason else ""
+        typer.echo(f"✗ investigate refused{code}: {result.error}", err=True)
+        raise typer.Exit(result.code)
+    if outcome is None:
+        typer.echo(f"{report} links:")
+    else:
+        kind, work = outcome.kind.value, outcome.work
+        if kind == "unlinked" and not work:
+            typer.echo(f"nothing to remove: that bead does not investigate {report}")
+        elif kind == "unlinked":
+            typer.echo(f"✓ {work} no longer investigates {report}")
+        elif kind == "already_linked":
+            typer.echo(f"✓ {work} already investigates {report}")
+        else:
+            made = "created " if outcome.created_work else ""
+            typer.echo(f"✓ {made}{work} now investigates {report}")
+            typer.echo(
+                "  → it does not track the report: closing or merging it drafts no delivery "
+                "milestone and never closes the report"
+            )
+    if relations is not None:
+        for line in _relations_lines(relations):
+            typer.echo(line)
+
+
+def investigate(
+    bead: str,
+    work: str = "",
+    new_work: bool = False,
+    remove: bool = False,
+    issue_type: str = "",
+    priority: str = "",
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Link reproduction work to a report with the ``investigates`` relation (never ``tracks``),
+    remove one such link, or with neither ``--work`` nor ``--new-work`` list the report's links.
+    Off unless ``intake.external.enabled``; never touches a tracker."""
+    otel.set_bead(bead)
+    if work and new_work:
+        typer.echo("✗ pass at most one of --work <id> or --new-work", err=True)
+        raise typer.Exit(2)
+    if remove and not work:
+        typer.echo("✗ --remove needs --work <id>: the bead to stop investigating", err=True)
+        raise typer.Exit(2)
+    if (issue_type or priority) and not new_work:
+        typer.echo("✗ --type and --priority apply to the bead --new-work creates", err=True)
+        raise typer.Exit(2)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    result = intake_services.investigate_report(
+        cfg,
+        entry,
+        Path(registry.hive_dir(entry)),
+        bead,
+        actor,
+        work=work,
+        new_work=new_work,
+        remove=remove,
+        issue_type=issue_type,
+        priority=priority,
+        hive=hive,
+    )
+    render_investigate(result, bead, as_json)
+
+
 def import_issue(
     url: str, hive: str = "", dry_run: bool = False, as_json: bool = False, as_: str = ""
 ):
@@ -301,13 +440,18 @@ def discover(hive: str = "", full: bool = False, as_json: bool = False, as_: str
 
 def _milestone_lines(outcome) -> list[str]:
     """One human line per report a milestone looked at: what changed, is pending or failed."""
+    return _milestone_item_lines(outcome.items)
+
+
+def _milestone_item_lines(items) -> list[str]:
     lines: list[str] = []
-    for item in outcome.items:
+    for item in items:
         parts = []
         if item.delivery:
             parts.append(f"delivery:{item.delivery}")
         if item.drafted:
-            parts.append(f"drafted record {item.drafted} (nothing is sent)")
+            held = ", held by the leak check" if getattr(item, "held", False) else ""
+            parts.append(f"drafted record {item.drafted}{held} (nothing is sent)")
         if item.closed:
             parts.append("complete: closed")
         if item.note:
@@ -439,6 +583,121 @@ def delivery_release(tag: str, as_: str = "", hive: str = "", as_json: bool = Fa
     render_delivery_release(result, tag, as_json)
 
 
+# -- the progress milestones (bh-dev42): they draft, they never send ---------------------------
+
+
+def on_work_claimed(cfg, entry, main, beads, actor: str, hive: str = "") -> None:
+    """The claim hook, called by ``work claim`` / ``start`` / ``claim --group`` / ``next`` after a
+    FRESH claim of each of ``beads``: a ``started`` record for every report that tracks one and is
+    still ``delivery:pending`` (once per work: the record is keyed on it, so a later claim drafts
+    nothing).
+
+    **Never fails the claim, and costs nothing unless opted in.** It returns after a pure config
+    read, with no bd call, no git call and no lock, unless ``intake.external.enabled``, the outbox
+    and ``intake.external.milestones.draft_on_start`` are all on. Any failure, an unexpected
+    exception included, becomes a warning on stderr and the claim stands. Every line goes to
+    stderr, so the claim's own output is unchanged. It sends nothing and writes no tracker.
+    """
+    try:
+        if not intake_services.draft_on_start(cfg):
+            return
+    except Exception:  # noqa: BLE001 - a malformed section must never fail a claim
+        return
+    for work in beads:
+        try:
+            result = intake_services.work_started(
+                cfg, entry, Path(main), work, actor or identity.resolve_actor(""), hive=hive
+            )
+        except Exception as exc:  # noqa: BLE001 - a milestone must never fail a claim
+            typer.echo(
+                f"⚠ intake started milestone did not run for {work} (the claim stands): {exc}",
+                err=True,
+            )
+            continue
+        if result.code:
+            why = f" ({result.reason})" if result.reason else ""
+            typer.echo(
+                f"⚠ intake started milestone did not complete for {work}{why}: {result.error} "
+                "(the claim stands)",
+                err=True,
+            )
+            continue
+        items = result.outcome.items if result.outcome is not None else ()
+        if items:
+            typer.echo(f"intake: the started milestone for {work}", err=True)
+        for line in _milestone_item_lines(items):
+            typer.echo(line, err=True)
+
+
+def _notice_row(item) -> dict:
+    return {
+        "report": item.report,
+        "drafted": item.drafted,
+        "held": item.held,
+        "note": item.note,
+        "error": item.error,
+    }
+
+
+def render_delivery_notice(result, verb: str, work: str, as_json: bool) -> None:
+    """Print one ``bh work delivery blocked|deprioritised`` (human or ``--json``); non-zero on a
+    refusal or when any report failed (every other report was still handled)."""
+    outcome = result.outcome
+    items = outcome.items if outcome is not None else ()
+    failed = bool(result.code) or any(item.error for item in items)
+    if as_json:
+        payload = {
+            "ok": not failed,
+            "verb": verb,
+            "work": work,
+            "reason": result.reason,
+            "error": result.error,
+            "reports": [_notice_row(item) for item in items],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if failed:
+            raise typer.Exit(result.code or 1)
+        return
+    if result.code:
+        code = f" ({result.reason})" if result.reason else ""
+        typer.echo(f"✗ {verb} notice not drafted{code}: {result.error}", err=True)
+        raise typer.Exit(result.code)
+    if not items:
+        typer.echo(f"  no report tracks {work}; nothing drafted")
+    for line in _milestone_item_lines(items):
+        typer.echo(line, err=line.lstrip().startswith("⚠"))
+    held = [item for item in items if item.held]
+    for item in held:
+        typer.echo(
+            f"⚠ {item.drafted} is held by the leak check: fix it with `bh work outbox show "
+            f"{item.drafted}` (edit, or publish a finding deliberately) before it can be approved",
+            err=True,
+        )
+    if any(item.drafted for item in items):
+        typer.echo(
+            "  → nothing is sent: an operator renders, approves and sends with `bh work outbox`"
+        )
+    if failed:
+        raise typer.Exit(1)
+
+
+def delivery_notice(
+    verb: str, work: str, reason: str, as_: str = "", hive: str = "", as_json: bool = False
+):
+    """``bh work delivery blocked|deprioritised <work> --reason <text>``: draft the public reason
+    under the event's fixed wording for every report that tracks ``work`` (still
+    ``delivery:pending``). Nothing is sent; off unless ``intake.external.enabled``, the outbox
+    and ``intake.external.milestones.draft_on_<verb>``."""
+    otel.set_bead(work)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    result = intake_services.delivery_notice(
+        cfg, entry, Path(registry.hive_dir(entry)), work, verb, reason, actor, hive=hive
+    )
+    render_delivery_notice(result, verb, work, as_json)
+
+
 # -- the supervised outbox (bh work outbox ...): operator seat, off by default ------------------
 
 
@@ -493,12 +752,26 @@ def _record_row(report: str, record) -> dict:
     }
 
 
+def _stored_operation_row(op) -> dict:
+    row: dict = {"kind": op.kind.value, "state": op.state.value}
+    if op.labels is not None:
+        row["add"], row["remove"] = sorted(op.labels.add), sorted(op.labels.remove)
+    return row
+
+
 def _outbox_payload(call, verb: str) -> dict:
     value = call.value
     payload: dict = {"ok": call.code == 0, "verb": verb, "reason": call.reason, "error": call.error}
     if value is None:
         return payload
-    if hasattr(value, "renders"):  # a RenderedRecord
+    if isinstance(value, intake_services.StoredOutboxRecord):  # no tracker wired (bh-fehna)
+        payload["record"] = _record_row(value.report, value.record)
+        payload["stored"] = {
+            "text": value.text,
+            "note": value.note,
+            "operations": [_stored_operation_row(op) for op in value.record.operations],
+        }
+    elif hasattr(value, "renders"):  # a RenderedRecord
         payload["record"] = _record_row(value.report, value.record)
         payload["renders"] = [_rendered_row(r) for r in value.renders]
     elif hasattr(value, "entries"):  # an OutboxListing
@@ -535,6 +808,21 @@ def _rendered_lines(rendered) -> list[str]:
     return lines
 
 
+def _stored_lines(stored) -> list[str]:
+    record = stored.record
+    lines = [f"{record.outbox_id} on {stored.report} ({record.event.value}, stored draft)"]
+    for op in record.operations:
+        line = f"{op.kind.value}: {op.state.value}"
+        if op.labels is not None:
+            changes = [f"+{label}" for label in sorted(op.labels.add)]
+            changes += [f"-{label}" for label in sorted(op.labels.remove)]
+            line += f" ({' '.join(changes)})" if changes else ""
+        lines.append(line)
+    lines += [f"  | {line}" for line in stored.text.splitlines() or [""]]
+    lines.append(f"  → {stored.note}")
+    return lines
+
+
 def render_outbox(call, verb: str, as_json: bool) -> None:
     """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal."""
     if as_json:
@@ -544,7 +832,10 @@ def render_outbox(call, verb: str, as_json: bool) -> None:
         return
     value = call.value
     done = value if isinstance(value, tuple) else ((value,) if value is not None else ())
-    if hasattr(value, "renders"):
+    if isinstance(value, intake_services.StoredOutboxRecord):
+        for line in _stored_lines(value):
+            typer.echo(line)
+    elif hasattr(value, "renders"):
         typer.echo(f"{value.record.outbox_id} on {value.report} ({value.record.event.value})")
         for rendered in value.renders:
             for line in _rendered_lines(rendered):
@@ -692,3 +983,345 @@ def outbox_retry(
             cfg, entry, directory, outbox_id, kind, actor, hive=hive
         ),
     )
+
+
+# -- the conversation (bh work thread ...): comment ingestion, off by default -------------------
+
+
+def _actor_row(actor) -> dict | None:
+    if actor is None:
+        return None
+    return {"id": actor.id, "kind": actor.kind, "display": actor.display}
+
+
+def _comment_row(record, new: bool, flagged: bool) -> dict:
+    return {
+        "id": record.id,
+        "role": record.role.value,
+        "evidence": record.evidence.value,
+        "state": record.state.value,
+        "author": _actor_row(record.author),
+        "created_at": record.created_at.isoformat(),
+        "rev": record.rev,
+        "considered_rev": record.considered_rev,
+        "outbox_id": record.outbox_id,
+        "flags": sorted(record.flags),
+        "body": record.body,
+        "new_evidence": new,
+        "flagged": flagged,
+    }
+
+
+def _thread_row(view) -> dict:
+    thread = view.thread
+    new, flagged = set(view.new_evidence), set(view.flagged)
+    return {
+        "report": view.report,
+        "seq": thread.seq,
+        "state": thread.state.value,
+        "considered_seq": thread.considered_seq,
+        "tracker": thread.tracker,
+        "project": thread.project,
+        "issue_url": thread.issue.url,
+        "new_evidence": list(view.new_evidence),
+        "flagged": list(view.flagged),
+        "comments": [
+            _comment_row(record, record.id in new, record.id in flagged)
+            for record in thread.records.values()
+        ],
+    }
+
+
+def _outcome_row(outcome, step: str = "") -> dict:
+    row = {
+        "report": outcome.report,
+        "seq": outcome.seq,
+        "written": outcome.written,
+        "complete": outcome.complete,
+        "checkpoint_advanced": outcome.checkpoint_advanced,
+        "events": [
+            {"kind": e.kind.value, "comment": e.comment, "seq": e.seq, "outbox_id": e.outbox_id}
+            for e in outcome.events
+        ],
+        "detail": outcome.detail,
+    }
+    if step:
+        row["step"] = step
+    return row
+
+
+def _incomplete(call) -> tuple:
+    value = call.value if isinstance(call.value, tuple) else (call.value,)
+    return tuple(o for o in value if o is not None and not getattr(o, "complete", True))
+
+
+def _thread_payload(call, verb: str, report: str) -> dict:
+    payload: dict = {
+        "ok": call.code == 0 and not _incomplete(call),
+        "verb": verb,
+        "report": report,
+        "reason": call.reason,
+        "error": call.error,
+    }
+    if call.code:
+        return payload
+    value = call.value
+    if verb == "show":
+        payload["thread"] = None if value is None else _thread_row(value)
+        links = getattr(call, "links", None)
+        payload["links"] = None if links is None else _relations_row(links)
+    elif verb == "ingest":
+        payload["outcomes"] = [
+            _outcome_row(outcome, step)
+            for step, outcome in zip(("ingest", "reconcile"), value, strict=True)
+        ]
+    else:
+        payload["outcome"] = _outcome_row(value)
+    return payload
+
+
+def _event_summary(outcome) -> str:
+    counts: dict[str, int] = {}
+    for event in outcome.events:
+        counts[event.kind.value] = counts.get(event.kind.value, 0) + 1
+    if not counts:
+        return "no change"
+    return ", ".join(f"{kind} {n}" for kind, n in sorted(counts.items()))
+
+
+def _thread_lines(view) -> list[str]:
+    thread = view.thread
+    lines = [f"{view.report} thread seq {thread.seq} ({thread.state.value}) → {thread.issue.url}"]
+    lines.append(f"  new evidence: {', '.join(view.new_evidence) or 'none'}")
+    if view.flagged:
+        lines.append(f"  flagged: {', '.join(view.flagged)}")
+    new, flagged = set(view.new_evidence), set(view.flagged)
+    for record in thread.records.values():
+        who = (record.author.display or record.author.id) if record.author else "?"
+        marks = [
+            m for m, on in (("new", record.id in new), ("flagged", record.id in flagged)) if on
+        ]
+        state = "" if record.state.value == "live" else f" {record.state.value}"
+        tail = f"  [{', '.join(marks)}]" if marks else ""
+        lines.append(f"{record.id}  {record.role.value}  {who}  rev {record.rev}{state}{tail}")
+        body = record.body if record.body is not None else "(body purged)"
+        lines += [f"  | {line}" for line in body.splitlines() or [""]]
+    return lines
+
+
+def render_thread(call, verb: str, report: str, as_json: bool) -> None:
+    """Print one ``bh work thread <verb>`` result (human or ``--json``); non-zero on a refusal or
+    on an ingest whose tracker read failed part-way (what was read before it is kept)."""
+    incomplete = () if call.code else _incomplete(call)
+    if as_json:
+        typer.echo(json.dumps(_thread_payload(call, verb, report), sort_keys=True))
+        if call.code or incomplete:
+            raise typer.Exit(call.code or 1)
+        return
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ thread {verb} refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+    value = call.value
+    if verb == "show":
+        if value is None:
+            typer.echo(f"no thread recorded for {report} (run `bh work thread ingest {report}`)")
+        else:
+            for line in _thread_lines(value):
+                typer.echo(line)
+        links = getattr(call, "links", None)
+        if links is not None:
+            typer.echo("links:")
+            for line in _relations_lines(links):
+                typer.echo(line)
+    elif verb == "ingest":
+        for step, outcome in zip(("ingested", "reconciled"), value, strict=True):
+            typer.echo(f"✓ {step} {outcome.report}: seq {outcome.seq}, {_event_summary(outcome)}")
+    else:
+        typer.echo(f"✓ considered {value.report} through seq {value.seq}: {_event_summary(value)}")
+    for outcome in incomplete:
+        typer.echo(f"⚠ {outcome.report}: incomplete read: {outcome.detail}", err=True)
+    if incomplete:
+        raise typer.Exit(1)
+
+
+def _thread(verb: str, report: str, hive: str, as_json: bool, run) -> None:
+    otel.set_bead(report)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    call = run(cfg, entry, Path(registry.hive_dir(entry)))
+    render_thread(call, verb, report, as_json)
+
+
+def thread_show(bead: str, hive: str = "", as_json: bool = False):
+    """The stored thread of a bound report (no tracker request)."""
+    _thread(
+        "show",
+        bead,
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.thread_show(
+            cfg, entry, directory, bead, hive=hive
+        ),
+    )
+
+
+def thread_ingest(bead: str, as_: str = "", hive: str = "", as_json: bool = False):
+    """Ingest a bound report's comments, then reconcile deletions (reads only)."""
+    actor = identity.resolve_actor(as_)
+    _thread(
+        "ingest",
+        bead,
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.thread_ingest(
+            cfg, entry, directory, bead, actor, hive=hive
+        ),
+    )
+
+
+def thread_considered(
+    bead: str, through: int, as_: str = "", hive: str = "", as_json: bool = False
+):
+    """Mark the thread considered through ``through`` (no tracker request)."""
+    actor = identity.resolve_actor(as_)
+    _thread(
+        "considered",
+        bead,
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.thread_considered(
+            cfg, entry, directory, bead, through, actor, hive=hive
+        ),
+    )
+
+
+# -- waiting for the reporter (bh-61xkc): needs-info and wake-on-reply, off by default -----------
+
+
+def render_needs_info(call, report: str, as_json: bool) -> None:
+    """Print one ``bh work needs-info`` (human or ``--json``); non-zero on a refusal."""
+    outcome = call.value if not call.code else None
+    if as_json:
+        payload = {
+            "ok": call.code == 0,
+            "verb": "needs-info",
+            "report": report,
+            "reason": call.reason,
+            "error": call.error,
+        }
+        if outcome is not None:
+            payload.update(
+                {
+                    "state": outcome.state,
+                    "state_written": outcome.state_written,
+                    "outbox_id": outcome.outbox_id,
+                    "held": outcome.held,
+                    "detail": outcome.detail,
+                }
+            )
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if call.code:
+            raise typer.Exit(call.code)
+        return
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ needs-info refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+    already = "" if outcome.state_written else " (it was already waiting; another question)"
+    typer.echo(f"✓ {report} is waiting for its reporter (intake:needs-info){already}")
+    typer.echo(f"  → question drafted as {outcome.outbox_id}; nothing is sent")
+    if outcome.held:
+        typer.echo(f"⚠ the draft is held: {outcome.detail}", err=True)
+    typer.echo(
+        f"  → review it with `bh work outbox show {outcome.outbox_id}`; an operator approves and "
+        "sends it. A reply wakes the report with `bh work wake` after `bh work thread ingest`"
+    )
+
+
+def _wake_row(item) -> dict:
+    return {
+        "report": item.report,
+        "woken": item.woken,
+        "evidence": list(item.evidence),
+        "detail": item.detail,
+        "error": item.error,
+    }
+
+
+def _wake_line(item) -> str:
+    if item.error:
+        return f"⚠ {item.report}: FAILED: {item.error}"
+    if item.woken:
+        return (
+            f"✓ woke {item.report}: the reporter replied ({', '.join(item.evidence)}) → "
+            "intake:untriaged (still held, never work; read it with `bh work thread show`)"
+        )
+    return f"  {item.report} stays on intake:needs-info: {item.detail}"
+
+
+def render_wake(call, report: str, all_: bool, as_json: bool) -> None:
+    """Print one ``bh work wake`` (human or ``--json``); non-zero on a refusal, or when the
+    sweep failed for any report (every other report was still handled)."""
+    value = call.value if not call.code else None
+    items = () if value is None else (value.items if all_ else (value,))
+    failed = bool(call.code) or any(item.error for item in items)
+    if as_json:
+        payload: dict = {
+            "ok": not failed,
+            "verb": "wake",
+            "all": all_,
+            "report": report,
+            "reason": call.reason,
+            "error": call.error,
+        }
+        if value is not None and all_:
+            payload["items"] = [_wake_row(item) for item in items]
+            payload["woken"] = [item.report for item in items if item.woken]
+        elif value is not None:
+            payload.update(_wake_row(value))
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if failed:
+            raise typer.Exit(call.code or 1)
+        return
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ wake refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+    if all_ and not items:
+        typer.echo("no report is waiting for its reporter")
+    for item in items:
+        line = _wake_line(item)
+        typer.echo(line, err=bool(item.error))
+    if failed:
+        raise typer.Exit(1)
+
+
+def needs_info(bead: str, ask: str, as_: str = "", hive: str = "", as_json: bool = False):
+    """Put a bound report on ``intake:needs-info`` and draft the question as a reply (never
+    sent without an operator); off unless ``intake.external.needs_info.enabled``."""
+    otel.set_bead(bead)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    call = intake_services.needs_info(
+        cfg, entry, Path(registry.hive_dir(entry)), bead, ask, actor, hive=hive
+    )
+    render_needs_info(call, bead, as_json)
+
+
+def wake(bead: str = "", all_: bool = False, as_: str = "", hive: str = "", as_json: bool = False):
+    """Wake a waiting report its reporter answered (or ``--all`` of them, opt-in); off unless
+    ``intake.external.needs_info.enabled``."""
+    if bool(bead) == all_:
+        typer.echo("✗ pass exactly one of <report> or --all", err=True)
+        raise typer.Exit(2)
+    if bead:
+        otel.set_bead(bead)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    call = intake_services.wake(
+        cfg, entry, Path(registry.hive_dir(entry)), bead, actor, all_=all_, hive=hive
+    )
+    render_wake(call, bead, all_, as_json)

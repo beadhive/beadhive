@@ -55,6 +55,7 @@ from beadhive.modules.tracker.contracts import (
     TransientFailure,
     WriteGrant,
     WriteOutcomeUnknown,
+    join_marker_line,
 )
 from beadhive.testing.intake import RecordingSanitizer, SequentialIdSource
 from beadhive.testing.tracker import MemoryTracker, MemoryWorld, at
@@ -103,6 +104,7 @@ class Sender:
             RecordingSanitizer(),
             marker_line=f"<!-- bh:v1 hive={ME.hive} install={ME.install} outbox={oid} -->",
             labels=LabelBase("r", labels),
+            join_marker_line=join_marker_line,
         )
 
     def apply(self, applied: ob.OutboxApplied) -> ob.OutboxApplied:

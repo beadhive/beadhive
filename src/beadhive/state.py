@@ -20,15 +20,20 @@ States
   (so the bead leaves the triage queue) while recording *which* disposition fielded the report as
   an event-sourced audit trail. ``intake:promoted`` is also the queue key the planner's adopt path
    reads.
+- ``intake:needs-info`` — a bound report waiting for its reporter (bh-61xkc): out of the triage
+  queue, NOT terminal. A reporter's reply wakes it back to ``untriaged``; every disposition fields
+  it as it fields an untriaged report.
 - ``outbound:pending`` — a staged outbound candidate (captured with ZERO public exposure).
 - ``publish:approved`` — the contributor filed it upstream (behind the human publish gate).
 - ``origin:report|github|import`` — the intake CHANNEL a bead entered through. A CLOSED
   provenance dimension (queryable, validates clean), orthogonal to the intake *queue* state:
   ``intake`` is queue membership (cleared on triage); ``origin`` is a durable source tag.
-- ``delivery:pending|merged|released|reverted`` and ``notified:replied|merged|released|corrected``
-  — where a report's tracked work has got to, and which milestone the reporter was last told
-  about. CLOSED dimensions written only by the intake module (never ``outbound:`` / ``publish:``
-  / ``release:``); values owned by ``beadhive.modules.intake``.
+- ``delivery:pending|merged|released|reverted`` and
+  ``notified:replied|merged|released|corrected|started|blocked|deprioritised`` — where a report's
+  tracked work has got to, and which milestone the reporter was last told about (the progress
+  values ``started|blocked|deprioritised`` are bh-dev42's, rotation-gated). CLOSED dimensions
+  written only by the intake module (never ``outbound:`` / ``publish:`` / ``release:``); values
+  owned by ``beadhive.modules.intake``.
 
 Provenance — THREE orthogonal facets (operator-approved, epic)
 --------------------------------------------------------------------------------

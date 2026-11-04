@@ -41,6 +41,7 @@ from beadhive.modules.intake.domain import (
     ThreadActor,
 )
 from beadhive.modules.intake.domain import outbox as ob
+from beadhive.modules.tracker.contracts import join_marker_line
 from beadhive.testing.intake import RecordingSanitizer, SequentialIdSource
 
 URL = "https://tracker.example/acme/widgets/issues/7"
@@ -51,7 +52,12 @@ ALL = Capabilities(frozenset({"comment.create", "labels.change", "comments.read"
 BOT = ThreadActor("bot-1", "bot", "beadhive[bot]")
 SECRET = "hunter2-very-secret"
 CTX = RenderContext(
-    URL, POLICY, RecordingSanitizer.of([SECRET]), "<!-- m -->", LabelBase("r1", frozenset({"x"}))
+    URL,
+    POLICY,
+    RecordingSanitizer.of([SECRET]),
+    "<!-- m -->",
+    LabelBase("r1", frozenset({"x"})),
+    join_marker_line=join_marker_line,
 )
 C, L = OpKind.COMMENT, OpKind.LABELS
 

@@ -71,6 +71,7 @@ from ..modules.tracker.contracts import (
     CommentWriter,
     IssueResolver,
     LabelWriter,
+    MarkerCodec,
     Operation,
     OperationNotEnabled,
     ProjectRef,
@@ -583,11 +584,16 @@ class _Resolving:
         return self._inner.get(key)  # type: ignore[attr-defined]
 
 
-_VIEW_TYPES: dict[tuple[bool, bool, bool], type] = {}
+class _Marking:
+    def marker_line(self, marker):
+        return self._inner.marker_line(marker)  # type: ignore[attr-defined]
 
 
-def _view_type(comment: bool, labels: bool, resolver: bool) -> type:
-    key = (comment, labels, resolver)
+_VIEW_TYPES: dict[tuple[bool, bool, bool, bool], type] = {}
+
+
+def _view_type(comment: bool, labels: bool, resolver: bool, marker: bool = False) -> type:
+    key = (comment, labels, resolver, marker)
     if key not in _VIEW_TYPES:
         mixins = tuple(
             mixin
@@ -595,6 +601,7 @@ def _view_type(comment: bool, labels: bool, resolver: bool) -> type:
                 (comment, _CommentWriting),
                 (labels, _LabelWriting),
                 (resolver, _Resolving),
+                (marker, _Marking),
             )
             if present
         )
@@ -605,11 +612,13 @@ def _view_type(comment: bool, labels: bool, resolver: bool) -> type:
 
 def narrow(adapter: object, enabled: frozenset[Operation]) -> TrackerAdapter:
     """The adapter as consumers see it: a writer Protocol is present only when the operation is
-    enabled AND the adapter implements it; ``IssueResolver`` passes through when implemented."""
+    enabled AND the adapter implements it; ``IssueResolver`` and the pure ``MarkerCodec`` pass
+    through when implemented (neither writes, so neither is gated on an operation)."""
     view = _view_type(
         Operation.COMMENT_CREATE in enabled and isinstance(adapter, CommentWriter),
         Operation.LABELS_CHANGE in enabled and isinstance(adapter, LabelWriter),
         isinstance(adapter, IssueResolver),
+        isinstance(adapter, MarkerCodec),
     )
     return view(adapter, enabled)
 

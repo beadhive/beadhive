@@ -133,6 +133,10 @@ def test_every_read_and_every_api_ready_write_spawns_no_bd_process() -> None:
     store.track(report, work, actor=ACTOR)
     assert store.tracked_work(report) == work and store.trackers_of(work) == (report,)
     store.untrack(report, work, actor=ACTOR)
+    store.investigate(report, work, actor=ACTOR)
+    assert store.investigations_of(report) == (work,) and store.tracked_work(report) is None
+    store.uninvestigate(report, work, actor=ACTOR)
+    assert store.investigations_of(report) == ()
     snapshot = SourceSnapshot("t2", "b2", IssueStatus.CLOSED, "r2")
     store.record_snapshot(report, snapshot, actor=ACTOR)
     store.write_thread(report, thread(seq=3), expect_seq=0, actor=ACTOR)

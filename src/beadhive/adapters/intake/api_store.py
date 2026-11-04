@@ -12,9 +12,9 @@ What moves to the API, and what does not (and why):
 * reads: one bead (``get``, ``read_thread``, ``read_outbox``, the hold and tracking reads, all
   answered by the ONE row, whose ``dependencies`` carry each neighbour's status and reason), the
   open-label queue, the bound-report and outbox listings;
-* writes: type/priority updates, assignment, tracking edges, the plain and the held close, and
-  the three metadata documents (a compare-and-set against the row just read, so a document that
-  moved since is refused where ``bd update --metadata`` would overwrite it);
+* writes: type/priority updates, assignment, tracking and investigates edges, the plain and the
+  held close, and the three metadata documents (a compare-and-set against the row just read, so a
+  document that moved since is refused where ``bd update --metadata`` would overwrite it);
 * the lookup by ``external_ref`` answers from an index of the bound reports (the API has no
   ``external_ref`` filter) and CONFIRMS A MISS on the CLI, so a bead bound by ``external_ref``
   alone is still found and a re-import still never duplicates it;
@@ -40,6 +40,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from beadhive.modules.intake.contracts import (
+    INVESTIGATES_EDGE,
     OUTBOX_KEY,
     BeadView,
     IntakeRefused,
@@ -274,6 +275,27 @@ class ApiReportStore(BdReportStore):
         except ReportApiError as exc:
             raise self._failed(exc, "untrack", report) from exc
 
+    def investigate(self, report: str, work: str, *, actor: str) -> None:
+        """The ``investigates`` edge runs work -> report, the opposite direction to ``tracks``."""
+        api = self._api()
+        if api is None:
+            return super().investigate(report, work, actor=actor)
+        try:
+            api.link(work, report, INVESTIGATES_EDGE, actor=actor)
+        except ReportApiError as exc:
+            raise self._failed(exc, "investigate", report) from exc
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
+        api = self._api()
+        if api is None:
+            return super().uninvestigate(report, work, actor=actor)
+        if work not in self.investigations_of(report):
+            return  # the service removes a (source, target) pair whatever its type
+        try:
+            api.unlink(work, report, actor=actor)
+        except ReportApiError as exc:
+            raise self._failed(exc, "uninvestigate", report) from exc
+
     def _set_document(
         self, bead: str, key: str, document: Any, *, row: dict, actor: str, operation: str
     ) -> None:
@@ -326,9 +348,10 @@ class ApiReportStore(BdReportStore):
     # -- unchanged by the route ----------------------------------------------------------------
     #
     # ``holds`` (the gate list stays on the CLI, where it is the faster read, then each gate's
-    # dependents over the API), ``is_held`` / ``tracked_work`` / ``trackers_of`` (all through
-    # ``_edges``), ``get`` / ``read_thread`` / ``read_outbox`` / ``write_thread`` /
-    # ``write_outbox`` / ``record_snapshot`` (through ``_show`` and ``_set_document``),
+    # dependents over the API), ``is_held`` / ``tracked_work`` / ``trackers_of`` /
+    # ``investigations_of`` (all through ``_edges``), ``get`` / ``read_thread`` / ``read_outbox`` /
+    # ``write_thread`` / ``write_outbox`` / ``record_snapshot`` (through ``_show`` and
+    # ``_set_document``),
     # ``set_state`` / ``open_hold`` / ``resolve_hold`` (CLI only) and ``duplicate_pairs`` (no API).
 
 

@@ -3,9 +3,10 @@
 No bd, no filesystem, no clock: ids come from a deterministic counter, and duplicate detection is
 a token-overlap on titles (bd's mechanical ``find-duplicates`` is the real store's business). It
 models only what the port promises: a state write replaces its dimension's label, a closed bead
-stays readable and findable, a link survives the report's closure, and the ``intake.thread``
-document is one top-level metadata key, stored encoded (so it is proven JSON-serialisable),
-rewritten whole, guarded by the ``seq`` re-check, and never disturbing another key. A bound
+stays readable and findable, a link (and an investigation, bh-u3a53, which is never a ``tracks``
+link) survives the report's closure, and the ``intake.thread`` document is one top-level metadata
+key, stored encoded (so it is proven JSON-serialisable), rewritten whole, guarded by the ``seq``
+re-check, and never disturbing another key. A bound
 report is born with an ``intake-hold:`` gate that keeps it out of :meth:`ready_ids`, :meth:`close`
 closes it first and resolves the hold after (the order is kept in :meth:`events`, so a test can
 prove there is no ready window), and :meth:`plain_close` refuses a held bead as ``bd close`` does.
@@ -72,6 +73,7 @@ class MemoryReportStore:
         self._scope = scope
         self._rows: dict[str, _Row] = {}
         self._tracks: dict[str, str] = {}
+        self._investigations: set[tuple[str, str]] = set()  # (report, work), bh-u3a53
         self._gates: dict[str, _Gate] = {}
         self._blockers: dict[str, set[str]] = {}  # bead -> other live blockers (test control)
         self._events: list[tuple[str, str]] = []
@@ -119,6 +121,9 @@ class MemoryReportStore:
 
     def trackers_of(self, work: str) -> tuple[str, ...]:
         return tuple(sorted(r for r, w in self._tracks.items() if w == work))
+
+    def investigations_of(self, report: str) -> tuple[str, ...]:
+        return tuple(sorted(w for r, w in self._investigations if r == report))
 
     def read_thread(self, bead: str) -> Thread | None:
         row = self._rows.get(bead)
@@ -282,6 +287,17 @@ class MemoryReportStore:
         self.writes += 1
         if self._tracks.get(report) == work:
             del self._tracks[report]
+
+    def investigate(self, report: str, work: str, *, actor: str) -> None:
+        self._row(report)
+        self._row(work)
+        self.writes += 1
+        self._investigations.add((report, work))
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
+        self._row(report)
+        self.writes += 1
+        self._investigations.discard((report, work))
 
     def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
         row = self._row(bead)

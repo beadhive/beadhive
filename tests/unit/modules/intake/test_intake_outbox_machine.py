@@ -42,6 +42,7 @@ from beadhive.modules.intake.domain import (
     reply_revision,
 )
 from beadhive.modules.intake.domain import outbox as ob
+from beadhive.modules.tracker.contracts import join_marker_line
 from beadhive.testing.intake import RecordingSanitizer, SequentialIdSource
 
 URL = "https://tracker.example/acme/widgets/issues/7"
@@ -67,6 +68,7 @@ def ctx(**changes) -> RenderContext:
         sanitizer=RecordingSanitizer(),
         marker_line="<!-- bh:v1 hive=acme/widgets install=inst-1 -->",
         labels=LABELS,
+        join_marker_line=join_marker_line,
     )
     return dataclasses.replace(base, **changes)
 

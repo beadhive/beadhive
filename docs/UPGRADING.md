@@ -5,6 +5,50 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.33.x → 0.34.0 — the supervised GitHub triage loop (all new switches default off)
+
+0.34.0 adds the supervised triage loop on top of intake and the outbox: it can read a bound
+report's issue comments, ask the reporter for more information through a supervised reply, wait
+for the answer, and tell the reporter how the tracked work is going. Every new capability is
+behind a switch that defaults to **off**, and nothing is sent without an operator's approval, so
+upgrading changes no behaviour until you turn something on.
+
+**Wire 2.21.0.** The wire contract moves to 2.21.0 (`docs/schemas/wire/v2.21.0/`, `latest` in
+`docs/schemas/wire/index.json`). Run the same release on every host before any new config
+key is set (see below).
+
+**New `bh work` verbs.** All are inert until their switch is on and refuse naming the key:
+
+- `bh work thread show | ingest | considered`: read, ingest and mark-as-considered a bound
+  report's comment thread (`comments.enabled`; `ingest` also needs
+  `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`). Reads only.
+- `bh work needs-info <report> --ask <text>` and `bh work wake <report>` / `wake --all`
+  (`needs_info.enabled`; `wake --all` also `needs_info.sweep`; the question also needs
+  `outbox.enabled` and `comments.enabled`). The question is drafted as a supervised reply; it posts
+  only after an operator approves it.
+- `bh work investigate <report> (--work <id> | --new-work) [--remove]`: relate reproduction work
+  to a report with an `investigates` edge that never fires delivery milestones and is separate from
+  `tracks` (off unless `intake.external.enabled`).
+- `bh work delivery <event>` notices: `started` (`milestones.draft_on_start`), `blocked` and
+  `deprioritised` (`milestones.draft_on_blocked`, `milestones.draft_on_deprioritised`, each with a
+  public `--reason`), plus `milestones.catch_up_on_link` for work that merged before it was linked.
+  They only draft records in the outbox; they never move a dimension or complete a report.
+
+**New config keys** (`docs/CONFIGURATION.md`): `comments.enabled`, `comments.deletion_confirmations`,
+`comments.purge_deleted_bodies`, `comments.max_body_chars`, `needs_info.enabled`,
+`needs_info.sweep`, `milestones.catch_up_on_link`, `milestones.draft_on_start`,
+`milestones.draft_on_blocked`, `milestones.draft_on_deprioritised`. All switches are `false`.
+
+**Do not use the new vocabulary before the fleet rollout (bh-hmtjn).** An older host rejects the
+new keys (`extra=forbid`), the `intake:needs-info` label value (`bh label validate`) and an
+`intake.outbox` document holding the new `started` / `blocked` / `deprioritised` records. So
+until 0.34.0 is installed on every host of the fleet: set none of the keys above in a shared
+config, do not run `bh work needs-info`, and do not apply `intake:needs-info` or the new
+milestone events to any report.
+
+The intake store keeps following `work.beads.route` (0.33.1): the new store operations behave the
+same over the Beads service and over the `bd` CLI.
+
 ## 0.33.0 → 0.33.1 — `beadhive[github]` and `beadhive[xtdb]` install from PyPI
 
 0.33.0 published `beadhive[github]` and `beadhive[xtdb]` extras that named unpublished

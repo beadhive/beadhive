@@ -29,11 +29,16 @@ from ..domain import (
     HoldSweepRequest,
     ImportOutcome,
     ImportRequest,
+    InvestigateOutcome,
+    InvestigateRequest,
     IssueBinding,
     LinkOutcome,
     LinkRequest,
     MergeFact,
     MilestoneOutcome,
+    NeedsInfoOutcome,
+    NeedsInfoRequest,
+    NoticeFact,
     OpKind,
     OutboxApprove,
     OutboxDocument,
@@ -48,8 +53,10 @@ from ..domain import (
     RenderedRecord,
     ReplyDraft,
     ReportDraft,
+    ReportRelations,
     SanitizerFinding,
     SourceSnapshot,
+    StartFact,
     StoreScope,
     Thread,
     ThreadActor,
@@ -57,6 +64,9 @@ from ..domain import (
     ThreadRequest,
     ThreadView,
     Verdict,
+    WakeOutcome,
+    WakeRequest,
+    WakeSweep,
     WorkDraft,
     WorkProgress,
 )
@@ -146,6 +156,34 @@ class IntakePort(Protocol):
 
     def on_release(self, fact: ReleaseFact) -> MilestoneOutcome: ...  # bh work delivery release
 
+    # waiting for the reporter (bh-61xkc): a bound report asks, waits on ``intake:needs-info`` and
+    # wakes back to ``intake:untriaged`` on a reply. The question is a drafted reply (supervised:
+    # an operator approves and sends it); waking reads the stored thread only.
+
+    def needs_info(self, request: NeedsInfoRequest) -> NeedsInfoOutcome: ...  # bh work needs-info
+
+    def wake(self, request: WakeRequest) -> WakeOutcome: ...  # bh work wake <report>
+
+    def wake_all(self, *, actor: str) -> WakeSweep: ...  # bh work wake --all (opt-in)
+
+    # the progress milestones (bh-dev42). Drafts only, like the merge and release triggers:
+    # ``started`` from the claim hook (the work layer wraps it so it never fails a claim),
+    # ``blocked`` / ``deprioritised`` from ``bh work delivery blocked|deprioritised``.
+
+    def on_work_started(self, fact: StartFact) -> MilestoneOutcome: ...  # work.claim (first claim)
+
+    def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome: ...  # bh work delivery <event>
+
+    # reproduction work (bh-u3a53): a bead that INVESTIGATES a report, a relation distinct from
+    # ``tracks``. It writes no ``delivery`` value, drafts nothing, and no milestone trigger, the
+    # claim hook or the link catch-up ever reads it; ``relations`` lists both kinds.
+
+    def investigate(self, request: InvestigateRequest) -> InvestigateOutcome: ...
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> InvestigateOutcome: ...
+
+    def relations(self, report: str) -> ReportRelations: ...  # tracks + investigated by
+
 
 @runtime_checkable
 class ReportStore(Protocol):
@@ -230,6 +268,21 @@ class ReportStore(Protocol):
     def untrack(self, report: str, work: str, *, actor: str) -> None: ...
 
     def trackers_of(self, work: str) -> tuple[str, ...]: ...
+
+    def investigate(self, report: str, work: str, *, actor: str) -> None:
+        """Record that ``work`` investigates ``report`` (bh-u3a53): one native edge, distinct from
+        ``tracks`` (which this never reads, writes or removes), non-blocking in both directions,
+        surviving either bead's closure. Idempotent."""
+        ...
+
+    def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
+        """Remove that one investigation edge; the ``tracks`` edge and every other investigation
+        of ``report`` stay. A no-op when there is none."""
+        ...
+
+    def investigations_of(self, report: str) -> tuple[str, ...]:
+        """Every bead that investigates ``report`` (sorted), of every status."""
+        ...
 
     def read_thread(self, bead: str) -> Thread | None: ...  # None: no ``intake.thread`` yet
 

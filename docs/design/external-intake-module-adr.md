@@ -550,6 +550,63 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   (`_APPROVED_OPTIONAL_REPAIR_PARAMS`), the same mechanism earlier optional-flag additions used.
   Both are off unless `intake.external.enabled`. CLI only, no MCP row. `accept` has no `--json`.
 
+**As built: the investigates relation (`bh-u3a53`).** A reproduction task linked with `tracks`
+would draft "a change that addresses this issue has been merged" when it closes and, under
+`close-on-merge`, close the report (design doc section 3: acceptance without reproduction must not
+read as a fix). Reproduction work gets its own relation beside `tracks`; nothing above changes, and
+`bh work link` / `accept --work` are byte-identical.
+
+- **Edge.** bd 1.3.0 refuses an unknown dependency type (`unknown dependency type "investigates"`,
+  probed), so the relation is stored as bd's built-in `validates` edge from the WORK to the report
+  (`bd dep add <work> <report> -t validates`, rendered `VALIDATES` on the work and `VALIDATED BY`
+  on the report; `INVESTIGATES_EDGE` in `domain/vocabulary.py`). bh uses `validates` nowhere else;
+  it is not in bd's `AffectsReadyWork` set or in `_BLOCKING_DEPENDENCIES`, so the reproduction bead
+  stays dispatchable although it "depends on" an open, held report (pinned against real bd). The
+  direction is the opposite of `tracks` on purpose: bd keeps ONE edge per (source, target) pair and
+  `bd dep remove` takes no type, so the two relations never share a pair and removing one never
+  removes the other; `uninvestigate` reads the pair's type first and never removes another edge.
+  `validates` is not among the link edges `bh-mj7cl` section 5 rejected for `tracks`.
+- **Ports.** `ReportStore` gains `investigate`, `uninvestigate` and `investigations_of` (the
+  `store.investigates-is-not-tracks` contract case, run on `MemoryReportStore`, `BdReportStore`
+  over the fake bd and over a real bd store); `IntakePort` gains `investigate(InvestigateRequest)`,
+  `uninvestigate(report, work)` and `relations(report) -> ReportRelations` (the report view:
+  `tracks`, its derived progress and `investigated_by`). `NullIntake` refuses the writes and reads
+  empty relations.
+- **Never a milestone, by construction.** Every trigger reads `trackers_of` (the `tracks` edges):
+  the merge and release triggers, `on_work_started` (the claim hook), `delivery_notice`, the link
+  catch-up `on_linked` and `reports_for_work` / `work_progress`. An investigation is not one, so
+  closing, merging, claiming or releasing an investigating bead drafts nothing, moves no dimension
+  and never closes the report, while a report tracking the very same bead hears each event (pinned
+  per trigger in the unit, composition and work-layer hook tests). Investigating writes the edge and
+  nothing else: no `delivery` value, no outbox document or fact, no catch-up, and the report's
+  `intake` value is untouched (reproduction is a triage step). `investigate_report` composes the
+  service with no milestone service bound at all.
+- **Rules** (`check_investigate`, each a refusal before any write): the link refusals in the link
+  order (`PUBLIC_STORE_ID`, `SELF_LINK`, `NOT_FOUND`, `NOT_A_REPORT`, `REPORT_CLOSED`,
+  `CROSS_STORE_LINK`, `TARGET_IS_REPORT`, `TARGET_UNTRIAGED`), then `TRACKED_WORK` (new): the work
+  the report tracks is its delivery, so it may not also investigate it. Several beads may
+  investigate one report and one bead several reports; a repeat is `already_linked`. The reverse is
+  allowed: a report may later `tracks` a bead that investigates it (the reproduction turned out to
+  be the fix), and then the `tracks` edge, not the investigation, drives its milestones.
+  `--new-work` runs the report-side refusals (`check_investigable`) first, creates a plain bead
+  (`create_work`; title `Reproduce: <report title>`, type `--type` or `task`, triage's own
+  description naming the report, never the issue body) and closes it again if the edge then fails.
+  Removal is allowed on a closed report.
+- **Registered (wire 2.21.0, additive).** `bh work investigate <report> [--work <id>] [--new-work]
+  [--remove] [--type T] [--priority P] [--as] [--hive] [--json]`, row
+  `work investigate|bead:string:r,work:string:o,new_work:boolean:o,remove:boolean:o,type_:string:o,priority:string:o,as_:string:o,hive:string:o,as_json:boolean:o`,
+  handler `"work.investigate"`. `--work` links, `--new-work` creates, `--work --remove` unlinks;
+  with neither it lists the report's links (read-only). Contradictory flags exit 2 before any
+  store is built. Off unless `intake.external.enabled` (every form, the listing included, refuses
+  `intake_disabled`); no new key; CLI only, no MCP row. `bh work thread show` gains a `links` key
+  (`--json`) and lines (human) listing both relations; an unknown report still reads "no thread".
+  No new stored vocabulary (the edge type is bd's, `TRACKED_WORK` is a refusal code only), so no
+  rotation gate is needed.
+- **Tests.** `tests/unit/modules/intake/test_intake_investigate.py`,
+  `tests/test_intake_investigate_composition.py`, `tests/test_intake_investigate_int.py`
+  (`integration`), the adapter argv cases in `tests/test_intake_bead_store.py` and the contract
+  case.
+
 ### 7. Report dimensions, the hold gate and field ownership
 
 A report has four dimensions, each with one writer (`bh-6wj9y` R2):
@@ -689,6 +746,16 @@ Adopted as `bh-fptob` R1 to R8, stored in `intake.thread`:
 - **Triage watermark** `considered_rev` derives "new evidence"; it never changes the `intake`
   dimension (wake-on-reply waits for `bh-elkv`, D3).
 
+**Composed in production (`bh-o9rep`, wire 2.21.0).** `intake.external.comments` ships
+`enabled` (default `false`), `deletion_confirmations` (2), `purge_deleted_bodies` (`true`) and
+`max_body_chars` (unset); `reconcile_every` is not shipped (no timer ingests yet).
+`intake_services.thread_call` composes `ThreadService` over the operational store, the root lock,
+`StoreOutboxView` and, for ingestion, the binding requesting `comments.read`, with the outbox's
+`OwnIdentity`. The CLI spelling is `bh work thread show <report>` (`thread_of`), `bh work thread
+ingest <report>` (`ingest_thread` then `reconcile_thread`) and `bh work thread considered <report>
+--through <seq>` (`mark_considered`; `--through` is required, so the watermark is always the seq
+the reader saw).
+
 **How triage marks `considered_rev` (decided in I7, `bh-rkmq1`; was open).** Through an explicit
 module operation, `IntakePort.mark_considered(ConsiderRequest(report, actor, through_seq))`, and
 **never** as a side effect of a disposition. Triage reads `IntakePort.thread_of(report)` (the
@@ -738,6 +805,52 @@ port's fields), and the pure rules (`apply`, `reconcile`, the outbox state machi
 check) are domain functions over those records. Translation to and from `TrackerComment`,
 `IssueKey`, `WriteReceipt` and `WriteGrant` happens in `application/`. Test cases are unchanged:
 they drive the application layer with `MemoryTracker`, and the pure domain functions directly.
+
+**As built: needs-info and wake-on-reply (`bh-61xkc`, wire 2.21.0).** The additive half of
+`bh-elkv` this section deferred (D3), planned in epic `bh-vhct2`; `bh-elkv`'s promote rename,
+priority queue and `accepted` redefinition stay there and untouched.
+
+- **Vocabulary.** `needs-info` joins the closed `intake` dimension (`INTAKE_NEEDS_INFO`,
+  `is_needs_info`, `is_awaiting_triage`) and reaches `state.STATE_DIMENSIONS` through the facade, so
+  `bh label validate` accepts it. It is the one non-terminal value besides `untriaged`: a bound
+  report waiting for its reporter, out of the untriaged queue (the queue still keys on
+  `intake:untriaged` only). A new closed value is rotation-gated like I2's (`bh-tfko9` pattern; the
+  rollout is `bh-hmtjn`), and nothing writes it unless `intake.external.needs_info.enabled`.
+- **Writers of the triage dimension.** Still only `IntakeService`: `dispose`, and now `needs_info`
+  (`untriaged` to `needs-info`) and `wake` (`needs-info` to `untriaged`). bd 1.3.0 walks that round
+  trip with one `intake:` label at a time and one event bead per transition, with `bd ready`
+  unchanged (`bh-tvpb6`); transitions are read from those event beads, never `bd history`.
+  `may_disposition` accepts both awaiting values, so every disposition fields a needs-info report
+  exactly as it fields an untriaged one (the refusal text is unchanged byte for byte), and the
+  completion policy never closes a report awaiting triage (`untriaged` or `needs-info`).
+- **`needs_info(NeedsInfoRequest(report, text, actor))`.** Drafts the question through the
+  supervised sender as a `reply` record (O1; O3 holds a leak), then writes `intake=needs-info`;
+  drafting first means a crash between the two leaves an untriaged report whose re-ask finds the
+  same draft (O2: same text, same thread seq). Refused before any write: without the outbox
+  (`OUTBOX_DISABLED`) or comment ingestion (`INTAKE_DISABLED`: a report that waits must be able to
+  hear the reply), on a born-native report (`NOT_A_REPORT`: no issue thread and no `intake-hold:`
+  gate), a closed or already fielded one, and, new, while the thread holds external evidence triage
+  has not read (`UNREAD_EVIDENCE`: read it, record the read with `thread considered`, then ask).
+  That last rule is what makes "a reply wakes it" exact without a second watermark: any new
+  evidence after the ask arrived after the question. Asking again while waiting drafts another
+  question and keeps the state.
+- **`wake(WakeRequest(report, actor))` and `wake_all(actor=)`.** Read the stored thread only (no
+  tracker request; `thread ingest` refreshes it) and move a `needs-info` report to `untriaged`
+  exactly when `new_evidence` is non-empty. Own and peer records are never evidence, so the posted
+  question, or our edit of it, never wakes a report; a reporter's reply or deletion does. Waking
+  **never** calls `mark_considered`: the reply stays new evidence for the next triage pass. The
+  lifetime hold is untouched, so a woken report is back in the untriaged queue and still never
+  ready or claimable. The sweep handles every open `needs-info` report and reports one failing
+  report on its item (`NOT_NEEDS_INFO` names a single report that is not waiting).
+- **Composition and verbs.** `intake_services.needs_info` runs on the outbox port (which carries
+  the thread service while comments are on) and `intake_services.wake` on the thread port.
+  `bh work needs-info <report> --ask <text> [--as] [--hive] [--json]` and `bh work wake [<report>]
+  [--all] [--as] [--hive] [--json]` are additive catalog rows (`work needs-info|...`,
+  `work wake|...`) in the unpublished minor 2.21.0; dropping them reproduces the bh-o9rep Click
+  inventory digest. Config (host-owned, strict, all off): `intake.external.needs_info.enabled`
+  gates both verbs, `needs_info.sweep` additionally gates `wake --all`. CLI only, no MCP row and no
+  timer. Tests: `tests/unit/modules/intake/test_intake_needs_info.py` (the round trip over
+  `MemoryWorld`) and `tests/test_intake_needs_info_composition.py`.
 
 ### 10. The outbox state machine
 
@@ -872,11 +985,14 @@ the epoch) and composes `outbox_service_for` with a `RandomIdSource`, the fleet 
 - `notified=<event>` is written by `set_state` straight after the transition's document write (bd
   has no transaction across the two); a failure is reported in the result and never un-sends. The
   close rule is not evaluated here: only milestone records reach it (I10).
-- The marker line is rendered by an injected `marker_line` codec (the adapter's own), so the dry
-  run shows the posted bytes. The tracker adapter itself is injected: building it from the store
-  binding and credentials is `bh-kzs0b`'s, not this bead's. `bh-kzs0b` built the process
-  `TrackerAdapters` for import and discover only; the outbox's own tracker, identity and marker
-  codec are **not** built from it (see "Not done here" under the verbs below).
+- The marker line is rendered by an injected `marker_line` codec (the adapter's own) and joined
+  to the body by the port's `join_marker_line`, injected into `RenderContext` by the application
+  (the domain may not import the port, X2) and called by the adapter's `post_comment` too, so the
+  dry run, its leak check and its digest are over the posted bytes (`bh-crf27`). The tracker
+  adapter itself is injected: building it from the store binding and credentials is
+  `bh-kzs0b`'s, not this bead's. `bh-kzs0b` built the process `TrackerAdapters` for import and
+  discover only; the outbox's own tracker, identity and marker codec are **not** built from it
+  (see "Not done here" under the verbs below).
 
 **The `bh work outbox` verbs (`bh-73td2`, wire 2.16.0).** `show`, `approve`, `send`, `reconcile`,
 `discard`, `retry` and `draft` are registered as `work outbox <verb>` (three tokens, on the nested
@@ -889,12 +1005,26 @@ decided before any write or tracker request: `intake.external.enabled` (`intake_
 saying the outbox tracker is not wired; tests patch that one seam). The listing form of `show` (no
 id) makes no tracker request and works without wiring.
 
-**Not done here (`bh-kzs0b`).** `outbox_wiring` is empty. Building the outbox's `tracker` (a
-`TrackerAdapters.for_store` bound port narrowed to the writers), `OwnIdentity` (hive and install
-UUID) and the adapter's `marker_line` codec from the plugin binding is not done: the marker codec
-lives in the plugin package, which root may not import. Until it lands, `bh work outbox show <id>`
-(a dry run against the tracker) and every sending verb refuse; `bh-kzs0b` built the process
-`TrackerAdapters` for import and discover only, so it does not make `bh-fehna` moot.
+**Done by `bh-uavc2` (absorbing `bh-fehna`).** `outbox_wiring` now builds all four from the
+hive's public-store binding when `intake.external.enabled`, `intake.external.outbox.enabled` and
+`plugins.tracker-github.enabled` are on: the tracker is `TrackerAdapters.for_store`'s bound,
+narrowed port (a writer only with its write flag on); the marker codec is that port's new optional
+`MarkerCodec.marker_line` (an additive port Protocol beside A1 that the GitHub adapter implements
+with its `bh:v1` codec and `narrow` passes through), so root still never imports the plugin;
+`OwnIdentity` is the bound `owner/repo` plus `install_id`, a random 32-hex id minted once into the
+hive's private `.bh/intake/install-id` (never configuration, never derived from a host or bead
+id); `owned_label_prefixes` is `write.labels.owned_prefixes` while `labels.change` is enabled. A
+binding refusal is carried as the refusal of every verb that needs the tracker. Without a tracker,
+`bh work outbox show <id>` prints the stored record (draft text, event, operation states, no
+digest) instead of refusing. O5 and O9 are unchanged: operator-only, one grant per operation.
+
+**Was not done here (`bh-kzs0b`; superseded by the paragraph above).** `outbox_wiring` was
+empty. Building the outbox's `tracker` (a `TrackerAdapters.for_store` bound port narrowed to the
+writers), `OwnIdentity` (hive and install UUID) and the adapter's `marker_line` codec from the
+plugin binding was not done: the marker codec lives in the plugin package, which root may not
+import. Until then, `bh work outbox show <id>` (a dry run against the tracker) and every sending
+verb refused; `bh-kzs0b` built the process `TrackerAdapters` for import and discover only, so it
+did not make `bh-fehna` moot.
 
 Interpretations, to be confirmed by the operator:
 
@@ -1063,6 +1193,76 @@ started, blocked and deprioritised milestones; revert detection (only an operato
   The flat `work delivery-release` was not needed. Off unless `intake.external.enabled`. CLI only,
   no MCP row.
 
+**As built: the link catch-up (`bh-61xkc`).** A report linked (`link`, or `accept --work` after
+its intake clear) to work that already merged used to stay `delivery:pending` forever, because the
+merge trigger had run before the edge existed. With `intake.external.milestones.catch_up_on_link`
+(host-owned, off) the linking service runs `MilestoneService.on_linked(report, work, actor)`: when
+the work is closed and another report that tracks it recorded the merge (`facts.merged` naming that
+work), the SAME per-report steps the triggers take run for the new report (the merged fact,
+`delivery:merged`, a `merged` record when `draft_on_merge`, the completion policy), then, when that
+report reached `delivery:released` through a `YES` verdict, the release steps with that verified
+fact (`released` record superseding the unsent `merged` one, O6). Nothing unverified is assumed and
+nothing sends. Work closed with no recorded merge (no report tracked it when it landed) is reported
+on the item and changes nothing: the merge commit is not known to intake. A catch-up failure is
+reported on its item and never fails the link. `LinkOutcome` / `DispositionOutcome` gain
+`milestones`, and `bh work link --json` carries a `milestones` key only when a catch-up ran. Tests:
+`tests/unit/modules/intake/test_intake_link_catch_up.py`.
+
+**As built: the progress milestones (`bh-dev42`).** The v1 scope above left `started`, `blocked`
+and `deprioritised` out; the supervised triage loop (`bh-vhct2`, operator decisions 2026-11-02)
+adds them as drafts only, with `started` from a claim hook and `blocked` / `deprioritised` from
+explicit operator verbs, never polling. Nothing above changes: the merge and release triggers,
+their wording, keys and close rule are as built.
+
+- **Vocabulary.** `OutboxEvent` gains `STARTED`, `BLOCKED` and `DEPRIORITISED`, and `notified`
+  gains `started`, `blocked` and `deprioritised` (`NOTIFIED_BY_EVENT` maps each to its own value).
+  All three are milestone events (not `reply`), so they land in the `milestone` group and O6
+  supersedes an unsent older milestone, and a later `merged` supersedes an unsent progress record.
+  The sender's completion hook still runs only for `merged` / `released`, and `_COVERS` is
+  unchanged, so a progress comment never completes a report or masks `notification_behind`.
+  Rotation-gated like `intake:needs-info` (`bh-hmtjn`): an older host cannot decode a document
+  holding such a record, so no hive drafts one until the release has rolled to every host.
+- **Wording and keys.** `started` is a constant (`STARTED_MESSAGE`) keyed on the work
+  (`DraftKey.source_revision` is the work id), so only the FIRST claim of that work drafts a
+  record per report: a re-claim, a resume after a bounce and a claim after an abandon find the key
+  (O2). `blocked` / `deprioritised` are a fixed lead sentence followed by the operator's public
+  reason, keyed on the work plus a digest of the reason: the same words re-run draft nothing, new
+  words draft a record that supersedes the unsent older one. The reason is the one free text a
+  milestone carries, so it is validated before anything is written (required, at most 1000
+  characters, no `{placeholder}` the renderer would rewrite) and then leak-checked like every
+  render: a reason naming a bead id, branch, path or seat leaves the record `held`.
+- **Only while `pending`.** Each drafts only for a report whose `delivery` is `pending`; anything
+  else is reported on the item and left alone, so a progress note can never supersede an unsent
+  `merged` or `released` record with stale news. Reports are those that track the work (open or
+  closed, like the merge trigger). No dimension moves and the completion policy is not evaluated.
+- **Where.** `MilestoneService.on_work_started(StartFact)` and `delivery_notice(NoticeFact)`,
+  behind the new `IntakePort` operations of the same names (`NullIntake`: the hook is free, the
+  verb refuses `INTAKE_DISABLED`). The root adds `intake_services.draft_on_start`, `work_started`
+  and `delivery_notice`; the work layer adds `work_intake.on_work_claimed`, `delivery_notice` and
+  `render_delivery_notice`.
+- **The claim seam.** `work_intake.on_work_claimed` runs after a fresh claim in
+  `work_lifecycle.claim_single_bead` (only on the core's `claimed` disposition, not `reattached`),
+  `work_lifecycle.provision_claim` (`bh work next`'s won claim), `work.start` (an epic) and
+  `work_group.claim_group` (every member). It returns after a pure config read unless
+  `intake.external.enabled`, `outbox.enabled` and `milestones.draft_on_start` are all on; any
+  failure, an unexpected exception included, is one stderr warning and the claim stands. All its
+  output goes to stderr, so `bh work claim` / `next --json` stdout is unchanged. Not hooked:
+  `claim --collapse` (the collapsed batch session).
+- **The verbs (wire 2.21.0, additive).** `bh work delivery blocked <work> --reason <text>` and
+  `bh work delivery deprioritised <work> --reason <text>` (`[--as] [--hive] [--json]`), catalog
+  rows `work delivery blocked|work:string:r,reason:string:r,as_:string:o,hive:string:o,as_json:boolean:o`
+  and the same for `deprioritised`, mounted on the existing `work delivery` group. Each refuses
+  before any store is built while `intake.external.enabled`, `outbox.enabled` or its own
+  `milestones.draft_on_blocked` / `.draft_on_deprioritised` is off, naming the key; unknown work is
+  `not_found`. Drafting may be done by any seat; approve and send stay operator-only.
+- **Config (all off, host-owned).** `milestones.draft_on_start`, `.draft_on_blocked`,
+  `.draft_on_deprioritised`; only a literal `true` enables.
+- **Tests.** `tests/unit/modules/intake/test_intake_progress_milestones.py` (first claim, re-claim,
+  bounce, abandon, supersession, the leak hold, `write_requests() == 0`),
+  `tests/test_intake_progress_milestones_composition.py` (the root and the command bodies) and
+  `tests/test_work_claim_milestones.py` (the claim, start, group and `next` seams; a hook failure
+  never fails the claim).
+
 ### 13. Leak check and sanitizer seam
 
 Adopted as `bh-6wj9y` R10: a pure `domain.leaks.check(rendered, policy)` runs at O1, at every
@@ -1106,12 +1306,13 @@ semantics and the defaults are the decision. Every key is per hive; everything i
 | `comments.deletion_confirmations` | `2` | Complete snapshots before a tombstone | `bh-fptob` |
 | `comments.purge_deleted_bodies` | `true` | Drop the latest body on tombstone | `bh-fptob` |
 | `comments.max_body_chars` | unset | Optional body cap (digest kept) | `bh-fptob` |
-| `comments.reconcile_every` | unset | Full comment-id pass cadence, in ingest passes | `bh-fptob` |
+| `comments.reconcile_every` | unset | Full comment-id pass cadence, in ingest passes (not shipped by `bh-o9rep`: `thread ingest` reconciles every pass) | `bh-fptob` |
 | `privacy.allow_published_operational_store` | `false` | Acknowledgement to enable on a single-store or `git-origin` hive | `bh-fptob` |
 | `outbox.enabled` | `false` | The per-hive egress opt-in (`bh-o2mjz`) | `bh-6wj9y` R15 |
 | `outbox.mode` | `supervised` | The only accepted value in v1 (D2); anything else fails validation | `bh-6wj9y` |
 | `completion_policy` | `close-on-merge` | Or `close-on-release` | `bh-6wj9y` |
 | `milestones.draft_on_merge`, `.draft_on_release`, `.append_release_to_closed` | `false` | Which milestones draft records | `bh-6wj9y` |
+| `milestones.draft_on_start`, `.draft_on_blocked`, `.draft_on_deprioritised` | `false` | The progress milestones: the claim hook and the two operator verbs | `bh-dev42` |
 | `outbox.labels.on_delivery` | unset | Delivery value to owned labels; must lie inside `owned_prefixes` | `bh-6wj9y` |
 | `outbox.public_evidence.commit_links` | `false` | Allow public commit or PR URLs in `PublicFacts` | `bh-6wj9y` |
 | `outbox.reconcile.absent_confirmations` | `2` | k in O16 | `bh-6wj9y` |
@@ -1129,7 +1330,7 @@ behave exactly as today.
 |---|---|
 | D1 one internal report per issue, URL key, native edge, many to one, no cross-store edge | Section 5 (URL idempotence in the operational store only, R1 refuses public ids), section 6 (`tracks`, refusals `CROSS_STORE_LINK`, `PUBLIC_STORE_ID`) |
 | D2 supervised-only first slice | O5 and O9 are operator-only; `outbox.mode` accepts only `supervised`; no timer runs O5 or O9; `bh work outbox show` is the dry-run render whose digest the operator types |
-| D3 import before `bh-elkv`, `intake:untriaged` only, not `promote` | `bh work import`; wake-on-reply and `needs-info` deferred; `bh-elkv`'s rename touches only `vocabulary.py` and its facade consumers |
+| D3 import before `bh-elkv`, `intake:untriaged` only, not `promote` | `bh work import`; wake-on-reply and `needs-info` deferred (since landed as `bh-elkv`'s additive half in `bh-61xkc`, section 9); `bh-elkv`'s rename touches only `vocabulary.py` and its facade consumers |
 | Off by default, configurable | Section 15; `NullIntake` makes every hook free |
 | Every tracker write an operator-approved gate | Section 11 |
 | Public store pull-only | Intake never resolves `SCOPE_PUBLIC`; a test asserts the public-store fixture is byte-identical after every case |
@@ -1331,8 +1532,12 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
   also changes the raw rows `bh work intake --json` emits, so it is its own decision.
 - ~~Clearing a dimension value on unlink (acceptance item 3).~~ Resolved by I2 (`bh-cokbi`), see
   "I2 measurement" below.
-- The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).
-- Started, blocked and deprioritised milestones; revert detection.
+- ~~The `needs-info` reply event and wake-on-reply, after `bh-elkv` (D3).~~ Landed in `bh-61xkc`
+  (section 9, "As built: needs-info and wake-on-reply"); `bh-elkv` keeps its rename and queue.
+- ~~Started, blocked and deprioritised milestones~~: landed in `bh-dev42` (section 12, "As
+  built: the progress milestones"). Revert detection stays open.
+- ~~A relation for reproduction work that never fires milestones~~: landed in `bh-u3a53` (section
+  6, "As built: the investigates relation").
 - A closing-keyword lint on merge commits.
 - Issue identity across a transfer or key change (port ADR O3): v1 refuses a transferred URL as
   `OTHER_PROJECT` and marks a thread `missing` for a human; no automatic re-binding.

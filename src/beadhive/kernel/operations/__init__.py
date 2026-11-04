@@ -269,17 +269,21 @@ work bounce|bead:string:r,message:string:o,as_:string:o,hive:string:o
 work brief|bead:string:r,hive:string:o
 work check|bead:string:r,hive:string:o
 work claim|bead:string:o,as_:string:o,group:string:o,collapse:string:o,hive:string:o,preview:boolean:o,as_json:boolean:o
+work delivery blocked|work:string:r,reason:string:r,as_:string:o,hive:string:o,as_json:boolean:o
+work delivery deprioritised|work:string:r,reason:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work delivery release|tag:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o
 work finish|epic:string:r,hive:string:o,override_validation:string:o,override_as:string:o
 work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o
 work intake|hive:string:o,source:string:o,as_json:boolean:o,no_dupes:boolean:o
+work investigate|bead:string:r,work:string:o,new_work:boolean:o,remove:boolean:o,type_:string:o,priority:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work issue|bead:string:r,hive:string:o
 work land|bead:string:r,hive:string:o
 work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 work list|hive:string:o
 work loop|epic:string:r,as_:string:o,hive:string:o,passes:integer:o,as_json:boolean:o,dry_run:boolean:o,seat_binary:string:o,harness:string:o,baml_required:boolean:o
 work merge|bead:string:o,hive:string:o,rm:boolean:o,molecule:boolean:o,group:string:o,override_validation:string:o,override_as:string:o
+work needs-info|bead:string:r,ask:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work next|as_:string:o,hive:string:o,as_json:boolean:o,epic:string:o
 work outbox approve|outbox_id:string:r,op:array:r,publish:array:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox discard|outbox_id:string:r,reason:string:r,accept_unknown:boolean:o,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
@@ -298,8 +302,12 @@ work resume|bead:string:r,as_:string:o,hive:string:o
 work review|bead:string:r,run_validate:boolean:o,demo:boolean:o,fresh:boolean:o,view:array:o,hive:string:o
 work schedule|epic:string:r,hive:string:o,as_json:boolean:o
 work show|bead:string:r,view:array:o,as_json:boolean:o,hive:string:o
+work thread considered|bead:string:r,through:integer:r,as_:string:o,hive:string:o,as_json:boolean:o
+work thread ingest|bead:string:r,as_:string:o,hive:string:o,as_json:boolean:o
+work thread show|bead:string:r,hive:string:o,as_json:boolean:o
 work start|epic:string:r,as_:string:o,hive:string:o
 work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o,override_validation:string:o,override_as:string:o
+work wake|bead:string:o,all_:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree init|path:string:r
 worktree list|as_json:boolean:o,hive:string:o,state:string:o,limit:integer:o,cursor:string:o
@@ -447,6 +455,7 @@ toolchain|false|Hive
 work|false|Integration plane
 work delivery|false|
 work outbox|false|
+work thread|false|
 worktree|false|Integration plane
 wt|true|
 """.strip()

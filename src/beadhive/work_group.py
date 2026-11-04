@@ -349,6 +349,10 @@ def claim_group(cfg, hive, group_arg, as_):
         f"✓ claimed batch {group} ({len(members)} beads: {', '.join(members)}) as {actor}; "
         f"worktree {target}"
     )
+    from . import work_intake
+
+    # the started milestone (bh-dev42): free unless opted in, never fails the claim
+    work_intake.on_work_claimed(cfg, entry, main, members, actor, hive)
     if not worktree.in_bead_worktree(target):
         typer.echo(
             f"\nWARNING: cwd is not the batch worktree — edits here target the wrong tree.\n"

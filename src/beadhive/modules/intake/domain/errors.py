@@ -34,6 +34,8 @@ class RefusalReason(StrEnum):
     ALREADY_LINKED_ELSEWHERE = "already_linked_elsewhere"
     REPORT_CLOSED = "report_closed"  # a closed report is not linked (the edge is made while open)
     INVALID_REQUEST = "invalid_request"  # contradictory options (``--work`` with ``--new-work``)
+    # an investigation (bh-u3a53) of the work the report already tracks: that work is its delivery
+    TRACKED_WORK = "tracked_work"
     # filing and disposition refusals (today's report.py and triage.py guards)
     INVALID_TYPE = "invalid_type"
     INVALID_LABELS = "invalid_labels"
@@ -73,6 +75,10 @@ class RefusalReason(StrEnum):
     NOT_PRIMARY = "not_primary"  # this host is not the hive's primary writer
     # the milestone triggers (I10): the release verb names a tag the repository does not have
     UNKNOWN_TAG = "unknown_tag"
+    # waiting for the reporter (bh-61xkc): wake names a report that is not waiting, and asking
+    # while the thread holds a reply triage has not read would ask for what may already be there
+    NOT_NEEDS_INFO = "not_needs_info"
+    UNREAD_EVIDENCE = "unread_evidence"
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
 
@@ -90,10 +96,11 @@ class IntakeStoreError(Exception):
     """The report store could not complete a read or write; ``detail`` is already scrubbed.
 
     ``operation`` names the failed step in the module's own vocabulary (``create``, ``set_state``,
-    ``update_fields``, ``close``, ``assign``, ``track``, ``record_snapshot``, ``read_thread``,
-    ``write_thread``, ``open_hold``, ``resolve_hold``, ``read_outbox``, ``write_outbox``, plus
-    the service's ``stamp:<dimension>`` and ``clear_intake`` re-tags) so a transport can word its
-    message; ``returncode`` is the store's own exit status (1 when it has none)."""
+    ``update_fields``, ``close``, ``assign``, ``track``, ``investigate``, ``uninvestigate``,
+    ``record_snapshot``, ``read_thread``, ``write_thread``, ``open_hold``, ``resolve_hold``,
+    ``read_outbox``, ``write_outbox``, plus the service's ``stamp:<dimension>`` and
+    ``clear_intake`` re-tags) so a transport can word its message; ``returncode`` is the store's
+    own exit status (1 when it has none)."""
 
     def __init__(
         self,
