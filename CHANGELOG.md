@@ -13,6 +13,25 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.34.0 (2026-11-04)
+
+### Feat
+
+- **work**: add bh work investigate in wire 2.21.0 and list both links in thread show
+- **intake**: add an investigates relation for reproduction work that never fires delivery milestones
+- **work**: draft the started milestone from the claim hook and add delivery notices in wire 2.21.0
+- **intake**: draft started, blocked and deprioritised milestones, drafts only
+- **tracker**: define the port's one marker join and post through it from the GitHub adapter
+- **work**: add bh work needs-info and wake behind default-off switches in wire 2.21.0
+- **intake**: add intake:needs-info with wake-on-reply, and catch late links up on merged work
+- **work**: add bh work thread show, ingest and considered, and cut wire 2.21.0
+- **intake**: wire the outbox sender from the tracker plugin binding
+- **tracker**: add the optional MarkerCodec port protocol and pass it through the bound adapter
+
+### Fix
+
+- **intake**: render, leak-check and digest the outbox comment over the posted bytes
+
 ## v0.33.1 (2026-11-04)
 
 ### Fix
