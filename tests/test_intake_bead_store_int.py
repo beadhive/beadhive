@@ -20,11 +20,21 @@ from pathlib import Path
 import pytest
 
 from beadhive.adapters.intake import SOURCE_KEY, BdReportStore
-from beadhive.modules.intake import IntakeStoreError, delivery_after_unlink
+from beadhive.modules.intake import (
+    PROPOSAL_KEY,
+    IntakeRefused,
+    IntakeStoreError,
+    RefusalReason,
+    ReviewVerdict,
+    add_review,
+    delivery_after_unlink,
+    proposal_to_document,
+)
 from beadhive.testing.intake import (
     REPORT_STORE_CASES,
     SCOPE,
     draft,
+    proposal,
     run_report_store_case,
 )
 from beadhive_bd_cli import CliRoutes, SubprocessBd, err_line
@@ -145,3 +155,25 @@ def test_unknown_metadata_target_is_a_store_failure(fresh) -> None:
     store = fresh()
     with pytest.raises(IntakeStoreError):
         store.record_snapshot("acme-ghost", draft(bound=True).snapshot, actor="dev/test")
+
+
+def test_one_proposal_round_trips_through_real_bd(fresh) -> None:
+    """bh-l4nbq: an ``intake.proposal`` written by the store is one flat key bd lists, reads back
+    equal, and a write over a moved ``seq`` is refused with nothing written."""
+    store = fresh()
+    routes = store._routes
+    report = store.create(draft("born native"))
+    first = proposal(1)
+    store.write_proposal(report, first, expect_seq=0, actor="dev/test")
+    reviewed = add_review(first, "rev/one", ReviewVerdict.CONFIRMED)
+    store.write_proposal(report, reviewed, expect_seq=1, actor="dev/test")
+
+    assert store.read_proposal(report) == reviewed
+    row = routes.issue_show_raw(report)
+    row = row[0] if isinstance(row, list) else row
+    assert row["metadata"][PROPOSAL_KEY] == proposal_to_document(reviewed)
+    assert [v.id for v in store.reports_with_proposal()] == [report]
+    with pytest.raises(IntakeRefused) as moved:
+        store.write_proposal(report, proposal(9), expect_seq=1, actor="dev/other")
+    assert moved.value.reason is RefusalReason.PROPOSAL_MOVED
+    assert store.read_proposal(report) == reviewed

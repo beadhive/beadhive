@@ -27,6 +27,7 @@ from .cases import (
     assert_report_store_conforms,
     draft,
     memory_store,
+    proposal,
     run_report_store_case,
     thread,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "assert_report_store_conforms",
     "draft",
     "memory_store",
+    "proposal",
     "run_report_store_case",
     "thread",
 ]

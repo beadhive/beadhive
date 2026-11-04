@@ -47,6 +47,7 @@ from ..domain import (
     OutboxResult,
     PresenceOutcome,
     PresenceRequest,
+    Proposal,
     QueueQuery,
     QueueView,
     ReleaseFact,
@@ -311,6 +312,27 @@ class ReportStore(Protocol):
 
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         """Every report carrying an ``intake.outbox`` document, of every status."""
+        ...
+
+    # review-gated triage (bh-hrx2r): the ``intake.proposal`` document, on ANY report (native or
+    # bound), private operational data that is never published
+
+    def read_proposal(self, bead: str) -> Proposal | None: ...  # None: no ``intake.proposal``
+
+    def write_proposal(self, bead: str, proposal: Proposal, *, expect_seq: int, actor: str) -> None:
+        """Rewrite ``bead``'s whole ``intake.proposal`` document, leaving every other document on
+        the bead untouched, in ONE store write.
+
+        As :meth:`write_outbox`: the store re-reads the stored ``seq`` and refuses with
+        ``IntakeRefused(PROPOSAL_MOVED)`` (writing nothing) unless it still equals ``expect_seq``
+        (0 for a bead without a proposal); ``proposal.seq`` must exceed it. A stored proposal that
+        is already ``applied`` is immutable: any write over it is refused with
+        ``IntakeRefused(PROPOSAL_IMMUTABLE)``. Unlike the outbox, a born-native report may carry
+        one."""
+        ...
+
+    def reports_with_proposal(self) -> tuple[BeadView, ...]:
+        """Every report carrying an ``intake.proposal`` document, of every status."""
         ...
 
 
