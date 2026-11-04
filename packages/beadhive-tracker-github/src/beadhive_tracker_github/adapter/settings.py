@@ -21,7 +21,11 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from beadhive.modules.tracker.contracts import Operation, RetryBudget
+from beadhive.modules.tracker.contracts import (
+    MAX_REQUEST_TIMEOUT_SECONDS,
+    Operation,
+    RetryBudget,
+)
 
 from .transport import DEFAULT_TIMEOUT_SECONDS
 
@@ -84,6 +88,10 @@ def _is_seconds(value: Any) -> bool:
     return (_is_int(value) or isinstance(value, float)) and 0 < value < float("inf")
 
 
+def _is_timeout(value: Any) -> bool:
+    return _is_seconds(value) and value <= MAX_REQUEST_TIMEOUT_SECONDS
+
+
 def parse_settings(settings: Mapping[str, Any]) -> AdapterSettings:
     if not isinstance(settings, Mapping):
         raise ValueError("plugins.tracker-github settings must be a mapping")
@@ -116,6 +124,6 @@ def parse_settings(settings: Mapping[str, Any]) -> AdapterSettings:
         budget=budget,
         label_prefixes=tuple(prefixes),
         timeout_seconds=float(
-            _value(settings, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS, _is_seconds)
+            _value(settings, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS, _is_timeout)
         ),
     )

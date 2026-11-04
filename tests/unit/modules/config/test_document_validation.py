@@ -49,6 +49,21 @@ def test_legacy_missing_version_checks_full_shape_without_stamping():
         validate_settings_mapping({"work": {"max_commits": "3"}}, scope="fleet")
 
 
+@pytest.mark.parametrize("scope", ["host", "fleet"])
+def test_tracker_github_timeout_cap_is_enforced_on_load_without_echoing_the_value(scope):
+    def document(value):
+        return {"plugins": {"tracker-github": {"timeout_seconds": value}}}
+
+    for accepted in (0.5, 30, 300, 300.0):
+        validate_settings_mapping(document(accepted), scope=scope)
+    for refused in (300.0001, 301, 1e9):
+        with pytest.raises(DocumentValidationError) as captured:
+            validate_settings_mapping(document(refused), scope=scope)
+        assert captured.value.path == "plugins.tracker-github.timeout_seconds"
+        assert captured.value.code == "validation_timeout_seconds_above_300"
+        assert str(refused) not in str(captured.value)
+
+
 def test_legacy_beads_section_validates_live_engine_and_keeps_opaque_extensions():
     for beads in (None, {}, {"engine": None}, {"engine": ""}, {"engine": "bd"}):
         validate_settings_mapping({"beads": beads}, scope="host")

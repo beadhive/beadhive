@@ -54,6 +54,7 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 
 from ...complexity import ComplexityTier, tier_names
 from ...kernel.daemon.contracts.config import HostDaemonConfig
+from ..tracker.contracts import MAX_REQUEST_TIMEOUT_SECONDS
 
 #: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
@@ -3001,6 +3002,21 @@ class TrackerGithubConfig(_QuietSection):
     )
     retry: TrackerGithubRetry = Field(default_factory=TrackerGithubRetry)
     write: TrackerGithubWrite = Field(default_factory=TrackerGithubWrite)
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _timeout_within_cap(cls, value):
+        # A validator, not `le=`: the cap is a correctness limit enforced here and in the adapter
+        # transport from one shared constant, and must not alter the published config JSON
+        # schema. Refused, never clamped; the value is not repeated.
+        if value > MAX_REQUEST_TIMEOUT_SECONDS:
+            # The error type carries the bound: the persisted-document gate reports only the
+            # field path and this code, so `config set`/load name the key and the cap.
+            raise PydanticCustomError(
+                f"timeout_seconds_above_{MAX_REQUEST_TIMEOUT_SECONDS}",
+                f"timeout_seconds must be at most {MAX_REQUEST_TIMEOUT_SECONDS} seconds",
+            )
+        return value
 
     @field_validator("base_url")
     @classmethod

@@ -41,10 +41,10 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from math import inf
 from typing import TYPE_CHECKING, Any
 
 from beadhive.modules.tracker.contracts import (
+    MAX_REQUEST_TIMEOUT_SECONDS,
     AuthenticationFailed,
     Operation,
     RetryBudget,
@@ -243,9 +243,13 @@ class Transport:
         if (
             isinstance(seconds, bool)
             or not isinstance(seconds, int | float)
-            or not 0 < seconds < inf
+            or not 0 < seconds <= MAX_REQUEST_TIMEOUT_SECONDS
         ):
-            raise ValueError("timeout_seconds must be a finite number greater than zero")
+            # Refused, never clamped; the value is never repeated.
+            raise ValueError(
+                f"timeout_seconds must be a number greater than zero and at most "
+                f"{MAX_REQUEST_TIMEOUT_SECONDS}"
+            )
 
     def _resolve(self) -> ResolvedToken | None:
         try:

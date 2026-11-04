@@ -330,6 +330,23 @@ def test_cli_set_bad_enum_exits_nonzero(cfg_path):
     assert r.exit_code == 1
 
 
+@pytest.mark.parametrize("value", ["301", "1000000000"])
+def test_cli_set_refuses_a_tracker_github_timeout_above_the_cap_and_writes_nothing(cfg_path, value):
+    before = cfg_path.read_text()
+    r = CliRunner().invoke(app, ["config", "set", "plugins.tracker-github.timeout_seconds", value])
+    assert r.exit_code == 1
+    assert cfg_path.read_text() == before
+    out = r.stdout + (r.stderr if r.stderr_bytes else "")
+    assert "timeout_seconds" in out and "300" in out
+    assert value not in out.replace("plugins.tracker-github.timeout_seconds", "")
+
+
+def test_cli_set_accepts_a_tracker_github_timeout_at_the_cap(cfg_path):
+    r = CliRunner().invoke(app, ["config", "set", "plugins.tracker-github.timeout_seconds", "300"])
+    assert r.exit_code == 0
+    assert config.get_value("plugins.tracker-github.timeout_seconds")["value"] == 300
+
+
 # ---- §2.1 control-plane backstop: controller is read-only over the HQ registry (bead .36) ----
 
 
