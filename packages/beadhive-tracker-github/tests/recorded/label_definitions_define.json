@@ -1,0 +1,135 @@
+{
+  "description": "labels.define converging one batch: one paged read of the live definitions, then, in sorted name order, PATCH /labels/{name} (update, 200; the name percent-encoded, ':' and '/' included) and POST /labels (create, 201), then DELETE /labels/{name} (prune, 204 No Content with NO body, a known success). The human label 'bug' and the identical 'bh:intake/accepted' send nothing. Used by tests/test_tracker_github_label_definitions.py.",
+  "provenance": "Synthetic replay; NOTHING here was captured from a live request or write (no test ever reaches GitHub). Shapes follow the documented GitHub REST 'Labels' endpoints, API version 2022-11-28 (List labels for a repository, Create a label, Update a label, Delete a label). Live re-verification is pending the first operator-approved labels.define, recorded on bead bh-uv09p.",
+  "interactions": [
+    {
+      "name": "read-live-definitions",
+      "provenance": "Documented form only (List labels for a repository); re-verify on the first live labels.define.",
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/labels?per_page=100"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json"
+        },
+        "json": [
+          {
+            "id": 1,
+            "node_id": "LA_kwDOsynth1",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bug",
+            "name": "bug",
+            "color": "d73a4a",
+            "default": false,
+            "description": "Something isn't working"
+          },
+          {
+            "id": 2,
+            "node_id": "LA_kwDOsynth2",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Aintake%2Faccepted",
+            "name": "bh:intake/accepted",
+            "color": "0e8a16",
+            "default": false,
+            "description": "Accepted for triage"
+          },
+          {
+            "id": 4,
+            "node_id": "LA_kwDOsynth4",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Aprogress%2Fstarted",
+            "name": "bh:progress/started",
+            "color": "FBCA04",
+            "default": false,
+            "description": "Old description"
+          },
+          {
+            "id": 5,
+            "node_id": "LA_kwDOsynth5",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale%20value",
+            "name": "bh:stale value",
+            "color": "cccccc",
+            "default": false,
+            "description": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "update",
+      "provenance": "Documented form only (Update a label: 200 with the label); re-verify on the first live labels.define.",
+      "request": {
+        "method": "PATCH",
+        "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Aprogress%2Fstarted",
+        "json": {
+          "color": "fbca04",
+          "description": "Work has started"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json"
+        },
+        "json": {
+          "id": 4,
+          "node_id": "LA_kwDOsynth4",
+          "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Aprogress%2Fstarted",
+          "name": "bh:progress/started",
+          "color": "fbca04",
+          "default": false,
+          "description": "Work has started"
+        }
+      }
+    },
+    {
+      "name": "create",
+      "provenance": "Documented form only (Create a label: 201 with the label); re-verify on the first live labels.define.",
+      "request": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/acme/widgets/labels",
+        "json": {
+          "name": "bh:type/feature",
+          "color": "a2eeef",
+          "description": "New feature or request"
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "location": "https://api.github.com/repos/acme/widgets/labels/bh%3Atype%2Ffeature"
+        },
+        "json": {
+          "id": 6,
+          "node_id": "LA_kwDOsynth6",
+          "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Atype%2Ffeature",
+          "name": "bh:type/feature",
+          "color": "a2eeef",
+          "default": false,
+          "description": "New feature or request"
+        }
+      }
+    },
+    {
+      "name": "delete",
+      "provenance": "Documented form only (Delete a label: 204 No Content, no body); re-verify on the first live labels.define.",
+      "request": {
+        "method": "DELETE",
+        "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale%20value"
+      },
+      "response": {
+        "status": 204,
+        "headers": {
+          "x-github-api-version-selected": "2022-11-28"
+        },
+        "json": null
+      }
+    }
+  ]
+}

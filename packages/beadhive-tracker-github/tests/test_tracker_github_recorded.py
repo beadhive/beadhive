@@ -222,6 +222,9 @@ def test_every_recorded_fixture_is_exercised_and_carries_no_credential():
         "issue_closes_between_pulls.json",
         "issue_comments_creation_order.json",
         "issues_closed_and_paginated.json",
+        "label_definitions_define.json",  # test_tracker_github_label_definitions.py
+        "label_definitions_list_paged.json",  # test_tracker_github_label_definitions.py
+        "label_definitions_refusals.json",  # test_tracker_github_label_definitions.py
     ]
     for name in names:
         text = (RECORDED / name).read_text(encoding="utf-8")

@@ -177,6 +177,8 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
         Operation.COMMENTS_READ,
         Operation.COMMENT_CREATE,
         Operation.LABELS_CHANGE,
+        Operation.LABELS_READ,
+        Operation.LABELS_DEFINE,
     }
     assert not isinstance(port, CommentWriter)  # comment.create was not enabled
     assert not isinstance(port, LabelWriter)  # labels.change is not enabled: no writer exposed

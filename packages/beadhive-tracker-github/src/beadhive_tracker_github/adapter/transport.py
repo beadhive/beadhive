@@ -20,7 +20,8 @@ writer, after its grant was checked) has :meth:`Session.send`, the ONE write sea
 (``comment.create``, ``labels.change``) sends through. Its client neither caches nor follows a
 redirect (httpx re-sends a redirected ``POST`` as a ``GET``), and it is retried only on a
 rate-limit refusal; a server error, a timeout, a dropped connection after the send, a redirect or
-an unreadable success body is ``WriteOutcomeUnknown``, never retried.
+an unreadable success body is ``WriteOutcomeUnknown``, never retried. ``204 No Content`` (a
+documented delete) is a known success with no body, not an unreadable one.
 
 The mapping reads the decoded JSON rather than githubkit's generated models: the models are not
 verified against every live payload (port ADR, "Unverified"), so a model mismatch would turn one
@@ -126,6 +127,7 @@ class Session:
         *,
         method: str = "GET",
         payload: Mapping[str, Any] | None = None,
+        no_content: bool = False,
     ) -> Reply | Refusal:
         from githubkit.exception import RequestError, RequestFailed, RequestTimeout
 
@@ -167,6 +169,11 @@ class Session:
                 ),
                 retryable=False,
             )
+        if write and (response.status_code == 204 or (no_content and not response.content)):
+            # 204 No Content is GitHub's documented success for a delete (a label definition):
+            # a KNOWN success with no receipt body, never WriteOutcomeUnknown. An empty 2xx counts
+            # too where the caller says the endpoint documents 204 (``no_content``).
+            return Reply(response.status_code, response.headers, None, str(response.url))
         try:
             decoded = response.json()
         except (ValueError, json.JSONDecodeError):
@@ -184,12 +191,15 @@ class Session:
         *,
         method: str = "GET",
         payload: Mapping[str, Any] | None = None,
+        no_content: bool = False,
     ) -> Reply:
         """Send until a reply, or until the retry decision says stop (then raise its error)."""
         transport = self._transport
         waited, attempt = 0.0, 0
         while True:
-            outcome = self._attempt(target, params, method=method, payload=payload)
+            outcome = self._attempt(
+                target, params, method=method, payload=payload, no_content=no_content
+            )
             if isinstance(outcome, Reply):
                 return outcome
             if isinstance(outcome.error, WriteOutcomeUnknown):
@@ -206,20 +216,32 @@ class Session:
         budget; raise the port error of the last refusal otherwise."""
         return self._run(target, params)
 
-    def send(self, method: str, target: str, payload: Mapping[str, Any] | None = None) -> Reply:
-        """One WRITE (``POST``, ``DELETE``) of ``payload`` to ``target``: the one write seam.
+    def send(
+        self,
+        method: str,
+        target: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        no_content: bool = False,
+    ) -> Reply:
+        """One WRITE (``POST``, ``PATCH``, ``DELETE``) of ``payload`` to ``target``: the one write
+        seam.
 
         Retried only when GitHub refused it with a rate limit (proof that nothing was written),
         within the budget, on the injected sleep. A server error, a timeout, a dropped
         connection, an unconfirmed (non-2xx, e.g. a redirect, never followed) or unreadable
         answer raises ``WriteOutcomeUnknown`` and is NEVER retried: the write may have applied
         exactly once, and the consumer reconciles (by the own-message marker, or by reading the
-        issue's labels). Every other refusal raises its port error with the exact diagnostic."""
+        issue's labels). Every other refusal raises its port error with the exact diagnostic.
+
+        A ``204 No Content`` answer is a KNOWN success whose reply carries no body (``None``), as
+        is any empty ``2xx`` when ``no_content`` says the endpoint documents ``204``; a writer
+        that needs a receipt body treats ``None`` as unreadable itself."""
         if method == "GET":
             raise ValueError("send() is for writes; use get() to read")
         if not self._write:
             raise ValueError("a write needs an operation opened with write=True")
-        return self._run(target, None, method=method, payload=payload)
+        return self._run(target, None, method=method, payload=payload, no_content=no_content)
 
 
 @dataclass

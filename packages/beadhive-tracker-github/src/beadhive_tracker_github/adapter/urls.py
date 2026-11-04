@@ -38,7 +38,7 @@ from beadhive.modules.tracker.contracts import (
     UrlNotRecognized,
 )
 
-__all__ = ["PUBLIC_API", "PUBLIC_WEB", "GitHubLocation"]
+__all__ = ["PUBLIC_API", "PUBLIC_WEB", "GitHubLocation", "next_link"]
 
 PUBLIC_API = "https://api.github.com"
 PUBLIC_WEB = "https://github.com"
@@ -48,6 +48,14 @@ _NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
 _NUMBER = re.compile(r"[0-9]{1,18}")
 _ISSUE_KINDS = frozenset({"issues"})
 _CHANGE_KINDS = frozenset({"pull", "pulls"})
+_NEXT = re.compile(r'<([^<>]+)>\s*;\s*rel="next"')
+
+
+def next_link(link: str | None) -> str | None:
+    """The ``rel="next"`` URL of a ``Link`` header, verbatim (``None`` on the last page). Pure;
+    the URL is followed only after :meth:`GitHubLocation.check_next`."""
+    match = _NEXT.search(link or "")
+    return match.group(1) if match else None
 
 
 def _origin(scheme: str, netloc: str) -> str:
