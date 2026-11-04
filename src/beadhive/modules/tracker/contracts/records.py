@@ -326,9 +326,12 @@ class LabelOwnership:
 
 @dataclass(frozen=True)
 class WriteReceipt:
+    """What an applied write reports back. ``target`` echoes ``WriteGrant.target``: an
+    :class:`IssueKey`, or the :class:`ProjectRef` of a repository-scoped write."""
+
     grant_id: str
     operation: Operation
-    target: IssueKey
+    target: IssueKey | ProjectRef
     comment: TrackerComment | None = None
     labels_after: frozenset[str] | None = None
 
