@@ -10,7 +10,8 @@ re-check, and never disturbing another key. A bound
 report is born with an ``intake-hold:`` gate that keeps it out of :meth:`ready_ids`, :meth:`close`
 closes it first and resolves the hold after (the order is kept in :meth:`events`, so a test can
 prove there is no ready window), and :meth:`plain_close` refuses a held bead as ``bd close`` does.
-The ``intake.outbox`` document is another such key, with the same ``seq`` re-check.
+The ``intake.outbox`` document is another such key, with the same ``seq`` re-check, and so is
+``intake.proposal`` (on any report, native or bound; an applied one is never rewritten).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from typing import Any
 
 from beadhive.modules.intake.contracts import (
     OUTBOX_KEY,
+    PROPOSAL_KEY,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
@@ -32,6 +34,9 @@ from beadhive.modules.intake.contracts import (
     IntakeStoreError,
     OutboxDocument,
     OutboxDocumentError,
+    Proposal,
+    ProposalDocumentError,
+    ProposalStatus,
     RefusalReason,
     ReportDraft,
     SourceSnapshot,
@@ -41,6 +46,8 @@ from beadhive.modules.intake.contracts import (
     WorkDraft,
     outbox_from_document,
     outbox_to_document,
+    proposal_from_document,
+    proposal_to_document,
     thread_from_document,
     thread_to_document,
 )
@@ -85,6 +92,8 @@ class MemoryReportStore:
         #: ``(bead, seq)`` of every durable ``intake.outbox`` write, in order.
         self.outbox_writes: list[tuple[str, int]] = []
         self._fail_outbox_write: Exception | None = None
+        #: ``(bead, seq)`` of every durable ``intake.proposal`` write, in order.
+        self.proposal_writes: list[tuple[str, int]] = []
 
     # -- reads -------------------------------------------------------------------------------
 
@@ -145,6 +154,18 @@ class MemoryReportStore:
 
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         return tuple(r.view for r in self._rows.values() if OUTBOX_KEY in r.metadata)
+
+    def read_proposal(self, bead: str) -> Proposal | None:
+        row = self._rows.get(bead)
+        if row is None or PROPOSAL_KEY not in row.metadata:
+            return None
+        try:
+            return proposal_from_document(row.metadata[PROPOSAL_KEY])
+        except ProposalDocumentError as exc:
+            raise IntakeStoreError(str(exc), bead=bead, operation="read_proposal") from exc
+
+    def reports_with_proposal(self) -> tuple[BeadView, ...]:
+        return tuple(r.view for r in self._rows.values() if PROPOSAL_KEY in r.metadata)
 
     # -- writes ------------------------------------------------------------------------------
 
@@ -352,6 +373,30 @@ class MemoryReportStore:
         self.writes += 1
         row.metadata[OUTBOX_KEY] = json.loads(json.dumps(outbox_to_document(document)))
         self.outbox_writes.append((bead, document.seq))
+
+    def write_proposal(self, bead: str, proposal: Proposal, *, expect_seq: int, actor: str) -> None:
+        row = self._row(bead)
+        stored = self.read_proposal(bead)
+        current = stored.seq if stored is not None else 0
+        if stored is not None and stored.status is ProposalStatus.APPLIED:
+            raise IntakeRefused(
+                RefusalReason.PROPOSAL_IMMUTABLE,
+                f"{bead}'s proposal is applied and cannot be rewritten",
+            )
+        if current != expect_seq:
+            raise IntakeRefused(
+                RefusalReason.PROPOSAL_MOVED,
+                f"{bead}'s proposal is at seq {current}, not {expect_seq}; re-read and retry",
+            )
+        if proposal.seq <= expect_seq:
+            raise IntakeStoreError(
+                f"a proposal write must advance seq past {expect_seq}",
+                bead=bead,
+                operation="write_proposal",
+            )
+        self.writes += 1
+        row.metadata[PROPOSAL_KEY] = json.loads(json.dumps(proposal_to_document(proposal)))
+        self.proposal_writes.append((bead, proposal.seq))
 
     # -- test controls (not part of the port) ------------------------------------------------
 

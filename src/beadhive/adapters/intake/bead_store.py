@@ -11,7 +11,8 @@ rewritten whole; see :mod:`beadhive.adapters.intake.documents`. ``intake.thread`
 conversation) is another such key: :meth:`BdReportStore.write_thread` re-reads the stored ``seq``
 (bd has no compare-and-swap) and then rewrites the whole document in ONE ``bd update --metadata``,
 so the records and the thread checkpoint always commit together. ``intake.outbox`` (the
-communication records) is a third such key, written the same way by :meth:`write_outbox`. Only
+communication records) is a third such key, written the same way by :meth:`write_outbox`, and
+``intake.proposal`` (the triage proposal, bh-hrx2r) a fourth, by :meth:`write_proposal`. Only
 the document's own read and write decode it; the queue and lookup reads never do.
 """
 
@@ -26,6 +27,7 @@ from beadhive.modules.intake.contracts import (
     INTAKE_HOLD_REASON,
     INVESTIGATES_EDGE,
     OUTBOX_KEY,
+    PROPOSAL_KEY,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
@@ -34,6 +36,9 @@ from beadhive.modules.intake.contracts import (
     IntakeStoreError,
     OutboxDocument,
     OutboxDocumentError,
+    Proposal,
+    ProposalDocumentError,
+    ProposalStatus,
     RefusalReason,
     ReportDraft,
     SourceSnapshot,
@@ -45,6 +50,8 @@ from beadhive.modules.intake.contracts import (
     is_hold_gate,
     outbox_from_document,
     outbox_to_document,
+    proposal_from_document,
+    proposal_to_document,
     thread_from_document,
     thread_to_document,
 )
@@ -55,6 +62,7 @@ from .documents import (
     current_source,
     source_document,
     stored_outbox,
+    stored_proposal,
     stored_thread,
 )
 
@@ -252,6 +260,15 @@ class BdReportStore:
 
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         rows = self._routes.issue_list(has_metadata_key=OUTBOX_KEY, all_=True, limit=0)
+        return self._views(rows)
+
+    def read_proposal(self, bead: str) -> Proposal | None:
+        """The bead's ``intake.proposal`` (one ``bd show``); None for no bead or no document."""
+        row = self._show(bead)
+        return self._proposal(bead, row) if row is not None else None
+
+    def reports_with_proposal(self) -> tuple[BeadView, ...]:
+        rows = self._routes.issue_list(has_metadata_key=PROPOSAL_KEY, all_=True, limit=0)
         return self._views(rows)
 
     # -- writes ------------------------------------------------------------------------------
@@ -478,6 +495,40 @@ class BdReportStore:
             operation="write_outbox",
         )
 
+    def write_proposal(self, bead: str, proposal: Proposal, *, expect_seq: int, actor: str) -> None:
+        """Re-read the stored ``seq``, then rewrite ``intake.proposal`` whole in one ``bd update``
+        (exactly as :meth:`write_outbox`, on any report: native or bound). An applied proposal
+        is immutable, so nothing is ever written over one."""
+        row = self._show(bead)
+        if row is None:
+            raise IntakeStoreError(f"{bead} not found", bead=bead, operation="write_proposal")
+        stored = self._proposal(bead, row)
+        current = stored.seq if stored is not None else 0
+        if stored is not None and stored.status is ProposalStatus.APPLIED:
+            raise IntakeRefused(
+                RefusalReason.PROPOSAL_IMMUTABLE,
+                f"{bead}'s proposal is applied and cannot be rewritten",
+            )
+        if current != expect_seq:
+            raise IntakeRefused(
+                RefusalReason.PROPOSAL_MOVED,
+                f"{bead}'s proposal is at seq {current}, not {expect_seq}; re-read and retry",
+            )
+        if proposal.seq <= expect_seq:
+            raise IntakeStoreError(
+                f"a proposal write must advance seq past {expect_seq}",
+                bead=bead,
+                operation="write_proposal",
+            )
+        self._set_document(
+            bead,
+            PROPOSAL_KEY,
+            proposal_to_document(proposal),
+            row=row,
+            actor=actor,
+            operation="write_proposal",
+        )
+
     # -- helpers -----------------------------------------------------------------------------
 
     def _show(self, bead: str) -> dict | None:
@@ -505,6 +556,16 @@ class BdReportStore:
             return outbox_from_document(document)
         except OutboxDocumentError as exc:  # never read as empty: the records may name sent posts
             raise IntakeStoreError(str(exc), bead=bead, operation="read_outbox") from exc
+
+    @staticmethod
+    def _proposal(bead: str, row: dict) -> Proposal | None:
+        document = stored_proposal(row)
+        if document is None:
+            return None
+        try:
+            return proposal_from_document(document)
+        except ProposalDocumentError as exc:  # never read as empty: the next write would replace it
+            raise IntakeStoreError(str(exc), bead=bead, operation="read_proposal") from exc
 
     def _check(self, result: Any, operation: str, bead: str, *, prefix: str = "") -> None:
         if result.returncode:

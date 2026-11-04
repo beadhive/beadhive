@@ -13,6 +13,8 @@
   ``IdSource`` and a recording ``Sanitizer`` for the outbox.
 - :class:`FakeReleaseVerifier` (``release``): a scripted ``ReleaseVerifier`` (tags and ancestry
   as plain data) for the milestone triggers.
+- :class:`FakeRepoFacts` (``repo_facts``): a scripted ``RepoFacts`` (branch ancestry, releases in
+  version order and changed paths as plain data) for the proposal checks.
 
 It imports the intake module's contracts, so it is imported explicitly, never from
 :mod:`beadhive.testing`.
@@ -27,6 +29,7 @@ from .cases import (
     assert_report_store_conforms,
     draft,
     memory_store,
+    proposal,
     run_report_store_case,
     thread,
 )
@@ -34,12 +37,14 @@ from .lock import InProcessIntakeLock, MemoryCheckpointStore, MemoryOutboxView
 from .memory_store import MemoryReportStore
 from .outbox import RecordingSanitizer, SequentialIdSource
 from .release import FakeReleaseVerifier
+from .repo_facts import FakeRepoFacts
 
 __all__ = [
     "REPORT_STORE_CASES",
     "SCOPE",
     "URL",
     "FakeReleaseVerifier",
+    "FakeRepoFacts",
     "InProcessIntakeLock",
     "MemoryCheckpointStore",
     "MemoryOutboxView",
@@ -51,6 +56,7 @@ __all__ = [
     "assert_report_store_conforms",
     "draft",
     "memory_store",
+    "proposal",
     "run_report_store_case",
     "thread",
 ]

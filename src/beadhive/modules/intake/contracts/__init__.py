@@ -330,3 +330,37 @@ __all__ += [
     "proposal_to_document",
     "validate_proposal",
 ]
+
+# -- the deterministic pre-apply checks and the repository facts they read (bh-hrx2r) ---------
+
+from ..domain import (  # noqa: E402
+    DEFAULT_REPORTER_TEXT_LIMIT,
+    CheckContext,
+    CheckFinding,
+    CheckKind,
+    LeakPolicy,
+    ProposalCheck,
+    TargetFact,
+    adopt_computed_fix,
+    check_proposal,
+    check_run,
+    cited_paths,
+    version_key,
+)
+from .ports import RepoFacts  # noqa: E402
+
+__all__ += [
+    "DEFAULT_REPORTER_TEXT_LIMIT",
+    "CheckContext",
+    "CheckFinding",
+    "CheckKind",
+    "LeakPolicy",
+    "ProposalCheck",
+    "TargetFact",
+    "adopt_computed_fix",
+    "check_proposal",
+    "check_run",
+    "cited_paths",
+    "version_key",
+    "RepoFacts",
+]

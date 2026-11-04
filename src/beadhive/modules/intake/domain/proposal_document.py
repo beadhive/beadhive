@@ -49,6 +49,8 @@ def proposal_to_document(proposal: Proposal) -> dict[str, Any]:
         "evidence": list(proposal.evidence),
         "analysed_commit": proposal.analysed_commit,
         "thread_seq": proposal.thread_seq,
+        "fixed_in": proposal.fixed_in,
+        "fix_commit": proposal.fix_commit,
         "reviews": [
             {
                 "pass": r.pass_no,
@@ -129,6 +131,8 @@ def proposal_from_document(value: Any) -> Proposal:
             evidence=_strings(raw.get("evidence", ()), "evidence"),
             analysed_commit=_str(raw.get("analysed_commit", ""), "analysed_commit"),
             thread_seq=_int(raw.get("thread_seq", 0), "thread_seq"),
+            fixed_in=_str(raw.get("fixed_in", ""), "fixed_in"),
+            fix_commit=_str(raw.get("fix_commit", ""), "fix_commit"),
             reviews=reviews,
             status=ProposalStatus(_str(raw["status"], "status")),
             seq=_int(raw["seq"], "seq"),

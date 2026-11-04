@@ -30,9 +30,13 @@ from beadhive.modules.intake.contracts import (
     IssueBinding,
     IssueStatus,
     OutboxDocument,
+    Proposal,
+    ProposalDisposition,
+    ProposalTarget,
     RefusalReason,
     ReportDraft,
     ReportStore,
+    ReviewVerdict,
     Role,
     SourceSnapshot,
     StoreScope,
@@ -41,7 +45,10 @@ from beadhive.modules.intake.contracts import (
     ThreadCheckpoint,
     ThreadIssue,
     WorkDraft,
+    add_review,
+    mark_applied,
     mint_outbox_id,
+    new_proposal,
     outbox_from_document,
 )
 
@@ -157,6 +164,27 @@ def outbox(seq: int = 2, *, texts: Sequence[str] = ("thanks",), url: str = URL) 
             "records": records,
         }
     )
+
+
+def proposal(
+    seq: int = 1,
+    *,
+    evidence: Sequence[str] = ("src/login.py:12",),
+    disposition: ProposalDisposition = ProposalDisposition.TRACKED,
+) -> Proposal:
+    """A small ``intake.proposal`` value for store cases: a ``proposed`` proposal at ``seq`` that
+    tracks ``acme-work`` and cites ``evidence``. Built with the module's own constructor."""
+    fresh = new_proposal(
+        disposition,
+        targets=(ProposalTarget("acme-work"),),
+        type="bug",
+        priority="2",
+        reporter_text="Thanks, we are tracking this.",
+        evidence=tuple(evidence),
+        analysed_commit="0123456789abcdef0123456789abcdef01234567",
+        thread_seq=3,
+    )
+    return dataclasses.replace(fresh, seq=seq)
 
 
 def _expect_store_error(call: Callable[[], object]) -> None:
@@ -530,6 +558,107 @@ def _outbox_on_every_status_and_bound_only(factory: ReportStoreFactory) -> None:
     assert store.read_outbox(native) is None
 
 
+def _expect_refused(reason: RefusalReason, call: Callable[[], object]) -> None:
+    try:
+        call()
+    except IntakeRefused as exc:
+        assert exc.reason is reason, exc.reason
+        return
+    raise AssertionError(f"expected IntakeRefused({reason.name})")
+
+
+def _proposal_absent_reads_none(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    assert store.read_proposal(bead) is None
+    assert store.read_proposal("acme-ghost") is None
+    assert store.reports_with_proposal() == ()
+
+
+def _proposal_round_trips_whole(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft())
+    first = proposal(1, evidence=("src/login.py:12", "src/session.py"))
+    store.write_proposal(bead, first, expect_seq=0, actor="dev/test")
+    assert store.read_proposal(bead) == first
+    reviewed = add_review(first, "rev/one", ReviewVerdict.CORRECTED, ("wrong target",))
+    second = dataclasses.replace(reviewed, evidence=("src/auth.py:3",))  # replaced, never merged
+    store.write_proposal(bead, second, expect_seq=1, actor="dev/test")
+    assert store.read_proposal(bead) == second
+
+
+def _proposal_write_rechecks_seq(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft())
+    store.write_proposal(bead, proposal(2), expect_seq=0, actor="dev/test")
+    moved = RefusalReason.PROPOSAL_MOVED
+    _expect_refused(moved, lambda: store.write_proposal(bead, proposal(9), expect_seq=0, actor="a"))
+    _expect_refused(moved, lambda: store.write_proposal(bead, proposal(9), expect_seq=3, actor="a"))
+    stored = store.read_proposal(bead)
+    assert stored is not None and stored.seq == 2  # a refused write wrote nothing
+    try:
+        store.write_proposal(bead, proposal(2), expect_seq=2, actor="dev/test")
+    except IntakeStoreError:
+        pass
+    else:
+        raise AssertionError("a proposal write that does not advance seq must be refused")
+
+
+def _proposal_keeps_other_documents(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft(bound=True))
+    before = store.get(bead)
+    assert before is not None
+    store.write_thread(bead, thread(3), expect_seq=0, actor="dev/test")
+    store.write_outbox(bead, outbox(2), expect_seq=0, actor="dev/test")
+    store.write_proposal(bead, proposal(1), expect_seq=0, actor="dev/test")
+    after = store.get(bead)
+    assert after is not None
+    assert (after.snapshot, after.binding, after.external_ref) == (
+        before.snapshot,
+        before.binding,
+        before.external_ref,
+    )
+    assert store.read_thread(bead) == thread(3)  # each writer rewrites only its own key
+    assert store.read_outbox(bead) == outbox(2)
+    store.write_thread(bead, thread(4), expect_seq=3, actor="dev/test")
+    store.write_outbox(bead, outbox(3), expect_seq=2, actor="dev/test")
+    assert store.read_proposal(bead) == proposal(1)
+
+
+def _proposal_on_any_report_of_every_status(factory: ReportStoreFactory) -> None:
+    """Unlike the outbox, a proposal may sit on a born-native report too; closed is in scope."""
+    store = factory()
+    native = store.create(draft("born native"))
+    bound = store.create(draft("bound", bound=True))
+    closed = store.create(draft("closed one"))
+    untouched = store.create(draft("no proposal"))
+    store.close(closed, reason="done", actor="dev/test")
+    for bead in (native, bound, closed):
+        store.write_proposal(bead, proposal(1), expect_seq=0, actor="dev/test")
+        assert store.read_proposal(bead) == proposal(1)
+    ghost = "acme-ghost"
+    _expect_store_error(lambda: store.write_proposal(ghost, proposal(1), expect_seq=0, actor="a"))
+    listed = sorted(v.id for v in store.reports_with_proposal())
+    assert listed == sorted([native, bound, closed]) and untouched not in listed
+
+
+def _applied_proposal_is_immutable(factory: ReportStoreFactory) -> None:
+    store = factory()
+    bead = store.create(draft())
+    verified = add_review(proposal(1), "rev/one", ReviewVerdict.CONFIRMED)
+    store.write_proposal(bead, proposal(1), expect_seq=0, actor="dev/test")
+    store.write_proposal(bead, verified, expect_seq=1, actor="dev/test")
+    applied = mark_applied(verified)
+    store.write_proposal(bead, applied, expect_seq=verified.seq, actor="dev/test")
+    rewrite = dataclasses.replace(applied, reporter_text="changed", seq=applied.seq + 1)
+    _expect_refused(
+        RefusalReason.PROPOSAL_IMMUTABLE,
+        lambda: store.write_proposal(bead, rewrite, expect_seq=applied.seq, actor="dev/test"),
+    )
+    assert store.read_proposal(bead) == applied  # the refused write wrote nothing
+
+
 def _bound_create_opens_a_hold_and_a_native_one_does_not(factory: ReportStoreFactory) -> None:
     store = factory()
     native = store.create(draft("born native"))
@@ -633,6 +762,14 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase(
         "store.holds-open-and-resolve-one-at-a-time", _holds_open_and_resolve_one_at_a_time
     ),
+    ReportStoreCase("store.proposal-absent-reads-none", _proposal_absent_reads_none),
+    ReportStoreCase("store.proposal-round-trips-whole", _proposal_round_trips_whole),
+    ReportStoreCase("store.proposal-write-rechecks-seq", _proposal_write_rechecks_seq),
+    ReportStoreCase("store.proposal-keeps-other-documents", _proposal_keeps_other_documents),
+    ReportStoreCase(
+        "store.proposal-on-any-report-of-every-status", _proposal_on_any_report_of_every_status
+    ),
+    ReportStoreCase("store.applied-proposal-is-immutable", _applied_proposal_is_immutable),
 )
 
 
@@ -668,6 +805,7 @@ __all__ = [
     "draft",
     "memory_store",
     "outbox",
+    "proposal",
     "run_report_store_case",
     "thread",
 ]

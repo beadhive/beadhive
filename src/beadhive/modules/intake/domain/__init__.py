@@ -551,6 +551,20 @@ from .proposal import (  # noqa: E402
     new_proposal,
     validate_proposal,
 )
+from .proposal_checks import (  # noqa: E402
+    DEFAULT_REPORTER_TEXT_LIMIT,
+    CheckContext,
+    CheckFinding,
+    CheckKind,
+    ProposalCheck,
+    RepoQueries,
+    TargetFact,
+    adopt_computed_fix,
+    check_proposal,
+    check_run,
+    cited_paths,
+    version_key,
+)
 from .proposal_document import (  # noqa: E402
     PROPOSAL_KEY,
     ProposalDocumentError,
@@ -627,4 +641,21 @@ __all__ += [
     "diff_labels",
     "group_of",
     "labels_revision",
+]
+
+# -- the deterministic pre-apply checks (bh-hrx2r) --------------------------------------------
+
+__all__ += [
+    "DEFAULT_REPORTER_TEXT_LIMIT",
+    "CheckContext",
+    "CheckFinding",
+    "CheckKind",
+    "ProposalCheck",
+    "RepoQueries",
+    "TargetFact",
+    "adopt_computed_fix",
+    "check_proposal",
+    "check_run",
+    "cited_paths",
+    "version_key",
 ]

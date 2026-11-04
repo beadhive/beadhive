@@ -12,11 +12,14 @@ import pytest
 
 from beadhive.modules.intake.contracts import (
     OUTBOX_KEY,
+    PROPOSAL_KEY,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
+    IntakeStoreError,
     ReportStore,
     outbox_to_document,
+    proposal_to_document,
     thread_to_document,
 )
 from beadhive.testing import ConformanceFailure
@@ -26,6 +29,7 @@ from beadhive.testing.intake import (
     assert_report_store_conforms,
     memory_store,
     outbox,
+    proposal,
     run_report_store_case,
     thread,
 )
@@ -39,7 +43,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 30
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 36
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -304,6 +308,56 @@ class _OutboxForEveryBead(MemoryReportStore):
         return super().read_outbox(bead) or outbox(0, texts=())
 
 
+class _ProposalForEveryBead(MemoryReportStore):
+    def read_proposal(self, bead):
+        return super().read_proposal(bead) or proposal(1)
+
+
+class _ProposalMerged(MemoryReportStore):
+    """Keeps the stored evidence and appends the new: a merge, not a rewrite."""
+
+    def write_proposal(self, bead, proposal, *, expect_seq, actor):
+        stored = self.read_proposal(bead)
+        if stored is not None:
+            merged = (*stored.evidence, *proposal.evidence)
+            proposal = dataclasses.replace(proposal, evidence=merged)
+        super().write_proposal(bead, proposal, expect_seq=expect_seq, actor=actor)
+
+
+class _ProposalSeqUnchecked(MemoryReportStore):
+    def write_proposal(self, bead, proposal, *, expect_seq, actor):
+        stored = self.read_proposal(bead)
+        expect = stored.seq if stored else 0
+        super().write_proposal(bead, proposal, expect_seq=expect, actor=actor)
+
+
+class _OutboxClobbersProposal(MemoryReportStore):
+    def write_outbox(self, bead, document, *, expect_seq, actor):
+        super().write_outbox(bead, document, expect_seq=expect_seq, actor=actor)
+        self._row(bead).metadata.pop(PROPOSAL_KEY, None)
+
+
+class _ProposalBoundOnly(MemoryReportStore):
+    """Refuses a born-native report, as the outbox does: a native report could never be triaged."""
+
+    def write_proposal(self, bead, proposal, *, expect_seq, actor):
+        view = self.get(bead)
+        if view is not None and not view.external_ref:
+            raise IntakeStoreError(f"{bead} is not bound", bead=bead, operation="write_proposal")
+        super().write_proposal(bead, proposal, expect_seq=expect_seq, actor=actor)
+
+
+class _AppliedRewritable(MemoryReportStore):
+    """Lets a write replace an applied proposal (seq still checked)."""
+
+    def write_proposal(self, bead, proposal, *, expect_seq, actor):
+        stored = self.read_proposal(bead)
+        if stored is not None and stored.status.value == "applied" and stored.seq == expect_seq:
+            self._row(bead).metadata[PROPOSAL_KEY] = proposal_to_document(proposal)
+            return
+        super().write_proposal(bead, proposal, expect_seq=expect_seq, actor=actor)
+
+
 class _WorkBornAsUntriagedReport(MemoryReportStore):
     """Creates the work bead of `accept --new-work` as a queued report: it would be triaged."""
 
@@ -360,6 +414,12 @@ _BROKEN = [
     (_ThreadClobbersOutbox, "store.outbox-keeps-other-documents"),
     (_OutboxAnyBead, "store.outbox-on-every-status-and-bound-only"),
     (_OutboxForEveryBead, "store.outbox-absent-reads-none"),
+    (_ProposalForEveryBead, "store.proposal-absent-reads-none"),
+    (_ProposalMerged, "store.proposal-round-trips-whole"),
+    (_ProposalSeqUnchecked, "store.proposal-write-rechecks-seq"),
+    (_OutboxClobbersProposal, "store.proposal-keeps-other-documents"),
+    (_ProposalBoundOnly, "store.proposal-on-any-report-of-every-status"),
+    (_AppliedRewritable, "store.applied-proposal-is-immutable"),
 ]
 
 

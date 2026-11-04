@@ -5,15 +5,15 @@ The same port, the same behaviour, over the API where the Beads service has an o
 :class:`~beadhive.adapters.intake.bead_store.BdReportStore` whose reads and api-ready writes are
 answered by an injected :class:`ReportApi` instead of a ``bd`` subprocess, so every policy the
 parent owns (classification inputs, the held close, the ``intake.source`` / ``intake.thread`` /
-``intake.outbox`` documents, the seq re-check) is shared, not copied.
+``intake.outbox`` / ``intake.proposal`` documents, the seq re-check) is shared, not copied.
 
 What moves to the API, and what does not (and why):
 
-* reads: one bead (``get``, ``read_thread``, ``read_outbox``, the hold and tracking reads, all
-  answered by the ONE row, whose ``dependencies`` carry each neighbour's status and reason), the
-  open-label queue, the bound-report and outbox listings;
+* reads: one bead (``get``, ``read_thread``, ``read_outbox``, ``read_proposal``, the hold and
+  tracking reads, all answered by the ONE row, whose ``dependencies`` carry each neighbour's status
+  and reason), the open-label queue, the bound-report, outbox and proposal listings;
 * writes: type/priority updates, assignment, tracking and investigates edges, the plain and the
-  held close, and the three metadata documents (a compare-and-set against the row just read, so a
+  held close, and the four metadata documents (a compare-and-set against the row just read, so a
   document that moved since is refused where ``bd update --metadata`` would overwrite it);
 * the lookup by ``external_ref`` answers from an index of the bound reports (the API has no
   ``external_ref`` filter) and CONFIRMS A MISS on the CLI, so a bead bound by ``external_ref``
@@ -42,6 +42,7 @@ from typing import Any, Protocol
 from beadhive.modules.intake.contracts import (
     INVESTIGATES_EDGE,
     OUTBOX_KEY,
+    PROPOSAL_KEY,
     BeadView,
     IntakeRefused,
     IntakeStoreError,
@@ -193,6 +194,10 @@ class ApiReportStore(BdReportStore):
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         views = self._rows("list", key=OUTBOX_KEY, all_=True)
         return super().reports_with_outbox() if views is None else views
+
+    def reports_with_proposal(self) -> tuple[BeadView, ...]:
+        views = self._rows("list", key=PROPOSAL_KEY, all_=True)
+        return super().reports_with_proposal() if views is None else views
 
     def find_by_external_ref(self, url: str) -> tuple[BeadView, ...]:
         """The beads bound to ``url``, every status. A hit in the bound-report index is answered
@@ -350,8 +355,8 @@ class ApiReportStore(BdReportStore):
     # ``holds`` (the gate list stays on the CLI, where it is the faster read, then each gate's
     # dependents over the API), ``is_held`` / ``tracked_work`` / ``trackers_of`` /
     # ``investigations_of`` (all through ``_edges``), ``get`` / ``read_thread`` / ``read_outbox`` /
-    # ``write_thread`` / ``write_outbox`` / ``record_snapshot`` (through ``_show`` and
-    # ``_set_document``),
+    # ``read_proposal`` / ``write_thread`` / ``write_outbox`` / ``write_proposal`` /
+    # ``record_snapshot`` (through ``_show`` and ``_set_document``),
     # ``set_state`` / ``open_hold`` / ``resolve_hold`` (CLI only) and ``duplicate_pairs`` (no API).
 
 

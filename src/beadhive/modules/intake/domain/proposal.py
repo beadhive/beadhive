@@ -83,7 +83,9 @@ class Proposal:
 
     ``share_with`` is the canonical report a duplicate is shared with, ``analysed_commit`` the
     repository commit the analysis was made at and ``thread_seq`` the ``intake.thread`` seq it
-    read, so a later check can tell the proposal went stale."""
+    read, so a later check can tell the proposal went stale. ``fixed_in`` is the release a fix
+    claim names and ``fix_commit`` the commit it cites; both are claims, which the pre-apply
+    checks verify (the version is computed from the repository and overwrites a claimed one)."""
 
     disposition: ProposalDisposition
     targets: tuple[ProposalTarget, ...] = ()
@@ -94,6 +96,8 @@ class Proposal:
     evidence: tuple[str, ...] = ()
     analysed_commit: str = ""
     thread_seq: int = 0
+    fixed_in: str = ""
+    fix_commit: str = ""
     reviews: tuple[ProposalReview, ...] = ()
     status: ProposalStatus = ProposalStatus.PROPOSED
     seq: int = 0
@@ -135,6 +139,8 @@ def new_proposal(
     evidence: tuple[str, ...] = (),
     analysed_commit: str = "",
     thread_seq: int = 0,
+    fixed_in: str = "",
+    fix_commit: str = "",
 ) -> Proposal:
     """A fresh ``proposed`` proposal at ``seq`` 1."""
     proposal = Proposal(
@@ -147,6 +153,8 @@ def new_proposal(
         evidence=tuple(evidence),
         analysed_commit=analysed_commit,
         thread_seq=thread_seq,
+        fixed_in=fixed_in,
+        fix_commit=fix_commit,
         seq=1,
     )
     validate_proposal(proposal)
@@ -199,6 +207,8 @@ def amend(proposal: Proposal, **changes) -> Proposal:
         "evidence",
         "analysed_commit",
         "thread_seq",
+        "fixed_in",
+        "fix_commit",
     }
     unknown = set(changes) - owned
     if unknown:
