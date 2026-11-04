@@ -21,6 +21,12 @@ from typing import Generic, TypeVar
 
 PORT_API_VERSION = 1
 
+#: The hard upper bound (seconds) on one adapter request's connect/read timeout. A correctness
+#: limit, not a tunable: an unbounded timeout reopens the "no timeout" hole, and a hung request
+#: would stall discovery and the outbox sender for its binding. Shared by the host config model
+#: and every adapter's transport validator so the two cannot drift; refused, never clamped.
+MAX_REQUEST_TIMEOUT_SECONDS = 300
+
 T = TypeVar("T")
 
 
@@ -321,6 +327,7 @@ class RetryBudget:
 
 
 __all__ = [
+    "MAX_REQUEST_TIMEOUT_SECONDS",
     "PORT_API_VERSION",
     "READ_OPERATIONS",
     "WRITE_OPERATIONS",

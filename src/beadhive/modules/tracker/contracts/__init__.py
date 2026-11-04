@@ -31,6 +31,7 @@ from .ports import (
     TrackerReader,
 )
 from .records import (
+    MAX_REQUEST_TIMEOUT_SECONDS,
     PORT_API_VERSION,
     READ_OPERATIONS,
     WRITE_OPERATIONS,
@@ -68,6 +69,7 @@ from .records import (
 )
 
 __all__ = [
+    "MAX_REQUEST_TIMEOUT_SECONDS",
     "PORT_API_VERSION",
     "READ_OPERATIONS",
     "WRITE_OPERATIONS",
