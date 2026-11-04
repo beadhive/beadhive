@@ -109,7 +109,7 @@ docker stop xtdb-beadlog             # about 1 s, exit 143: this is the clean st
 Everything is under `plugins.beadlog-xtdb`, **host-owned**, and **off by default**.
 
 ```sh
-uv sync --extra xtdb                  # in a checkout; installs beadhive[xtdb] (psycopg, LGPL-3.0)
+uv tool install 'beadhive[xtdb]'      # adds psycopg (LGPL-3.0); in a checkout: uv sync --extra xtdb
 bh config set plugins.beadlog-xtdb.enabled true
 bh config set plugins.beadlog-xtdb.data_dir /data/<real-disk>/xtdb
 bh config set plugins.beadlog-xtdb.credential.config_path /abs/path/fnox.toml
