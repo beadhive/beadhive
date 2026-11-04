@@ -16,7 +16,9 @@ from beadhive.modules.intake.contracts import (
     THREAD_KEY,
     BeadView,
     DuplicatePair,
+    IntakeRefused,
     IntakeStoreError,
+    RefusalReason,
     ReportStore,
     outbox_to_document,
     proposal_to_document,
@@ -43,7 +45,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 36
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 37
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -358,6 +360,30 @@ class _AppliedRewritable(MemoryReportStore):
         super().write_proposal(bead, proposal, expect_seq=expect_seq, actor=actor)
 
 
+class _NoNewRound(MemoryReportStore):
+    """Refuses every write over an applied proposal: a woken needs-info report could never be
+    re-reviewed."""
+
+    def write_proposal(self, bead, proposal, *, expect_seq, actor):
+        stored = self.read_proposal(bead)
+        if stored is not None and stored.status.value == "applied":
+            raise IntakeRefused(RefusalReason.PROPOSAL_IMMUTABLE, "applied")
+        super().write_proposal(bead, proposal, expect_seq=expect_seq, actor=actor)
+
+
+class _HistoryDroppable(MemoryReportStore):
+    """Checks only the applied record, so a later write may drop the kept history."""
+
+    def write_proposal(self, bead, proposal, *, expect_seq, actor):
+        stored = self.read_proposal(bead)
+        if stored is not None and stored.history and stored.status.value != "applied":
+            if stored.seq != expect_seq:
+                raise IntakeRefused(RefusalReason.PROPOSAL_MOVED, "moved")
+            self._row(bead).metadata[PROPOSAL_KEY] = proposal_to_document(proposal)
+            return
+        super().write_proposal(bead, proposal, expect_seq=expect_seq, actor=actor)
+
+
 class _WorkBornAsUntriagedReport(MemoryReportStore):
     """Creates the work bead of `accept --new-work` as a queued report: it would be triaged."""
 
@@ -420,6 +446,8 @@ _BROKEN = [
     (_OutboxClobbersProposal, "store.proposal-keeps-other-documents"),
     (_ProposalBoundOnly, "store.proposal-on-any-report-of-every-status"),
     (_AppliedRewritable, "store.applied-proposal-is-immutable"),
+    (_NoNewRound, "store.applied-needs-info-opens-a-new-round"),
+    (_HistoryDroppable, "store.applied-needs-info-opens-a-new-round"),
 ]
 
 

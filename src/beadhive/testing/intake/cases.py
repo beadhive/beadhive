@@ -49,6 +49,7 @@ from beadhive.modules.intake.contracts import (
     mark_applied,
     mint_outbox_id,
     new_proposal,
+    new_round,
     outbox_from_document,
 )
 
@@ -659,6 +660,36 @@ def _applied_proposal_is_immutable(factory: ReportStoreFactory) -> None:
     assert store.read_proposal(bead) == applied  # the refused write wrote nothing
 
 
+def _applied_needs_info_opens_a_new_round(factory: ReportStoreFactory) -> None:
+    """An applied needs-info proposal is followed only by a new round that keeps it, unchanged,
+    in history (bh-9aqmv); a bare rewrite, and any later write that edits or drops the history,
+    is refused and writes nothing."""
+    store = factory()
+    bead = store.create(draft(bound=True))
+    asked = proposal(1, disposition=ProposalDisposition.NEEDS_INFO)
+    store.write_proposal(bead, asked, expect_seq=0, actor="dev/test")
+    verified = add_review(asked, "rev/one", ReviewVerdict.CONFIRMED)
+    store.write_proposal(bead, verified, expect_seq=asked.seq, actor="dev/test")
+    applied = mark_applied(verified)
+    store.write_proposal(bead, applied, expect_seq=verified.seq, actor="dev/test")
+    rewrite = dataclasses.replace(applied, reporter_text="changed", seq=applied.seq + 1)
+    _expect_refused(
+        RefusalReason.PROPOSAL_IMMUTABLE,
+        lambda: store.write_proposal(bead, rewrite, expect_seq=applied.seq, actor="dev/test"),
+    )
+    assert store.read_proposal(bead) == applied
+    following = new_round(applied, proposal(1))
+    store.write_proposal(bead, following, expect_seq=applied.seq, actor="dev/test")
+    stored = store.read_proposal(bead)
+    assert stored == following and stored.history == (applied,)
+    dropped = dataclasses.replace(following, history=(), seq=following.seq + 1)
+    _expect_refused(
+        RefusalReason.PROPOSAL_IMMUTABLE,
+        lambda: store.write_proposal(bead, dropped, expect_seq=following.seq, actor="dev/test"),
+    )
+    assert store.read_proposal(bead) == following  # the refused write wrote nothing
+
+
 def _bound_create_opens_a_hold_and_a_native_one_does_not(factory: ReportStoreFactory) -> None:
     store = factory()
     native = store.create(draft("born native"))
@@ -770,6 +801,9 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
         "store.proposal-on-any-report-of-every-status", _proposal_on_any_report_of_every_status
     ),
     ReportStoreCase("store.applied-proposal-is-immutable", _applied_proposal_is_immutable),
+    ReportStoreCase(
+        "store.applied-needs-info-opens-a-new-round", _applied_needs_info_opens_a_new_round
+    ),
 )
 
 
