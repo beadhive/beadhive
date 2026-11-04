@@ -49,6 +49,14 @@ jobs:
           uv run --isolated --no-project --with dist/*.whl python -c "import beadhive"
           uv run --isolated --no-project --with dist/*.whl bh --version
 
+      # Pre-publish (bh-lrs9v): `publish` needs this job, so a failure here fails the tag before
+      # anything reaches PyPI. The github/xtdb extras vendor their plugin packages in the wheel and
+      # add only third-party dependencies; this proves, from the BUILT wheel in clean venvs with
+      # no workspace resolution, that bare, `[github]` and `[xtdb]` all install from the index and
+      # that each plugin factory imports (or, bare, refuses naming the extra).
+      - name: Smoke-test the bare, [github] and [xtdb] installs in isolated venvs
+        run: python3 scripts/release-extras-smoke.py dist/*.whl
+
       - name: Assert the wheel-derived digest equals the installed measurement
         shell: bash
         run: |
