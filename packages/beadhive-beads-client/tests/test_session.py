@@ -270,6 +270,90 @@ def test_list_issues_forwards_status_all_and_include_infra() -> None:
     assert params.get_list("status") == ["closed", "open"]
 
 
+def _recording_session(seen: list[httpx.Request]) -> BeadsSession:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v0/beads/context":
+            return httpx.Response(200, json=context())
+        return httpx.Response(200, json={"items": [], "has_more": False})
+
+    return BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080"),
+        ExpectedContext("expected", "scratch"),
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def test_list_issues_forwards_label_type_gate_and_metadata_filters() -> None:
+    """bh-9o12j: the intake report store reads its queue (`label`), its bound reports
+    (`has_metadata_key`) and its gates (`type_` + `include_gates`) through the service, so the
+    wrapper passes the generated client's own filters through unchanged."""
+    seen: list[httpx.Request] = []
+    with _recording_session(seen) as session:
+        session.list_issues(
+            limit=0,
+            label=["intake:untriaged", "origin:github"],
+            label_any=["bug", "feature"],
+            type_="gate",
+            include_gates=True,
+            has_metadata_key="intake.source",
+            metadata_field=["team=core"],
+            brief=True,
+        )
+    params = seen[-1].url.params
+    assert params.get_list("label") == ["intake:untriaged", "origin:github"]
+    assert params.get_list("label_any") == ["bug", "feature"]
+    assert params["type"] == "gate"
+    assert params["include_gates"] == "true"
+    assert params["has_metadata_key"] == "intake.source"  # the dot is part of the key
+    assert params.get_list("metadata_field") == ["team=core"]
+    assert params["brief"] == "true"
+
+
+def test_list_issues_omits_every_new_filter_it_was_not_given() -> None:
+    seen: list[httpx.Request] = []
+    with _recording_session(seen) as session:
+        session.list_issues(limit=0)
+    params = seen[-1].url.params
+    for name in ("label", "label_any", "type", "has_metadata_key", "metadata_field"):
+        assert name not in params
+    assert params["include_gates"] == "false" and params["brief"] == "false"
+
+
+def test_get_issue_asks_for_dependents_only_when_told_to() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v0/beads/context":
+            return httpx.Response(200, json=context())
+        if request.url.path == "/v0/beads/ready":
+            return httpx.Response(200, json={"items": [], "has_more": False})
+        row = {
+            "id": "x-1",
+            "title": "t",
+            "priority": 2,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "revision": "0",
+        }
+        return httpx.Response(200, json=row)
+
+    with BeadsSession(
+        RemoteEndpoint("http://127.0.0.1:8080"),
+        ExpectedContext("expected", "scratch"),
+        transport=httpx.MockTransport(handler),
+    ) as session:
+        session.get_issue("x-1")
+        assert seen[-1].url.params["include_dependents"] == "false"
+        session.get_issue("x-1", include_dependents=True)
+        assert seen[-1].url.params["include_dependents"] == "true"
+
+
 def test_list_issues_rejects_an_unrecognized_sort_value() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/healthz":
