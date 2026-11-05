@@ -19,6 +19,15 @@ is refused for that issue (``bh work labels define`` first), from ONE ``labels.r
 sent: an operator approves the batch (:meth:`~.sender.OutboxService.approve_label_batch`) and
 ``send`` changes each issue once.
 
+**refresh** (:meth:`LabelProjection.refresh`, ``bh-gjb5w``): the opt-in transition hook's draft
+(``intake.external.labels.on_transition``). The same desired-state function and the same single
+``labels`` record per issue, but TRACKER-FREE: it diffs against the labels the store holds (the
+import snapshot, with the owned part replaced by the base of the open ``labels`` record when one
+is waiting, so a refresh never regresses a fresher sync draft) and reads no issue listing and no
+label definitions. The sender reads the live labels when it renders, so a stale base only
+costs a no-op change. Same supersede group: a refresh finds (O2) or refreshes (O6) the report's
+open record, never stacking one.
+
 **define** (:meth:`LabelProjection.define`): the catalog (closed sets up front, open sets as the
 values appear on the projected beads) against the repository's definitions, rendered with a
 digest. With the digest an operator reviewed, an operator seat re-renders it, mints ONE
@@ -198,6 +207,64 @@ class LabelProjection:
         items.sort(key=lambda i: (order.get(i.report, len(order)), i.report))
         return LabelSyncOutcome(tuple(items), request.dry_run)
 
+    # -- refresh (the on_transition hook) ----------------------------------------------------
+
+    def refresh(self, reports: Iterable[str], actor: str) -> tuple[LabelSyncItem, ...]:
+        """Draft or refresh the ONE ``labels`` record of each of ``reports`` from stored state,
+        with no tracker call (see the module docstring). One item per distinct report, in order.
+        Never raises: a gate that is off, an unbound report or a store failure is that item's
+        ``note`` or ``error``, because the transition that called this has already happened."""
+        wanted = list(dict.fromkeys(reports))
+        try:
+            if not self._outbox.enabled:
+                raise IntakeRefused(
+                    RefusalReason.OUTBOX_DISABLED,
+                    "the outbox is off for this hive (intake.external.outbox.enabled; opt-in)",
+                )
+            machine.require_kind_enabled(OpKind.LABELS, self._outbox)
+            require_private_store(self._posture)
+        except IntakeRefused as exc:
+            return tuple(LabelSyncItem(r, error=exc.detail or str(exc)) for r in wanted)
+        return tuple(
+            self._guarded(report, lambda r=report: self._refresh_one(r, actor)) for report in wanted
+        )
+
+    def _refresh_one(self, report: str, actor: str) -> LabelSyncItem:
+        view = self._store.get(report)
+        if view is None:
+            return LabelSyncItem(report, error=f"{report} not found")
+        binding = view.binding
+        if binding is None:
+            return LabelSyncItem(report, note="not bound to an external issue; no labels")
+        if view.snapshot is None:
+            return LabelSyncItem(
+                report, binding.url, note="no stored issue snapshot; sync labels to read the issue"
+            )
+        facts = self._facts(view)
+        catalog = LabelCatalog.build(self._registry, self._settings, _observed([facts]))
+        base = self._stored_base(view, binding)
+        desired = desired_labels(catalog, facts.report, facts.work, facts.progress)
+        diff = diff_labels(catalog, desired, base.labels)
+        swaps = tuple((dim, old, new) for dim, (old, new) in sorted(diff.swaps(catalog).items()))
+        item = LabelSyncItem(view.id, binding.url, diff.add, diff.remove, diff.drift, swaps=swaps)
+        if not item.changed:
+            return self._converged(view, binding, item, LabelSyncRequest(actor, reports=(report,)))
+        return self._draft(view, binding, base, item, actor)
+
+    def _stored_base(self, view: BeadView, binding: IssueBinding) -> LabelBase:
+        """The labels the store believes the issue carries: the import snapshot's, with the owned
+        ones replaced by those the open ``labels`` record was drafted on (a fresh read)."""
+        snapshot = view.snapshot
+        assert snapshot is not None
+        base = LabelBase(snapshot.revision, frozenset(snapshot.labels))
+        doc = self._store.read_outbox(view.id)
+        open_id = _open_labels(doc, binding.url) if doc is not None else ""
+        op = doc.records[open_id].op(OpKind.LABELS) if doc is not None and open_id else None
+        if op is None or op.labels is None:
+            return base
+        kept = frozenset(label for label in base.labels if not self._leaks.owns(label))
+        return LabelBase(op.labels.base_revision, kept | op.labels.base_owned)
+
     def _select(self, request: LabelSyncRequest) -> tuple[list[BeadView], list[LabelSyncItem]]:
         """The bound reports of this tracker project to sync, and an item for each named report
         that cannot be (missing, unbound, bound elsewhere)."""
@@ -313,19 +380,18 @@ class LabelProjection:
             )
         if request.dry_run:
             return item
-        return self._draft(view, binding, issue, item, request.actor)
+        return self._draft(view, binding, label_base(issue), item, request.actor)
 
     def _draft(
         self,
         view: BeadView,
         binding: IssueBinding,
-        issue: TrackerIssue,
+        base: LabelBase,
         item: LabelSyncItem,
         actor: str,
     ) -> LabelSyncItem:
         """O1 of ONE labels record under the binding's lock: O2 when the newest open one already
         carries this diff on these owned labels, else a new one superseding the older (O6)."""
-        base = label_base(issue)
         owned = frozenset(label for label in base.labels if self._leaks.owns(label))
         with self._lock.hold(binding_key(binding)):
             doc = self._store.read_outbox(view.id) or OutboxDocument()

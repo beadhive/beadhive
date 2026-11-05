@@ -27,7 +27,7 @@ Presentation, hive resolution, clone-on-demand and push stay with the legacy cal
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from ..contracts import IntakeLock, IntakePort, LabelPolicy, ReportStore
 from ..domain import (
@@ -62,6 +62,7 @@ from ..domain import (
     LabelBatchOutcome,
     LabelDefineOutcome,
     LabelDefineRequest,
+    LabelSyncItem,
     LabelSyncOutcome,
     LabelSyncRequest,
     LinkOutcome,
@@ -160,7 +161,14 @@ class IntakeService:
     and define; without it they refuse with ``INTAKE_DISABLED``. The label batch is the outbox's.
     ``triage`` binds propose, review and apply-reviewed (the repository facts, landed commits,
     branch, leak policy and re-filer); without it they refuse with ``INTAKE_DISABLED``. Apply
-    refreshes the touched reports' labels through ``projection`` when it is bound."""
+    refreshes the touched reports' labels through ``projection`` when it is bound.
+    ``refresh_on_transition`` (``intake.external.labels.on_transition``, the host passes it; off
+    by default) makes every transition below also draft or refresh the affected report's ONE
+    ``labels`` record from stored state (:meth:`LabelProjection.refresh`; no tracker call, the
+    sender reads live labels at render): dispose (accept, reject, reroute, promote), needs_info,
+    wake, link, unlink and the milestone triggers (merge, release, started, delivery notices).
+    It needs ``projection`` and never fails the transition; each public call refreshes a report
+    once, and ``apply_reviewed`` defers to its own refresh of the touched reports."""
 
     def __init__(
         self,
@@ -178,6 +186,7 @@ class IntakeService:
         review: ReviewPolicy | None = None,
         projection: LabelProjection | None = None,
         triage: TriageBinding | None = None,
+        refresh_on_transition: bool = False,
     ) -> None:
         self._store = store
         self._catch_up = catch_up_on_link
@@ -191,7 +200,31 @@ class IntakeService:
         self._linker = LinkService(store, lock)
         self._review = ReviewService(store, threads, review)
         self._projection = projection
+        self._refresh_on_transition = refresh_on_transition
+        self._deferred = 0  # > 0 while a caller that refreshes the touched reports itself runs
+        self._refreshed: tuple[LabelSyncItem, ...] = ()
         self._proposals = ProposalService(store, self, triage, projection=projection)
+
+    # -- the opt-in label refresh on a transition (bh-gjb5w) ----------------------------------
+
+    @property
+    def last_label_refresh(self) -> tuple[LabelSyncItem, ...]:
+        """What the most recent transition's label refresh did, per report (empty: it did not
+        run). A refresh that could not draft is its item's ``note`` or ``error``."""
+        return self._refreshed
+
+    def _refresh_labels(self, reports: Iterable[str], actor: str) -> None:
+        """The transition hook: draft or refresh the ONE ``labels`` record of each distinct
+        report. A no-op unless ``refresh_on_transition`` and ``projection`` are both bound."""
+        if not self._refresh_on_transition or self._projection is None or self._deferred:
+            return
+        wanted = tuple(dict.fromkeys(reports))
+        if wanted:
+            self._refreshed = self._projection.refresh(wanted, actor)
+
+    def _after_milestones(self, outcome: MilestoneOutcome, actor: str) -> MilestoneOutcome:
+        self._refresh_labels(outcome.reports, actor)
+        return outcome
 
     # -- filing ------------------------------------------------------------------------------
 
@@ -242,6 +275,11 @@ class IntakeService:
     # -- dispositions ------------------------------------------------------------------------
 
     def dispose(self, request: DispositionRequest) -> DispositionOutcome:
+        outcome = self._dispose(request)
+        self._refresh_labels((request.report,), request.actor)
+        return outcome
+
+    def _dispose(self, request: DispositionRequest) -> DispositionOutcome:
         if request.disposition is Disposition.REJECT and not request.reason:
             raise IntakeRefused(
                 RefusalReason.REASON_REQUIRED, "reject requires a --reason (reporter-visible)"
@@ -270,9 +308,11 @@ class IntakeService:
         composition root, which can reach both stores, orchestrates it."""
         view = self._require_untriaged(request.report)
         reason = refile(view)
-        return self._reroute(
+        outcome = self._reroute(
             dataclasses.replace(request, disposition=Disposition.REROUTE, reason=reason, seat="")
         )
+        self._refresh_labels((request.report,), request.actor)
+        return outcome
 
     def _require_untriaged(self, report: str) -> BeadView:
         """The bead, if it is an untriaged intake bead (a disposition never re-triages)."""
@@ -443,6 +483,7 @@ class IntakeService:
         with ``catch_up_on_link``, work that already merged then catches the report up."""
         outcome = self._linker.link(request)
         caught_up = self._caught_up(request.report, request.work, request.actor)
+        self._refresh_labels((request.report,), request.actor)
         if not caught_up:
             return outcome
         return dataclasses.replace(outcome, milestones=caught_up)
@@ -456,7 +497,9 @@ class IntakeService:
         return self._milestones.on_linked(report, work, actor).items
 
     def unlink(self, report: str, *, actor: str) -> LinkOutcome:
-        return self._linker.unlink(report, actor=actor)
+        outcome = self._linker.unlink(report, actor=actor)
+        self._refresh_labels((report,), actor)
+        return outcome
 
     def work_progress(self, report: str) -> WorkProgress:
         return self._linker.work_progress(report)
@@ -555,6 +598,7 @@ class IntakeService:
                 )
             except IntakeStoreError as exc:
                 raise _retag(exc, "stamp:intake", request.report) from exc
+        self._refresh_labels((request.report,), request.actor)
         return NeedsInfoOutcome(
             request.report,
             drafted.outbox_id,
@@ -570,7 +614,10 @@ class IntakeService:
         the reply stays new evidence for the next triage pass. The report keeps its hold."""
         threads = self._thread_service()
         view = check_wake(request.report, self._store.get(request.report))
-        return self._wake(view, threads, request.actor)
+        outcome = self._wake(view, threads, request.actor)
+        if outcome.woken:
+            self._refresh_labels((request.report,), request.actor)
+        return outcome
 
     def wake_all(self, *, actor: str) -> WakeSweep:
         """``wake`` every open report on ``intake:needs-info``; one report failing is reported on
@@ -584,7 +631,9 @@ class IntakeService:
                 items.append(WakeOutcome(view.id, error=exc.detail or exc.reason.value))
             except IntakeStoreError as exc:
                 items.append(WakeOutcome(view.id, error=exc.detail))
-        return WakeSweep(tuple(items))
+        sweep = WakeSweep(tuple(items))
+        self._refresh_labels(sweep.woken, actor)
+        return sweep
 
     def _wake(self, view: BeadView, threads: ThreadService, actor: str) -> WakeOutcome:
         thread = threads.thread_of(view.id)
@@ -686,16 +735,16 @@ class IntakeService:
         return self._milestones
 
     def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome:
-        return self._milestone_service().on_work_merged(fact)
+        return self._after_milestones(self._milestone_service().on_work_merged(fact), fact.actor)
 
     def on_release(self, fact: ReleaseFact) -> MilestoneOutcome:
-        return self._milestone_service().on_release(fact)
+        return self._after_milestones(self._milestone_service().on_release(fact), fact.actor)
 
     def on_work_started(self, fact: StartFact) -> MilestoneOutcome:
-        return self._milestone_service().on_work_started(fact)
+        return self._after_milestones(self._milestone_service().on_work_started(fact), fact.actor)
 
     def delivery_notice(self, fact: NoticeFact) -> MilestoneOutcome:
-        return self._milestone_service().delivery_notice(fact)
+        return self._after_milestones(self._milestone_service().delivery_notice(fact), fact.actor)
 
     # -- review packets (bh-hrx2r): ingest every pending thread, then cluster-aware batches -----
 
@@ -734,7 +783,13 @@ class IntakeService:
         return self._proposals.review(request)
 
     def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome:
-        return self._proposals.apply_reviewed(request)
+        # apply refreshes the touched reports' labels itself (fresh, from the tracker): the verbs
+        # it runs through this service must not draft a second refresh for the same report
+        self._deferred += 1
+        try:
+            return self._proposals.apply_reviewed(request)
+        finally:
+            self._deferred -= 1
 
     # -- discovery (I6) ----------------------------------------------------------------------
 
