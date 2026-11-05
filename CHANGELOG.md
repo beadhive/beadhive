@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.1 (2026-11-05)
+
+### Fix
+
+- **intake**: wake a needs-info round only on reporter comments after its read
+- **intake**: finish half-done triage applies, read-aware needs-info and report owners in checks
+
 ## v0.35.0 (2026-11-05)
 
 ### Feat
