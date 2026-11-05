@@ -42,7 +42,9 @@ def accept(
     if work or new_work:
         return accept_to_work(cfg, bead, actor, work, new_work, issue_type, priority, hive)
     cwd = registry.hive_dir_for(cfg, hive)
-    render_disposition(*triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority))
+    render_disposition(
+        *triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority, cfg=cfg)
+    )
 
 
 def reject(bead: str, reason: str, as_: str = "", hive: str = ""):
@@ -50,7 +52,7 @@ def reject(bead: str, reason: str, as_: str = "", hive: str = ""):
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
     actor = identity.resolve_actor(as_)
-    render_disposition(*triage.reject(cwd, bead, actor, reason=reason))
+    render_disposition(*triage.reject(cwd, bead, actor, reason=reason, cfg=cfg))
 
 
 def reroute(
@@ -74,7 +76,7 @@ def promote(bead: str, as_: str = "", hive: str = ""):
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
     actor = identity.resolve_actor(as_)
-    render_disposition(*triage.promote(cwd, bead, actor))
+    render_disposition(*triage.promote(cwd, bead, actor, cfg=cfg))
 
 
 def _import_entry(cfg, hive: str):
@@ -1325,3 +1327,842 @@ def wake(bead: str = "", all_: bool = False, as_: str = "", hive: str = "", as_j
         cfg, entry, Path(registry.hive_dir(entry)), bead, actor, all_=all_, hive=hive
     )
     render_wake(call, bead, all_, as_json)
+
+
+# -- the label projection (bh work labels ...) and review-gated triage (bh work triage ...) ------
+#
+# The JSON serializers below are the published shape of each verb's ``--json`` document (and of
+# the ``triage review --out`` files): plain dicts, sorted keys, every record flattened to its
+# public fields. Proposals use the stored ``intake.proposal`` document shape.
+
+
+def _sorted(values) -> list[str]:
+    return sorted(values or ())
+
+
+def _envelope(call, verb: str) -> dict:
+    return {"ok": call.code == 0, "verb": verb, "reason": call.reason, "error": call.error}
+
+
+def _refused(call, verb: str) -> None:
+    code = f" ({call.reason})" if call.reason else ""
+    typer.echo(f"✗ {verb} refused{code}: {call.error}", err=True)
+    raise typer.Exit(call.code or 1)
+
+
+def _emit(payload: dict, code: int = 0) -> None:
+    typer.echo(json.dumps(payload, sort_keys=True))
+    if code:
+        raise typer.Exit(code)
+
+
+def label_sync_item_row(item) -> dict:
+    """One report's sync: the converging diff, drift, swaps and the record drafted or found."""
+    return {
+        "report": item.report,
+        "url": item.url,
+        "add": _sorted(item.add),
+        "remove": _sorted(item.remove),
+        "drift": _sorted(item.drift),
+        "undefined": _sorted(item.undefined),
+        "swaps": [{"dimension": dim, "removed": old, "added": new} for dim, old, new in item.swaps],
+        "changed": item.changed,
+        "drafted": item.drafted,
+        "pending": item.pending,
+        "superseded": item.superseded,
+        "discarded": item.discarded,
+        "held": item.held,
+        "note": item.note,
+        "error": item.error,
+    }
+
+
+def label_sync_row(outcome) -> dict:
+    items = outcome.items
+    return {
+        "dry_run": outcome.dry_run,
+        "items": [label_sync_item_row(item) for item in items],
+        "changed": [item.report for item in items if item.changed],
+        "drafted": list(outcome.drafted),
+        "errors": [item.report for item in items if item.error],
+    }
+
+
+def _label_spec_row(spec) -> dict:
+    return {
+        "name": spec.name,
+        "color": spec.color,
+        "description": spec.description,
+        "dimension": spec.dimension,
+        "value": spec.value,
+    }
+
+
+def label_plan_row(plan) -> dict:
+    """A ``labels define`` plan: what it would write, what it keeps and what blocks it."""
+    return {
+        "target": plan.target,
+        "digest": plan.digest,
+        "short_digest": plan.short_digest,
+        "changed": plan.changed,
+        "blocked": plan.blocked,
+        "create": [_label_spec_row(s) for s in plan.create],
+        "update": [_label_spec_row(s) for s in plan.update],
+        "delete": list(plan.delete),
+        "kept": [
+            {"name": k.name, "reason": k.reason, "carried_by": list(k.carried_by)}
+            for k in plan.kept
+        ],
+        "problems": [{"name": p.name, "detail": p.detail} for p in plan.problems],
+        "findings": {
+            name: [
+                {"id": f.id, "kind": f.kind.value, "match": f.match, "overridable": f.overridable}
+                for f in found
+            ]
+            for name, found in sorted(plan.findings.items())
+        },
+    }
+
+
+def label_define_row(outcome) -> dict:
+    return {
+        "plan": label_plan_row(outcome.plan),
+        "applied": outcome.applied,
+        "grant_ids": list(outcome.grant_ids),
+        "audit": outcome.audit,
+        "detail": outcome.detail,
+    }
+
+
+def _batch_item_row(item) -> dict:
+    return {
+        "report": item.report,
+        "outbox_id": item.outbox_id,
+        "digest": item.digest,
+        "short_digest": item.short_digest,
+        "url": item.url,
+        "add": _sorted(item.add),
+        "remove": _sorted(item.remove),
+        "stale": item.stale,
+        "note": item.note,
+    }
+
+
+def label_batch_row(batch) -> dict:
+    """The rendered batch an operator approves by its digest."""
+    return {
+        "digest": batch.digest,
+        "short_digest": batch.short_digest,
+        "items": [_batch_item_row(item) for item in batch.items],
+        "stale": [item.outbox_id for item in batch.stale],
+    }
+
+
+def label_batch_outcome_row(outcome) -> dict:
+    return {
+        "batch": label_batch_row(outcome.batch),
+        "approved": [_outbox_result_row(result) for result in outcome.approved],
+        "grant_ids": list(outcome.grant_ids),
+        "stale": [_batch_item_row(item) for item in outcome.stale],
+        "failed": [{"outbox_id": oid, "error": why} for oid, why in outcome.failed],
+    }
+
+
+def _label_change(add, remove) -> str:
+    changes = [f"+{label}" for label in sorted(add)] + [f"-{label}" for label in sorted(remove)]
+    return " ".join(changes) or "no change"
+
+
+def _label_sync_line(item, dry_run: bool = False) -> str:
+    if item.error and not (dry_run and item.undefined):
+        return f"⚠ {item.report}: {item.error}"
+    parts = [_label_change(item.add, item.remove)] if item.changed else ["converged"]
+    if item.undefined:  # a dry run: the diff, and what define must create before a sync drafts
+        parts.append(
+            f"not defined yet: {', '.join(sorted(item.undefined))} (run `bh work labels define`)"
+        )
+    if item.drift:
+        parts.append(f"drift {', '.join(sorted(item.drift))}")
+    for what, value in (
+        ("drafted", item.drafted),
+        ("already drafted as", item.pending),
+        ("superseding", item.superseded),
+        ("discarded", item.discarded),
+    ):
+        if value:
+            parts.append(f"{what} {value}")
+    if item.held:
+        parts.append("held by the leak check")
+    if item.note:
+        parts.append(item.note)
+    return f"  {item.report}: {'; '.join(parts)}"
+
+
+def _result(verb: str, hive: str, as_json: bool, call, payload, lines, failed=False) -> None:
+    """Print one labels or triage verb (human or ``--json``); non-zero on a refusal or failure."""
+    if as_json:
+        body = _envelope(call, verb)
+        if not call.code:
+            body.update(payload(call.value))
+        body["ok"] = not call.code and not failed
+        _emit(body, call.code or (1 if failed else 0))
+        return
+    if call.code:
+        _refused(call, verb)
+    for line in lines(call.value):
+        typer.echo(line, err=line.startswith(("⚠", "✗")))
+    if failed:
+        raise typer.Exit(1)
+
+
+def _hive_call(hive: str, run):
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    return cfg, entry, run(cfg, entry, Path(registry.hive_dir(entry)))
+
+
+def labels_sync(
+    report: str = "",
+    all_: bool = False,
+    include_closed: bool = False,
+    dry_run: bool = False,
+    prune_unmapped: bool = False,
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """``bh work labels sync``: converge the bound issues' owned labels by drafting."""
+    if report and all_:
+        typer.echo("✗ pass a <report> or --all, not both", err=True)
+        raise typer.Exit(2)
+    if report:
+        otel.set_bead(report)
+    actor = identity.resolve_actor(as_)
+    _cfg, _entry, call = _hive_call(
+        hive,
+        lambda cfg, entry, directory: intake_services.labels_sync(
+            cfg,
+            entry,
+            directory,
+            actor,
+            report=report,
+            include_closed=include_closed,
+            dry_run=dry_run,
+            prune_unmapped=prune_unmapped,
+            hive=hive,
+        ),
+    )
+    outcome = call.value
+
+    def lines(value) -> list[str]:
+        items = value.items
+        changed = [i for i in items if i.changed]
+        mode = " (dry run: nothing written)" if value.dry_run else ""
+        out = [
+            f"labels sync{mode}: {len(items)} report(s), {len(changed)} to change, "
+            f"{len(value.drafted)} drafted"
+        ]
+        out += [_label_sync_line(item, value.dry_run) for item in items]
+        if value.drafted:
+            out.append(
+                "  → nothing is sent: review the batch with `bh work labels review`, then an "
+                "operator approves it with `bh work labels approve --batch <digest>`"
+            )
+        return out
+
+    # a dry run only reports a label the repository does not define yet (define it first); any
+    # other error, and every refused draft of a real sync, fails the command
+    failed = outcome is not None and any(
+        not (outcome.dry_run and item.undefined) for item in outcome.errors
+    )
+    _result("labels sync", hive, as_json, call, label_sync_row, lines, failed)
+
+
+def labels_define(
+    dry_run: bool = False,
+    prune: bool = False,
+    approve: str = "",
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """``bh work labels define``: the definitions plan and digest; ``--approve`` applies it."""
+    actor = identity.resolve_actor(as_)
+    _cfg, _entry, call = _hive_call(
+        hive,
+        lambda cfg, entry, directory: intake_services.labels_define(
+            cfg, entry, directory, actor, approve=approve, prune=prune, dry_run=dry_run, hive=hive
+        ),
+    )
+
+    def lines(value) -> list[str]:
+        plan = value.plan
+        out = [f"labels define on {plan.target}: plan {plan.short_digest}"]
+        out += [f"  create {s.name} (#{s.color}) {s.description}" for s in plan.create]
+        out += [f"  update {s.name} (#{s.color}) {s.description}" for s in plan.update]
+        out += [f"  delete {name}" for name in plan.delete]
+        out += [f"  keep {k.name}: carried by {', '.join(k.carried_by)}" for k in plan.kept]
+        out += [f"⚠ {p.name}: {p.detail}" for p in plan.problems]
+        for name, found in sorted(plan.findings.items()):
+            out.append(f"⚠ {name}: leak finding {', '.join(f.id for f in found)}")
+        if value.grant_ids:
+            out.append(f"  grants {', '.join(value.grant_ids)} (single use)")
+        out.append(f"  → {value.detail}")
+        if not value.applied and plan.changed and not plan.blocked:
+            out.append(
+                f"  → an operator applies it with `bh work labels define --approve "
+                f"{plan.short_digest}`"
+            )
+        return out
+
+    _result("labels define", hive, as_json, call, label_define_row, lines)
+
+
+def labels_review(hive: str = "", as_json: bool = False):
+    """``bh work labels review``: the batch of drafted label changes and its digest."""
+    _cfg, _entry, call = _hive_call(
+        hive,
+        lambda cfg, entry, directory: intake_services.labels_review(
+            cfg, entry, directory, hive=hive
+        ),
+    )
+
+    def lines(batch) -> list[str]:
+        if not batch.items:
+            return ["no drafted label change (run `bh work labels sync`)"]
+        out = [
+            f"label batch {batch.short_digest}: {len(batch.items)} change(s), "
+            f"{len(batch.stale)} stale"
+        ]
+        for item in batch.items:
+            stale = f"  [stale: {item.note or 'the labels moved since the draft'}]"
+            out.append(
+                f"  {item.outbox_id}  {item.report}  {_label_change(item.add, item.remove)}"
+                f"{stale if item.stale else ''}"
+            )
+        out.append(
+            f"  → an operator approves it with `bh work labels approve --batch "
+            f"{batch.short_digest}` (a stale item is skipped and re-drafted by the next sync)"
+        )
+        return out
+
+    _result("labels review", hive, as_json, call, lambda b: {"batch": label_batch_row(b)}, lines)
+
+
+def labels_approve(batch: str, as_: str = "", hive: str = "", as_json: bool = False):
+    """``bh work labels approve --batch <digest>``: one single-use grant per issue."""
+    actor = identity.resolve_actor(as_)
+    _cfg, _entry, call = _hive_call(
+        hive,
+        lambda cfg, entry, directory: intake_services.labels_approve(
+            cfg, entry, directory, batch, actor, hive=hive
+        ),
+    )
+
+    def lines(outcome) -> list[str]:
+        total = len(outcome.batch.items)
+        out = [
+            f"✓ approved {len(outcome.approved)} of {total} label change(s) in batch "
+            f"{outcome.batch.short_digest}"
+        ]
+        for result in outcome.approved:
+            out.append(f"  {result.outbox_id} {result.report}: grant {result.grant_id}")
+        for item in outcome.stale:
+            out.append(f"⚠ {item.outbox_id} {item.report}: stale, skipped (re-run labels sync)")
+        for outbox_id, why in outcome.failed:
+            out.append(f"⚠ {outbox_id}: {why}")
+        if outcome.approved:
+            out.append(
+                "  → nothing is sent: send each with `bh work outbox send <id> --kind labels`"
+            )
+        return out
+
+    failed = bool(call.value is not None and call.value.failed)
+    _result("labels approve", hive, as_json, call, label_batch_outcome_row, lines, failed)
+
+
+# -- review-gated triage -------------------------------------------------------------------------
+
+
+def _binding_row(binding) -> dict | None:
+    if binding is None:
+        return None
+    return {
+        "tracker": binding.tracker,
+        "project": binding.project,
+        "url": binding.url,
+        "identifier": binding.identifier,
+    }
+
+
+def proposal_row(proposal) -> dict | None:
+    """A proposal as its stored ``intake.proposal`` document (status, reviews, history)."""
+    from .modules.intake import proposal_to_document
+
+    return None if proposal is None else proposal_to_document(proposal)
+
+
+def _cluster_link_row(link) -> dict:
+    return {
+        "first": link.first,
+        "second": link.second,
+        "kind": link.kind.value,
+        "score": link.score,
+        "detail": link.detail,
+    }
+
+
+def _cluster_row(cluster) -> dict:
+    return {
+        "key": cluster.key,
+        "members": list(cluster.members),
+        "links": [_cluster_link_row(link) for link in cluster.links],
+    }
+
+
+def _index_row(entry) -> dict:
+    return {
+        "report": entry.report,
+        "title": entry.title,
+        "reference": entry.reference,
+        "disposition": entry.disposition,
+        "status": entry.status,
+        "share_with": entry.share_with,
+        "cluster": entry.cluster,
+        "batch": entry.batch,
+    }
+
+
+def review_metrics_row(metrics) -> dict:
+    return {
+        "proposals": metrics.proposals,
+        "reviewed": metrics.reviewed,
+        "passes": [
+            {
+                "pass": p.pass_no,
+                "reviewed": p.reviewed,
+                "confirmed": p.confirmed,
+                "corrected": p.corrected,
+                "unsure": p.unsure,
+                "correction_rate": p.correction_rate,
+            }
+            for p in metrics.passes
+        ],
+        "reporter_visible": metrics.reporter_visible,
+        "reporter_visible_errors": metrics.reporter_visible_errors,
+        "reporter_visible_error_rate": metrics.reporter_visible_error_rate,
+    }
+
+
+def review_packet_row(packet) -> dict:
+    """One report's packet; the global index is the run's (not repeated per packet)."""
+    return {
+        "report": packet.report,
+        "title": packet.title,
+        "body": packet.body,
+        "labels": list(packet.labels),
+        "binding": _binding_row(packet.binding),
+        "thread": None if packet.thread is None else _thread_row(packet.thread),
+        "thread_complete": packet.thread_complete,
+        "thread_detail": packet.thread_detail,
+        "proposal": proposal_row(packet.proposal),
+        "cluster": packet.cluster,
+        "cluster_members": list(packet.cluster_members),
+        "links": [_cluster_link_row(link) for link in packet.links],
+    }
+
+
+def review_batch_row(batch, run) -> dict:
+    """One batch as a self-contained document: its clusters, its packets and the global index."""
+    return {
+        "number": batch.number,
+        "reports": list(batch.reports),
+        "clusters": [_cluster_row(c) for c in batch.clusters],
+        "packets": [review_packet_row(p) for p in batch.packets],
+        "index": [_index_row(entry) for entry in run.index],
+    }
+
+
+def review_run_row(run, *, packets: bool = True) -> dict:
+    row = {
+        "reports": list(run.reports),
+        "index": [_index_row(entry) for entry in run.index],
+        "clusters": [_cluster_row(c) for c in run.clusters],
+        "ingested": list(run.ingested),
+        "metrics": review_metrics_row(run.metrics),
+    }
+    if packets:
+        row["batches"] = [
+            {k: v for k, v in review_batch_row(b, run).items() if k != "index"} for b in run.batches
+        ]
+    else:
+        row["batches"] = [
+            {"number": b.number, "reports": list(b.reports), "file": _batch_file(b.number)}
+            for b in run.batches
+        ]
+    return row
+
+
+def _batch_file(number: int) -> str:
+    return f"batch-{number:03d}.json"
+
+
+#: The file ``triage review --out`` writes beside the batches.
+REVIEW_INDEX_FILE = "index.json"
+
+
+def write_review_packets(run, out: Path) -> tuple[Path, ...]:
+    """``--out DIR``: one JSON document per batch (``batch-NNN.json``, with the global index) and
+    ``index.json`` (the batch list, index, clusters, ingested threads and metrics)."""
+    out.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for batch in run.batches:
+        path = out / _batch_file(batch.number)
+        path.write_text(
+            json.dumps(review_batch_row(batch, run), sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        written.append(path)
+    index = out / REVIEW_INDEX_FILE
+    index.write_text(
+        json.dumps(review_run_row(run, packets=False), sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    written.append(index)
+    return tuple(written)
+
+
+def triage_review(
+    pending: bool = False,
+    batch_size: int = intake_services.DEFAULT_REVIEW_BATCH_SIZE,
+    out: str = "",
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """``bh work triage review --pending``: cluster-aware review packets for the pending set."""
+    if not pending:
+        typer.echo("✗ pass --pending (review packets are built for the pending set)", err=True)
+        raise typer.Exit(2)
+    if batch_size < 1:
+        typer.echo("✗ --batch-size must be at least 1", err=True)
+        raise typer.Exit(2)
+    actor = identity.resolve_actor(as_)
+    _cfg, _entry, call = _hive_call(
+        hive,
+        lambda cfg, entry, directory: intake_services.triage_review(
+            cfg, entry, directory, actor, batch_size=batch_size, hive=hive
+        ),
+    )
+    written: tuple[Path, ...] = ()
+    if not call.code and out:
+        written = write_review_packets(call.value, Path(out))
+
+    def payload(run) -> dict:
+        row = review_run_row(run, packets=not out)
+        if out:
+            row["out"] = str(Path(out))
+            row["files"] = [str(path) for path in written]
+        return row
+
+    def lines(run) -> list[str]:
+        result = [
+            f"triage review: {len(run.reports)} pending report(s) in {len(run.batches)} "
+            f"batch(es), {len(run.clusters)} cluster(s); {len(run.ingested)} thread(s) ingested"
+        ]
+        for batch in run.batches:
+            families = [c.key for c in batch.clusters if len(c.members) > 1]
+            extra = f" (families: {', '.join(families)})" if families else ""
+            result.append(f"  batch {batch.number}: {', '.join(batch.reports)}{extra}")
+        for packet in (p for b in run.batches for p in b.packets):
+            if not packet.thread_complete:
+                result.append(f"⚠ {packet.report}: partial thread: {packet.thread_detail}")
+        metrics = run.metrics
+        for p in metrics.passes:
+            result.append(
+                f"  review pass {p.pass_no}: {p.corrected}/{p.reviewed} corrected "
+                f"({p.correction_rate:.0%}), {p.unsure} unsure"
+            )
+        if written:
+            result.append(f"  → wrote {len(written)} file(s) to {out}")
+        return result
+
+    _result("triage review", hive, as_json, call, payload, lines)
+
+
+def _read_document(source: str):
+    """The JSON document at ``source`` (a file path, or ``-`` for stdin); exit 2 if unreadable."""
+    try:
+        if source == "-":
+            text = typer.get_text_stream("stdin").read()
+        else:
+            text = Path(source).read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"✗ cannot read {source}: {exc}", err=True)
+        raise typer.Exit(2) from None
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        typer.echo(f"✗ {source} is not a JSON document: {exc}", err=True)
+        raise typer.Exit(2) from None
+
+
+def triage_propose(
+    bead: str, source: str, review_of: str = "", as_: str = "", hive: str = "", as_json=False
+):
+    """``bh work triage propose <report> <file|->`` (``--review-of <pass>``: a verdict)."""
+    otel.set_bead(bead)
+    pass_no = 0
+    if review_of:
+        try:
+            pass_no = intake_services.review_pass(review_of)
+        except ValueError as exc:
+            typer.echo(f"✗ {exc}", err=True)
+            raise typer.Exit(2) from None
+    document = _read_document(source)
+    actor = identity.resolve_actor(as_)
+    verb = "triage review-of" if pass_no else "triage propose"
+    _cfg, _entry, call = _hive_call(
+        hive,
+        lambda cfg, entry, directory: intake_services.triage_propose(
+            cfg,
+            entry,
+            directory,
+            bead,
+            document,
+            actor,
+            review_of=pass_no,
+            branch=str(config.integration_branch(cfg, entry)),
+            hive=hive,
+        ),
+    )
+
+    def payload(outcome) -> dict:
+        row = {
+            "report": outcome.report,
+            "proposal": proposal_row(outcome.proposal),
+            "status": outcome.proposal.status.value,
+        }
+        if pass_no:
+            row.update({"pass": pass_no, "adopted": outcome.adopted})
+        else:
+            row["kind"] = outcome.kind.value
+        return row
+
+    def lines(outcome) -> list[str]:
+        proposal = outcome.proposal
+        if pass_no:
+            review = proposal.reviews[-1]
+            adopted = " (its correction adopted)" if outcome.adopted else ""
+            return [
+                f"✓ {outcome.report}: review pass {review.pass_no} {review.verdict.value}"
+                f"{adopted} → {proposal.status.value}"
+            ]
+        return [
+            f"✓ {outcome.report}: proposal {outcome.kind.value} ({proposal.disposition.value}, "
+            f"{proposal.status.value}, seq {proposal.seq})"
+        ]
+
+    _result(verb, hive, as_json, call, payload, lines)
+
+
+def _finding_row(finding) -> dict:
+    return {"kind": finding.kind.value, "detail": finding.detail, "fix": finding.fix}
+
+
+def proposal_check_row(check, item=None) -> dict:
+    """One report's checks; with its dry-run plan ``item``, the verification gap too."""
+    row = {
+        "report": check.report,
+        "passed": check.passed,
+        "stale": check.stale,
+        "findings": [_finding_row(f) for f in check.findings],
+        "computed_fixed_in": check.computed_fixed_in,
+    }
+    if item is not None:
+        row["plan"] = item.status.value
+        row["detail"] = item.detail
+    return row
+
+
+def triage_check(pending: bool = False, as_: str = "", hive: str = "", as_json: bool = False):
+    """``bh work triage check [--pending]``: every pre-apply check; exit 1 when any fails."""
+    actor = identity.resolve_actor(as_)
+    _cfg, _entry, call = _hive_call(
+        hive,
+        lambda cfg, entry, directory: intake_services.triage_check(
+            cfg,
+            entry,
+            directory,
+            actor,
+            pending=pending,
+            branch=str(config.integration_branch(cfg, entry)),
+            hive=hive,
+        ),
+    )
+
+    def items(checks) -> dict:
+        return {item.report: item for item in checks.outcome.items}
+
+    def payload(checks) -> dict:
+        plans = items(checks)
+        return {
+            "pending": pending,
+            "checks": [proposal_check_row(c, plans.get(c.report)) for c in checks.checks],
+            "failed": list(checks.failed),
+        }
+
+    def lines(checks) -> list[str]:
+        out = [f"triage check: {len(checks.checks)} open proposal(s), {len(checks.failed)} failing"]
+        plans = items(checks)
+        for check in checks.checks:
+            fixed = (
+                f" (fix version {check.computed_fixed_in or 'unreleased'})"
+                if check.computed_fixed_in is not None
+                else ""
+            )
+            if check.passed:
+                item = plans.get(check.report)
+                gap = f"; {item.detail}" if item is not None and item.detail else ""
+                out.append(f"  ✓ {check.report}: passed{fixed}{gap}")
+                continue
+            out.append(f"✗ {check.report}: {len(check.findings)} finding(s){fixed}")
+            for finding in check.findings:
+                out.append(f"    {finding.kind.value}: {finding.detail} (fix: {finding.fix})")
+        return out
+
+    failed = bool(call.value is not None and call.value.failed)
+    _result("triage check", hive, as_json, call, payload, lines, failed)
+
+
+def _reroute_map(pairs) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for pair in pairs or ():
+        report, sep, hive = str(pair).partition("=")
+        if not sep or not report.strip() or not hive.strip():
+            typer.echo(f"✗ --reroute-to takes <report>=<hive>, not {pair!r}", err=True)
+            raise typer.Exit(2)
+        out[report.strip()] = hive.strip()
+    return out
+
+
+def apply_item_row(item, destinations=None) -> dict:
+    """One report in an apply run (applied, planned, blocked, listed or failed)."""
+    row = {
+        "report": item.report,
+        "disposition": item.disposition.value,
+        "status": item.status.value,
+        "steps": [step.value for step in item.steps],
+        "work": item.work,
+        "share_with": item.share_with,
+        "fixed_in": item.fixed_in,
+        "drafted": list(item.drafted),
+        "findings": [_finding_row(f) for f in item.findings],
+        "detail": item.detail,
+    }
+    if "reroute" in row["steps"]:
+        row["reroute_to"] = (destinations or {}).get(item.report, "")
+    return row
+
+
+def apply_row(outcome, destinations=None) -> dict:
+    return {
+        "dry_run": outcome.dry_run,
+        "items": [apply_item_row(item, destinations) for item in outcome.items],
+        "applied": list(outcome.applied),
+        "blocked": list(outcome.blocked),
+        "decisions": list(outcome.decisions),
+        "failed": [i.report for i in outcome.items if i.status.value == "failed"],
+        "drafted": list(outcome.drafted),
+        "already_applied": list(outcome.already_applied),
+        "checks": [proposal_check_row(c) for c in outcome.checks],
+        "labels": None if outcome.labels is None else label_sync_row(outcome.labels),
+        "labels_error": outcome.labels_error,
+    }
+
+
+def triage_apply(
+    reviewed: bool = False,
+    dry_run: bool = False,
+    reroute_to=None,
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """``bh work triage apply --reviewed [--dry-run]``: apply the reviewed proposals."""
+    if not reviewed:
+        typer.echo(
+            "✗ pass --reviewed (only proposals a review stands behind are ever applied)", err=True
+        )
+        raise typer.Exit(2)
+    destinations = _reroute_map(reroute_to)
+    actor = identity.resolve_actor(as_)
+
+    def run(cfg, entry, directory):
+        from . import report as reporting  # the target hive's filing (the `bh report` path)
+
+        for target in sorted(set(destinations.values())):
+            registry.resolve_hive(cfg, target)  # an unknown hive exits here, before any write
+        refile = intake_services.reroute_refiler(
+            destinations, actor, file_report=reporting.file_report, cfg=cfg
+        )
+        return intake_services.triage_apply(
+            cfg,
+            entry,
+            directory,
+            actor,
+            dry_run=dry_run,
+            branch=str(config.integration_branch(cfg, entry)),
+            refile=refile,
+            hive=hive,
+        )
+
+    _cfg, _entry, call = _hive_call(hive, run)
+    outcome = call.value
+
+    def payload(value) -> dict:
+        return apply_row(value, destinations)
+
+    def lines(value) -> list[str]:
+        mode = " (dry run: nothing written)" if value.dry_run else ""
+        planned = sum(1 for item in value.items if item.status.value == "planned")
+        out = [
+            f"triage apply{mode}: {len(value.applied)} applied, {planned} planned, "
+            f"{len(value.blocked)} blocked, {len(value.decisions)} decision(s)"
+        ]
+        if value.already_applied:
+            out.append(f"  already applied: {', '.join(value.already_applied)}")
+        for item in value.items:
+            steps = " → ".join(step.value for step in item.steps)
+            parts = [item.disposition.value]
+            if steps:
+                parts.append(steps)
+            if item.work:
+                parts.append(f"work {item.work}")
+            if item.fixed_in is not None:
+                parts.append(f"fix version {item.fixed_in or 'unreleased'}")
+            if item.drafted:
+                parts.append(f"drafted {', '.join(item.drafted)} (never sent)")
+            if "reroute" in [s.value for s in item.steps]:
+                target = destinations.get(item.report, "")
+                parts.append(
+                    f"re-filed into {target}"
+                    if target
+                    else "no --reroute-to destination: it would fail"
+                )
+            if item.detail:
+                parts.append(item.detail)
+            mark = "⚠" if item.status.value == "failed" else " "
+            out.append(f"{mark} {item.status.value:8} {item.report}: {'; '.join(parts)}")
+        if value.labels_error:
+            out.append(f"⚠ {value.labels_error}")
+        elif value.labels is not None and value.labels.drafted:
+            out.append(f"  labels: drafted {', '.join(value.labels.drafted)} (never sent)")
+        if value.drafted:
+            out.append(
+                "  → nothing is sent: an operator reviews, approves and sends with `bh work outbox`"
+            )
+        return out
+
+    failed = bool(outcome is not None and any(i.status.value == "failed" for i in outcome.items))
+    _result("triage apply", hive, as_json, call, payload, lines, failed)

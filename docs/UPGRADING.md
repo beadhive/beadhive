@@ -5,6 +5,56 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.34.x → 0.35.0 — GitHub label projection and review-gated triage (switches default off)
+
+0.35.0 adds two supervised features on top of intake and the outbox. The **label projection**
+derives GitHub labels under one owned prefix (`bh:` by default) from the dimension registry and
+keeps every bound issue's owned labels converged on bead state. **Review-gated batch triage**
+stores an analyst's proposal on each report, records verifier verdicts, runs deterministic
+pre-apply checks and applies only reviewed proposals. Every new capability is behind a switch that
+defaults to **off**, nothing is sent without an operator's approval, and bh makes no LLM call, so
+upgrading changes no behaviour until you turn something on.
+
+**Wire 2.22.0.** The wire contract moves to 2.22.0 (`docs/schemas/wire/v2.22.0/`, `latest` in
+`docs/schemas/wire/index.json`); the change is additive (two new `bh work` groups).
+
+**New `bh work` verbs.** All refuse naming the key they need:
+
+- `bh work labels sync [<report>|--all] [--include-closed] [--dry-run] [--prune-unmapped]`,
+  `labels define [--dry-run] [--prune] [--approve <digest>]`, `labels review` and
+  `labels approve --batch <digest>` (`intake.external.labels.enabled`; drafting and approving also
+  `outbox.enabled` and `outbox.labels_enabled`). `define --approve` and `approve --batch` are
+  operator-seat only, like `bh work outbox approve`.
+- `bh work triage review --pending [--batch-size N] [--out DIR]`, `triage propose <report>
+  <file|-> [--review-of <pass>]`, `triage check [--pending]` and `triage apply --reviewed
+  [--dry-run] [--reroute-to <report>=<hive>]` (`intake.external.enabled`; `review` also
+  `comments.enabled` and the tracker's `read.comments.enabled`). `apply` is operator-seat only and
+  only drafts: replies and questions are sent with `bh work outbox`. `bh work intake` is unchanged.
+- `--review-of` takes the review pass number (1, 2, ... in recording order); the batch skill's
+  `B` and `C` are accepted for passes 1 and 2 of a proposal's first round.
+
+**New config keys** (`docs/CONFIGURATION.md`): the `intake.external.labels` section (`enabled`,
+`prefix`, `project`, `aliases`, `colors`, `overrides`, `on_transition`) and
+`plugins.tracker-github.read.labels.enabled` / `write.label_definitions.enabled`. All switches are
+`false`.
+
+**Rotation order (bh-hmtjn pattern).** An older host rejects the new keys (`extra=forbid`) and
+cannot decode an `intake.outbox` document holding the new `labels` record type (the issue label
+changes `labels sync` drafts, with their own supersede group). So:
+
+1. Install 0.35.0 on **every** host of the fleet, every host that reads a hive's outbox included
+   (any host that runs `bh work outbox`, `bh doctor` or a merge / release hook on that hive).
+2. Only then set the new keys in a shared config: `plugins.tracker-github.read.labels.enabled`,
+   `write.label_definitions.enabled` (with `bh:` in `write.labels.owned_prefixes`) and
+   `intake.external.labels.*`.
+3. Only then run `bh work labels sync` (the first `labels` record), or turn on
+   `labels.on_transition` (which drafts one on every transition).
+4. Define the labels before the first sync: `bh work labels define`, review the plan, then
+   `bh work labels define --approve <digest>` from an operator seat.
+
+The triage proposal store (`intake.proposal`, a private document on the report bead) is new too
+and only 0.35.0 reads it, so run the `bh work triage` verbs from 0.35.0 hosts.
+
 ## 0.33.x → 0.34.0 — the supervised GitHub triage loop (all new switches default off)
 
 0.34.0 adds the supervised triage loop on top of intake and the outbox: it can read a bound

@@ -4032,7 +4032,9 @@ def labels_allowed():
 
 @label_app.command("docs", help="regenerate ~/.beadhive/labels.md from config.")
 def labels_docs():
-    registry.docs()
+    from . import intake_services  # the projected label table (intake.external.labels)
+
+    registry.docs(sections=(intake_services.projected_label_lines,))
 
 
 # ---- dolt -------------------------------------------------------------------

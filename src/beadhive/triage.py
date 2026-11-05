@@ -100,14 +100,16 @@ def intake_payload(cwd, source: str = "", threshold: float = 0.5) -> dict:
 # ---- dispositions (type-aware) ----------------------------------------------
 
 
-def accept(cwd, bead, actor, issue_type: str = "", priority: str = ""):
+def accept(cwd, bead, actor, issue_type: str = "", priority: str = "", cfg=None):
     """Accept a report into backlog: set type/priority (type-aware — both optional), then clear the
-    intake state. The bead stays open as normal backlog. Returns (exit, error, message)."""
+    intake state. The bead stays open as normal backlog. Returns (exit, error, message). ``cfg``
+    (when the caller holds it) lets the opt-in transition label refresh run after it."""
     code, err, _outcome = intake_services.dispose(
         cwd,
         DispositionRequest(
             bead, Disposition.ACCEPT, actor, issue_type=issue_type, priority=priority
         ),
+        cfg=cfg,
     )
     if err:
         return code, err, ""
@@ -116,11 +118,11 @@ def accept(cwd, bead, actor, issue_type: str = "", priority: str = ""):
     return 0, "", f"✓ accepted {bead} → backlog{detail}"
 
 
-def reject(cwd, bead, actor, reason: str):
+def reject(cwd, bead, actor, reason: str, cfg=None):
     """Reject a report: clear intake, then close it with a reporter-visible reason. Returns
     (exit, error, message)."""
     code, err, _outcome = intake_services.dispose(
-        cwd, DispositionRequest(bead, Disposition.REJECT, actor, reason=reason)
+        cwd, DispositionRequest(bead, Disposition.REJECT, actor, reason=reason), cfg=cfg
     )
     if err:
         return code, err, ""
@@ -141,7 +143,9 @@ def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=N
 
     if superintendent:
         code, err, _outcome = intake_services.dispose(
-            cwd, DispositionRequest(bead, Disposition.REROUTE, actor, seat=superintendent)
+            cwd,
+            DispositionRequest(bead, Disposition.REROUTE, actor, seat=superintendent),
+            cfg=cfg,
         )
         if err:
             return code, err, ""
@@ -154,12 +158,12 @@ def reroute(cwd, bead, actor, to_hive: str = "", superintendent: str = "", cfg=N
     )
 
 
-def promote(cwd, bead, actor):
+def promote(cwd, bead, actor, cfg=None):
     """Hand a report to the planner: transition intake to `promoted` — the queue the planner's
     adopt path reads. This is a clean HAND-OFF only; adopting the report into a
     gated epic molecule is jf5k's job, NOT done here. Returns (exit, error, message)."""
     code, err, _outcome = intake_services.dispose(
-        cwd, DispositionRequest(bead, Disposition.PROMOTE, actor)
+        cwd, DispositionRequest(bead, Disposition.PROMOTE, actor), cfg=cfg
     )
     if err:
         return code, err, ""

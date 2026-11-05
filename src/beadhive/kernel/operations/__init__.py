@@ -278,6 +278,10 @@ work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:s
 work intake|hive:string:o,source:string:o,as_json:boolean:o,no_dupes:boolean:o
 work investigate|bead:string:r,work:string:o,new_work:boolean:o,remove:boolean:o,type_:string:o,priority:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work issue|bead:string:r,hive:string:o
+work labels approve|batch:string:r,as_:string:o,hive:string:o,as_json:boolean:o
+work labels define|dry_run:boolean:o,prune:boolean:o,approve:string:o,as_:string:o,hive:string:o,as_json:boolean:o
+work labels review|hive:string:o,as_json:boolean:o
+work labels sync|report:string:o,all_:boolean:o,include_closed:boolean:o,dry_run:boolean:o,prune_unmapped:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 work land|bead:string:r,hive:string:o
 work link|bead:string:r,to:string:o,remove:boolean:o,replace:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 work list|hive:string:o
@@ -305,6 +309,10 @@ work show|bead:string:r,view:array:o,as_json:boolean:o,hive:string:o
 work thread considered|bead:string:r,through:integer:r,as_:string:o,hive:string:o,as_json:boolean:o
 work thread ingest|bead:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work thread show|bead:string:r,hive:string:o,as_json:boolean:o
+work triage apply|reviewed:boolean:o,dry_run:boolean:o,reroute_to:array:o,as_:string:o,hive:string:o,as_json:boolean:o
+work triage check|pending:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
+work triage propose|bead:string:r,source:string:r,review_of:string:o,as_:string:o,hive:string:o,as_json:boolean:o
+work triage review|pending:boolean:o,batch_size:integer:o,out:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work start|epic:string:r,as_:string:o,hive:string:o
 work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o,override_validation:string:o,override_as:string:o
 work wake|bead:string:o,all_:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
@@ -454,8 +462,10 @@ setup|false|Admin / infra
 toolchain|false|Hive
 work|false|Integration plane
 work delivery|false|
+work labels|false|
 work outbox|false|
 work thread|false|
+work triage|false|
 worktree|false|Integration plane
 wt|true|
 """.strip()
