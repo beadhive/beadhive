@@ -216,6 +216,16 @@ port (candidate F, rejected below).
   cases with no HTTP, no clock and no GitHub notion; it is the substitute every consumer test
   uses. The Jira Cloud and Linear mapping in `bh-gj1hb` E19 fits the contract unchanged, but is
   from documentation and was **not exercised**.
+- **As built: the label verbs (`bh-v3fe7`, wire 2.22.0).** `bh work labels sync` binds the
+  hive's adapter requesting `issues.read` and `labels.read` and makes ONE issue listing and ONE
+  `list_label_definitions` per run; `bh work labels define` requests `labels.read` (plus
+  `issues.read` with `--prune`, to keep a label an open issue still carries) and, with
+  `--approve`, `labels.define`, so an operation that is not enabled is refused by the binding,
+  naming `read.labels.enabled` or `write.label_definitions.enabled`, before any request. The
+  root narrowing view exposes `LabelReader`, `LabelDefiner` and `LabelPruner` only for enabled
+  operations, and an approved define hands each `ProjectRef` grant to exactly one write
+  (`define_labels`, then `delete_labels` for `--prune`). Issue label changes still travel as
+  supervised `labels.change` outbox operations (`IssueKey` grants), approved as one batch.
 
 ### 4. Module and package home, dependency direction, enforcement
 
