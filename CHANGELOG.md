@@ -13,6 +13,32 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.0 (2026-11-05)
+
+### Feat
+
+- **work**: publish bh work labels and triage in wire 2.22.0 and update the count and digest tests
+- **work**: add the bh work labels and bh work triage verb groups
+- **intake**: opt-in label refresh on disposition, link and milestone transitions
+- **intake**: propose, review and apply-reviewed over stored proposals
+- **intake**: LabelProjection service with fresh-label sync, define and batch-digest approval
+- **intake**: review packets with full threads, global index and correction metrics
+- **intake**: duplicate clusters and cluster-aware review batches
+- **tracker-github**: labels.read and labels.define with a 204-aware write seam
+- **config**: tracker-github labels flags and the intake.external.labels projection section
+- **intake**: deterministic pre-apply proposal checks and a RepoFacts port (ancestry, computed fix version, changed paths)
+- **intake**: proposal store on the report store port (CLI and API stores, memory store, conformance cases)
+- **testing**: MemoryTracker and MemoryWorld support labels.read and labels.define, with conformance cases
+- **intake**: registry-derived label catalog and desired-state projection
+- **intake**: labels outbox record type with its own supersede group
+- **tracker**: add labels.read and labels.define operations, LabelDefinition and repo-scoped write grants to the port
+- **intake**: intake.proposal document with review verdicts, status machine and fail-closed codec
+
+### Fix
+
+- **tracker-github**: implement LabelPruner.delete_labels and bind it in the root narrowing view
+- **test**: configure an owned prefix in the label-flags parse test
+
 ## v0.34.0 (2026-11-04)
 
 ### Feat
