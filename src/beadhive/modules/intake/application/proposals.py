@@ -81,6 +81,7 @@ from ..domain import (
     content_from_document,
     content_seq,
     duplicate_text,
+    evidence_after,
     half_rejected,
     leak_check,
     mark_applied,
@@ -240,11 +241,13 @@ class ProposalService:
 
     def _woken(self, view: BeadView, applied: Proposal) -> bool:
         """A report applied as needs-info that its reporter woke: back on ``intake:untriaged``,
-        or its thread advanced past the seq the applied round read."""
+        or reporter evidence changed after the seq the applied round read. Apply's own recorded
+        read moves the thread's seq, and the question it asked is an own comment: neither wakes
+        it (bh-yu6sy)."""
         if INTAKE_UNTRIAGED in view.labels:
             return True
         thread = self._store.read_thread(view.id)
-        return thread is not None and thread.seq > applied.thread_seq
+        return thread is not None and bool(evidence_after(thread, applied.thread_seq))
 
     # -- review --------------------------------------------------------------------------------
 

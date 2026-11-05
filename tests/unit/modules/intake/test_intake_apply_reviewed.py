@@ -1002,3 +1002,42 @@ def test_a_triage_read_does_not_make_a_proposal_stale() -> None:
     assert fresh.status is ApplyStatus.PLANNED
     assert stale.status is ApplyStatus.BLOCKED
     assert [f.kind for f in stale.findings] == [CheckKind.STALE_THREAD]
+
+
+def test_a_needs_info_report_whose_analysis_read_a_comment_waits_for_a_new_one() -> None:
+    """Apply records the read (moving the thread's seq) and asks; the report is not woken until
+    the reporter writes again (bh-yu6sy review)."""
+    hive = Hive()
+    report = hive.report("a hang")
+    hive.reply(report, "It hangs on the second run.")
+    seq = hive.store.read_thread(report).seq
+    hive.propose(
+        report,
+        {"disposition": "needs-info", "reporter_text": "Which version is it?", "thread_seq": seq},
+    )
+    hive.review(report, {"verdict": "confirmed"})
+    hive.apply()
+    assert hive.store.read_thread(report).seq > seq  # the recorded read
+
+    with pytest.raises(IntakeRefused) as early:
+        hive.propose(report, {"disposition": "new"})
+    assert early.value.reason is RefusalReason.PROPOSAL_TRANSITION
+
+    hive.reply(report, "Version 0.34.0.", day=3)
+    thread = hive.store.read_thread(report)
+    following = hive.propose(
+        report, {"disposition": "new", "type": "bug", "thread_seq": thread.seq}
+    )
+    assert following.kind is ProposeKind.NEW_ROUND
+
+
+def test_ordinary_open_work_is_a_valid_owner() -> None:
+    hive = Hive()
+    report = hive.report("a crash")
+    owner = hive.work("the fix")
+    hive.propose(report, {"disposition": "tracked", "targets": [owner]})
+    hive.review(report, {"verdict": "confirmed"})
+
+    planned = item(hive.apply(dry_run=True), report)
+
+    assert planned.status is ApplyStatus.PLANNED and planned.findings == ()

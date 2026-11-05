@@ -37,6 +37,7 @@ from beadhive.modules.intake.domain import (
     classify,
     content_seq,
     digest,
+    evidence_after,
     flagged,
     mark_considered,
     marker_bead_ids,
@@ -381,6 +382,20 @@ def test_content_seq_moves_with_the_comments_and_not_with_a_triage_read() -> Non
     policy = ThreadPolicy(deletion_confirmations=1)
     dead = reconcile_comments(revised, {"c1"}, complete=True, snapshot_start_seq=99, policy=policy)
     assert content_seq(dead.thread) == dead.thread.seq  # a tombstone is a change
+    gone = reconcile_presence(dead.thread, set(), complete=True)
+    gone = reconcile_presence(gone.thread, set(), complete=True).thread
+    assert gone.state is ThreadState.MISSING and content_seq(gone) == gone.seq
+
+
+def test_evidence_after_counts_reporter_changes_only() -> None:
+    base = ingest(obs("c1"), obs("c2", day=3)).thread
+    seen = base.seq
+    assert evidence_after(base, 0) == ("c1", "c2") and evidence_after(base, seen) == ()
+    read = mark_considered(base).thread
+    assert evidence_after(read, seen) == ()  # a recorded read is no answer
+    revised = ingest(obs("c1", body="edited", day=2, updated=4), base=read).thread
+    assert evidence_after(revised, seen) == ("c1",)
+    assert evidence_after(mark_considered(revised).thread, seen) == ("c1",)  # read since: still new
 
 
 def test_a_tombstone_after_the_last_pass_is_new_evidence_until_considered() -> None:
