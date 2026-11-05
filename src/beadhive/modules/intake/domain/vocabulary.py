@@ -81,6 +81,7 @@ INVESTIGATES_EDGE = "validates"
 # Canonical `<dim>:<value>` label-cache entries (what `bd set-state` writes).
 INTAKE_UNTRIAGED = "intake:untriaged"
 INTAKE_PROMOTED = "intake:promoted"  # handed to the planner (adopt queue key)
+INTAKE_REJECTED = "intake:rejected"  # rejected; a report still open with it is half-rejected
 INTAKE_NEEDS_INFO = "intake:needs-info"  # a bound report waiting for its reporter (bh-61xkc)
 ORIGIN_REPORT = "origin:report"
 ORIGIN_GITHUB = "origin:github"
@@ -228,6 +229,7 @@ __all__ = [
     "INTAKE_DIMENSIONS",
     "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
+    "INTAKE_REJECTED",
     "INTAKE_UNTRIAGED",
     "NOTIFIED_BLOCKED",
     "NOTIFIED_CORRECTED",

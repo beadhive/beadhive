@@ -27,6 +27,7 @@ from beadhive.modules.intake.application import (
     TriageBinding,
 )
 from beadhive.modules.intake.domain import (
+    CLOSE_REASON_LIMIT,
     INTAKE_NEEDS_INFO,
     INTAKE_UNTRIAGED,
     ApplyOutcome,
@@ -35,6 +36,9 @@ from beadhive.modules.intake.domain import (
     ApplyStep,
     CheckKind,
     CompletionPolicy,
+    ConsiderRequest,
+    Disposition,
+    DispositionRequest,
     IntakeRefused,
     IssueBinding,
     IssueStatus,
@@ -824,8 +828,26 @@ def test_a_report_no_longer_awaiting_triage_is_blocked_before_any_write() -> Non
 
 
 def test_a_refused_verb_fails_the_item_and_leaves_the_proposal_verified() -> None:
-    """The triage verbs keep every refusal they make: tracking another REPORT passes the
-    checks (it exists and is open) but the link refuses it, so nothing is applied."""
+    """A verb that fails after every check passed fails its item and applies nothing: here the
+    question's draft cannot be written."""
+    hive = Hive()
+    report = hive.report("a hang")
+    hive.propose(report, {"disposition": "needs-info", "reporter_text": "Which version is it?"})
+    hive.review(report, {"verdict": "confirmed"})
+    before = hive.writes()
+    hive.store.fail_next_outbox_write()
+
+    failed = item(hive.apply(), report)
+
+    assert failed.status is ApplyStatus.FAILED and failed.steps == ()
+    assert failed.detail.startswith("needs-info failed")
+    assert hive.proposal(report).status is ProposalStatus.VERIFIED
+    assert hive.writes() == before
+
+
+def test_an_owner_that_is_a_report_is_blocked_by_the_checks() -> None:
+    """Tracking another REPORT is refused by the link, so the checks catch it before apply
+    writes anything, and the dry run shows it (bh-osh0a)."""
     hive = Hive()
     report = hive.report("a crash")
     other = hive.report("another report")
@@ -833,10 +855,12 @@ def test_a_refused_verb_fails_the_item_and_leaves_the_proposal_verified() -> Non
     hive.review(report, {"verdict": "confirmed"})
     before = hive.writes()
 
-    failed = item(hive.apply(), report)
+    planned = item(hive.apply(dry_run=True), report)
+    blocked = item(hive.apply(), report)
 
-    assert failed.status is ApplyStatus.FAILED and failed.steps == ()
-    assert failed.detail.startswith("accept --work failed")
+    for outcome in (planned, blocked):
+        assert outcome.status is ApplyStatus.BLOCKED
+        assert [f.kind for f in outcome.findings] == [CheckKind.OWNER_NOT_WORK]
     assert hive.proposal(report).status is ProposalStatus.VERIFIED
     assert hive.writes() == before
 
@@ -855,3 +879,126 @@ def test_apply_refreshes_the_labels_of_the_touched_reports_when_labels_are_on() 
     assert outcome.labels is not None and outcome.labels_error == ""
     assert [i.report for i in outcome.labels.items] == [touched]
     assert hive.world.write_requests() == 0  # label changes are drafted, never sent
+
+
+# -- the 0.35.0 dog-food apply (bh-4kwet): closes, resumes and the thread watermark ----------
+
+LONG_REPLY = (
+    "Thanks for the detailed report. "
+    + "We traced the behaviour you describe through the close ladder and the retry path. " * 8
+    + "Please upgrade and let us know if it comes back."
+)
+
+
+def test_a_reject_whose_reply_is_longer_than_a_close_reason_still_closes() -> None:
+    """Beads stores at most 255 characters of close reason; the whole reply goes to the outbox
+    and the intake state change, and the close takes its start (bh-mqv12)."""
+    assert len(LONG_REPLY) > CLOSE_REASON_LIMIT
+    hive = Hive()
+    report = hive.report("works as intended?")
+    hive.propose(report, {"disposition": "reject", "reporter_text": LONG_REPLY})
+    hive.review(report, {"verdict": "confirmed"})
+
+    done = item(hive.apply(), report)
+
+    assert done.status is ApplyStatus.APPLIED
+    assert done.steps == (ApplyStep.DRAFT_REPLY, ApplyStep.REJECT)
+    assert hive.store.get(report).status == "closed"
+    history = hive.store.history(report)
+    (closed,) = [reason for kind, value, reason in history if (kind, value) == ("status", "closed")]
+    assert len(closed) <= CLOSE_REASON_LIMIT and closed.endswith("\u2026")
+    assert LONG_REPLY.startswith(closed[:-1])
+    assert any(LONG_REPLY in reason for _, _, reason in history)  # the state change keeps it all
+    (record,) = hive.records(report)
+    assert record.event is OutboxEvent.REPLY
+
+
+def test_apply_finishes_a_half_rejected_report_without_drafting_again() -> None:
+    """An earlier run drafted the reply, set intake:rejected and failed to close: apply only
+    closes it now, and marks the proposal applied (bh-mqv12)."""
+    hive = Hive()
+    report = hive.report("works as intended?")
+    hive.propose(report, {"disposition": "reject", "reporter_text": "Not a bug: see the docs."})
+    hive.review(report, {"verdict": "confirmed"})
+    hive.store.set_state(report, "intake", "rejected", reason="rejected", actor=TRIAGE)
+
+    planned = item(hive.apply(dry_run=True), report)
+    done = item(hive.apply(), report)
+
+    assert planned.status is ApplyStatus.PLANNED and planned.steps == (ApplyStep.REJECT,)
+    assert done.status is ApplyStatus.APPLIED and done.steps == (ApplyStep.REJECT,)
+    assert hive.store.get(report).status == "closed"
+    assert hive.proposal(report).status is ProposalStatus.APPLIED
+    assert hive.records(report) == []  # nothing drafted again
+
+
+def test_a_half_rejected_report_whose_proposal_does_not_reject_it_is_blocked() -> None:
+    hive = Hive()
+    report = hive.report("a crash")
+    hive.propose(report, {"disposition": "new", "type": "bug"})
+    hive.review(report, {"verdict": "confirmed"})
+    hive.store.set_state(report, "intake", "rejected", reason="rejected", actor=TRIAGE)
+    before = hive.writes()
+
+    blocked = item(hive.apply(), report)
+
+    assert blocked.status is ApplyStatus.BLOCKED and "does not reject" in blocked.detail
+    assert hive.writes() == before
+
+
+def test_reject_closes_a_half_rejected_report() -> None:
+    """``bh work reject`` on a report a failed reject left open finishes it (bh-mqv12)."""
+    hive = Hive()
+    report = hive.report("works as intended?")
+    hive.store.set_state(report, "intake", "rejected", reason="rejected", actor=TRIAGE)
+
+    outcome = hive.intake.dispose(
+        DispositionRequest(report, Disposition.REJECT, TRIAGE, reason=LONG_REPLY)
+    )
+
+    assert outcome.state == "rejected"
+    assert hive.store.get(report).status == "closed"
+
+
+def test_needs_info_applies_when_the_analysis_read_the_thread() -> None:
+    """The verified analysis read the reporter's comment (its thread_seq covers it): apply
+    records that read and asks, and the comment is no longer new evidence (bh-yu6sy)."""
+    hive = Hive()
+    report = hive.report("a hang")
+    hive.reply(report, "It hangs on the second run.")
+    seq = hive.store.read_thread(report).seq
+    hive.propose(
+        report,
+        {"disposition": "needs-info", "reporter_text": "Which version is it?", "thread_seq": seq},
+    )
+    hive.review(report, {"verdict": "confirmed"})
+
+    done = item(hive.apply(), report)
+
+    assert done.status is ApplyStatus.APPLIED and done.steps == (ApplyStep.NEEDS_INFO,)
+    assert INTAKE_NEEDS_INFO in hive.store.get(report).labels
+    assert hive.intake.thread_of(report).new_evidence == ()
+
+
+def test_a_triage_read_does_not_make_a_proposal_stale() -> None:
+    """Recording a read moves the thread's seq but no comment, so a proposal that read the thread
+    is not stale; a comment after it still is (bh-yu6sy)."""
+    hive = Hive()
+    report = hive.report("a hang")
+    hive.reply(report, "It hangs on the second run.")
+    seq = hive.store.read_thread(report).seq
+    hive.propose(
+        report,
+        {"disposition": "needs-info", "reporter_text": "Which version is it?", "thread_seq": seq},
+    )
+    hive.review(report, {"verdict": "confirmed"})
+    hive.intake.mark_considered(ConsiderRequest(report, TRIAGE, through_seq=seq))
+    assert hive.store.read_thread(report).seq > seq
+
+    fresh = item(hive.apply(dry_run=True), report)
+    hive.reply(report, "Also on the third.", day=3)
+    stale = item(hive.apply(dry_run=True), report)
+
+    assert fresh.status is ApplyStatus.PLANNED
+    assert stale.status is ApplyStatus.BLOCKED
+    assert [f.kind for f in stale.findings] == [CheckKind.STALE_THREAD]

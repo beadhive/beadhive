@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from beadhive.modules.intake.contracts import (
+    CLOSE_REASON_LIMIT,
     OUTBOX_KEY,
     PROPOSAL_KEY,
     THREAD_KEY,
@@ -235,6 +236,13 @@ class MemoryReportStore:
 
     def close(self, bead: str, *, reason: str, actor: str) -> None:
         row = self._row(bead)
+        if len(reason) > CLOSE_REASON_LIMIT:  # what Beads says of a longer one (bh-mqv12)
+            raise IntakeStoreError(
+                f"close refused by Beads (invalid_argument: `reason` is {len(reason)} "
+                f"characters; storage holds at most {CLOSE_REASON_LIMIT})",
+                bead=bead,
+                operation="close",
+            )
         if row.view.status == "closed":
             return  # bd closes a closed bead again without a word, and leaves its gates alone
         holds = self._open_gates(bead)

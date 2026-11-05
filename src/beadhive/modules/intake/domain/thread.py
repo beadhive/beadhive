@@ -748,6 +748,17 @@ def mark_considered(thread: Thread, through_seq: int | None = None) -> Applied:
     return Applied(considered, (ThreadEvent(EventKind.CONSIDERED, "", seq),))
 
 
+def content_seq(thread: Thread) -> int:
+    """The seq of the thread's last change to a comment: one first seen, revised, touched,
+    re-flagged, resurrected, confirmed present again or tombstoned. ``seq`` also moves when
+    :func:`mark_considered` records a triage read or a checkpoint is stored, and neither changes
+    what an analysis read, so staleness compares a proposal's ``thread_seq`` against this."""
+    latest = 0
+    for record in thread.records.values():
+        latest = max(latest, record.last_seen_seq, record.tombstone_seq or 0)
+    return latest
+
+
 def new_evidence(thread: Thread) -> tuple[str, ...]:
     """Comment ids triage has not considered: a live external record with a ``rev`` above its
     ``considered_rev`` (or never considered), or an external record tombstoned after the last
@@ -836,6 +847,7 @@ __all__ = [
     "apply_observations",
     "checkpoint_for",
     "classify",
+    "content_seq",
     "digest",
     "flagged",
     "mark_considered",

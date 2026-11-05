@@ -60,7 +60,15 @@ from .models import (
     WorkProgress,
 )
 from .references import ReferenceShape, classify_reference
-from .rules import REPORT_TYPES, dupes_touching, may_disposition, revision_is_newer
+from .rules import (
+    CLOSE_REASON_LIMIT,
+    REPORT_TYPES,
+    close_reason,
+    dupes_touching,
+    half_rejected,
+    may_disposition,
+    revision_is_newer,
+)
 from .thread import (
     DEFAULT_POLICY,
     THREAD_SCHEMA,
@@ -96,6 +104,7 @@ from .thread import (
     apply_observations,
     checkpoint_for,
     classify,
+    content_seq,
     digest,
     flagged,
     mark_considered,
@@ -120,6 +129,7 @@ from .vocabulary import (
     INTAKE_DIMENSIONS,
     INTAKE_NEEDS_INFO,
     INTAKE_PROMOTED,
+    INTAKE_REJECTED,
     INTAKE_UNTRIAGED,
     INVESTIGATES_EDGE,
     NOTIFIED_DIM,
@@ -166,6 +176,7 @@ __all__ = [
     "INTAKE_DIMENSIONS",
     "INTAKE_NEEDS_INFO",
     "INTAKE_PROMOTED",
+    "INTAKE_REJECTED",
     "INTAKE_UNTRIAGED",
     "NOTIFIED_DIM",
     "ORIGIN_BACKFILL",
@@ -175,6 +186,7 @@ __all__ = [
     "ORIGIN_GITHUB",
     "ORIGIN_IMPORT",
     "ORIGIN_REPORT",
+    "CLOSE_REASON_LIMIT",
     "REPORT_TYPES",
     "THREAD_KEY",
     "DEFAULT_POLICY",
@@ -254,6 +266,8 @@ __all__ = [
     "channel_of",
     "checkpoint_for",
     "classify",
+    "close_reason",
+    "content_seq",
     "classify_reference",
     "delivery_after_unlink",
     "delivery_of",
@@ -261,6 +275,7 @@ __all__ = [
     "disposition_state",
     "dupes_touching",
     "flagged",
+    "half_rejected",
     "is_escalation_origin",
     "is_promoted",
     "is_report_origin",

@@ -5,6 +5,15 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.0 → 0.35.1 — triage apply fixes
+
+No new keys and no state change. `bh work triage apply --reviewed` on 0.35.0 could leave a reject
+half done (reply drafted, `intake:rejected` set, close refused because the reply was longer than
+the 255-character close reason Beads stores) and refused needs-info questions whose comments the
+analysis had read. On 0.35.1 rerun `bh work triage apply --reviewed`: it closes the half-rejected
+reports without drafting their replies again and asks the questions. A proposal re-stored only to
+move its `thread_seq` past a `thread considered` write needs no further change.
+
 ## 0.34.x → 0.35.0 — GitHub label projection and review-gated triage (switches default off)
 
 0.35.0 adds two supervised features on top of intake and the outbox. The **label projection**
