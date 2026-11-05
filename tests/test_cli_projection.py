@@ -81,8 +81,9 @@ def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
     # + work thread show / ingest / considered (bh-o9rep), then needs-info and wake (bh-61xkc),
-    # then work delivery blocked / deprioritised (bh-dev42), then work investigate (bh-u3a53)
-    assert len(declarations) == 284
+    # then work delivery blocked / deprioritised (bh-dev42), then work investigate (bh-u3a53),
+    # then the `labels` (4) and `triage` (4) groups (bh-v3fe7, wire 2.22.0)
+    assert len(declarations) == 292
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -92,7 +93,7 @@ def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
         next(row for row in declarations if row.operation == "host.eligible").path
         == "host eligible"
     )
-    assert len(parents) == 42  # + work thread (bh-o9rep)
+    assert len(parents) == 44  # + work thread (bh-o9rep), work labels and work triage (bh-v3fe7)
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
     assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)
@@ -151,9 +152,11 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     # (bh-61xkc) only ADD: dropping them leaves the bh-o9rep digest
     # 155573cc23c82872f9a40e11ce552758576708d92b0fe492d63fe271a534afe4. `investigate` (bh-u3a53)
     # only ADDS: dropping it leaves the bh-61xkc/bh-dev42 digest
-    # 8d97e54bd45f5d0294eca2265dafdc560fce7f7979fbe865595d793d6d7918c3.
+    # 8d97e54bd45f5d0294eca2265dafdc560fce7f7979fbe865595d793d6d7918c3. The `labels` and `triage`
+    # groups (bh-v3fe7) only ADD: dropping them leaves the bh-u3a53 digest
+    # bfaeb8ba9168088715af40d27a1eb485baad3dcdde692755adf127b6dd9de026.
     assert _digest(_click_inventory(work.app)) == (
-        "bfaeb8ba9168088715af40d27a1eb485baad3dcdde692755adf127b6dd9de026"
+        "ce6b8883e9e93a4e0faa89c3fd9145eeb410950f6ded1519d20ce1ea6009a5fe"
     )
     assert _digest(_click_inventory(plan.app)) == (
         "7156c6aeee559e071428f3e3856586da7500742420cbec3286bbf95db4493f19"
@@ -166,8 +169,9 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
         (): "9252c456cb560e585f93551b32452e5adef4e924b964937bc415d2faae5da8ab",
         # `work backup` (state/work pairing, bh-cqvj6) joins the command list; the intake verbs
         # and the `delivery` / `outbox` groups (bh-73td2) join after it, then `thread` (bh-o9rep),
-        # then `needs-info` and `wake` (bh-61xkc), then `investigate` (bh-u3a53).
-        ("work",): "8833a962dbe51948b73ef60f6d7f90de56db5581334a65f1bad30ab172bd3120",
+        # then `needs-info` and `wake` (bh-61xkc), then `investigate` (bh-u3a53), then the
+        # `labels` and `triage` groups (bh-v3fe7).
+        ("work",): "f76208ff421e56f97b5b205d2f2f70baa6bd25ca8367fbc8c89b377153cc9cff",
         ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
     }
     for path, digest in expected_help.items():
