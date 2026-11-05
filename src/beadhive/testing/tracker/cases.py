@@ -49,6 +49,7 @@ from beadhive.modules.tracker.contracts import (
     LabelDefinition,
     LabelNotOwned,
     LabelOwnership,
+    LabelPruner,
     LabelReader,
     LabelWriter,
     NotVisible,
@@ -714,6 +715,121 @@ def _labels_define_ambiguous_not_applied(factory: TrackerFactory) -> None:
     assert s.world.write_requests() == 2 and s.world.label_definitions() == (ACCEPTED,)
 
 
+# ---- cases: repository label deletion (labels.define, the optional LabelPruner) -------------
+#
+# ``delete_labels`` is the pruning half of ``labels.define``: the same operation, the same
+# repository grant scope. A case runs only for an adapter that declares ``labels.define`` AND
+# implements ``LabelPruner`` (it is optional; an adapter without it is not failed).
+
+
+def _pruner_subject(factory: TrackerFactory, **kwargs: Any) -> TrackerSubject | None:
+    """A subject with labels.define enabled that can delete labels, else ``None`` (skipped)."""
+    if Operation.LABELS_DEFINE not in factory().adapter.describe().supported:
+        return None
+    s = factory(enabled=frozenset({Operation.LABELS_DEFINE}), **kwargs)
+    return s if isinstance(s.adapter, LabelPruner) else None
+
+
+def _labels_delete_only_owned(factory: TrackerFactory) -> None:
+    s = _pruner_subject(factory)
+    if s is None:
+        return
+    assert isinstance(s.adapter, LabelPruner)
+    for definition in (HUMAN_BUG, ACCEPTED, TRIAGE):
+        s.world.seed_label_definition(definition)
+    for n, batch in enumerate(
+        ((HUMAN_BUG.name,), ("x-bh:accepted",), (ACCEPTED.name, HUMAN_BUG.name))
+    ):
+        _refused(
+            lambda batch=batch, n=n: s.adapter.delete_labels(
+                batch, grant=_define_grant(s, f"g-{n}")
+            ),
+            LabelNotOwned,
+            "a label definition outside the owned set was deleted",
+        )
+    assert s.world.write_requests() == 0
+    assert set(s.world.label_definitions()) == {HUMAN_BUG, ACCEPTED, TRIAGE}  # nothing partial
+    receipt = s.adapter.delete_labels((ACCEPTED.name,), grant=_define_grant(s, "g-ok"))
+    assert_contract_only(receipt)
+    assert receipt.grant_id == "g-ok" and receipt.operation is Operation.LABELS_DEFINE
+    assert receipt.target == s.adapter.describe().project
+    assert set(s.world.label_definitions()) == {HUMAN_BUG, TRIAGE}  # theirs untouched
+
+
+def _labels_delete_grant_matches_and_single_use(factory: TrackerFactory) -> None:
+    s = _pruner_subject(factory)
+    if s is None:
+        return
+    assert isinstance(s.adapter, LabelPruner)
+    project = s.adapter.describe().project
+    for definition in (ACCEPTED, TRIAGE):
+        s.world.seed_label_definition(definition)
+    issue = s.world.add_issue("thread", at=at(2))
+    wrong = [
+        grant(Operation.LABELS_DEFINE, issue, "g-issue"),  # a delete is not issue-scoped
+        grant(
+            Operation.LABELS_DEFINE, ProjectRef(project.tracker, "someone-else/elsewhere"), "g-2"
+        ),
+        grant(Operation.LABELS_CHANGE, project, "g-op"),  # another operation
+    ]
+    for bad in wrong:
+        _refused(
+            lambda bad=bad: s.adapter.delete_labels((ACCEPTED.name,), grant=bad),
+            OperationNotEnabled,
+            f"a mismatched grant was accepted: {bad}",
+        )
+    assert s.world.write_requests() == 0 and set(s.world.label_definitions()) == {ACCEPTED, TRIAGE}
+    good = _define_grant(s, "g-once")
+    s.adapter.delete_labels((ACCEPTED.name,), grant=good)
+    _refused(
+        lambda: s.adapter.delete_labels((TRIAGE.name,), grant=good),
+        OperationNotEnabled,
+        "a grant was used twice",
+    )
+    assert s.world.write_requests() == 1 and s.world.label_definitions() == (TRIAGE,)
+
+
+def _labels_delete_refused_when_not_enabled(factory: TrackerFactory) -> None:
+    s = factory()  # no write enabled
+    if Operation.LABELS_DEFINE not in s.adapter.describe().supported:
+        return
+    s.world.seed_label_definition(ACCEPTED)
+    if isinstance(s.adapter, LabelPruner):  # an absent pruner is the structural refusal
+        _refused(
+            lambda: s.adapter.delete_labels((ACCEPTED.name,), grant=_define_grant(s)),
+            OperationNotEnabled,
+            "a label was deleted with labels.define disabled",
+        )
+    assert s.world.write_requests() == 0
+    assert s.world.label_definitions() == (ACCEPTED,)
+
+
+def _labels_delete_already_gone_succeeds(factory: TrackerFactory) -> None:
+    """A name the repository does not hold is already deleted: it succeeds, sends no write,
+    uses its grant, and deleting a label twice (a re-run) converges."""
+    s = _pruner_subject(factory)
+    if s is None:
+        return
+    assert isinstance(s.adapter, LabelPruner)
+    s.world.seed_label_definition(HUMAN_BUG)
+    s.world.seed_label_definition(ACCEPTED)
+    receipt = s.adapter.delete_labels(("bh:absent",), grant=_define_grant(s, "g-1"))
+    assert receipt.grant_id == "g-1" and receipt.target == s.adapter.describe().project
+    assert s.world.write_requests() == 0 and set(s.world.label_definitions()) == {
+        HUMAN_BUG,
+        ACCEPTED,
+    }
+    _refused(
+        lambda: s.adapter.delete_labels(("bh:absent",), grant=_define_grant(s, "g-1")),
+        OperationNotEnabled,
+        "the grant of a converged delete was reused",
+    )
+    s.adapter.delete_labels((ACCEPTED.name, "bh:absent"), grant=_define_grant(s, "g-2"))
+    assert s.world.write_requests() == 1 and s.world.label_definitions() == (HUMAN_BUG,)
+    s.adapter.delete_labels((ACCEPTED.name,), grant=_define_grant(s, "g-3"))  # the re-run
+    assert s.world.write_requests() == 1 and s.world.label_definitions() == (HUMAN_BUG,)
+
+
 # ---- cases: rate limits --------------------------------------------------------------------
 
 
@@ -868,6 +984,12 @@ TRACKER_CASES: tuple[TrackerCase, ...] = (
     TrackerCase("labels.define-is-idempotent", _labels_define_is_idempotent),
     TrackerCase("labels.define-ambiguous-not-retried", _labels_define_ambiguous_not_retried),
     TrackerCase("labels.define-ambiguous-not-applied", _labels_define_ambiguous_not_applied),
+    TrackerCase("labels.delete-only-owned", _labels_delete_only_owned),
+    TrackerCase(
+        "labels.delete-grant-matches-and-single-use", _labels_delete_grant_matches_and_single_use
+    ),
+    TrackerCase("labels.delete-refused-when-not-enabled", _labels_delete_refused_when_not_enabled),
+    TrackerCase("labels.delete-already-gone-succeeds", _labels_delete_already_gone_succeeds),
     TrackerCase("rate-limit.within-budget", _rate_limit_within_budget),
     TrackerCase("rate-limit.beyond-budget", _rate_limit_beyond_budget),
     TrackerCase("rate-limit.wait-cap", _rate_limit_wait_cap),

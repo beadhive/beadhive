@@ -3,15 +3,16 @@
 Against the ``MockTransport`` fake (``tracker_github_fake.FakeGitHub``): every refusal happens
 before any request (and before the credential is resolved), names are percent-encoded on the
 wire, a define converges, and the grant is single-use. Against the recorded replays
-(``recorded/label_definitions_*.json``): the paged listing, one create / update / delete batch
-whose ``204 No Content`` delete is a known success, and the refusals GitHub's documentation is
-silent on (a duplicate name, a missing permission, a delete reported "not found"). The
-``204``-is-success rule of the one write seam is pinned at the transport too. Nothing here
-reaches GitHub, reads a clock or sleeps.
+(``recorded/label_definitions_*.json``): the paged listing, one create / update batch, one
+``delete_labels`` batch whose ``204 No Content`` is a known success, and the refusals GitHub's
+documentation is silent on (a duplicate name, a missing permission, a delete reported "not
+found"). The ``204``-is-success rule of the one write seam is pinned at the transport too.
+Nothing here reaches GitHub, reads a clock or sleeps.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections import deque
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ from beadhive.modules.tracker.contracts import (
     LabelDefiner,
     LabelDefinition,
     LabelNotOwned,
+    LabelPruner,
     NotVisible,
     Operation,
     OperationNotEnabled,
@@ -159,52 +161,39 @@ def test_a_missing_or_mismatched_grant_refuses_before_any_request(bad):
 
 
 @pytest.mark.parametrize(
-    ("definitions", "prune", "prefixes"),
+    ("definitions", "prefixes"),
     [
-        ((HUMAN,), frozenset(), ("bh:",)),
-        ((LabelDefinition("x-bh:accepted", "ffffff", ""),), frozenset(), ("bh:",)),
-        ((ACCEPTED, HUMAN), frozenset(), ("bh:",)),  # one foreign name refuses the batch
-        ((LabelDefinition("BH:upper", "ffffff", ""),), frozenset(), ("bh:",)),
-        ((), frozenset({"bug"}), ("bh:",)),  # never prune a human label
-        ((ACCEPTED,), frozenset(), None),  # no configured ownership owns nothing
-        ((ACCEPTED,), frozenset(), ()),
+        ((HUMAN,), ("bh:",)),
+        ((LabelDefinition("x-bh:accepted", "ffffff", ""),), ("bh:",)),
+        ((ACCEPTED, HUMAN), ("bh:",)),  # one foreign name refuses the batch
+        ((LabelDefinition("BH:upper", "ffffff", ""),), ("bh:",)),
+        ((ACCEPTED,), None),  # no configured ownership owns nothing
+        ((ACCEPTED,), ()),
     ],
-    ids=[
-        "human",
-        "lookalike",
-        "mixed",
-        "case",
-        "prune-human",
-        "unconfigured",
-        "empty-prefixes",
-    ],
+    ids=["human", "lookalike", "mixed", "case", "unconfigured", "empty-prefixes"],
 )
-def test_a_name_outside_the_configured_prefixes_refuses_before_any_request(
-    definitions, prune, prefixes
-):
+def test_a_name_outside_the_configured_prefixes_refuses_before_any_request(definitions, prefixes):
     world = FakeGitHub()
     world.seed_label_definition(HUMAN)
     tokens = Tokens(world)
     adapter = definer(world, prefixes=prefixes, tokens=tokens)
     with pytest.raises(LabelNotOwned):
-        adapter.define_labels(definitions, grant=grant(), prune=prune)
+        adapter.define_labels(definitions, grant=grant())
     assert world.requests == [] and tokens.calls == 0
     assert world.label_definitions() == (HUMAN,)
 
 
 @pytest.mark.parametrize(
-    ("definitions", "prune"),
+    "definitions",
     [
-        ((LabelDefinition("bh:a", "#0e8a16", ""),), frozenset()),
-        ((LabelDefinition("bh:a", "0e8a1", ""),), frozenset()),
-        ((LabelDefinition("bh:a", "zzzzzz", ""),), frozenset()),
-        ((LabelDefinition("bh:a", "0e8a16", "x" * 101),), frozenset()),
-        ((LabelDefinition(" bh:a", "0e8a16", ""),), frozenset()),
-        ((LabelDefinition("", "0e8a16", ""),), frozenset()),
-        ((ACCEPTED, LabelDefinition("bh:Accepted", "000000", "")), frozenset()),
-        ((ACCEPTED,), frozenset({"bh:accepted"})),
-        ((), frozenset({""})),
-        (("bh:a",), frozenset()),
+        (LabelDefinition("bh:a", "#0e8a16", ""),),
+        (LabelDefinition("bh:a", "0e8a1", ""),),
+        (LabelDefinition("bh:a", "zzzzzz", ""),),
+        (LabelDefinition("bh:a", "0e8a16", "x" * 101),),
+        (LabelDefinition(" bh:a", "0e8a16", ""),),
+        (LabelDefinition("", "0e8a16", ""),),
+        (ACCEPTED, LabelDefinition("bh:Accepted", "000000", "")),
+        ("bh:a",),
     ],
     ids=[
         "hash-color",
@@ -214,16 +203,14 @@ def test_a_name_outside_the_configured_prefixes_refuses_before_any_request(
         "padded-name",
         "empty-name",
         "duplicate-by-case",
-        "defined-and-pruned",
-        "empty-prune",
         "not-a-definition",
     ],
 )
-def test_a_malformed_batch_is_refused_before_any_request_or_grant(definitions, prune):
+def test_a_malformed_batch_is_refused_before_any_request_or_grant(definitions):
     world = FakeGitHub()
     adapter = definer(world)
     with pytest.raises(ValueError):
-        adapter.define_labels(definitions, grant=grant(), prune=prune)
+        adapter.define_labels(definitions, grant=grant())
     assert world.requests == []
     adapter.define_labels((ACCEPTED,), grant=grant())  # the refusal spent nothing
     assert world.label_definitions() == (ACCEPTED,)
@@ -283,21 +270,18 @@ def test_the_listing_reads_every_page_of_at_most_one_hundred():
     assert gets[1].url.path == "/repositories/9001/labels"  # Link: rel="next", verbatim
 
 
-def test_a_define_creates_updates_and_prunes_owned_labels_and_spares_human_ones():
+def test_a_define_creates_and_updates_owned_labels_and_spares_the_rest():
     world = FakeGitHub()
-    for definition in (HUMAN, TRIAGE, LabelDefinition("bh:stale", "cccccc", "")):
+    stale = LabelDefinition("bh:stale", "cccccc", "")
+    for definition in (HUMAN, TRIAGE, stale):
         world.seed_label_definition(definition)
-    issue = world.add_issue("thread", at=datetime(2026, 1, 2, tzinfo=UTC), labels=("bh:stale",))
     changed = LabelDefinition("bh:triage", "000000", "Re-described")
 
-    receipt = definer(world).define_labels(
-        (ACCEPTED, changed), grant=grant("g-ok"), prune=frozenset({"bh:stale", "bh:absent"})
-    )
+    receipt = definer(world).define_labels((ACCEPTED, changed), grant=grant("g-ok"))
 
     assert receipt.grant_id == "g-ok" and receipt.operation is DEFINE
     assert receipt.target == PROJECT
-    assert set(world.label_definitions()) == {HUMAN, ACCEPTED, changed}
-    assert world.server_labels(issue) == frozenset()  # GitHub removes a deleted label too
+    assert set(world.label_definitions()) == {HUMAN, ACCEPTED, changed, stale}  # no prune here
     assert bodies(world) == [
         (
             "POST",
@@ -309,8 +293,134 @@ def test_a_define_creates_updates_and_prunes_owned_labels_and_spares_human_ones(
             "/repos/acme/widgets/labels/bh%3Atriage",
             {"color": "000000", "description": "Re-described"},
         ),
-        ("DELETE", "/repos/acme/widgets/labels/bh%3Astale", None),
     ]
+
+
+def test_delete_labels_deletes_owned_labels_everywhere_and_spares_human_ones():
+    world = FakeGitHub()
+    for definition in (HUMAN, TRIAGE, LabelDefinition("bh:stale", "cccccc", "")):
+        world.seed_label_definition(definition)
+    issue = world.add_issue("thread", at=datetime(2026, 1, 2, tzinfo=UTC), labels=("bh:stale",))
+
+    receipt = definer(world).delete_labels(("bh:stale", "bh:absent"), grant=grant("g-ok"))
+
+    assert receipt.grant_id == "g-ok" and receipt.operation is DEFINE
+    assert receipt.target == PROJECT
+    assert set(world.label_definitions()) == {HUMAN, TRIAGE}
+    assert world.server_labels(issue) == frozenset()  # GitHub removes a deleted label too
+    assert bodies(world) == [("DELETE", "/repos/acme/widgets/labels/bh%3Astale", None)]
+
+
+def test_the_adapter_is_a_label_pruner_only_with_labels_define_and_define_has_no_prune():
+    world = FakeGitHub()
+    assert isinstance(definer(world), LabelPruner)
+    assert not isinstance(adapter_for(world, label_prefixes=("bh:",)), LabelPruner)
+    assert list(inspect.signature(LabelDefining.define_labels).parameters) == [
+        "self",
+        "definitions",
+        "grant",
+    ]
+    assert list(inspect.signature(LabelDefining.delete_labels).parameters) == [
+        "self",
+        "names",
+        "grant",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("names", "prefixes"),
+    [
+        (("bug",), ("bh:",)),  # never prune a human label
+        (("bh:stale", "bug"), ("bh:",)),  # one foreign name refuses the batch
+        (("BH:stale",), ("bh:",)),
+        (("bh:stale",), None),  # no configured ownership owns nothing
+        (("bh:stale",), ()),
+    ],
+    ids=["human", "mixed", "case", "unconfigured", "empty-prefixes"],
+)
+def test_a_deleted_name_outside_the_configured_prefixes_refuses_before_any_request(names, prefixes):
+    world = FakeGitHub()
+    world.seed_label_definition(HUMAN)
+    tokens = Tokens(world)
+    adapter = definer(world, prefixes=prefixes, tokens=tokens)
+    with pytest.raises(LabelNotOwned):
+        adapter.delete_labels(names, grant=grant())
+    assert world.requests == [] and tokens.calls == 0
+    assert world.label_definitions() == (HUMAN,)
+
+
+@pytest.mark.parametrize("names", [("",), (" bh:a",), ("bh:a", ""), ("bh:a", 3)])
+def test_a_malformed_deletion_is_refused_before_any_request_or_grant(names):
+    world = FakeGitHub()
+    world.seed_label_definition(LabelDefinition("bh:a", "cccccc", ""))
+    adapter = definer(world)
+    with pytest.raises(ValueError):
+        adapter.delete_labels(names, grant=grant())
+    assert world.requests == []
+    adapter.delete_labels(("bh:a",), grant=grant())  # the refusal spent nothing
+    assert world.label_definitions() == ()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(grant(target=IssueKey("github", "acme/widgets", "#1")), id="issue-scope"),
+        pytest.param(grant(target=ProjectRef("github", "other/repo")), id="other-project"),
+        pytest.param(grant(op=Operation.LABELS_CHANGE), id="other-operation"),
+        pytest.param("g-1", id="not-a-grant"),
+    ],
+)
+def test_a_mismatched_grant_refuses_a_deletion_before_any_request(bad):
+    world = FakeGitHub()
+    tokens = Tokens(world)
+    with pytest.raises(OperationNotEnabled):
+        definer(world, tokens=tokens).delete_labels(("bh:stale",), grant=bad)
+    assert world.requests == [] and tokens.calls == 0
+
+
+def test_a_deletion_uses_its_grant_once_even_when_the_label_is_already_gone():
+    world = FakeGitHub()
+    adapter = definer(world)
+    adapter.delete_labels(("bh:absent",), grant=grant("g-1"))
+    assert world.write_requests() == 0  # converged: nothing to delete, nothing sent
+    with pytest.raises(OperationNotEnabled, match="already used"):
+        adapter.delete_labels(("bh:absent",), grant=grant("g-1"))
+
+
+def test_an_anonymous_deletion_is_refused_locally_and_keeps_the_grant():
+    world = FakeGitHub()
+    world.seed_label_definition(LabelDefinition("bh:stale", "cccccc", ""))
+    with pytest.raises(AuthenticationFailed, match="needs a credential"):
+        definer(world, tokens=Tokens(anonymous=True)).delete_labels(
+            ("bh:stale",), grant=grant("g-kept")
+        )
+    assert world.requests == []
+    definer(world).delete_labels(("bh:stale",), grant=grant("g-kept"))
+    assert world.label_definitions() == ()
+
+
+def test_a_foreign_case_variant_is_never_deleted_and_keeps_the_grant():
+    world = FakeGitHub()
+    world.seed_label_definition(LabelDefinition("BH:stale", "cccccc", "a human's label"))
+    adapter = definer(world)
+    with pytest.raises(LabelNotOwned, match="BH:stale"):
+        adapter.delete_labels(("bh:stale",), grant=grant("g-1"))
+    assert world.write_requests() == 0
+    with pytest.raises(LabelNotOwned):  # refused before the spend: not "already used"
+        adapter.delete_labels(("bh:stale",), grant=grant("g-1"))
+
+
+def test_an_ambiguous_deletion_stops_the_batch_and_is_never_retried():
+    world = FakeGitHub()
+    for name in ("bh:a", "bh:b"):
+        world.seed_label_definition(LabelDefinition(name, "cccccc", ""))
+    adapter = definer(world)
+    world.fail_next_write_ambiguously(applied=True)
+    with pytest.raises(WriteOutcomeUnknown):
+        adapter.delete_labels(("bh:a", "bh:b"), grant=grant("g-1"))
+    assert world.write_requests() == 1  # the second delete was never sent
+    adapter.delete_labels(("bh:a", "bh:b"), grant=grant("g-2"))  # a fresh grant converges
+    assert world.label_definitions() == ()
 
 
 @pytest.mark.parametrize(
@@ -329,11 +439,8 @@ def test_label_names_are_percent_encoded_in_every_path(name, encoded):
     world.seed_label_definition(LabelDefinition(name + "-gone", "cccccc", ""))
     adapter = definer(world)
 
-    adapter.define_labels(
-        (LabelDefinition(name, "dddddd", "new"),),
-        grant=grant("g-1"),
-        prune=frozenset({name + "-gone"}),
-    )
+    adapter.define_labels((LabelDefinition(name, "dddddd", "new"),), grant=grant("g-1"))
+    adapter.delete_labels((name + "-gone",), grant=grant("g-2"))
 
     assert [(m, p) for m, p, _ in bodies(world)] == [
         ("PATCH", f"/repos/acme/widgets/labels/{encoded}"),
@@ -372,7 +479,7 @@ def test_a_converged_batch_sends_no_write_but_uses_the_grant():
     world = FakeGitHub()
     world.seed_label_definition(ACCEPTED)
     adapter = definer(world)
-    adapter.define_labels((ACCEPTED,), grant=grant("g-1"), prune=frozenset({"bh:absent"}))
+    adapter.define_labels((ACCEPTED,), grant=grant("g-1"))
     assert world.write_requests() == 0
     with pytest.raises(OperationNotEnabled, match="already used"):
         adapter.define_labels((ACCEPTED,), grant=grant("g-1"))
@@ -541,7 +648,7 @@ def test_the_recorded_listing_is_paged_and_follows_the_link_verbatim():
     )
 
 
-def test_the_recorded_define_creates_updates_and_a_204_delete_is_a_success():
+def test_the_recorded_define_creates_and_updates():
     replay = Replay(_load("label_definitions_define.json")["interactions"])
     receipt = _recorded_adapter(replay).define_labels(
         (
@@ -550,9 +657,17 @@ def test_the_recorded_define_creates_updates_and_a_204_delete_is_a_success():
             LabelDefinition("bh:type/feature", "a2eeef", "New feature or request"),  # create
         ),
         grant=grant("g-rec"),
-        prune=frozenset({"bh:stale value"}),
     )
     replay.assert_done()  # the bodies and the percent-encoded paths are the recorded ones
+    assert receipt.grant_id == "g-rec" and receipt.target == PROJECT
+
+
+def test_the_recorded_delete_of_an_owned_label_is_a_204_success_and_sends_nothing_for_absent():
+    replay = Replay(_load("label_definitions_delete.json")["interactions"])
+    receipt = _recorded_adapter(replay).delete_labels(
+        ("bh:absent", "bh:stale value"), grant=grant("g-rec")
+    )
+    replay.assert_done()  # one read, then the one percent-encoded DELETE, whose 204 is a success
     assert receipt.grant_id == "g-rec" and receipt.target == PROJECT
 
 
@@ -567,28 +682,29 @@ def test_every_recorded_refusal_names_its_evidence_honestly():
 
 
 @pytest.mark.parametrize(
-    ("case", "call", "error", "text"),
+    ("case", "method", "argument", "error", "text"),
     [
         (
             "duplicate-name",
-            ((LabelDefinition("bh:type/feature", "a2eeef", "New feature or request"),), ()),
+            "define_labels",
+            (LabelDefinition("bh:type/feature", "a2eeef", "New feature or request"),),
             PayloadRejected,
             "422 payload rejected after authorization (Validation Failed)",
         ),
         (
             "no-write-permission",
-            ((LabelDefinition("bh:type/feature", "a2eeef", "New feature or request"),), ()),
+            "define_labels",
+            (LabelDefinition("bh:type/feature", "a2eeef", "New feature or request"),),
             PermissionDenied,
             "403 token lacks the permission (endpoint needs issues=write; pull_requests=write)",
         ),
-        ("delete-forbidden-as-not-found", ((), ("bh:stale",)), NotVisible, "404"),
+        ("delete-forbidden-as-not-found", "delete_labels", ("bh:stale",), NotVisible, "404"),
     ],
 )
-def test_each_recorded_refusal_raises_its_port_error(case, call, error, text):
+def test_each_recorded_refusal_raises_its_port_error(case, method, argument, error, text):
     replay = Replay(REFUSALS[case])
-    definitions, prune = call
     with pytest.raises(error) as raised:
-        _recorded_adapter(replay).define_labels(definitions, grant=grant(), prune=frozenset(prune))
+        getattr(_recorded_adapter(replay), method)(argument, grant=grant())
     replay.assert_done()
     assert str(raised.value).startswith(text)
     if error is PermissionDenied:
@@ -597,8 +713,6 @@ def test_each_recorded_refusal_raises_its_port_error(case, call, error, text):
 
 def test_a_recorded_delete_of_a_label_already_gone_converges():
     replay = Replay(REFUSALS["delete-already-gone"])
-    receipt = _recorded_adapter(replay).define_labels(
-        (), grant=grant(), prune=frozenset({"bh:stale"})
-    )
+    receipt = _recorded_adapter(replay).delete_labels(("bh:stale",), grant=grant())
     replay.assert_done()
     assert receipt.operation is DEFINE

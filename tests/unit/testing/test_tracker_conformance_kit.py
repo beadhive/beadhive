@@ -28,8 +28,10 @@ from beadhive.modules.tracker.contracts import (
     LabelDefinition,
     LabelNotOwned,
     LabelOwnership,
+    LabelPruner,
     LabelReader,
     LabelWriter,
+    NotVisible,
     Operation,
     OperationNotEnabled,
     OtherProject,
@@ -81,7 +83,7 @@ def test_memory_tracker_conforms(impl: str, case: TrackerCase) -> None:
 
 def test_case_set_covers_the_acceptance_scenarios() -> None:
     ids = {case.case_id for case in TRACKER_CASES}
-    assert len(ids) == len(TRACKER_CASES) == 35
+    assert len(ids) == len(TRACKER_CASES) == 39
     assert {
         "issues.closed-included",
         "issues.checkpoint-incremental",
@@ -94,6 +96,10 @@ def test_case_set_covers_the_acceptance_scenarios() -> None:
         "labels.define-is-idempotent",
         "labels.define-ambiguous-not-retried",
         "labels.define-ambiguous-not-applied",
+        "labels.delete-only-owned",
+        "labels.delete-grant-matches-and-single-use",
+        "labels.delete-refused-when-not-enabled",
+        "labels.delete-already-gone-succeeds",
         "resolver.resolve-is-pure-and-canonical",
         "resolver.refusals",
         "resolver.get-reads-one-issue",
@@ -110,6 +116,7 @@ def test_memory_tracker_implements_every_optional_protocol_and_the_view_hides_th
         assert isinstance(adapter, TrackerAdapter)
         assert isinstance(adapter, CommentWriter) and isinstance(adapter, LabelWriter)
         assert isinstance(adapter, LabelReader) and isinstance(adapter, LabelDefiner)
+        assert isinstance(adapter, LabelPruner)
     assert isinstance(tracker, IssueResolver) and not isinstance(view, IssueResolver)
 
 
@@ -406,6 +413,59 @@ class _DefineRefundsAmbiguousGrant(MemoryTracker):
             raise
 
 
+class _DeletesForeignLabels(MemoryTracker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ownership = LabelOwnership(prefixes=("",))
+
+
+class _DeletesPartially(MemoryTracker):
+    """Deletes each name as it goes, so a foreign name leaves the owned ones deleted."""
+
+    def delete_labels(self, names, *, grant):
+        for n, name in enumerate(names):
+            if not self._ownership.owns(name):
+                raise LabelNotOwned(f"outside the owned set: {name}")
+            one = dataclasses.replace(grant, grant_id=f"{grant.grant_id}-{n}")
+            super().delete_labels((name,), grant=one)
+        return WriteReceipt(grant.grant_id, grant.operation, self.describe().project)
+
+
+class _DeleteIgnoresGrantTarget(MemoryTracker):
+    def delete_labels(self, names, *, grant):
+        widened = dataclasses.replace(grant, target=self.describe().project)
+        return super().delete_labels(names, grant=widened)
+
+
+class _DeleteIgnoresEnabled(MemoryTracker):
+    def delete_labels(self, names, *, grant):
+        self._enabled = self._enabled | {Operation.LABELS_DEFINE}  # as if it were always on
+        return super().delete_labels(names, grant=grant)
+
+
+class _DeleteOfAbsentRaises(MemoryTracker):
+    def delete_labels(self, names, *, grant):
+        missing = [name for name in names if name not in self.world.label_defs]
+        if missing:
+            raise NotVisible(f"no such label: {', '.join(missing)}")
+        return super().delete_labels(names, grant=grant)
+
+
+class _DeleteOfAbsentSendsAWrite(MemoryTracker):
+    def delete_labels(self, names, *, grant):
+        receipt = super().delete_labels(names, grant=grant)
+        if not any(name in self.world.label_defs for name in names):
+            self.world.writes += 1  # sends the delete again for a label that is already gone
+        return receipt
+
+
+class _DeleteOfAbsentKeepsGrant(MemoryTracker):
+    def delete_labels(self, names, *, grant):
+        if not any(name in self.world.label_defs for name in names):
+            return WriteReceipt(grant.grant_id, grant.operation, self.describe().project)
+        return super().delete_labels(names, grant=grant)
+
+
 class _ListsOnlyOwnedDefinitions(MemoryTracker):
     def list_label_definitions(self):
         return tuple(d for d in super().list_label_definitions() if self._ownership.owns(d.name))
@@ -465,6 +525,15 @@ _CASES = {case.case_id: case for case in TRACKER_CASES}
         (_DefineRefundsAmbiguousGrant, "labels.define-ambiguous-not-retried"),
         (_DefineAppliesAnyway, "labels.define-ambiguous-not-applied"),
         (_DefineRefundsAmbiguousGrant, "labels.define-ambiguous-not-applied"),
+        (_DeletesForeignLabels, "labels.delete-only-owned"),
+        (_DeletesPartially, "labels.delete-only-owned"),
+        (_DeleteIgnoresGrantTarget, "labels.delete-grant-matches-and-single-use"),
+        (_ReusableGrants, "labels.delete-grant-matches-and-single-use"),
+        (_DeleteIgnoresEnabled, "labels.delete-refused-when-not-enabled"),
+        (_IgnoresEnabled, "labels.delete-refused-when-not-enabled"),
+        (_DeleteOfAbsentRaises, "labels.delete-already-gone-succeeds"),
+        (_DeleteOfAbsentSendsAWrite, "labels.delete-already-gone-succeeds"),
+        (_DeleteOfAbsentKeepsGrant, "labels.delete-already-gone-succeeds"),
     ],
     ids=lambda value: value if isinstance(value, str) else value.__name__.lstrip("_"),
 )

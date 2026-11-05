@@ -71,6 +71,7 @@ from ..modules.tracker.contracts import (
     CommentWriter,
     IssueResolver,
     LabelDefiner,
+    LabelPruner,
     LabelReader,
     LabelWriter,
     MarkerCodec,
@@ -591,6 +592,12 @@ class _LabelDefining:
         return self._inner.define_labels(definitions, grant=grant)  # type: ignore[attr-defined]
 
 
+class _LabelPruning:
+    def delete_labels(self, names, *, grant):
+        self._check_grant(grant, Operation.LABELS_DEFINE)  # type: ignore[attr-defined]
+        return self._inner.delete_labels(names, grant=grant)  # type: ignore[attr-defined]
+
+
 class _Resolving:
     def resolve(self, url):
         return self._inner.resolve(url)  # type: ignore[attr-defined]
@@ -614,8 +621,9 @@ def _view_type(
     marker: bool = False,
     label_reader: bool = False,
     label_definer: bool = False,
+    label_pruner: bool = False,
 ) -> type:
-    key = (comment, labels, resolver, marker, label_reader, label_definer)
+    key = (comment, labels, resolver, marker, label_reader, label_definer, label_pruner)
     if key not in _VIEW_TYPES:
         mixins = tuple(
             mixin
@@ -626,6 +634,7 @@ def _view_type(
                 (marker, _Marking),
                 (label_reader, _LabelReading),
                 (label_definer, _LabelDefining),
+                (label_pruner, _LabelPruning),
             )
             if present
         )
@@ -645,6 +654,7 @@ def narrow(adapter: object, enabled: frozenset[Operation]) -> TrackerAdapter:
         isinstance(adapter, MarkerCodec),
         Operation.LABELS_READ in enabled and isinstance(adapter, LabelReader),
         Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelDefiner),
+        Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelPruner),
     )
     return view(adapter, enabled)
 

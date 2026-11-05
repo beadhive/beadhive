@@ -9,8 +9,8 @@ Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin
 > `LabelReader`), takes full id snapshots for deletion reconciliation, resolves issue URLs
 > (`IssueResolver`), reports the actor and a GET-only tri-state capability probe. Its landed
 > writers are `comment.create` (`CommentWriter.post_comment`, W8 `bh-03s4w`), `labels.change`
-> (`LabelWriter.change_labels`, W9 `bh-t082i`) and `labels.define` (`LabelDefiner.define_labels`,
-> `bh-uv09p`). A writer method exists only when its write flag is
+> (`LabelWriter.change_labels`, W9 `bh-t082i`) and `labels.define` (`LabelDefiner.define_labels` and
+> `LabelPruner.delete_labels`, `bh-uv09p`). A writer method exists only when its write flag is
 > on, and even then every call needs a fresh, single-use, operator-approved `WriteGrant`. **No live
 > GitHub write has been made yet**: the first real write is an operator-approved step recorded on
 > the writer's bead, outside the tests.
@@ -76,9 +76,10 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
   mismatched or spent grant, a foreign name or a missing credential. It then reads the live
   definitions once and sends only the difference, in sorted name order: `POST .../labels` to
   create, `PATCH .../labels/{name}` to update (a case-variant of an owned label is renamed, never
-  duplicated) and, for each name the adapter-level `prune` keyword lists, `DELETE
-  .../labels/{name}`, whose `204 No Content` is a known success. Every `{name}` is percent-encoded.
-  The grant is spent after that read, just before the first write.
+  duplicated). Pruning is the separate optional `LabelPruner.delete_labels(names, *, grant)` (same
+  operation, scope and refusal order; a name the repository does not hold is already gone):
+  `DELETE .../labels/{name}`, whose `204 No Content` is a known success. Every `{name}` is
+  percent-encoded. The grant is spent after the read, just before the first write.
 * **`204 No Content`** answering a write is a known success with no body, never
   `WriteOutcomeUnknown`; an empty `2xx` is one too where the caller declares the endpoint
   documents `204`.

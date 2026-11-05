@@ -33,6 +33,7 @@ from beadhive.modules.tracker.contracts import (
     IssueResolver,
     LabelDefiner,
     LabelDefinition,
+    LabelPruner,
     LabelReader,
     LabelWriter,
     Operation,
@@ -335,6 +336,20 @@ class _LabelAdapter:
         self.calls.append("define")
         return grant
 
+    def delete_labels(self, names, *, grant):
+        self.calls.append("delete")
+        return grant
+
+
+class _DefineOnlyAdapter:
+    """An adapter that defines labels but cannot delete them (no ``LabelPruner``)."""
+
+    def describe(self):
+        raise AssertionError("not used")
+
+    def define_labels(self, definitions, *, grant):
+        return grant
+
 
 def test_narrow_binds_the_label_reader_and_definer_only_when_their_operation_is_enabled():
     adapter = _LabelAdapter()
@@ -350,6 +365,55 @@ def test_narrow_binds_the_label_reader_and_definer_only_when_their_operation_is_
     assert not isinstance(both, LabelWriter) and not isinstance(both, CommentWriter)
     assert both.list_label_definitions()[0].name == "bh:intake/accepted"
     assert adapter.calls == ["read"]
+
+
+def test_narrow_binds_the_label_pruner_only_when_labels_define_is_enabled_and_implemented():
+    adapter = _LabelAdapter()
+    off = tracker_root.narrow(adapter, frozenset())
+    only_read = tracker_root.narrow(adapter, frozenset({Operation.LABELS_READ}))
+    only_define = tracker_root.narrow(adapter, frozenset({Operation.LABELS_DEFINE}))
+    define_only = tracker_root.narrow(_DefineOnlyAdapter(), frozenset({Operation.LABELS_DEFINE}))
+
+    assert not isinstance(off, LabelPruner) and not hasattr(off, "delete_labels")
+    assert not isinstance(only_read, LabelPruner)
+    assert isinstance(only_define, LabelPruner) and isinstance(only_define, LabelDefiner)
+    assert isinstance(define_only, LabelDefiner) and not isinstance(define_only, LabelPruner)
+    assert not hasattr(define_only, "delete_labels")
+
+
+def test_a_label_deletion_needs_a_matching_single_use_grant_of_the_define_operation():
+    adapter = _LabelAdapter()
+    port = tracker_root.narrow(adapter, frozenset({Operation.LABELS_DEFINE}))
+    project = ProjectRef("github", "acme/widget")
+
+    with pytest.raises(OperationNotEnabled):
+        port.delete_labels(("bh:x",), grant="approved")  # type: ignore[attr-defined]
+    with pytest.raises(OperationNotEnabled):
+        port.delete_labels(  # type: ignore[attr-defined]
+            ("bh:x",), grant=WriteGrant("g-1", Operation.LABELS_CHANGE, project)
+        )
+    assert adapter.calls == []
+    grant = WriteGrant("g-2", Operation.LABELS_DEFINE, project)
+    assert port.delete_labels(("bh:x",), grant=grant) is grant  # type: ignore[attr-defined]
+    assert adapter.calls == ["delete"]
+
+
+def test_the_built_github_adapter_is_a_pruner_in_the_root_view_only_when_define_is_enabled(
+    loads,
+):
+    write = {
+        "label_definitions": {"enabled": True},
+        "labels": {"owned_prefixes": ["bh:"]},
+    }
+    enabled = root({"tracker-github": enabled_plugin(write=write)}).for_store(
+        entry(), requested=READ | {Operation.LABELS_DEFINE}
+    )
+    assert Operation.LABELS_DEFINE in enabled.enabled
+    assert isinstance(enabled.port, LabelDefiner) and isinstance(enabled.port, LabelPruner)
+
+    off = root({"tracker-github": enabled_plugin()}).for_store(entry(), requested=READ)
+    assert not isinstance(off.port, LabelDefiner) and not isinstance(off.port, LabelPruner)
+    assert not hasattr(off.port, "delete_labels")
 
 
 def test_a_label_definition_write_needs_a_matching_single_use_grant():

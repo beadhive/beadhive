@@ -1,17 +1,21 @@
 """Repository label DEFINITIONS: the ``labels.read`` reader and the ``labels.define`` writer.
 
-Both are optional port capabilities (``LabelReader``, ``LabelDefiner``; additive, the port API
-version stays 1), each a mixin of :class:`~.tracker.GitHubTrackerAdapter`:
+The reader and writer are optional port capabilities (``LabelReader``, and ``LabelDefiner`` with
+``LabelPruner``; additive, the port API version stays 1), each a mixin of
+:class:`~.tracker.GitHubTrackerAdapter`:
 
 * :class:`LabelDefinitionReading` is part of the READ path (the adapter class inherits it), so,
   like every read, a disabled ``labels.read`` is refused with ``OperationNotEnabled`` before the
   credential is resolved or any request is sent;
 * :class:`LabelDefining` is a WRITER, composed in only when ``labels.define`` is enabled
-  (:mod:`.compose`), so a disabled define has no method at all.
+  (:mod:`.compose`), so a disabled define has no method at all. It carries both
+  ``define_labels`` (create/update, ``LabelDefiner``) and ``delete_labels`` (``LabelPruner``,
+  the same operation, scope and refusal order); the port's ``define_labels`` has no prune
+  argument.
 
-``define_labels`` copies the shape of the ``labels.change`` writer (:mod:`.labels`). Every refusal
-below happens **before any request is sent** (and before the credential is resolved), and the
-tests assert it on the transport:
+``define_labels`` and ``delete_labels`` copy the shape of the ``labels.change`` writer
+(:mod:`.labels`). Every refusal below happens **before any request is sent** (and before the
+credential is resolved), and the tests assert it on the transport:
 
 1. a malformed definition (an empty or padded name, a color that is not six hex digits without
    ``#``, a description over :data:`DESCRIPTION_LIMIT` characters, two definitions of one name):
@@ -20,17 +24,18 @@ tests assert it on the transport:
 3. the grant is not a ``WriteGrant``, names another operation or another target than this
    adapter's ``ProjectRef`` (a define is repository-scoped, never issue-scoped), or was already
    used: ``OperationNotEnabled``;
-4. a name to define or prune lies outside the configured ``write.labels.owned_prefixes``:
+4. a name to define or delete lies outside the configured ``write.labels.owned_prefixes``:
    ``LabelNotOwned``. The port's ``define_labels`` takes no ``LabelOwnership``, so the operator's
    configuration is the ONLY ownership; an adapter built without one owns nothing;
 5. no credential resolved (an anonymous write cannot succeed): ``AuthenticationFailed``.
 
 Then ONE read of the live definitions (paged, below) decides what to send, so a define converges:
 a definition the repository already holds identically sends nothing, an owned label whose color
-or description differs is updated in place, and a missing one is created. Only then is the grant
+or description differs is updated in place, and a missing one is created; a deleted name the
+repository does not hold is already gone and sends nothing. Only then is the grant
 **spent** (immediately before the first write; a read that fails never burns the approval, a
-batch that changes nothing still uses it) and the writes sent, in sorted name order, creates and
-updates first, then deletes, through the one write seam :meth:`~.transport.Session.send`.
+batch that changes nothing still uses it) and the writes sent, in sorted name order, through the
+one write seam :meth:`~.transport.Session.send`.
 
 Wire (GitHub REST, API version 2022-11-28):
 
@@ -40,10 +45,10 @@ Wire (GitHub REST, API version 2022-11-28):
 * ``PATCH /repos/{o}/{r}/labels/{name}`` with ``{"new_name", "color", "description"}`` updates
   (``200``). GitHub label names are case-insensitive: an existing label differing only in case is
   updated (renamed to the wanted spelling) rather than duplicated, and it must itself be owned;
-* ``DELETE /repos/{o}/{r}/labels/{name}`` removes one ``prune`` names (``204 No Content``, a known
-  success with no body). A ``404`` there means "already gone" only if a follow-up ``GET`` of the
-  label also answers ``404``; otherwise the refusal stands (GitHub may report "forbidden" as
-  "not found").
+* ``DELETE /repos/{o}/{r}/labels/{name}`` removes one label ``delete_labels`` names (``204 No
+  Content``, a known success with no body). A ``404`` there means "already gone" only if a
+  follow-up ``GET`` of the label also answers ``404``; otherwise the refusal stands (GitHub may
+  report "forbidden" as "not found").
 
 Every ``{name}`` in a path is percent-encoded with nothing safe (``bh:x/y`` -> ``bh%3Ax%2Fy``).
 GitHub's documentation is silent on the permission a define needs and on the duplicate-name
@@ -178,7 +183,8 @@ class LabelDefinitionReading:
 
 
 class LabelDefining:
-    """Mixin (writer): ``define_labels`` over the host's location, transport and grant ledger."""
+    """Mixin (writer): ``define_labels`` and the ``LabelPruner`` ``delete_labels`` over the host's
+    location, transport and grant ledger."""
 
     # Provided by the host, ``GitHubTrackerAdapter``.
     _grants: GrantLedger
@@ -204,46 +210,48 @@ class LabelDefining:
             raise LabelNotOwned(f"labels outside the owned set: {', '.join(foreign)}")
 
     def define_labels(
-        self,
-        definitions: tuple[LabelDefinition, ...],
-        *,
-        grant: WriteGrant,
-        prune: frozenset[str] = frozenset(),
+        self, definitions: tuple[LabelDefinition, ...], *, grant: WriteGrant
     ) -> WriteReceipt:
-        """Create or update ``definitions`` (owned names only) under one repository grant, and
-        delete each owned label ``prune`` names; converges, so an unchanged batch sends nothing.
-
-        ``prune`` is this adapter's extension of the port (a keyword with an empty default, so
-        the ``LabelDefiner`` shape is unchanged): one grant covers the whole convergence."""
+        """Create or update ``definitions`` (owned names only) under one repository grant;
+        converges, so an unchanged batch sends nothing."""
         wanted = tuple(_checked(d) for d in definitions)
         folded = [d.name.casefold() for d in wanted]
         if len(set(folded)) != len(folded):
             raise ValueError("a label is defined twice (names are case-insensitive)")
-        pruned = frozenset(prune)
-        if not all(isinstance(name, str) and name.strip() for name in pruned):
-            raise ValueError("prune names must be non-empty strings")
-        if {name.casefold() for name in pruned} & set(folded):
-            raise ValueError("a label cannot be both defined and pruned")
-        checked = self._authorise_definitions([d.name for d in wanted] + sorted(pruned), grant)
+        checked = self._authorise_definitions([d.name for d in wanted], grant)
         with self._transport.operation(_DEFINE, write=True) as session:
             if session.anonymous:
                 raise AuthenticationFailed("labels.define needs a credential and none resolved")
             live = {d.name.casefold(): d for d in _list_definitions(session, self._location)}
-            plan = self._plan(wanted, pruned, live)
+            plan = self._plan(wanted, live)
+            self._grants.spend(checked)  # only now: a failed read never burns the approval
+            for method, name, payload in plan:
+                self._send(session, method, name, payload)
+        return WriteReceipt(checked.grant_id, checked.operation, self._project)
+
+    def delete_labels(self, names: tuple[str, ...], *, grant: WriteGrant) -> WriteReceipt:
+        """Delete each owned label ``names`` lists (the optional ``LabelPruner`` port) under one
+        repository grant, with the ``labels.define`` operation; a name the repository does not
+        hold is already deleted, so a converged batch sends no ``DELETE``."""
+        pruned = tuple(names)
+        if not all(isinstance(name, str) and name.strip() == name and name for name in pruned):
+            raise ValueError("a label name must be a non-empty string without surrounding spaces")
+        checked = self._authorise_definitions(pruned, grant)
+        with self._transport.operation(_DEFINE, write=True) as session:
+            if session.anonymous:
+                raise AuthenticationFailed("labels.define needs a credential and none resolved")
+            live = {d.name.casefold(): d for d in _list_definitions(session, self._location)}
+            plan = self._delete_plan(pruned, live)
             self._grants.spend(checked)  # only now: a failed read never burns the approval
             for method, name, payload in plan:
                 self._send(session, method, name, payload)
         return WriteReceipt(checked.grant_id, checked.operation, self._project)
 
     def _plan(
-        self,
-        wanted: tuple[LabelDefinition, ...],
-        pruned: frozenset[str],
-        live: dict[str, LabelDefinition],
+        self, wanted: tuple[LabelDefinition, ...], live: dict[str, LabelDefinition]
     ) -> list[tuple[str, str | None, dict[str, str] | None]]:
         """``(method, existing name, payload)`` per write; refuses a foreign case-variant."""
         writes: list[tuple[str, str | None, dict[str, str] | None]] = []
-        deletes: list[tuple[str, str | None, dict[str, str] | None]] = []
         for want in sorted(wanted, key=lambda d: d.name):
             have = live.get(want.name.casefold())
             if have is None:
@@ -254,12 +262,20 @@ class LabelDefining:
                 if have.name != want.name:
                     payload["new_name"] = want.name
                 writes.append(("PATCH", have.name, payload))
-        for name in sorted(pruned):
-            have = live.get(name.casefold())
+        return writes
+
+    def _delete_plan(
+        self, names: tuple[str, ...], live: dict[str, LabelDefinition]
+    ) -> list[tuple[str, str | None, dict[str, str] | None]]:
+        """One ``DELETE`` per distinct live label named (case-insensitively), in name order;
+        refuses a foreign case-variant before any is sent."""
+        deletes: list[tuple[str, str | None, dict[str, str] | None]] = []
+        for key in sorted({name.casefold() for name in names}):
+            have = live.get(key)
             if have is not None:
                 self._refuse_foreign([have.name])
                 deletes.append(("DELETE", have.name, None))
-        return writes + deletes
+        return deletes
 
     def _send(
         self, session: Session, method: str, name: str | None, payload: dict[str, str] | None
