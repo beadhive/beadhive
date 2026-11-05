@@ -37,6 +37,7 @@ from beadhive.modules.intake.contracts import (
     verdict_from_document,
     verification_gap,
 )
+from beadhive.modules.intake.domain import CLOSE_REASON_LIMIT, close_reason, half_rejected
 
 D = ProposalDisposition
 SEAT = "dev/verifier"
@@ -287,3 +288,29 @@ def test_every_disposition_maps_onto_the_existing_verbs() -> None:
     assert _plan(D.REJECT, bound=False, reporter_text="No.").steps == (ApplyStep.REJECT,)
     assert _plan(D.REROUTE).steps == (ApplyStep.REROUTE,)
     assert "never applied" in _plan(D.DECISION)
+
+
+# -- closing a fielded report (bh-mqv12) ------------------------------------------------------
+
+
+def test_a_close_reason_is_cut_to_what_beads_stores() -> None:
+    short = "Fixed in v1.2.0."
+    assert close_reason(short) is short
+    exact = "x" * CLOSE_REASON_LIMIT
+    assert close_reason(exact) == exact
+    cut = close_reason("word " * 100)
+    assert len(cut) <= CLOSE_REASON_LIMIT and cut.endswith("\u2026")
+    assert ("word " * 100).startswith(cut[:-1])
+
+
+@pytest.mark.parametrize(
+    ("status", "labels", "half"),
+    [
+        ("open", ("intake:rejected",), True),
+        ("closed", ("intake:rejected",), False),
+        ("open", ("intake:untriaged",), False),
+        ("open", (), False),
+    ],
+)
+def test_only_an_open_report_on_intake_rejected_is_half_rejected(status, labels, half) -> None:
+    assert half_rejected(status, labels) is half

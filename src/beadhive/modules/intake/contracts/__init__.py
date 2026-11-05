@@ -492,3 +492,9 @@ __all__ += [
     "verdict_from_document",
     "verification_gap",
 ]
+
+# -- what Beads stores, which every ``ReportStore`` (and its memory fake) honours -------------
+
+from ..domain import CLOSE_REASON_LIMIT  # noqa: E402
+
+__all__ += ["CLOSE_REASON_LIMIT"]

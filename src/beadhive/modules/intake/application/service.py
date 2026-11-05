@@ -109,8 +109,10 @@ from ..domain import (
     channel_of,
     check_ask,
     check_wake,
+    close_reason,
     disposition_state,
     dupes_touching,
+    half_rejected,
     hold_findings,
     is_needs_info,
     may_disposition,
@@ -284,7 +286,13 @@ class IntakeService:
             raise IntakeRefused(
                 RefusalReason.REASON_REQUIRED, "reject requires a --reason (reporter-visible)"
             )
-        self._require_untriaged(request.report)
+        view = self._store.get(request.report)
+        rejecting = request.disposition is Disposition.REJECT
+        if rejecting and view is not None and half_rejected(view.status, view.labels):
+            # a reject that set the state and then failed to close (bh-mqv12): finish it
+            self._close(request.report, request.reason, request.actor)
+            return DispositionOutcome(request.report, request.disposition, "rejected")
+        self._untriaged(request.report, view)
         handler = {
             Disposition.ACCEPT: self._accept,
             Disposition.REJECT: self._reject,
@@ -316,7 +324,10 @@ class IntakeService:
 
     def _require_untriaged(self, report: str) -> BeadView:
         """The bead, if it is an untriaged intake bead (a disposition never re-triages)."""
-        view = self._store.get(report)
+        return self._untriaged(report, self._store.get(report))
+
+    def _untriaged(self, report: str, view: BeadView | None) -> BeadView:
+        """``view`` (``report`` as just read), if it is an untriaged intake bead."""
         if view is None:
             raise IntakeRefused(RefusalReason.NOT_FOUND, f"{report} not found")
         if not may_disposition(view.labels):
@@ -445,9 +456,14 @@ class IntakeService:
         except (IntakeRefused, IntakeStoreError):
             pass
 
+    def _close(self, report: str, reason: str, actor: str) -> None:
+        """Close a fielded report. The reason is cut to what Beads stores: the full text is in
+        the ``intake`` state change just written (and, for a reply, in the outbox)."""
+        self._store.close(report, reason=close_reason(reason), actor=actor)
+
     def _reject(self, request: DispositionRequest) -> DispositionOutcome:
         state = self._clear_intake(request, f"rejected: {request.reason}")
-        self._store.close(request.report, reason=request.reason, actor=request.actor)
+        self._close(request.report, request.reason, request.actor)
         return DispositionOutcome(request.report, request.disposition, state)
 
     def _promote(self, request: DispositionRequest) -> DispositionOutcome:
@@ -459,7 +475,7 @@ class IntakeService:
             self._store.assign(request.report, request.seat, actor=request.actor)
             return DispositionOutcome(request.report, request.disposition, "", seat=request.seat)
         state = self._clear_intake(request, request.reason)
-        self._store.close(request.report, reason=request.reason, actor=request.actor)
+        self._close(request.report, request.reason, request.actor)
         return DispositionOutcome(request.report, request.disposition, state)
 
     # -- bindings ----------------------------------------------------------------------------

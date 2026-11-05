@@ -80,6 +80,7 @@ class RepoQueries(Protocol):
 class CheckKind(StrEnum):
     OWNER_MISSING = "owner_missing"  # an owner target that does not exist
     OWNER_CLOSED = "owner_closed"  # an owner target of live work that is closed
+    OWNER_NOT_WORK = "owner_not_work"  # an owner target that is a report, never work
     FIX_OPEN = "fix_open"  # a fixed claim whose fixing bead is still open
     TARGET_MISSING = "target_missing"  # a related target that does not exist
     FIX_UNPROVEN = "fix_unproven"  # a fix claim that names no fixing commit
@@ -104,11 +105,15 @@ STALE_KINDS = frozenset({CheckKind.STALE_THREAD, CheckKind.STALE_PATHS, CheckKin
 @dataclass(frozen=True)
 class TargetFact:
     """What the store says of one target bead: its status and, for a closed fixing bead, the
-    commits that landed it (oldest first). An id absent from the facts does not exist."""
+    commits that landed it (oldest first). ``bound``: it is bound to an external issue, and
+    ``untriaged``: it is an untriaged intake bead; either way it is a report, which link and
+    accept refuse as work. An id absent from the facts does not exist."""
 
     id: str
     status: str
     commits: tuple[str, ...] = ()
+    bound: bool = False
+    untriaged: bool = False
 
 
 @dataclass(frozen=True)
@@ -251,6 +256,16 @@ def _targets(proposal: Proposal, context: CheckContext) -> list[CheckFinding]:
                     CheckKind.OWNER_MISSING,
                     f"owner target {target.id} does not exist",
                     "name the existing work that owns the outcome",
+                )
+            )
+        elif fact.bound or fact.untriaged:
+            what = "bound to an external issue" if fact.bound else "an untriaged intake bead"
+            found.append(
+                CheckFinding(
+                    CheckKind.OWNER_NOT_WORK,
+                    f"owner target {target.id} is {what}, so it is a report, not work; apply "
+                    "would refuse to link to it",
+                    "name the work bead that report tracks, or propose new work",
                 )
             )
         elif fixed and fact.status != CLOSED:

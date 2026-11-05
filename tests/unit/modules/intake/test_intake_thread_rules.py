@@ -35,7 +35,9 @@ from beadhive.modules.intake.domain import (
     apply_observations,
     checkpoint_for,
     classify,
+    content_seq,
     digest,
+    evidence_after,
     flagged,
     mark_considered,
     marker_bead_ids,
@@ -366,6 +368,34 @@ def test_considering_marks_what_was_read_and_is_idempotent() -> None:
     everything = mark_considered(marked.thread)
     assert new_evidence(everything.thread) == () and not mark_considered(everything.thread).changed
     assert mark_considered(everything.thread, 10_000).thread is everything.thread  # clamped
+
+
+def test_content_seq_moves_with_the_comments_and_not_with_a_triage_read() -> None:
+    """A read (or a checkpoint) moves seq; only a comment change moves content_seq (bh-yu6sy)."""
+    base = ingest(obs("c1"), obs("c2", day=3)).thread
+    assert content_seq(base) == base.seq
+    marked = mark_considered(base).thread
+    stamped = advance_checkpoint(marked, CheckpointScope.ISSUE, URL, "memory:x").thread
+    assert stamped.seq > base.seq and content_seq(stamped) == base.seq
+    revised = ingest(obs("c1", body="edited", day=2, updated=4), base=stamped).thread
+    assert content_seq(revised) == revised.seq
+    policy = ThreadPolicy(deletion_confirmations=1)
+    dead = reconcile_comments(revised, {"c1"}, complete=True, snapshot_start_seq=99, policy=policy)
+    assert content_seq(dead.thread) == dead.thread.seq  # a tombstone is a change
+    gone = reconcile_presence(dead.thread, set(), complete=True)
+    gone = reconcile_presence(gone.thread, set(), complete=True).thread
+    assert gone.state is ThreadState.MISSING and content_seq(gone) == gone.seq
+
+
+def test_evidence_after_counts_reporter_changes_only() -> None:
+    base = ingest(obs("c1"), obs("c2", day=3)).thread
+    seen = base.seq
+    assert evidence_after(base, 0) == ("c1", "c2") and evidence_after(base, seen) == ()
+    read = mark_considered(base).thread
+    assert evidence_after(read, seen) == ()  # a recorded read is no answer
+    revised = ingest(obs("c1", body="edited", day=2, updated=4), base=read).thread
+    assert evidence_after(revised, seen) == ("c1",)
+    assert evidence_after(mark_considered(revised).thread, seen) == ("c1",)  # read since: still new
 
 
 def test_a_tombstone_after_the_last_pass_is_new_evidence_until_considered() -> None:

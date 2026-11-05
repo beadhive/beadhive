@@ -6,7 +6,10 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from .models import DuplicatePair
-from .vocabulary import is_awaiting_triage
+from .vocabulary import INTAKE_REJECTED, is_awaiting_triage
+
+#: The longest close reason Beads stores (characters); a longer one is refused, not cut.
+CLOSE_REASON_LIMIT = 255
 
 #: The issue types a cross-hive report may be filed as; bd owns the full type vocabulary, intake
 #: gates the user-facing surface to these.
@@ -18,6 +21,21 @@ def dupes_touching(pairs: Iterable[DuplicatePair], ids: Iterable[str]) -> tuple[
     we care about (a fresh report on entry, or the intake queue at triage)."""
     wanted = set(ids)
     return tuple(p for p in pairs if p.first in wanted or p.second in wanted)
+
+
+def close_reason(reason: str, limit: int = CLOSE_REASON_LIMIT) -> str:
+    """``reason`` cut to what Beads stores as a close reason, ending in an ellipsis when cut. A
+    reject's reason is often the whole reply to the reporter; the full text stays in the
+    ``intake`` state change and the reply itself, so the close only needs its start."""
+    if len(reason) <= limit:
+        return reason
+    return reason[: limit - 1].rstrip() + "\u2026"
+
+
+def half_rejected(status: str, labels: Iterable[str] | None) -> bool:
+    """An open report already on ``intake:rejected``: a reject set the state and its close then
+    failed. Rejecting it again only closes it (nothing else of the reject is left to do)."""
+    return status != "closed" and INTAKE_REJECTED in tuple(labels or ())
 
 
 def may_disposition(labels: Iterable[str] | None) -> bool:
@@ -57,4 +75,12 @@ def revision_is_newer(stored: str, observed: str) -> bool:
     return observed_version != stored_version
 
 
-__all__ = ["REPORT_TYPES", "dupes_touching", "may_disposition", "revision_is_newer"]
+__all__ = [
+    "CLOSE_REASON_LIMIT",
+    "REPORT_TYPES",
+    "close_reason",
+    "dupes_touching",
+    "half_rejected",
+    "may_disposition",
+    "revision_is_newer",
+]

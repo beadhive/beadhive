@@ -748,6 +748,33 @@ def mark_considered(thread: Thread, through_seq: int | None = None) -> Applied:
     return Applied(considered, (ThreadEvent(EventKind.CONSIDERED, "", seq),))
 
 
+def content_seq(thread: Thread) -> int:
+    """The seq of the thread's last change to a comment: one first seen, revised, touched,
+    re-flagged, resurrected, confirmed present again or tombstoned. ``seq`` also moves when
+    :func:`mark_considered` records a triage read or a checkpoint is stored, and neither changes
+    what an analysis read, so staleness compares a proposal's ``thread_seq`` against this. A
+    thread gone missing on the tracker records no seq of its own, so it counts as changed now."""
+    if thread.state is not ThreadState.PRESENT:
+        return thread.seq
+    latest = 0
+    for record in thread.records.values():
+        latest = max(latest, record.last_seen_seq, record.tombstone_seq or 0)
+    return latest
+
+
+def evidence_after(thread: Thread, seq: int) -> tuple[str, ...]:
+    """External comments that changed after ``seq``: what a reporter added since a triage round
+    read the thread at ``seq``, whether or not a later pass has read it since. A recorded read, a
+    checkpoint and own or peer comments (the question triage posted, once ingested) are never a
+    reporter's answer."""
+    return tuple(
+        comment_id
+        for comment_id, record in thread.records.items()
+        if record.role is Role.EXTERNAL
+        and max(record.last_seen_seq, record.tombstone_seq or 0) > seq
+    )
+
+
 def new_evidence(thread: Thread) -> tuple[str, ...]:
     """Comment ids triage has not considered: a live external record with a ``rev`` above its
     ``considered_rev`` (or never considered), or an external record tombstoned after the last
@@ -836,7 +863,9 @@ __all__ = [
     "apply_observations",
     "checkpoint_for",
     "classify",
+    "content_seq",
     "digest",
+    "evidence_after",
     "flagged",
     "mark_considered",
     "marker_bead_ids",

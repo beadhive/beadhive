@@ -46,6 +46,7 @@ from ..domain import (
     ApplyStep,
     BeadView,
     CheckContext,
+    ConsiderRequest,
     Disposition,
     DispositionOutcome,
     DispositionRequest,
@@ -72,12 +73,16 @@ from ..domain import (
     RefusalReason,
     ReplyDraft,
     TargetFact,
+    ThreadOutcome,
     add_review,
     amend,
     apply_order,
     check_run,
     content_from_document,
+    content_seq,
     duplicate_text,
+    evidence_after,
+    half_rejected,
     leak_check,
     mark_applied,
     may_disposition,
@@ -125,6 +130,8 @@ class TriageActions(Protocol):
     def link(self, request: LinkRequest) -> LinkOutcome: ...
 
     def needs_info(self, request: NeedsInfoRequest) -> NeedsInfoOutcome: ...
+
+    def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome: ...
 
     def draft_reply(self, request: ReplyDraft) -> OutboxResult: ...
 
@@ -234,11 +241,13 @@ class ProposalService:
 
     def _woken(self, view: BeadView, applied: Proposal) -> bool:
         """A report applied as needs-info that its reporter woke: back on ``intake:untriaged``,
-        or its thread advanced past the seq the applied round read."""
+        or reporter evidence changed after the seq the applied round read. Apply's own recorded
+        read moves the thread's seq, and the question it asked is an own comment: neither wakes
+        it (bh-yu6sy)."""
         if INTAKE_UNTRIAGED in view.labels:
             return True
         thread = self._store.read_thread(view.id)
-        return thread is not None and thread.seq > applied.thread_seq
+        return thread is not None and bool(evidence_after(thread, applied.thread_seq))
 
     # -- review --------------------------------------------------------------------------------
 
@@ -300,12 +309,18 @@ class ProposalService:
                 if binding.landed is not None and view.status == CLOSED
                 else ()
             )
-            targets[target] = TargetFact(target, view.status, tuple(landed))
+            targets[target] = TargetFact(
+                target,
+                view.status,
+                tuple(landed),
+                bound=view.binding is not None,
+                untriaged=INTAKE_UNTRIAGED in view.labels,
+            )
         seqs: dict[str, int] = {}
         for report in run:
             thread = self._store.read_thread(report)
-            if thread is not None:
-                seqs[report] = thread.seq
+            if thread is not None:  # a triage read moves seq, not the comments (bh-yu6sy)
+                seqs[report] = content_seq(thread)
         return CheckContext(
             branch=binding.branch,
             repo=binding.repo,
@@ -404,7 +419,8 @@ class ProposalService:
                     "work to share yet",
                 )
         view = self._store.get(report)
-        if view is None or view.status == CLOSED or not may_disposition(view.labels):
+        resuming = view is not None and half_rejected(view.status, view.labels)
+        if view is None or view.status == CLOSED or not (resuming or may_disposition(view.labels)):
             return _with(
                 base,
                 detail=f"{report} is not a report awaiting triage (missing, closed or already "
@@ -425,6 +441,15 @@ class ProposalService:
             )
         if isinstance(plan, str):
             return _with(base, detail=plan)
+        if resuming:
+            # an earlier run drafted the reply (and linked), set intake:rejected, then failed
+            # to close (bh-mqv12): only the close is left
+            if ApplyStep.REJECT not in plan.steps:
+                return _with(
+                    base,
+                    detail=f"{report} is on intake:rejected but its proposal does not reject it",
+                )
+            plan = dataclasses.replace(plan, steps=(ApplyStep.REJECT,))
         if ApplyStep.REROUTE in plan.steps and binding.refile is None:
             return _with(
                 base,
@@ -479,6 +504,12 @@ class ProposalService:
                         DispositionRequest(report, Disposition.REJECT, actor, reason=plan.reason)
                     )
                 elif step is ApplyStep.NEEDS_INFO:
+                    # the verified analysis read the thread through its thread_seq: record that
+                    # read, so needs-info sees those comments as read and a later reply as new
+                    # (bh-yu6sy)
+                    self._actions.mark_considered(
+                        ConsiderRequest(report, actor, through_seq=proposal.thread_seq)
+                    )
                     asked = self._actions.needs_info(NeedsInfoRequest(report, plan.question, actor))
                     drafted.append(asked.outbox_id)
                 elif step is ApplyStep.REROUTE:
