@@ -755,6 +755,176 @@ def thread_considered_cmd(
     return work_intake.thread_considered(bead, through, as_, hive, as_json)
 
 
+# ---- the label projection (bh work labels ...): off by default --------------------------------
+
+
+def labels_sync_cmd(
+    report: str = typer.Argument(
+        "", metavar="<report>", help="one bound report (default: every bound report)"
+    ),
+    all_: bool = typer.Option(False, "--all", help="every bound report (the default)"),
+    include_closed: bool = typer.Option(
+        False, "--include-closed", help="also closed reports and issues (a backfill)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="report the diffs; write nothing"),
+    prune_unmapped: bool = typer.Option(
+        False,
+        "--prune-unmapped",
+        help="also remove owned labels the projection no longer produces (drift)",
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Converge the bound issues' owned labels (under the projection prefix, `bh:` by default)
+    on bead state: intake state, delivery, progress, type, priority and component, derived from
+    the dimension registry. Reads the issues fresh (one listing per run) and drafts at most one
+    `labels` outbox record per issue; nothing is sent until an operator approves the batch
+    (`labels review`, `labels approve`). Labels outside the prefix are never touched. Off unless
+    `intake.external.labels.enabled`; drafting also needs `outbox.enabled` and
+    `outbox.labels_enabled`."""
+    return work_intake.labels_sync(
+        report, all_, include_closed, dry_run, prune_unmapped, as_, hive, as_json
+    )
+
+
+def labels_define_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="show the plan; approve nothing"),
+    prune: bool = typer.Option(
+        False, "--prune", help="also delete owned labels the registry no longer produces"
+    ),
+    approve: str = typer.Option(
+        "",
+        "--approve",
+        metavar="<digest>",
+        help="apply the plan whose digest you reviewed (full or 12-hex prefix; operator seats)",
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Define the repository's projected labels: the plan (create, update and, with `--prune`,
+    delete; a label an open issue still carries is kept) and its digest. `--approve <digest>`
+    from an operator seat mints one single-use grant per tracker write and applies it; a converged
+    repository needs none and a re-run is harmless. Off unless `intake.external.labels.enabled`;
+    needs the tracker's `read.labels` (and `write.label_definitions` to apply)."""
+    return work_intake.labels_define(dry_run, prune, approve, as_, hive, as_json)
+
+
+def labels_review_cmd(hive: str = _HIVE, as_json: bool = _JSON):
+    """Render the batch of every drafted label change, each with what it adds and removes and
+    whether its issue's labels moved since the draft (stale), plus the batch digest to approve.
+    Reads only. Off unless `intake.external.outbox.enabled`."""
+    return work_intake.labels_review(hive, as_json)
+
+
+def labels_approve_cmd(
+    batch: str = typer.Option(
+        ...,
+        "--batch",
+        metavar="<digest>",
+        help="the batch digest `labels review` printed (full or 12-hex prefix)",
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Approve the reviewed batch of label changes: one single-use grant per issue (operator
+    seats only). A stale item is skipped and re-drafted by the next sync. Approving sends nothing:
+    send each with `bh work outbox send <id> --kind labels`. Needs `outbox.labels_enabled`."""
+    return work_intake.labels_approve(batch, as_, hive, as_json)
+
+
+# ---- review-gated batch triage (bh work triage ...): off by default ---------------------------
+
+
+def triage_review_cmd(
+    pending: bool = typer.Option(False, "--pending", help="the pending set (required)"),
+    batch_size: int = typer.Option(
+        20, "--batch-size", help="reports per batch (whole clusters; a cluster never splits)"
+    ),
+    out: str = typer.Option(
+        "", "--out", metavar="<dir>", help="write one JSON file per batch plus index.json"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Build review packets for the pending reports (untriaged, or answered while waiting on
+    their reporter, with no applied proposal): each report's body and FULL thread (ingested
+    first), its proposal and reviews, its duplicate cluster and the global index, in
+    cluster-aware batches. The only write is the thread ingest (and the `--out` files). Needs
+    `intake.external.comments.enabled` and the tracker's `read.comments`."""
+    return work_intake.triage_review(pending, batch_size, out, as_, hive, as_json)
+
+
+def triage_propose_cmd(
+    bead: str = typer.Argument(..., metavar="<report>", help="the report the proposal is for"),
+    source: str = typer.Argument(
+        ..., metavar="<file|->", help="the proposal (or verdict) JSON document; - reads stdin"
+    ),
+    review_of: str = typer.Option(
+        "",
+        "--review-of",
+        metavar="<pass>",
+        help="store a verifier's verdict for review pass N (1, 2, ...; B = 1, C = 2)",
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Store an analyst's proposal on a report, or with `--review-of <pass>` a verifier's
+    verdict. A proposal names `disposition` (new, tracked, fixed, partially-fixed, duplicate-of,
+    reject, needs-info, reroute, decision) and optionally `targets`, `share_with`, `type`,
+    `priority`, `reporter_text`, `evidence`, `analysed_commit`, `thread_seq`, `fixed_in`,
+    `fix_commit`. A verdict is `{"verdict": confirmed|corrected|unsure, "corrections": [...],
+    "seat"?, "pass"?, "adopt"?: <proposal>}`. Review passes number 1, 2, ... in recording order
+    across rounds; B and C are the batch skill's names for passes 1 and 2. The codec and the leak
+    lint run first: a refusal writes nothing. Nothing reaches a tracker."""
+    return work_intake.triage_propose(bead, source, review_of, as_, hive, as_json)
+
+
+def triage_check_cmd(
+    pending: bool = typer.Option(
+        False, "--pending", help="only reports still awaiting triage (untriaged or needs-info)"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Run every deterministic pre-apply check on the open proposals: targets exist and are open
+    (a fix's bead closed), fixing commits are on the integration branch and the fix version is
+    COMPUTED from the first tag containing them, families resolve to one canonical, fields match
+    the disposition, reporter text is leak-free, and nothing went stale (a newer comment, or a
+    cited path changed). Writes nothing; exits 1 when any check fails."""
+    return work_intake.triage_check(pending, as_, hive, as_json)
+
+
+_REROUTE_TO = typer.Option(
+    [],
+    "--reroute-to",
+    metavar="<report>=<hive>",
+    help="the hive a reroute proposal's report is re-filed into (by report id); repeat",
+)
+
+
+def triage_apply_cmd(
+    reviewed: bool = typer.Option(
+        False, "--reviewed", help="apply only proposals a review stands behind (required)"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="check and plan; write nothing"),
+    reroute_to: list[str] = _REROUTE_TO,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Apply the reviewed proposals: only those whose last review confirmed them (or corrected
+    them and adopted the correction) and that pass every check, canonicals first, through the
+    existing triage verbs. Replies and questions are DRAFTED, never sent; decisions are listed,
+    never applied; a second run changes nothing. Operator seats only (a dry run: any seat)."""
+    return work_intake.triage_apply(reviewed, dry_run, reroute_to, as_, hive, as_json)
+
+
 def _refuse_public(verb: str, *values) -> None:
     """Refuse an operational verb aimed at a PUBLIC projection bead (bh-lniwf.5).
 
@@ -2119,6 +2289,14 @@ CLI_HANDLERS = {
     "work.thread.considered": thread_considered_cmd,
     "work.thread.ingest": thread_ingest_cmd,
     "work.thread.show": thread_show_cmd,
+    "work.labels.approve": labels_approve_cmd,
+    "work.labels.define": labels_define_cmd,
+    "work.labels.review": labels_review_cmd,
+    "work.labels.sync": labels_sync_cmd,
+    "work.triage.apply": triage_apply_cmd,
+    "work.triage.check": triage_check_cmd,
+    "work.triage.propose": triage_propose_cmd,
+    "work.triage.review": triage_review_cmd,
     "work.assign": assign,
     "work.claim": claim,
     "work.next": next_,
@@ -2148,6 +2326,9 @@ CLI_PROJECTION = _project_cli_group(
         "work delivery": "Record delivery milestones for imported external reports.",
         "work outbox": "Supervised replies to external issues: draft, review, approve, send.",
         "work thread": "Imported reports' issue comments: show, ingest, mark considered.",
+        "work labels": "Project bead state onto the bound issues' owned labels: sync, define, "
+        "review, approve.",
+        "work triage": "Review-gated batch triage: review packets, propose, check, apply.",
     },
 )
 _CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
@@ -2181,6 +2362,14 @@ outbox_reconcile_cmd = _CLI_CALLBACKS["work.outbox.reconcile"]
 outbox_retry_cmd = _CLI_CALLBACKS["work.outbox.retry"]
 outbox_send_cmd = _CLI_CALLBACKS["work.outbox.send"]
 outbox_show_cmd = _CLI_CALLBACKS["work.outbox.show"]
+labels_approve_cmd = _CLI_CALLBACKS["work.labels.approve"]
+labels_define_cmd = _CLI_CALLBACKS["work.labels.define"]
+labels_review_cmd = _CLI_CALLBACKS["work.labels.review"]
+labels_sync_cmd = _CLI_CALLBACKS["work.labels.sync"]
+triage_apply_cmd = _CLI_CALLBACKS["work.triage.apply"]
+triage_check_cmd = _CLI_CALLBACKS["work.triage.check"]
+triage_propose_cmd = _CLI_CALLBACKS["work.triage.propose"]
+triage_review_cmd = _CLI_CALLBACKS["work.triage.review"]
 assign = _CLI_CALLBACKS["work.assign"]
 claim = _CLI_CALLBACKS["work.claim"]
 next_ = _CLI_CALLBACKS["work.next"]
