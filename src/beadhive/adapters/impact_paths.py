@@ -150,6 +150,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
     "beadhive-tracker-github": (
         "tests/test_config_store_binding.py",
         "tests/unit/bootstrap/test_tracker_github_composition.py",
+        "tests/unit/bootstrap/test_tracker_github_label_prune.py",
     ),
     "beadhive-validation-broker": (
         "tests/test_validation_broker_engine.py",

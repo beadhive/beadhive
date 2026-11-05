@@ -1,0 +1,75 @@
+{
+  "description": "labels.read: GET /repos/acme/widgets/labels paged with per_page=100, the server's Link: rel=\"next\" URL (numeric /repositories/<id>/ form) followed verbatim. Pages are shortened (a real first page holds 100 rows). A label without a description answers null. Used by tests/test_tracker_github_label_definitions.py.",
+  "provenance": "Synthetic replay; NOTHING here was captured from a live request or write (no test ever reaches GitHub). Shapes follow the documented GitHub REST 'Labels' endpoints, API version 2022-11-28 (List labels for a repository, Create a label, Update a label, Delete a label). Live re-verification is pending the first operator-approved labels.define, recorded on bead bh-uv09p.",
+  "interactions": [
+    {
+      "name": "first-page",
+      "provenance": "Documented form only (List labels for a repository; Link pagination); re-verify on the first live labels.read.",
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/labels?per_page=100"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "link": "<https://api.github.com/repositories/9001/labels?per_page=100&page=2>; rel=\"next\", <https://api.github.com/repositories/9001/labels?per_page=100&page=2>; rel=\"last\"",
+          "x-ratelimit-remaining": "4998",
+          "x-ratelimit-reset": "1767229200"
+        },
+        "json": [
+          {
+            "id": 1,
+            "node_id": "LA_kwDOsynth1",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bug",
+            "name": "bug",
+            "color": "d73a4a",
+            "default": false,
+            "description": "Something isn't working"
+          },
+          {
+            "id": 2,
+            "node_id": "LA_kwDOsynth2",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Aintake%2Faccepted",
+            "name": "bh:intake/accepted",
+            "color": "0e8a16",
+            "default": false,
+            "description": "Accepted for triage"
+          }
+        ]
+      }
+    },
+    {
+      "name": "last-page",
+      "provenance": "Documented form only (List labels for a repository; Link pagination); re-verify on the first live labels.read.",
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repositories/9001/labels?per_page=100&page=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json",
+          "link": "<https://api.github.com/repositories/9001/labels?per_page=100&page=1>; rel=\"prev\", <https://api.github.com/repositories/9001/labels?per_page=100&page=1>; rel=\"first\"",
+          "x-ratelimit-remaining": "4997",
+          "x-ratelimit-reset": "1767229200"
+        },
+        "json": [
+          {
+            "id": 3,
+            "node_id": "LA_kwDOsynth3",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Atype%2Ffeature",
+            "name": "bh:type/feature",
+            "color": "a2eeef",
+            "default": false,
+            "description": null
+          }
+        ]
+      }
+    }
+  ]
+}

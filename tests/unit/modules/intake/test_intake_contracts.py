@@ -84,6 +84,18 @@ def test_port_names_match_the_adr() -> None:
         "investigate",
         "uninvestigate",
         "relations",
+        # review packets and triage-quality metrics (bh-hrx2r), additive
+        "review_packets",
+        "review_metrics",
+        # the label projection and its batch approval (bh-uim9i), additive
+        "sync_labels",
+        "define_labels",
+        "review_label_batch",
+        "approve_label_batch",
+        # propose, review and apply-reviewed (bh-9aqmv), additive
+        "propose",
+        "review_proposal",
+        "apply_reviewed",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",

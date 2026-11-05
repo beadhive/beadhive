@@ -2,7 +2,8 @@
 
 Small capability interfaces: :class:`TrackerReader` and :class:`TrackerIdentity` are required
 and together form :class:`TrackerAdapter`, the one Protocol the plugin wiring binds.
-:class:`CommentWriter`, :class:`LabelWriter`, :class:`IssueResolver` and :class:`MarkerCodec` are
+:class:`CommentWriter`, :class:`LabelWriter`, :class:`LabelReader`, :class:`LabelDefiner`,
+:class:`LabelPruner`, :class:`IssueResolver` and :class:`MarkerCodec` are
 optional and are discovered with ``isinstance`` on the bound object. A writer's presence is
 necessary, never sufficient: the operation must also be enabled and each call must carry a fresh
 grant.
@@ -20,6 +21,7 @@ from .records import (
     IdQuery,
     IssueKey,
     IssueQuery,
+    LabelDefinition,
     LabelOwnership,
     OwnMarker,
     Page,
@@ -75,6 +77,36 @@ class LabelWriter(Protocol):
 
 
 @runtime_checkable
+class LabelReader(Protocol):
+    """Optional (additive; the API version stays 1): the label definitions of the repository.
+
+    One read; ``labels.read`` is a read operation, so no grant is needed."""
+
+    def list_label_definitions(self) -> tuple[LabelDefinition, ...]: ...
+
+
+@runtime_checkable
+class LabelDefiner(Protocol):
+    """Optional (additive; the API version stays 1): create or update repository label
+    definitions. A repository-scoped write, so ``grant.target`` is the :class:`ProjectRef`."""
+
+    def define_labels(
+        self, definitions: tuple[LabelDefinition, ...], *, grant: WriteGrant
+    ) -> WriteReceipt: ...
+
+
+@runtime_checkable
+class LabelPruner(Protocol):
+    """Optional (additive; the API version stays 1): delete repository label definitions the
+    consumer no longer produces (``labels define --prune``). The same ``labels.define`` operation
+    and the same repository scope as :class:`LabelDefiner`, so ``grant.target`` is the
+    :class:`ProjectRef`; only owned names, refused for the whole batch before any request. A name
+    the repository does not hold is already deleted (idempotent)."""
+
+    def delete_labels(self, names: tuple[str, ...], *, grant: WriteGrant) -> WriteReceipt: ...
+
+
+@runtime_checkable
 class IssueResolver(Protocol):
     """Optional URL resolution (amendment A1; the API version stays 1).
 
@@ -120,6 +152,9 @@ def join_marker_line(body: str, line: str) -> str:
 __all__ = [
     "CommentWriter",
     "IssueResolver",
+    "LabelDefiner",
+    "LabelPruner",
+    "LabelReader",
     "LabelWriter",
     "MarkerCodec",
     "TrackerAdapter",

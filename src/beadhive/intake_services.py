@@ -685,8 +685,11 @@ def _linking_port(
         store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
         labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
         held = lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb)
+        refresh = transition_refresh(
+            cfg, entry, directory, store, held, ids=ids, sanitizer=sanitizer
+        )
         if not catch_up_on_link(cfg):
-            return IntakeService(store, labels, lock=held)
+            return IntakeService(store, labels, lock=held, **refresh)
         from .adapters.intake import ScrubSanitizer
 
         outbox, milestones = milestone_settings(cfg)
@@ -700,7 +703,9 @@ def _linking_port(
             outbox=outbox,
             milestones=milestones,
         )
-        return IntakeService(store, labels, lock=held, milestones=service, catch_up_on_link=True)
+        return IntakeService(
+            store, labels, lock=held, milestones=service, catch_up_on_link=True, **refresh
+        )
 
     return bind_intake(enabled, build)
 
@@ -881,10 +886,29 @@ def investigate_report(
 # -- dispositions ----------------------------------------------------------------------------
 
 
-def dispose(directory, request: DispositionRequest) -> tuple[int, str, DispositionOutcome | None]:
-    """Run one triage disposition; ``(exit, error, outcome)``."""
+def _disposing_service(directory, cfg: Mapping[str, Any] | None, verb: str) -> IntakeService:
+    """The service a disposition runs on: the directory's plain one, with the opt-in transition
+    label refresh bound when ``cfg`` turns it on (``intake.external.labels.on_transition``)."""
+    if cfg is None or not labels_config(cfg).on_transition:
+        return service_for_directory(directory)
+    entry = intake_beads.entry_of_directory(directory)
+    if entry is None:
+        return service_for_directory(directory)
+    store = directory_store(directory, entry=entry)
+    lock = intake_lock(cfg, directory, hive=str(entry.get("prefix") or ""), verb=verb)
+    return IntakeService(
+        store, _NoLabelPolicy(), lock=lock, **transition_refresh(cfg, entry, directory, store, lock)
+    )
+
+
+def dispose(
+    directory, request: DispositionRequest, *, cfg: Mapping[str, Any] | None = None
+) -> tuple[int, str, DispositionOutcome | None]:
+    """Run one triage disposition; ``(exit, error, outcome)``. With ``cfg`` turning on
+    ``intake.external.labels.on_transition`` the report's labels record is refreshed after it."""
     try:
-        return 0, "", service_for_directory(directory).dispose(request)
+        verb = f"work {request.disposition.value}"
+        return 0, "", _disposing_service(directory, cfg, verb).dispose(request)
     except IntakeRefused as exc:
         return 1, exc.detail, None
     except IntakeStoreError as exc:
@@ -926,7 +950,7 @@ def reroute_to_hive(
         return f"rerouted to {to_hive} as {new_id}"
 
     try:
-        service_for_directory(directory).reroute_elsewhere(
+        _disposing_service(directory, cfg, "work reroute").reroute_elsewhere(
             DispositionRequest(bead, Disposition.REROUTE, actor), refile
         )
     except _RefileFailed as exc:
@@ -1195,7 +1219,10 @@ def outbox_service_for(
         if threads is not None
         else None
     )
-    return IntakeService(store, labels, outbox=sender, milestones=milestones, threads=conversation)
+    refresh = transition_refresh(cfg, entry, directory, store, held, ids=source, sanitizer=scrubber)
+    return IntakeService(
+        store, labels, outbox=sender, milestones=milestones, threads=conversation, **refresh
+    )
 
 
 # -- the merge and release milestones (I10): they draft, they never send ---------------------
@@ -1307,9 +1334,10 @@ def _milestone_port(
         store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
         labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
         outbox, milestones = milestone_settings(cfg)
+        held = lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb)
         service = MilestoneService(
             store,
-            lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb),
+            held,
             ids=ids if ids is not None else RandomIdSource(),
             leak_policy=leak_policy(cfg),
             sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
@@ -1318,7 +1346,10 @@ def _milestone_port(
             milestones=milestones,
             verifier=verifier,
         )
-        return IntakeService(store, labels, milestones=service)
+        refresh = transition_refresh(
+            cfg, entry, directory, store, held, ids=ids, sanitizer=sanitizer
+        )
+        return IntakeService(store, labels, milestones=service, **refresh)
 
     return bind_intake(enabled, build)
 
@@ -2130,7 +2161,10 @@ def thread_call(
             identity=identity if identity is not None else wiring.get("identity"),
             policy=policy,
         )
-        port = IntakeService(store, ValidateLabelPolicy(cfg, str(entry["prefix"])), threads=service)
+        refresh = transition_refresh(cfg, entry, directory, store, held)
+        port = IntakeService(
+            store, ValidateLabelPolicy(cfg, str(entry["prefix"])), threads=service, **refresh
+        )
         value = run(port)
     except IntakeRefused as exc:
         return ThreadCall(1, exc.detail, exc.reason.value)
@@ -2266,7 +2300,1040 @@ def wake(
     return thread_call(cfg, entry, directory, run, verb="work wake", needs_tracker=False, **kwargs)
 
 
+# -- the label projection and review-gated triage (bh-hrx2r): bh work labels / bh work triage ---
+
+
+@dataclass(frozen=True)
+class LabelsConfig:
+    """``intake.external.labels`` as the root reads it. ``enabled`` and ``on_transition`` are only
+    a literal ``true`` (``on_transition`` only acts with ``enabled``); ``settings`` is the module's
+    ``LabelSettings`` (``None`` with ``error`` when the section has a shape the module refuses)."""
+
+    enabled: bool = False
+    on_transition: bool = False
+    settings: Any = None
+    error: str = ""
+
+
+#: The keys of ``intake.external.labels`` that need it on, named in every refusal.
+LABELS_ENABLED_KEY = "intake.external.labels.enabled"
+
+
+def labels_config(cfg: Mapping[str, Any]) -> LabelsConfig:
+    """``intake.external.labels`` translated into the module's ``LabelSettings`` (the prefix, the
+    projected dimensions, aliases, colors and per-value overrides). Host-owned and off: only a
+    literal ``true`` enables the projection or the transition refresh."""
+    from .modules.intake.domain import (
+        DEFAULT_PREFIX,
+        DEFAULT_PROJECTED,
+        LabelOverride,
+        LabelSettings,
+    )
+
+    section = (((cfg.get("intake") or {}).get("external")) or {}).get("labels") or {}
+    enabled = section.get("enabled") is True
+    on_transition = enabled and section.get("on_transition") is True
+    try:
+        overrides = {
+            str(key): LabelOverride(
+                name=str((value or {}).get("name") or ""),
+                description=str((value or {}).get("description") or ""),
+                color=str((value or {}).get("color") or "").lower(),
+            )
+            for key, value in (section.get("overrides") or {}).items()
+        }
+        settings = LabelSettings(
+            prefix=str(section.get("prefix") or DEFAULT_PREFIX),
+            project=tuple(
+                str(d) for d in (section["project"] if "project" in section else DEFAULT_PROJECTED)
+            ),
+            aliases={str(k): str(v) for k, v in (section.get("aliases") or {}).items()},
+            colors={str(k): str(v).lower() for k, v in (section.get("colors") or {}).items()},
+            overrides=overrides,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        return LabelsConfig(enabled, on_transition, None, f"intake.external.labels: {exc}")
+    return LabelsConfig(enabled, on_transition, settings)
+
+
+def registry_dimensions(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """The dimension registry (``dimensions.*``) as the module's ``RegistryDimension`` records:
+    each dimension's description and, when it declares ``values``, its closed set (``values:
+    []`` is a locked one). The built-in intake, delivery, type, priority and progress vocabulary
+    is the module's own; the registry only adds to it."""
+    from .modules.intake.domain import RegistryDimension
+
+    out: dict[str, Any] = {}
+    for name, spec in (cfg.get("dimensions") or {}).items():
+        node = spec if isinstance(spec, Mapping) else {}
+        values = node.get("values")
+        out[str(name)] = RegistryDimension(
+            str(name),
+            str(node.get("description") or ""),
+            None if values is None else frozenset(str(v) for v in values),
+        )
+    return out
+
+
+#: ``<hive>/.bh/intake/audit.log``: the local audit trail of approved repository-level writes.
+AUDIT_LOG_FILE = "audit.log"
+
+
+def audit_path(directory) -> Path:
+    """``<hive>/.bh/intake/audit.log``, in the hive's private, never-published state."""
+    return _intake_state_dir(directory, "intake audit log", "audit") / AUDIT_LOG_FILE
+
+
+class FileAuditLog:
+    """The root :class:`~beadhive.modules.intake.contracts.AuditLog`: one JSON line per note
+    (``at``, ``actor``, ``note``), appended to a private file (mode 0600) that never reaches a
+    tracker. ``clock`` stamps each line (UTC); tests inject one."""
+
+    def __init__(
+        self,
+        path: Path | Callable[[], Path],
+        *,
+        clock: Callable[[], Any] | None = None,
+    ) -> None:
+        self._path = path
+        self._clock = clock
+
+    def note(self, text: str, *, actor: str) -> None:
+        import datetime as _dt
+        import json as _json
+
+        path = self._path() if callable(self._path) else self._path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        moment = self._clock() if self._clock is not None else _dt.datetime.now(_dt.UTC)
+        line = _json.dumps({"at": moment.isoformat(), "actor": actor, "note": text}, sort_keys=True)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+
+
+class LinkageLandedCommits:
+    """The root :class:`~beadhive.modules.intake.contracts.LandedCommits`: a work bead's
+    ``git.commits`` linkage (``git_linkage.read_commits``, recorded at submit and merge), oldest
+    first. Unreadable or absent linkage is ``()``: a ``fixed`` claim then needs its own
+    ``fix_commit``. ``read`` is the injected reader (tests pass one)."""
+
+    def __init__(self, directory, *, read: Callable[[str], Sequence[str]] | None = None) -> None:
+        self._directory = Path(directory)
+        self._read = read
+
+    def landed_commits(self, bead: str) -> tuple[str, ...]:
+        if self._read is not None:
+            return tuple(self._read(bead))
+        from . import git_linkage
+
+        return tuple(git_linkage.read_commits(bead, self._directory))
+
+
+def _labels_off() -> IntakeRefused:
+    return IntakeRefused(
+        RefusalReason.INTAKE_DISABLED,
+        f"the label projection is off for this hive ({LABELS_ENABLED_KEY}; it is opt-in)",
+    )
+
+
+def _no_labels_wiring() -> IntakeRefused:
+    return IntakeRefused(
+        RefusalReason.INTAKE_DISABLED,
+        f"the label projection has no tracker wired: {TRACKER_CONFIG_HINT}, and set "
+        f"plugins.{TRACKER_PLUGIN_ID}.read.labels.enabled to true, then run the verb again",
+    )
+
+
+def labels_wiring(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory=None,
+    *,
+    requested: frozenset = frozenset(),
+    adapters: Any = None,
+) -> dict[str, Any]:
+    """The label projection's tracker wiring (``tracker`` and the bound label prefixes), from the
+    same plugin binding as the outbox, requesting ``requested`` (``issues.read`` and
+    ``labels.read`` for a sync, plus ``labels.define`` for an approved define). Empty unless
+    ``intake.external.enabled``, :data:`LABELS_ENABLED_KEY` and ``plugins.tracker-github.enabled``
+    are all on; a binding that refuses (an operation not enabled, R6 to R13) is
+    ``{"refusal": ...}``. Building sends no tracker request."""
+    if not external_intake_settings(cfg)[0] or not labels_config(cfg).enabled:
+        return {}
+    if adapters is None:
+        adapters = process_adapters(cfg)
+    if adapters is None:
+        return {}
+    home = directory if directory is not None else registry.hive_dir(entry)
+    try:
+        return tracker_wiring(cfg, entry, home, adapters, requested=requested, needs_marker=False)
+    except IntakeRefused as exc:
+        return {"refusal": exc}
+    except IntakeStoreError as exc:  # the install id's private state
+        return {"refusal": IntakeRefused(RefusalReason.INTAKE_DISABLED, outbox_message(exc))}
+
+
+def label_projection_for(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    store,
+    lock: IntakeLock,
+    *,
+    tracker: Any,
+    ids: Any = None,
+    sanitizer: Any = None,
+    audit: Any = None,
+    owned_label_prefixes: tuple[str, ...] = (),
+):
+    """The ``LabelProjection`` over ``store`` and ``tracker`` (an ``_UnwiredTracker`` for the
+    tracker-free transition refresh), or ``None`` unless :data:`LABELS_ENABLED_KEY` is on. Its
+    leak policy owns the projection's prefix (plus ``owned_label_prefixes``, the plugin's), its
+    outbox policy is the hive's (drafting needs ``outbox.enabled`` and ``outbox.labels_enabled``)
+    and its audit trail is :class:`FileAuditLog` in the hive's private state. Raises
+    ``IntakeRefused`` for a labels section the module refuses."""
+    from .adapters.intake import ScrubSanitizer
+    from .modules.intake.application import LabelProjection
+
+    setting = labels_config(cfg)
+    if not setting.enabled:
+        return None
+    if setting.settings is None:
+        raise IntakeRefused(RefusalReason.INVALID_REQUEST, setting.error)
+    owned = tuple(dict.fromkeys((*owned_label_prefixes, setting.settings.prefix)))
+    return LabelProjection(
+        store,
+        tracker,
+        lock,
+        ids=ids if ids is not None else RandomIdSource(),
+        registry=registry_dimensions(cfg),
+        settings=setting.settings,
+        leak_policy=leak_policy(cfg, owned_label_prefixes=owned),
+        sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
+        posture=store_posture(entry),
+        outbox=milestone_settings(cfg)[0],
+        audit=audit if audit is not None else FileAuditLog(lambda: audit_path(directory)),
+    )
+
+
+def transition_refresh(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any] | None,
+    directory,
+    store,
+    lock: IntakeLock,
+    *,
+    ids: Any = None,
+    sanitizer: Any = None,
+) -> dict[str, Any]:
+    """The ``IntakeService`` keywords of the opt-in transition hook (bh-gjb5w): a TRACKER-FREE
+    projection and ``refresh_on_transition``, so a disposition, needs-info, wake, link, unlink or
+    milestone drafts or refreshes the report's ONE ``labels`` record from stored state. Empty
+    (the hook is off, the default) unless ``intake.external.labels.enabled`` AND
+    ``labels.on_transition``; a refresh never fails the transition."""
+    setting = labels_config(cfg)
+    if entry is None or not setting.on_transition or setting.settings is None:
+        return {}
+    projection = label_projection_for(
+        cfg,
+        entry,
+        directory,
+        store,
+        lock,
+        tracker=_UnwiredTracker(_no_labels_wiring),
+        ids=ids,
+        sanitizer=sanitizer,
+    )
+    return {"projection": projection, "refresh_on_transition": True}
+
+
+@dataclass(frozen=True)
+class IntakeCall:
+    """The rendering input of one ``bh work labels`` / ``bh work triage`` verb: ``code`` is the
+    exit status, ``reason`` the stable refusal code (empty on success, ``store_error`` for a store
+    failure), ``error`` the one-line message naming the fix, ``value`` what the port returned."""
+
+    code: int
+    error: str = ""
+    reason: str = ""
+    value: Any = None
+
+
+def intake_message(exc: IntakeStoreError) -> str:
+    """The one-line message for a store failure during a labels or triage verb."""
+    return f"intake could not finish {exc.bead or 'a report'} ({exc.operation}): {exc.detail}"
+
+
+def _intake_call(run: Callable[[], Any]) -> IntakeCall:
+    try:
+        value = run()
+    except IntakeRefused as exc:
+        return IntakeCall(1, exc.detail, exc.reason.value)
+    except IntakeStoreError as exc:
+        return IntakeCall(exc.returncode, intake_message(exc), "store_error")
+    except store_target.StoreResolutionError as exc:
+        return IntakeCall(1, str(exc), "store_unresolved")
+    return IntakeCall(0, value=value)
+
+
+@dataclass(frozen=True)
+class _Composed:
+    service: IntakeService
+    store: Any
+
+
+def _compose(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    *,
+    hive: str,
+    verb: str,
+    lock: IntakeLock | None = None,
+    ids: Any = None,
+    sanitizer: Any = None,
+    audit: Any = None,
+    outbox: Mapping[str, Any] | None = None,
+    threads: Mapping[str, Any] | None = None,
+    labels_tracker: Any = None,
+    owned_label_prefixes: tuple[str, ...] = (),
+    triage: Any = None,
+    review: Any = None,
+) -> _Composed:
+    """One ``IntakeService`` over the hive's OPERATIONAL store with what a labels or triage verb
+    needs bound: the supervised sender (and the milestone service) over ``outbox`` (an outbox
+    wiring; only while ``outbox.enabled``), the thread service over ``threads`` (a thread wiring),
+    the label projection over ``labels_tracker`` (only while :data:`LABELS_ENABLED_KEY`; else the
+    transition hook's tracker-free one when ``labels.on_transition``), the ``TriageBinding`` and
+    the ``ReviewPolicy``. Nothing here reads a tracker or writes a store."""
+    from .adapters.intake import ScrubSanitizer
+
+    store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
+    labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
+    held = lock if lock is not None else intake_lock(cfg, directory, hive=hive, verb=verb)
+    source = ids if ids is not None else RandomIdSource()
+    scrubber = sanitizer if sanitizer is not None else ScrubSanitizer()
+    policy, milestone_policy = milestone_settings(cfg)
+    posture = store_posture(entry)
+    owned = tuple((outbox or {}).get("owned_label_prefixes", ()))
+    sender = milestones = conversation = None
+    if outbox is not None and policy.enabled:
+        leaks = leak_policy(cfg, owned_label_prefixes=owned)
+        milestones = MilestoneService(
+            store,
+            held,
+            ids=source,
+            leak_policy=leaks,
+            sanitizer=scrubber,
+            posture=posture,
+            outbox=policy,
+            milestones=milestone_policy,
+        )
+        sender = OutboxService(
+            store,
+            outbox["tracker"],
+            held,
+            ids=source,
+            identity=outbox["identity"],
+            marker_line=outbox["marker_line"],
+            policy=policy,
+            leak_policy=leaks,
+            sanitizer=scrubber,
+            posture=posture,
+            holder=f"{socket.gethostname()}:{os.getpid()}",
+            completion=milestones.complete,
+        )
+    if threads is not None:
+        conversation = thread_service_for(
+            store,
+            threads["tracker"],
+            held,
+            posture=posture,
+            identity=threads.get("identity"),
+            policy=comments_settings(cfg)[1],
+        )
+    keywords: dict[str, Any] = {}
+    if labels_tracker is not None:
+        projection = label_projection_for(
+            cfg,
+            entry,
+            directory,
+            store,
+            held,
+            tracker=labels_tracker,
+            ids=source,
+            sanitizer=scrubber,
+            audit=audit,
+            owned_label_prefixes=(*owned, *owned_label_prefixes),
+        )
+        if projection is not None:
+            keywords = {
+                "projection": projection,
+                "refresh_on_transition": labels_config(cfg).on_transition,
+            }
+    else:
+        keywords = transition_refresh(
+            cfg, entry, directory, store, held, ids=source, sanitizer=scrubber
+        )
+    service = IntakeService(
+        store,
+        labels,
+        outbox=sender,
+        milestones=milestones,
+        threads=conversation,
+        catch_up_on_link=catch_up_on_link(cfg) and milestones is not None,
+        lock=held,
+        triage=triage,
+        review=review,
+        **keywords,
+    )
+    return _Composed(service, store)
+
+
+def _require_intake() -> None:
+    raise IntakeRefused(
+        RefusalReason.INTAKE_DISABLED,
+        "external intake is off for this hive (intake.external.enabled; it is opt-in)",
+    )
+
+
+def _require_labels(cfg: Mapping[str, Any]) -> None:
+    """Refuse, naming the key, unless intake and the label projection are on and valid."""
+    if not external_intake_settings(cfg)[0]:
+        _require_intake()
+    setting = labels_config(cfg)
+    if not setting.enabled:
+        raise _labels_off()
+    if setting.settings is None:
+        raise IntakeRefused(RefusalReason.INVALID_REQUEST, setting.error)
+
+
+def _labels_tracker(
+    cfg, entry, directory, requested: frozenset, tracker: Any
+) -> tuple[Any, tuple[str, ...]]:
+    """The projection's tracker (injected, or from :func:`labels_wiring`) and the plugin's owned
+    label prefixes; a binding refusal is raised (it names the key to set)."""
+    if tracker is not None:
+        return tracker, ()
+    wiring = labels_wiring(cfg, entry, directory, requested=requested)
+    if wiring.get("tracker") is None:
+        raise wiring.get("refusal") or _no_labels_wiring()
+    return wiring["tracker"], tuple(wiring.get("owned_label_prefixes", ()))
+
+
+def labels_sync(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    actor: str,
+    *,
+    report: str = "",
+    include_closed: bool = False,
+    dry_run: bool = False,
+    prune_unmapped: bool = False,
+    hive: str = "",
+    tracker: Any = None,
+    lock: IntakeLock | None = None,
+    ids: Any = None,
+    sanitizer: Any = None,
+) -> IntakeCall:
+    """``bh work labels sync [<report>] [--include-closed] [--dry-run] [--prune-unmapped]``: the
+    projection's sync (one issue listing and one ``labels.read`` per run) over the bound tracker
+    (``issues.read`` and ``labels.read``). It DRAFTS at most one ``labels`` record per issue and
+    never sends; ``dry_run`` writes nothing. Off unless ``intake.external.enabled`` and
+    :data:`LABELS_ENABLED_KEY`; drafting also needs ``outbox.enabled`` and
+    ``outbox.labels_enabled``."""
+    from .modules.intake.domain import LabelSyncRequest
+    from .modules.tracker.contracts import Operation
+
+    def run():
+        _require_labels(cfg)
+        port, owned = _labels_tracker(
+            cfg,
+            entry,
+            directory,
+            frozenset({Operation.ISSUES_READ, Operation.LABELS_READ}),
+            tracker,
+        )
+        composed = _compose(
+            cfg,
+            entry,
+            directory,
+            hive=hive,
+            verb="work labels sync",
+            lock=lock,
+            ids=ids,
+            sanitizer=sanitizer,
+            labels_tracker=port,
+            owned_label_prefixes=owned,
+        )
+        return composed.service.sync_labels(
+            LabelSyncRequest(
+                actor,
+                reports=(report,) if report else (),
+                include_closed=include_closed,
+                dry_run=dry_run,
+                prune_unmapped=prune_unmapped,
+            )
+        )
+
+    return _intake_call(run)
+
+
+def labels_define(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    actor: str,
+    *,
+    approve: str = "",
+    prune: bool = False,
+    dry_run: bool = False,
+    hive: str = "",
+    tracker: Any = None,
+    lock: IntakeLock | None = None,
+    ids: Any = None,
+    sanitizer: Any = None,
+    audit: Any = None,
+) -> IntakeCall:
+    """``bh work labels define [--dry-run] [--prune] [--approve <digest>]``: the repository's label
+    definitions against the registry-derived catalog, rendered with a digest. With ``approve``
+    (an operator seat only, the digest the operator reviewed) it mints ONE single-use grant per
+    tracker write and applies the plan, noting it in the local audit log; a converged repository
+    needs none. Reads ``labels.read`` (and, for ``prune``, ``issues.read``); applying also needs
+    ``labels.define``. Off unless ``intake.external.enabled`` and :data:`LABELS_ENABLED_KEY`."""
+    from .modules.intake.domain import LabelDefineRequest
+    from .modules.tracker.contracts import Operation
+
+    requested = {Operation.LABELS_READ}
+    if prune:
+        requested.add(Operation.ISSUES_READ)
+    if approve:
+        requested.add(Operation.LABELS_DEFINE)
+
+    def run():
+        _require_labels(cfg)
+        port, owned = _labels_tracker(cfg, entry, directory, frozenset(requested), tracker)
+        composed = _compose(
+            cfg,
+            entry,
+            directory,
+            hive=hive,
+            verb="work labels define",
+            lock=lock,
+            ids=ids,
+            sanitizer=sanitizer,
+            audit=audit,
+            labels_tracker=port,
+            owned_label_prefixes=owned,
+        )
+        return composed.service.define_labels(
+            LabelDefineRequest(actor, approve=approve, prune=prune, dry_run=dry_run)
+        )
+
+    return _intake_call(run)
+
+
+def labels_review(cfg, entry, directory, **kwargs) -> OutboxCall:
+    """``bh work labels review``: the rendered batch of every drafted ``labels.change`` operation
+    (one pass over the outbox documents and one issue listing), with the digest an operator
+    approves. A read; off unless ``intake.external.enabled`` and ``outbox.enabled``."""
+    return outbox_call(cfg, entry, directory, lambda port: port.review_label_batch(), **kwargs)
+
+
+def labels_approve(cfg, entry, directory, digest: str, actor: str, **kwargs) -> OutboxCall:
+    """``bh work labels approve --batch <digest>``: approve the reviewed batch (an operator seat
+    only): one single-use grant per issue, a stale item skipped for re-draft. Sends nothing.
+    Needs ``outbox.enabled`` and ``outbox.labels_enabled``."""
+    from .modules.intake.domain import LabelBatchApprove
+
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.approve_label_batch(LabelBatchApprove(digest, actor)),
+        **kwargs,
+    )
+
+
+#: The pending review batches hold at most this many reports by default (whole clusters).
+DEFAULT_REVIEW_BATCH_SIZE = 20
+
+
+def review_policy(cfg: Mapping[str, Any], *, comments_read: bool) -> Any:
+    """The host's ``ReviewPolicy``: ``comments_enabled`` is ``intake.external.comments.enabled``,
+    ``comments_read`` whether the bound tracker serves ``comments.read`` (the binding enabled it),
+    so review refuses, naming both switches, unless every pending thread can be read."""
+    from .modules.intake.domain import ReviewPolicy
+
+    return ReviewPolicy(comments_enabled=comments_settings(cfg)[0], comments_read=comments_read)
+
+
+def triage_binding(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    *,
+    branch: str = "main",
+    repo: Any = None,
+    landed: Any = None,
+    sanitizer: Any = None,
+    refile: Callable[..., str] | None = None,
+) -> Any:
+    """The ``TriageBinding`` propose, review and apply read: the repository facts over the hive
+    checkout (:class:`~beadhive.adapters.intake.GitRepoFacts`, read-only git), the landed commits
+    from the ``git.commits`` linkage (:class:`LinkageLandedCommits`), the integration ``branch``,
+    the outbox's leak policy and sanitizer, and the reroute re-filer (``None``: a reroute is
+    blocked)."""
+    from .adapters.intake import GitRepoFacts, ScrubSanitizer
+    from .modules.intake.application import TriageBinding
+
+    return TriageBinding(
+        repo=repo if repo is not None else GitRepoFacts(directory),
+        leak_policy=leak_policy(cfg),
+        sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
+        branch=branch,
+        landed=landed if landed is not None else LinkageLandedCommits(directory),
+        refile=refile,
+    )
+
+
+def reroute_refiler(
+    destinations: Mapping[str, str],
+    actor: str,
+    *,
+    file_report: Callable[..., tuple[int, str, str]],
+    cfg: Mapping[str, Any] | None = None,
+) -> Callable[..., str] | None:
+    """The apply-time reroute re-filer (``--reroute-to <report>=<hive>``): files the rerouted
+    report into its destination hive through ``file_report`` (the ``bh report`` write path,
+    type-preserving, with the bound issue's URL as the description) and returns the reason the
+    source records. A report with no destination refuses before anything is written, so the
+    report is left untouched. ``None`` (no destinations): every reroute is blocked."""
+    if not destinations:
+        return None
+
+    def refile(view, _proposal) -> str:
+        to_hive = destinations.get(view.id, "")
+        if not to_hive:
+            raise IntakeRefused(
+                RefusalReason.INVALID_REQUEST,
+                f"no reroute destination for {view.id}: pass --reroute-to {view.id}=<hive>",
+            )
+        rtype = view.issue_type if view.issue_type in REPORT_TYPES else "bug"
+        description = f"Rerouted from {view.binding.url}" if view.binding is not None else ""
+        code, err, new_id = file_report(
+            to_hive, view.title, rtype, actor, cfg=cfg, description=description
+        )
+        if err:
+            raise IntakeRefused(
+                RefusalReason.INVALID_REQUEST, f"reroute re-file into {to_hive} failed: {err}"
+            )
+        return f"rerouted to {to_hive} as {new_id}"
+
+    return refile
+
+
+def triage_review(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    actor: str,
+    *,
+    batch_size: int = DEFAULT_REVIEW_BATCH_SIZE,
+    hive: str = "",
+    tracker: Any = None,
+    identity: OwnIdentity | None = None,
+    lock: IntakeLock | None = None,
+) -> IntakeCall:
+    """``bh work triage review --pending``: ingest every pending report's thread, then build
+    cluster-aware batches of review packets (body, full thread, proposal and reviews, cluster and
+    the global index). The only write is the thread ingest. Off unless
+    ``intake.external.enabled``; refused, naming both switches, unless
+    ``intake.external.comments.enabled`` and the tracker's ``read.comments.enabled`` are on."""
+    from .modules.intake.domain import ReviewRequest
+
+    def run():
+        if not external_intake_settings(cfg)[0]:
+            _require_intake()
+        threads: dict[str, Any] | None = None
+        if tracker is not None:
+            threads = {"tracker": tracker, "identity": identity}
+        elif comments_settings(cfg)[0]:
+            wiring = thread_wiring(cfg, entry, directory)
+            if wiring.get("refusal") is not None:
+                raise wiring["refusal"]
+            if wiring.get("tracker") is not None:
+                threads = wiring
+        composed = _compose(
+            cfg,
+            entry,
+            directory,
+            hive=hive,
+            verb="work triage review",
+            lock=lock,
+            threads=threads,
+            review=review_policy(cfg, comments_read=threads is not None),
+        )
+        return composed.service.review_packets(ReviewRequest(actor, batch_size=batch_size))
+
+    return _intake_call(run)
+
+
+#: ``--review-of`` letters as the batch skill names its passes (bh-skls-p0v): pass A is the
+#: analyst's proposal itself, B the first verifier pass and C the tie-break, i.e. review passes
+#: 1 and 2 of a proposal's first round.
+REVIEW_PASS_ALIASES = {"B": 1, "C": 2}
+
+
+def review_pass(text: str) -> int:
+    """The review pass number ``--review-of`` names: a positive number, or the batch skill's
+    ``B`` / ``C`` (passes 1 and 2). ``A`` is refused: it is the proposal, not a review. Raises
+    ``ValueError`` with the fix."""
+    value = str(text).strip()
+    if value.upper() == "A":
+        raise ValueError("pass A is the analyst's proposal: store it without --review-of")
+    if value.upper() in REVIEW_PASS_ALIASES:
+        return REVIEW_PASS_ALIASES[value.upper()]
+    if value.isdigit() and int(value) >= 1:
+        return int(value)
+    raise ValueError(f"--review-of takes a review pass number (1, 2, ...) or B / C, not {text!r}")
+
+
+def triage_propose(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    report: str,
+    document: Any,
+    actor: str,
+    *,
+    review_of: int = 0,
+    branch: str = "main",
+    hive: str = "",
+    lock: IntakeLock | None = None,
+    repo: Any = None,
+    landed: Any = None,
+    sanitizer: Any = None,
+) -> IntakeCall:
+    """``bh work triage propose <report> <file|->``: store the analyst's proposal (or, with
+    ``review_of``, the verifier's verdict for that pass) on ``report``. The codec and the leak
+    lint of ``reporter_text`` run first, so a refusal writes nothing; nothing reaches a tracker.
+    Off unless ``intake.external.enabled``."""
+    from .modules.intake.domain import ProposalReviewRequest, ProposeRequest
+
+    def run():
+        if not external_intake_settings(cfg)[0]:
+            _require_intake()
+        binding = triage_binding(
+            cfg, entry, directory, branch=branch, repo=repo, landed=landed, sanitizer=sanitizer
+        )
+        service = _compose(
+            cfg, entry, directory, hive=hive, verb="work triage propose", lock=lock, triage=binding
+        ).service
+        if review_of:
+            verdict = dict(document) if isinstance(document, Mapping) else document
+            if isinstance(verdict, dict):
+                stated = verdict.get("pass")
+                if isinstance(stated, str):
+                    try:
+                        stated = review_pass(stated)
+                    except ValueError as exc:
+                        raise IntakeRefused(RefusalReason.PROPOSAL_INVALID, str(exc)) from exc
+                if stated not in (None, 0, review_of):
+                    raise IntakeRefused(
+                        RefusalReason.PROPOSAL_INVALID,
+                        f"the verdict says pass {stated}, but --review-of names pass {review_of}",
+                    )
+                verdict["pass"] = review_of
+            return service.review_proposal(ProposalReviewRequest(report, verdict, actor))
+        return service.propose(ProposeRequest(report, document, actor))
+
+    return _intake_call(run)
+
+
+@dataclass(frozen=True)
+class TriageChecks:
+    """``bh work triage check``: the dry run's checks of every open proposal, its plan per report
+    (``items``, for the verification gap) and, with ``--pending``, the reports kept (still
+    awaiting triage)."""
+
+    outcome: Any
+    pending: tuple[str, ...] | None = None
+
+    @property
+    def checks(self) -> tuple[Any, ...]:
+        if self.pending is None:
+            return tuple(self.outcome.checks)
+        keep = set(self.pending)
+        return tuple(c for c in self.outcome.checks if c.report in keep)
+
+    @property
+    def failed(self) -> tuple[str, ...]:
+        return tuple(c.report for c in self.checks if not c.passed)
+
+
+def triage_check(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    actor: str,
+    *,
+    pending: bool = False,
+    branch: str = "main",
+    hive: str = "",
+    lock: IntakeLock | None = None,
+    repo: Any = None,
+    landed: Any = None,
+    sanitizer: Any = None,
+) -> IntakeCall:
+    """``bh work triage check [--pending]``: every deterministic pre-apply check of every open
+    proposal (targets, fix claims with the COMPUTED fix version, families, field consistency,
+    reporter text, staleness), as ``apply --reviewed --dry-run`` runs them. Writes nothing.
+    ``pending`` keeps only the reports still awaiting triage. Off unless
+    ``intake.external.enabled``."""
+    from .modules.intake.domain import ApplyRequest, may_disposition
+
+    def run():
+        if not external_intake_settings(cfg)[0]:
+            _require_intake()
+        binding = triage_binding(
+            cfg, entry, directory, branch=branch, repo=repo, landed=landed, sanitizer=sanitizer
+        )
+        composed = _compose(
+            cfg, entry, directory, hive=hive, verb="work triage check", lock=lock, triage=binding
+        )
+        outcome = composed.service.apply_reviewed(ApplyRequest(actor, dry_run=True))
+        if not pending:
+            return TriageChecks(outcome)
+        kept = []
+        for check in outcome.checks:
+            view = composed.store.get(check.report)
+            if view is not None and view.status != "closed" and may_disposition(view.labels):
+                kept.append(check.report)
+        return TriageChecks(outcome, tuple(kept))
+
+    return _intake_call(run)
+
+
+def _operator_only(cfg: Mapping[str, Any], actor: str, doing: str) -> None:
+    """Refuse an agent seat (or no actor) exactly as an outbox approval does."""
+    from .modules.intake.domain import is_operator_seat
+
+    if not is_operator_seat(actor, milestone_settings(cfg)[0]):
+        raise IntakeRefused(
+            RefusalReason.OPERATOR_SEAT_REQUIRED,
+            f"{doing} needs a human operator seat, not {actor or 'no actor'!r}",
+        )
+
+
+def triage_apply(
+    cfg: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    directory,
+    actor: str,
+    *,
+    dry_run: bool = False,
+    branch: str = "main",
+    refile: Callable[..., str] | None = None,
+    hive: str = "",
+    lock: IntakeLock | None = None,
+    repo: Any = None,
+    landed: Any = None,
+    ids: Any = None,
+    sanitizer: Any = None,
+    outbox: Mapping[str, Any] | None = None,
+    threads: Mapping[str, Any] | None = None,
+    labels_tracker: Any = None,
+) -> IntakeCall:
+    """``bh work triage apply --reviewed [--dry-run]``: check every open proposal, then apply the
+    reviewed ones canonicals first through the existing triage verbs. A reply or a question is
+    DRAFTED (never sent); the touched reports' labels are refreshed (drafted) when the projection
+    is on. An operator seat only, exactly as an outbox approval; ``dry_run`` (any seat) checks and
+    plans and writes nothing. Off unless ``intake.external.enabled``.
+
+    Unless injected, the sender comes from :func:`outbox_wiring` (while ``outbox.enabled``), the
+    thread service from :func:`thread_wiring` (while ``comments.enabled``) and the projection's
+    tracker from :func:`labels_wiring`; a verb whose wiring is missing refuses on its own report,
+    which is then reported as failed with nothing written for it."""
+    from .modules.intake.domain import ApplyRequest
+    from .modules.tracker.contracts import Operation
+
+    def run():
+        if not external_intake_settings(cfg)[0]:
+            _require_intake()
+        if not dry_run:
+            _operator_only(cfg, actor, "applying reviewed proposals")
+        binding = triage_binding(
+            cfg,
+            entry,
+            directory,
+            branch=branch,
+            repo=repo,
+            landed=landed,
+            sanitizer=sanitizer,
+            refile=refile,
+        )
+        sender = outbox
+        conversation = threads
+        projection_tracker = labels_tracker
+        owned: tuple[str, ...] = ()
+        if not dry_run:
+            if sender is None:
+                sender = _apply_outbox(cfg, entry, directory)
+            if conversation is None and comments_settings(cfg)[0]:
+                conversation = _apply_threads(cfg, entry, directory)
+            if projection_tracker is None and labels_config(cfg).enabled:
+                wired = labels_wiring(
+                    cfg,
+                    entry,
+                    directory,
+                    requested=frozenset({Operation.ISSUES_READ, Operation.LABELS_READ}),
+                )
+                refusal = wired.get("refusal") or _no_labels_wiring()
+                projection_tracker = wired.get("tracker") or _UnwiredTracker(lambda: refusal)
+                owned = tuple(wired.get("owned_label_prefixes", ()))
+        composed = _compose(
+            cfg,
+            entry,
+            directory,
+            hive=hive,
+            verb="work triage apply",
+            lock=lock,
+            ids=ids,
+            sanitizer=sanitizer,
+            outbox=sender,
+            threads=conversation,
+            labels_tracker=projection_tracker,
+            owned_label_prefixes=owned,
+            triage=binding,
+        )
+        return composed.service.apply_reviewed(ApplyRequest(actor, dry_run=dry_run))
+
+    return _intake_call(run)
+
+
+def _apply_threads(cfg, entry, directory) -> dict[str, Any]:
+    """The thread service's wiring for an apply (comment ingestion on): the thread wiring, or,
+    when its tracker is not wired, an unwired stand-in. ``needs-info`` only reads the STORED
+    thread, so it still runs; any tracker read refuses with the binding's reason."""
+    wiring = thread_wiring(cfg, entry, directory)
+    if wiring.get("tracker") is not None:
+        return wiring
+    refusal = wiring.get("refusal") or _no_thread_wiring()
+    return {"tracker": _UnwiredTracker(lambda: refusal), "identity": None}
+
+
+def _apply_outbox(cfg, entry, directory) -> dict[str, Any] | None:
+    """The sender's wiring for an apply: the outbox wiring, or, while the outbox is on but its
+    tracker is not wired, an unwired stand-in whose every use refuses with the binding's reason
+    (a draft then fails its report, with nothing written for it). ``None``: the outbox is off."""
+    if not (external_intake_settings(cfg)[0] and milestone_settings(cfg)[0].enabled):
+        return None
+    wiring = outbox_wiring(cfg, entry, directory)
+    if wiring.get("tracker") is not None and wiring.get("marker_line") is not None:
+        return wiring
+    refusal = wiring.get("refusal") or _no_outbox_wiring()
+
+    def refuse(*_args: Any, **_kwargs: Any) -> str:
+        raise refusal
+
+    return {
+        "tracker": _UnwiredTracker(lambda: refusal),
+        "identity": OwnIdentity("", ""),
+        "marker_line": refuse,
+    }
+
+
+def projected_label_rows(cfg: Mapping[str, Any]) -> tuple[dict[str, str], ...]:
+    """The projected GitHub label table for ``bh label docs``: one row per label the projection
+    defines up front (``name``, ``color``, ``description``, ``dimension``, ``value``), plus one
+    ``(open)`` row per open dimension, whose labels are defined as values appear. Empty while
+    :data:`LABELS_ENABLED_KEY` is off or the section is invalid. Configuration only: nothing is
+    read from a tracker or a store."""
+    from .modules.intake.domain import LabelCatalog
+
+    setting = labels_config(cfg)
+    if not setting.enabled or setting.settings is None:
+        return ()
+    catalog = LabelCatalog.build(registry_dimensions(cfg), setting.settings)
+    rows = [
+        {
+            "name": spec.name,
+            "color": spec.color,
+            "description": spec.description,
+            "dimension": spec.dimension,
+            "value": spec.value,
+        }
+        for spec in catalog.specs
+    ]
+    settings = setting.settings
+    for dim in settings.project:
+        if catalog.openness(dim) is not None and catalog.openness(dim).value == "open":
+            rows.append(
+                {
+                    "name": f"{settings.prefix}{settings.group(dim)}/<value>",
+                    "color": "",
+                    "description": "(open: defined as values appear on projected beads)",
+                    "dimension": dim,
+                    "value": "",
+                }
+            )
+    return tuple(rows)
+
+
+def projected_label_lines(cfg: Mapping[str, Any]) -> list[str]:
+    """``bh label docs``' "Projected GitHub labels" section (:func:`projected_label_rows`); no
+    section at all while the projection is off."""
+    rows = projected_label_rows(cfg)
+    if not rows:
+        return []  # the projection is off: the page is unchanged
+    out = ["## Projected GitHub labels", ""]
+    out += [
+        "Derived from the dimension registry by `intake.external.labels` "
+        "(`bh work labels define` creates them).",
+        "",
+        "| Label | Color | Description |",
+        "|---|---|---|",
+    ]
+    for row in rows:
+        color = f"`#{row['color']}`" if row["color"] else ""
+        out.append(f"| `{row['name']}` | {color} | {row['description']} |")
+    out.append("")
+    return out
+
+
 __all__ = [
+    "AUDIT_LOG_FILE",
+    "DEFAULT_REVIEW_BATCH_SIZE",
+    "LABELS_ENABLED_KEY",
+    "REVIEW_PASS_ALIASES",
+    "FileAuditLog",
+    "IntakeCall",
+    "LabelsConfig",
+    "LinkageLandedCommits",
+    "TriageChecks",
+    "audit_path",
+    "intake_message",
+    "label_projection_for",
+    "labels_approve",
+    "labels_config",
+    "labels_define",
+    "labels_review",
+    "labels_sync",
+    "labels_wiring",
+    "projected_label_lines",
+    "projected_label_rows",
+    "registry_dimensions",
+    "reroute_refiler",
+    "review_pass",
+    "review_policy",
+    "transition_refresh",
+    "triage_apply",
+    "triage_binding",
+    "triage_check",
+    "triage_propose",
+    "triage_review",
     "catch_up_on_link",
     "needs_info",
     "needs_info_settings",

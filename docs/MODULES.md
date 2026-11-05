@@ -707,6 +707,31 @@ investigate <report>` with `--work <id>`, `--new-work [--type --priority]` or `-
 `tests/test_intake_investigate_composition.py` and `tests/test_intake_investigate_int.py`
 (`integration`), plus the `store.investigates-is-not-tracks` contract case.
 
+The label projection and review-gated batch triage (epic `bh-hrx2r`, 0.35.0) reach the CLI
+through the composition root only (`bh-v3fe7`, wire 2.22.0). `intake_services` translates
+`intake.external.labels` into the module's `LabelSettings` (`labels_config`) and `dimensions.*`
+into `RegistryDimension` records (`registry_dimensions`), builds `LabelProjection` over the bound
+tracker (`labels_wiring`: `issues.read` and `labels.read`, plus `labels.define` for an approved
+`define`; the root narrowing view carries the `LabelPruner` that `define --prune` deletes through)
+with the outbox's policy and a root `AuditLog` (`FileAuditLog`, one JSON line per approved define
+in the private `.bh/intake/audit.log`), and binds `TriageBinding` (`triage_binding`:
+`adapters/intake.GitRepoFacts` on the hive checkout, the `work.integration_branch`, the outbox's
+leak policy and `ScrubSanitizer`, a root `LandedCommits` over each bead's `git.commits` linkage,
+`LinkageLandedCommits`, and the apply-time re-filer `reroute_refiler` for `--reroute-to
+<report>=<hive>`) and `ReviewPolicy` (`review_policy`: `comments.enabled` and whether the binding
+serves `comments.read`). `transition_refresh` binds the tracker-free projection with
+`refresh_on_transition` into every transition composer (dispositions, link, needs-info, wake, the
+milestone triggers) when `labels.on_transition` is on. `labels_sync` / `labels_define` /
+`labels_review` / `labels_approve` and `triage_review` / `triage_propose` / `triage_check` /
+`triage_apply` return an `IntakeCall`; `triage_apply` refuses an agent seat exactly as an outbox
+approval does (`is_operator_seat`), and the module's own services refuse one for `define
+--approve` and the batch approval. `work_intake` renders each result and owns the `--json`
+serializers (proposals as their stored `intake.proposal` document) and the `triage review --out`
+files (`batch-NNN.json` plus `index.json`); `bh label docs` appends `projected_label_lines`. Tests:
+`tests/test_intake_labels_triage_cli.py` (every verb offline, including the dry-run walkthrough
+that writes nothing), beside the module tests `test_intake_label_projection.py`,
+`test_intake_label_refresh.py`, `test_intake_review.py` and `test_intake_apply_reviewed.py`.
+
 The closed `delivery` (`pending|merged|released|reverted`) and `notified`
 (`replied|merged|released|corrected|started|blocked|deprioritised`) dimensions are registered in
 `INTAKE_DIMENSIONS`, so `bh label validate` accepts those values and refuses any other; nothing

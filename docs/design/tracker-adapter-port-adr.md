@@ -154,6 +154,9 @@ Signatures are as prototyped in
 | `TrackerIdentity` | yes | `whoami() -> Actor or None`, `probe_capabilities() -> CapabilityReport` (read-only requests only) |
 | `CommentWriter` | optional | `post_comment(issue, body, *, marker, grant) -> WriteReceipt` |
 | `LabelWriter` | optional | `change_labels(issue, *, add, remove, ownership, grant) -> WriteReceipt` |
+| `LabelReader` | optional (`bh-w8vg3`; API version stays 1) | `list_label_definitions() -> tuple[LabelDefinition, ...]`: operation `labels.read`, a read (no grant) |
+| `LabelDefiner` | optional (`bh-w8vg3`; API version stays 1) | `define_labels(definitions, *, grant) -> WriteReceipt`: operation `labels.define`, a write. It is repository-scoped, so `WriteGrant.target` widens additively from `IssueKey` to `IssueKey \| ProjectRef` and a define grant names the `ProjectRef`; existing issue grants are unchanged |
+| `LabelPruner` | optional (`bh-uim9i`; API version stays 1) | `delete_labels(names, *, grant) -> WriteReceipt`: the same `labels.define` operation and `ProjectRef` grant scope as `LabelDefiner`, deleting owned definitions the consumer no longer produces (`labels define --prune`); owned names only, refused for the whole batch before any request; a name the repository does not hold is already deleted |
 | `IssueResolver` | optional (amendment A1) | `resolve(url) -> IssueKey` (pure), `get(IssueKey) -> TrackerIssue` |
 | `MarkerCodec` | optional (`bh-uavc2`; API version stays 1) | `marker_line(OwnMarker) -> str`: pure, the exact own-message footer `post_comment` appends, so a consumer can show and digest the posted bytes without importing the adapter's package. The body and line are joined by the port's one pure rule `join_marker_line(body, line)` (trailing whitespace stripped, one blank line, the line; an empty body posts the line alone; `bh-crf27`), which the adapter's `post_comment` and the consumer's render both call |
 
@@ -213,6 +216,16 @@ port (candidate F, rejected below).
   cases with no HTTP, no clock and no GitHub notion; it is the substitute every consumer test
   uses. The Jira Cloud and Linear mapping in `bh-gj1hb` E19 fits the contract unchanged, but is
   from documentation and was **not exercised**.
+- **As built: the label verbs (`bh-v3fe7`, wire 2.22.0).** `bh work labels sync` binds the
+  hive's adapter requesting `issues.read` and `labels.read` and makes ONE issue listing and ONE
+  `list_label_definitions` per run; `bh work labels define` requests `labels.read` (plus
+  `issues.read` with `--prune`, to keep a label an open issue still carries) and, with
+  `--approve`, `labels.define`, so an operation that is not enabled is refused by the binding,
+  naming `read.labels.enabled` or `write.label_definitions.enabled`, before any request. The
+  root narrowing view exposes `LabelReader`, `LabelDefiner` and `LabelPruner` only for enabled
+  operations, and an approved define hands each `ProjectRef` grant to exactly one write
+  (`define_labels`, then `delete_labels` for `--prune`). Issue label changes still travel as
+  supervised `labels.change` outbox operations (`IssueKey` grants), approved as one batch.
 
 ### 4. Module and package home, dependency direction, enforcement
 

@@ -33,7 +33,17 @@ tracker in R6's order, and is the only code that ever calls a writer:
   (O16). An ambiguous timeout therefore never causes a second write until two complete reads have
   shown nothing was written and an operator has retried (O17) and approved again.
 
-The render is the dry run: no tracker request and no store write. The marker line is encoded by
+**Label operations read the issue's labels fresh** (``bh-uim9i``): a render, an approval and a
+send of a ``labels.change`` read the issue's labels now (one ``IssueResolver.get``, else a paged
+listing) instead of trusting the stored snapshot, which only an import refreshes; when that read
+cannot be made the snapshot is the fallback. The batch (:meth:`OutboxService.review_label_batch`,
+:meth:`OutboxService.approve_label_batch`) renders every drafted labels operation from ONE issue
+listing, ONE pass over the outbox documents and (to approve) ONE capability probe, and approving
+its digest mints one single-use grant per item; an item whose owned labels moved since its draft is
+skipped and reported for re-draft.
+
+The render is the dry run: no store write, and no tracker request beyond that one label read. The
+marker line is encoded by
 the injected ``marker_line`` (the adapter's own codec) and joined to the body by the port's
 ``join_marker_line``, the same rule the adapter's ``post_comment`` applies, so the bytes shown,
 leak-checked and digested are the bytes posted (``bh-crf27``).
@@ -56,6 +66,7 @@ from beadhive.modules.tracker.contracts import (
     TrackerAdapter,
     TrackerComment,
     TrackerError,
+    TrackerIssue,
     join_marker_line,
 )
 
@@ -68,6 +79,10 @@ from ..domain import (
     IntakeStoreError,
     IssueBinding,
     LabelBase,
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchItem,
+    LabelBatchOutcome,
     LeakPolicy,
     Message,
     OpKind,
@@ -93,6 +108,7 @@ from ..domain import (
     StorePosture,
     ThreadActor,
     ThreadState,
+    batch_digest,
     is_outbox_id,
     outbox_view,
     reply_revision,
@@ -100,6 +116,7 @@ from ..domain import (
 )
 from ..domain import outbox as machine
 from . import outbox as translate
+from .labels import issue_index, label_base
 from .paging import iterate_pages
 from .threads import binding_key, thread_actor
 from .threads import issue_key as binding_issue
@@ -190,7 +207,9 @@ class OutboxService:
         report, doc = self._locate(outbox_id)
         binding = self._binding(report)
         record = doc.records[outbox_id]
-        ctx = self._ctx(report, binding, outbox_id)
+        reads = record.op(OpKind.LABELS) is not None and self._policy.labels_enabled
+        fresh = self._fresh(binding) if reads else None  # nothing to approve: no read
+        ctx = self._ctx(report, binding, outbox_id, labels=fresh)
         renders = tuple(machine.render(record, op.kind, ctx) for op in record.operations)
         return RenderedRecord(report, record, renders)
 
@@ -236,9 +255,10 @@ class OutboxService:
         report, _ = self._locate(request.outbox_id)
         binding = self._bound_here(report)
         capabilities = translate.capabilities(self._tracker.probe_capabilities())
+        fresh = self._fresh(binding) if request.kind is OpKind.LABELS else None
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, rules = self._open(report, epoch, request.actor)
-            ctx = self._ctx(report, binding, request.outbox_id)
+            ctx = self._ctx(report, binding, request.outbox_id, labels=fresh)
             steps: list[str] = []
             if request.publish:
                 published = machine.override(
@@ -283,6 +303,7 @@ class OutboxService:
         report, _ = self._locate(outbox_id)
         binding = self._bound_here(report)
         writer = self._writer(kind)
+        fresh = self._fresh(binding) if kind is OpKind.LABELS else None
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, rules = self._open(report, epoch, actor)
             record = self._record(doc, outbox_id)
@@ -291,7 +312,7 @@ class OutboxService:
                 raise IntakeRefused(
                     RefusalReason.UNKNOWN_OUTBOX, f"{outbox_id} has no {kind.value} operation"
                 )
-            ctx = self._ctx(report, binding, outbox_id)
+            ctx = self._ctx(report, binding, outbox_id, labels=fresh)
             if op.state is OpState.APPROVED:
                 moved = machine.invalidate(doc, outbox_id, kind, ctx=ctx, actor=actor)
                 if moved.changed:  # O7: never send bytes the operator did not approve
@@ -502,6 +523,159 @@ class OutboxService:
         result = self._result(report, applied, rules, kind)
         return dataclasses.replace(result, detail="drafted again; render, approve and send anew")
 
+    # -- the batch (bh-uim9i): one review of every drafted labels operation -------------------
+
+    def review_label_batch(self) -> LabelBatch:
+        """The rendered batch (``bh work labels review``): every drafted ``labels.change``
+        operation, ordered by report then draft, each with its digest as drafted, the change it
+        makes and whether its issue's owned labels moved since (``stale``); and the digest of the
+        ``(outbox_id, digest)`` list. One pass over the outbox documents and one issue listing (none
+        when nothing is drafted); no store write."""
+        self._require_enabled()
+        docs = self._outbox_index()
+        return self._batch(docs, self._live_for(docs))
+
+    def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome:
+        """Approve the batch whose digest an operator reviewed: re-render it (ONE capability
+        probe, ONE pass over the outbox documents, ONE issue listing), refuse unless its digest is
+        still the one reviewed, then approve every item through O5, each minting its own
+        single-use grant under its binding's lock. A STALE item (its owned labels moved since its
+        draft) is skipped and reported for re-draft by the next sync; an item an approval refuses
+        is reported and the rest still approved. Nothing is sent."""
+        self._require_enabled()
+        machine.require_kind_enabled(OpKind.LABELS, self._policy)
+        require_private_store(self._posture)
+        if not machine.is_operator_seat(request.actor, self._policy):
+            raise IntakeRefused(
+                RefusalReason.OPERATOR_SEAT_REQUIRED,
+                f"approving a batch needs a human operator seat, not {request.actor!r}",
+            )
+        capabilities = translate.capabilities(self._tracker.probe_capabilities())
+        docs = self._outbox_index()
+        live = self._live_for(docs)
+        batch = self._batch(docs, live)
+        if not batch.items:
+            raise IntakeRefused(RefusalReason.UNKNOWN_OUTBOX, "no drafted labels operation")
+        if not machine.digest_matches(request.digest, batch.digest):
+            raise IntakeRefused(
+                RefusalReason.STALE_DIGEST,
+                f"the batch is now {batch.short_digest}; review it again before approving",
+            )
+        approved: list[OutboxResult] = []
+        stale: list[LabelBatchItem] = []
+        failed: list[tuple[str, str]] = []
+        for item in batch.items:
+            if item.stale:
+                stale.append(item)
+                continue
+            try:
+                approved.append(self._approve_item(item, live[item.url], capabilities, request))
+            except IntakeRefused as exc:
+                if exc.reason is RefusalReason.STALE_DIGEST:
+                    stale.append(dataclasses.replace(item, stale=True, note=exc.detail))
+                else:
+                    failed.append((item.outbox_id, str(exc)))
+        return LabelBatchOutcome(batch, tuple(approved), tuple(stale), tuple(failed))
+
+    def _approve_item(
+        self,
+        item: LabelBatchItem,
+        issue: TrackerIssue,
+        capabilities: machine.Capabilities,
+        request: LabelBatchApprove,
+    ) -> OutboxResult:
+        """O5 for one batch item, against the listing's labels, minting its own grant."""
+        binding = self._bound_here(item.report)
+        fresh = label_base(issue)
+        with self._lock.hold(binding_key(binding)) as epoch:
+            doc, expect, rules = self._open(item.report, epoch, request.actor)
+            ctx = self._ctx(item.report, binding, item.outbox_id, labels=fresh)
+            applied = machine.approve(
+                doc,
+                ApprovalRequest(item.outbox_id, OpKind.LABELS, item.digest, request.actor),
+                grant_id=self._ids.grant_id(),
+                policy=self._policy,
+                ctx=ctx,
+                capabilities=capabilities,
+            )
+            self._commit(item.report, applied, expect, request.actor)
+            record = applied.document.records[item.outbox_id]
+            rendered = machine.render(record, OpKind.LABELS, ctx)
+        approval = record.op(OpKind.LABELS).approval  # type: ignore[union-attr]
+        result = self._result(item.report, applied, rules, OpKind.LABELS)
+        return dataclasses.replace(
+            result,
+            rendered=rendered,
+            grant_id=approval.grant_id if approval is not None else "",
+            detail=f"approved {rendered.short_digest} in batch; `send` changes it once",
+        )
+
+    def _outbox_index(self) -> dict[str, OutboxDocument]:
+        """Every outbox document, read once, by report (the batch's one pass)."""
+        docs: dict[str, OutboxDocument] = {}
+        for view in self._store.reports_with_outbox():
+            doc = self._store.read_outbox(view.id)
+            if doc is not None:
+                docs[view.id] = doc
+        return docs
+
+    @staticmethod
+    def _drafted(docs: dict[str, OutboxDocument]) -> list[tuple[str, OutboxRecord]]:
+        """The records with a drafted label operation, ordered by report then draft."""
+        out: list[tuple[str, OutboxRecord]] = []
+        for report in sorted(docs):
+            for record in sorted(docs[report].records.values(), key=_created):
+                op = record.op(OpKind.LABELS)
+                if op is not None and op.state is OpState.DRAFTED and op.labels is not None:
+                    out.append((report, record))
+        return out
+
+    def _live_for(self, docs: dict[str, OutboxDocument]) -> dict[str, TrackerIssue]:
+        """The issues by URL from ONE listing (open and closed); none when nothing is drafted."""
+        if not self._drafted(docs):
+            return {}
+        try:
+            return issue_index(self._tracker, include_closed=True)
+        except TrackerError as exc:
+            raise IntakeRefused(
+                RefusalReason.TRACKER_ERROR, f"the issue listing failed: {type(exc).__name__}"
+            ) from exc
+
+    def _batch(self, docs: dict[str, OutboxDocument], live: dict[str, TrackerIssue]) -> LabelBatch:
+        items: list[LabelBatchItem] = []
+        for report, record in self._drafted(docs):
+            op = record.op(OpKind.LABELS)
+            assert op is not None and op.labels is not None
+            url = record.binding.url
+            base = LabelBase(op.labels.base_revision, op.labels.base_owned)
+            drafted = machine.render(record, OpKind.LABELS, self._bare_ctx(url, base))
+            issue = live.get(url)
+            stale, note = False, ""
+            if issue is None:
+                stale, note = True, "the issue is not in the listing (deleted or moved)"
+            else:  # any owned label moved (even one the diff does not name), or the render did
+                now = machine.render(record, OpKind.LABELS, self._bare_ctx(url, label_base(issue)))
+                owned = frozenset(label for label in issue.labels if self._leaks.owns(label))
+                if owned != op.labels.base_owned or now.digest != drafted.digest:
+                    stale, note = True, "its owned labels moved since the draft; sync re-drafts it"
+            items.append(
+                LabelBatchItem(
+                    report,
+                    record.outbox_id,
+                    drafted.digest,
+                    url,
+                    drafted.add,
+                    drafted.remove,
+                    stale,
+                    note,
+                )
+            )
+        return LabelBatch(tuple(items), batch_digest(items))
+
+    def _bare_ctx(self, url: str, labels: LabelBase) -> RenderContext:
+        """A label render's context: a label operation reads no marker and no thread."""
+        return RenderContext(url, self._leaks, self._sanitizer, labels=labels)
+
     # -- helpers -----------------------------------------------------------------------------
 
     def _require_enabled(self) -> None:
@@ -551,15 +725,22 @@ class OutboxService:
             )
         return binding
 
-    def _ctx(self, report: str, binding: IssueBinding, outbox_id: str) -> RenderContext:
+    def _ctx(
+        self,
+        report: str,
+        binding: IssueBinding,
+        outbox_id: str,
+        *,
+        labels: LabelBase | None = None,
+    ) -> RenderContext:
+        """The render context of ``outbox_id``. ``labels`` is the issue's labels read fresh
+        (a label operation's); without it, the stored snapshot's (an import refreshes it)."""
         thread = self._store.read_thread(report)
-        view = self._store.get(report)
-        snapshot = view.snapshot if view is not None else None
-        labels = (
-            LabelBase(snapshot.revision, frozenset(snapshot.labels))
-            if snapshot is not None
-            else None
-        )
+        if labels is None:
+            view = self._store.get(report)
+            snapshot = view.snapshot if view is not None else None
+            if snapshot is not None:
+                labels = LabelBase(snapshot.revision, frozenset(snapshot.labels))
         marker = translate.own_marker(self._identity, outbox_id)
         return RenderContext(
             binding.url,
@@ -645,11 +826,21 @@ class OutboxService:
         """The issue's labels now (one read through ``IssueResolver.get``, else a paged listing
         matched on the issue); ``None`` when the read failed or never found the issue, so nothing
         is inferred from it."""
+        found = self._read_issue(binding)
+        return frozenset(found.labels) if found is not None else None
+
+    def _fresh(self, binding: IssueBinding) -> LabelBase | None:
+        """The issue's labels read now, with the tracker's revision, for a label render; ``None``
+        (the snapshot is used) when the read cannot be made."""
+        found = self._read_issue(binding)
+        return label_base(found) if found is not None else None
+
+    def _read_issue(self, binding: IssueBinding) -> TrackerIssue | None:
         issue = binding_issue(binding)
         tracker = self._tracker
         try:
             if isinstance(tracker, IssueResolver):
-                return frozenset(tracker.get(issue).labels)
+                return tracker.get(issue)
 
             def fetch(cursor: PageCursor | None):
                 return tracker.list_issues(IssueQuery(cursor=cursor))
@@ -657,7 +848,7 @@ class OutboxService:
             for page in iterate_pages(fetch):
                 for row in page.items:
                     if row.key == issue:
-                        return frozenset(row.labels)
+                        return row
         except TrackerError:
             return None
         return None

@@ -70,6 +70,9 @@ from ..modules.tracker.contracts import (
     WRITE_OPERATIONS,
     CommentWriter,
     IssueResolver,
+    LabelDefiner,
+    LabelPruner,
+    LabelReader,
     LabelWriter,
     MarkerCodec,
     Operation,
@@ -93,6 +96,8 @@ OPERATION_FLAG_KEYS: Mapping[Operation, str] = MappingProxyType(
         Operation.COMMENTS_READ: "read.comments.enabled",
         Operation.COMMENT_CREATE: "write.comment.enabled",
         Operation.LABELS_CHANGE: "write.labels.enabled",
+        Operation.LABELS_READ: "read.labels.enabled",
+        Operation.LABELS_DEFINE: "write.label_definitions.enabled",
     }
 )
 
@@ -576,6 +581,23 @@ class _LabelWriting:
         )
 
 
+class _LabelReading:
+    def list_label_definitions(self):
+        return self._inner.list_label_definitions()  # type: ignore[attr-defined]
+
+
+class _LabelDefining:
+    def define_labels(self, definitions, *, grant):
+        self._check_grant(grant, Operation.LABELS_DEFINE)  # type: ignore[attr-defined]
+        return self._inner.define_labels(definitions, grant=grant)  # type: ignore[attr-defined]
+
+
+class _LabelPruning:
+    def delete_labels(self, names, *, grant):
+        self._check_grant(grant, Operation.LABELS_DEFINE)  # type: ignore[attr-defined]
+        return self._inner.delete_labels(names, grant=grant)  # type: ignore[attr-defined]
+
+
 class _Resolving:
     def resolve(self, url):
         return self._inner.resolve(url)  # type: ignore[attr-defined]
@@ -589,11 +611,19 @@ class _Marking:
         return self._inner.marker_line(marker)  # type: ignore[attr-defined]
 
 
-_VIEW_TYPES: dict[tuple[bool, bool, bool, bool], type] = {}
+_VIEW_TYPES: dict[tuple[bool, ...], type] = {}
 
 
-def _view_type(comment: bool, labels: bool, resolver: bool, marker: bool = False) -> type:
-    key = (comment, labels, resolver, marker)
+def _view_type(
+    comment: bool,
+    labels: bool,
+    resolver: bool,
+    marker: bool = False,
+    label_reader: bool = False,
+    label_definer: bool = False,
+    label_pruner: bool = False,
+) -> type:
+    key = (comment, labels, resolver, marker, label_reader, label_definer, label_pruner)
     if key not in _VIEW_TYPES:
         mixins = tuple(
             mixin
@@ -602,6 +632,9 @@ def _view_type(comment: bool, labels: bool, resolver: bool, marker: bool = False
                 (labels, _LabelWriting),
                 (resolver, _Resolving),
                 (marker, _Marking),
+                (label_reader, _LabelReading),
+                (label_definer, _LabelDefining),
+                (label_pruner, _LabelPruning),
             )
             if present
         )
@@ -619,6 +652,9 @@ def narrow(adapter: object, enabled: frozenset[Operation]) -> TrackerAdapter:
         Operation.LABELS_CHANGE in enabled and isinstance(adapter, LabelWriter),
         isinstance(adapter, IssueResolver),
         isinstance(adapter, MarkerCodec),
+        Operation.LABELS_READ in enabled and isinstance(adapter, LabelReader),
+        Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelDefiner),
+        Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelPruner),
     )
     return view(adapter, enabled)
 

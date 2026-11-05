@@ -1,0 +1,57 @@
+{
+  "description": "labels.define pruning (LabelPruner.delete_labels): one paged read of the live definitions, then DELETE /labels/{name} (204 No Content with NO body, a known success; the name percent-encoded, a space included) for the owned label the repository holds. A name the repository does not hold ('bh:absent') sends nothing; the human label 'bug' is untouched. Used by tests/test_tracker_github_label_definitions.py.",
+  "provenance": "Synthetic replay; NOTHING here was captured from a live request or write (no test ever reaches GitHub). Shapes follow the documented GitHub REST 'Labels' endpoints, API version 2022-11-28 (List labels for a repository, Create a label, Update a label, Delete a label). Live re-verification is pending the first operator-approved labels.define, recorded on bead bh-uv09p.",
+  "interactions": [
+    {
+      "name": "read-live-definitions",
+      "provenance": "Documented form only (List labels for a repository); re-verify on the first live labels.define.",
+      "request": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/acme/widgets/labels?per_page=100"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json; charset=utf-8",
+          "x-github-api-version-selected": "2022-11-28",
+          "x-github-media-type": "github.v3; format=json"
+        },
+        "json": [
+          {
+            "id": 1,
+            "node_id": "LA_kwDOsynth1",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bug",
+            "name": "bug",
+            "color": "d73a4a",
+            "default": false,
+            "description": "Something isn't working"
+          },
+          {
+            "id": 5,
+            "node_id": "LA_kwDOsynth5",
+            "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale%20value",
+            "name": "bh:stale value",
+            "color": "cccccc",
+            "default": false,
+            "description": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete",
+      "provenance": "Documented form only (Delete a label: 204 No Content, no body); re-verify on the first live labels.define.",
+      "request": {
+        "method": "DELETE",
+        "url": "https://api.github.com/repos/acme/widgets/labels/bh%3Astale%20value"
+      },
+      "response": {
+        "status": 204,
+        "headers": {
+          "x-github-api-version-selected": "2022-11-28"
+        },
+        "json": null
+      }
+    }
+  ]
+}

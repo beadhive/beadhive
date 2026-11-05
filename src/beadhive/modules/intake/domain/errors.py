@@ -81,6 +81,11 @@ class RefusalReason(StrEnum):
     UNREAD_EVIDENCE = "unread_evidence"
     # an operation of the port that no bead has implemented yet
     NOT_AVAILABLE = "not_available"
+    # review-gated triage proposals (bh-hrx2r)
+    PROPOSAL_INVALID = "proposal_invalid"  # an inconsistent proposal or review
+    PROPOSAL_IMMUTABLE = "proposal_immutable"  # an applied proposal cannot change
+    PROPOSAL_TRANSITION = "proposal_transition"  # the status move is not allowed from here
+    PROPOSAL_MOVED = "proposal_moved"  # the stored intake.proposal seq moved since it was read
 
 
 class IntakeRefused(Exception):
@@ -98,9 +103,9 @@ class IntakeStoreError(Exception):
     ``operation`` names the failed step in the module's own vocabulary (``create``, ``set_state``,
     ``update_fields``, ``close``, ``assign``, ``track``, ``investigate``, ``uninvestigate``,
     ``record_snapshot``, ``read_thread``, ``write_thread``, ``open_hold``, ``resolve_hold``,
-    ``read_outbox``, ``write_outbox``, plus the service's ``stamp:<dimension>`` and
-    ``clear_intake`` re-tags) so a transport can word its message; ``returncode`` is the store's
-    own exit status (1 when it has none)."""
+    ``read_outbox``, ``write_outbox``, ``read_proposal``, ``write_proposal``, plus the service's
+    ``stamp:<dimension>`` and ``clear_intake`` re-tags) so a transport can word its message;
+    ``returncode`` is the store's own exit status (1 when it has none)."""
 
     def __init__(
         self,

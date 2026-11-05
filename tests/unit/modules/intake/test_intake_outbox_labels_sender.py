@@ -543,7 +543,23 @@ def test_a_human_changing_an_owned_label_after_approval_voids_it_and_sends_nothi
     s = Scene()
     oid = s.draft()
     first = s.approve(oid).grant_id
-    s.store.record_snapshot(
+    labels = s.world.issues[s.issue.identifier].labels  # the human edits the live issue
+    labels.discard("beadhive:triage")
+    labels.add("beadhive:wontfix")
+    result = s.intake.send(oid, actor="alice", kind=L)
+
+    assert result.state is OpState.DRAFTED and result.rules == ("O7",)
+    assert s.op(oid).approval.grant is GrantStatus.VOIDED
+    assert s.op(oid).approval.grant_id == first
+    assert s.world.write_requests() == 0
+    assert s.approve(oid).grant_id != first  # a fresh approval of the re-rendered diff
+
+
+def test_a_label_send_reads_the_issue_fresh_and_never_trusts_a_stale_snapshot() -> None:
+    s = Scene()
+    oid = s.draft()
+    s.approve(oid)
+    s.store.record_snapshot(  # only the stored snapshot moved; the issue itself did not
         s.report,
         SourceSnapshot(
             "a bug", "", IssueStatus.OPEN, "r2", labels=("bug", "needs-love", "beadhive:wontfix")
@@ -552,11 +568,8 @@ def test_a_human_changing_an_owned_label_after_approval_voids_it_and_sends_nothi
     )
     result = s.intake.send(oid, actor="alice", kind=L)
 
-    assert result.state is OpState.DRAFTED and result.rules == ("O7",)
-    assert s.op(oid).approval.grant is GrantStatus.VOIDED
-    assert s.op(oid).approval.grant_id == first
-    assert s.world.write_requests() == 0
-    assert s.approve(oid).grant_id != first  # a fresh approval of the re-rendered diff
+    assert result.state is OpState.SENT
+    assert s.world.server_labels(s.issue) == {"bug", "needs-love", "beadhive:accepted"}
 
 
 # -- an ambiguous outcome reconciles without a duplicate change --------------------------------

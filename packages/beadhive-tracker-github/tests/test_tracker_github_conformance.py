@@ -4,9 +4,11 @@ Every case in :data:`~beadhive.testing.tracker.TRACKER_CASES` runs against a fre
 the offline ``httpx.MockTransport`` stand-in (``tracker_github_fake.FakeGitHub``), on the public
 host and on a GitHub Enterprise Server prefix. No case opens a socket, reads a clock or sleeps.
 
-**Writers land one bead at a time.** Both writers have landed, ``comment.create`` (W8
-``bh-03s4w``: grants, round trip, both ambiguous outcomes) and ``labels.change`` (W9
-``bh-t082i``: ``labels.only-owned``), so every case runs for real and none is expected to fail.
+**Writers land one bead at a time.** Every writer has landed, ``comment.create`` (W8
+``bh-03s4w``: grants, round trip, both ambiguous outcomes), ``labels.change`` (W9 ``bh-t082i``:
+``labels.only-owned``) and, with the ``labels.read`` reader, ``labels.define`` (``bh-uv09p``: the
+seven ``labels.*`` definition cases, which skip for an adapter that does not declare the
+operation and so RUN here), so every case runs for real and none is expected to fail.
 Should a future writer land after its conformance case, the case is listed in
 :data:`WRITER_CASES` and fails STRICTLY until it lands. Every case, including
 ``write.refused-when-not-enabled`` (an absent writer is the structural refusal), must pass.
@@ -18,6 +20,8 @@ import pytest
 
 from beadhive.modules.tracker.contracts import (
     CommentWriter,
+    LabelDefiner,
+    LabelReader,
     LabelWriter,
     Operation,
     TrackerAdapter,
@@ -68,17 +72,21 @@ def test_with_no_write_enabled_the_adapter_has_no_write_method():
 
     assert isinstance(adapter, TrackerAdapter)
     assert not isinstance(adapter, CommentWriter)
-    assert not isinstance(adapter, LabelWriter)
+    assert not isinstance(adapter, LabelWriter) and not isinstance(adapter, LabelDefiner)
     assert not hasattr(adapter, "post_comment") and not hasattr(adapter, "change_labels")
+    assert not hasattr(adapter, "define_labels")
+    assert isinstance(adapter, LabelReader)  # a read: present, gated by labels.read itself
     supported = adapter.describe().supported  # what the package implements, enabled or not
     assert supported == {
         Operation.ISSUES_READ,
         Operation.COMMENTS_READ,
         Operation.COMMENT_CREATE,
         Operation.LABELS_CHANGE,
+        Operation.LABELS_READ,
+        Operation.LABELS_DEFINE,
     }
     report = adapter.probe_capabilities()
-    for op in (Operation.COMMENT_CREATE, Operation.LABELS_CHANGE):
+    for op in (Operation.COMMENT_CREATE, Operation.LABELS_CHANGE, Operation.LABELS_DEFINE):
         assert report.states[op].supported  # implemented, but neither enabled nor usable
         assert not report.states[op].enabled and not report.states[op].usable
     assert subject.world.write_requests() == 0
@@ -102,6 +110,17 @@ def test_the_label_writer_exists_only_when_labels_change_is_enabled():
     assert isinstance(adapter, TrackerAdapter) and isinstance(adapter, LabelWriter)
     assert not isinstance(adapter, CommentWriter) and not hasattr(adapter, "post_comment")
     state = adapter.probe_capabilities().states[Operation.LABELS_CHANGE]
+    assert state.supported and state.enabled
+    assert subject.world.write_requests() == 0
+
+
+def test_the_label_definer_exists_only_when_labels_define_is_enabled():
+    subject = github_subject(enabled=frozenset({Operation.LABELS_DEFINE}))
+    adapter = subject.adapter
+
+    assert isinstance(adapter, TrackerAdapter) and isinstance(adapter, LabelDefiner)
+    assert not isinstance(adapter, LabelWriter) and not isinstance(adapter, CommentWriter)
+    state = adapter.probe_capabilities().states[Operation.LABELS_DEFINE]
     assert state.supported and state.enabled
     assert subject.world.write_requests() == 0
 

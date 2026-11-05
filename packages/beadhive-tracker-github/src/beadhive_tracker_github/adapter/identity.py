@@ -9,7 +9,9 @@ locked thread. So each operation gets a :class:`~beadhive.modules.tracker.contra
 * ``NO`` is definitive: the credential was rejected (``401``) or the repository is invisible
   (``404``); it is archived or disabled; issues are off; no credential was sent (no
   ``permissions`` object); a classic or OAuth token's scopes lack ``repo`` (or ``public_repo`` on
-  a public repository); for ``labels.change``, a role below triage.
+  a public repository); for ``labels.change``, a role below triage; for ``labels.define``
+  (creating, editing and deleting repository labels), a role below write (``push``).
+* ``labels.read`` is a read: ``YES`` whenever the repository is readable, archived or not.
 * ``YES`` means only "not refuted": a classic or OAuth token with a sufficient scope and role.
 * ``UNKNOWN``: no ``X-OAuth-Scopes`` header (a fine-grained or App installation token, whose
   per-repository grant no read can show) or an answer the probe could not interpret. The first
@@ -67,6 +69,10 @@ def scopes_of(headers: Mapping[str, str]) -> frozenset[str] | None:
     return frozenset(scope.strip() for scope in raw.split(",") if scope.strip())
 
 
+#: Operations a readable repository allows with no credential-specific evidence.
+_READS = (Operation.ISSUES_READ, Operation.COMMENTS_READ, Operation.LABELS_READ)
+
+
 def probe_operation(op: Operation, facts: RepositoryFacts) -> tuple[Tri, str]:
     """``(tri, one-line reason)`` for ``op`` given the repository facts."""
     if not facts.readable:
@@ -74,10 +80,10 @@ def probe_operation(op: Operation, facts: RepositoryFacts) -> tuple[Tri, str]:
     if not facts.has_issues:
         return Tri.NO, "issues are disabled on this repository"
     if facts.archived or facts.disabled:
-        if op in (Operation.ISSUES_READ, Operation.COMMENTS_READ):
+        if op in _READS:
             return Tri.YES, "repository readable (archived or disabled: read-only)"
         return Tri.NO, "repository is archived or disabled and read-only"
-    if op in (Operation.ISSUES_READ, Operation.COMMENTS_READ):
+    if op in _READS:
         return Tri.YES, "repository readable"
     permissions = facts.permissions
     if permissions is None:
@@ -90,6 +96,11 @@ def probe_operation(op: Operation, facts: RepositoryFacts) -> tuple[Tri, str]:
     )
     if op is Operation.LABELS_CHANGE and not role_ok:
         return Tri.NO, "role on the repository is below triage"
+    writer = bool(
+        permissions.get("push") or permissions.get("maintain") or permissions.get("admin")
+    )
+    if op is Operation.LABELS_DEFINE and not writer:
+        return Tri.NO, "role on the repository is below write (labels.define edits definitions)"
     if facts.scopes is None:
         return (
             Tri.UNKNOWN,

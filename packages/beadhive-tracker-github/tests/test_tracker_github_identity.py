@@ -27,6 +27,7 @@ from beadhive_tracker_github.adapter.identity import RepositoryFacts, probe_oper
 from tracker_github_fake import FakeGitHub, adapter_for
 
 COMMENT, LABELS = Operation.COMMENT_CREATE, Operation.LABELS_CHANGE
+DEFINE, LABELS_READ = Operation.LABELS_DEFINE, Operation.LABELS_READ
 
 
 def _probe(world: FakeGitHub, **kwargs):
@@ -116,7 +117,8 @@ def test_a_classic_token_with_repo_scope_is_yes_but_a_disabled_write_is_not_usab
         state = report.states[op]
         assert not state.enabled and not state.usable
     assert report.states[LABELS].supported  # the labels.change writer has landed (W9)
-    for op in READ_OPERATIONS:
+    assert report.states[DEFINE].supported and probes[DEFINE][0] is Tri.YES  # bh-uv09p
+    for op in READ_OPERATIONS:  # labels.read included (bh-uv09p)
         assert report.states[op].supported and report.states[op].usable
 
 
@@ -132,6 +134,31 @@ def test_an_unscoped_token_is_unknown_never_yes():
     _, probes = _probe(FakeGitHub(scopes=None))
     assert probes[COMMENT][0] is probes[LABELS][0] is Tri.UNKNOWN
     assert "first approved write is the probe" in probes[COMMENT][1]
+
+
+def test_a_triage_role_may_change_labels_but_not_define_them():
+    world = FakeGitHub(scopes="repo")
+    world.repo_meta["permissions"] = {"pull": True, "triage": True, "push": False}
+    _, probes = _probe(world)
+    assert probes[LABELS][0] is Tri.YES
+    assert probes[DEFINE] == (
+        Tri.NO,
+        "role on the repository is below write (labels.define edits definitions)",
+    )
+    assert probes[LABELS_READ][0] is Tri.YES
+
+
+def test_an_unscoped_writer_is_unknown_for_labels_define():
+    _, probes = _probe(FakeGitHub(scopes=None))
+    assert probes[DEFINE][0] is Tri.UNKNOWN
+
+
+def test_an_archived_repository_still_reads_label_definitions_but_cannot_define_them():
+    world = FakeGitHub()
+    world.repo_meta["archived"] = True
+    _, probes = _probe(world)
+    assert probes[LABELS_READ][0] is Tri.YES
+    assert probes[DEFINE][0] is Tri.NO and "archived" in probes[DEFINE][1]
 
 
 def test_a_role_below_triage_is_a_definitive_no_for_labels_even_when_unscoped():

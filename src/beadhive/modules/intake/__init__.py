@@ -260,3 +260,188 @@ __all__ += [
     "WakeRequest",
     "WakeSweep",
 ]
+
+# -- review-gated triage proposals (bh-hrx2r) ---------------------------------------------------
+
+from .contracts import (  # noqa: E402
+    PROPOSAL_KEY,
+    PROPOSAL_SCHEMA,
+    Proposal,
+    ProposalDisposition,
+    ProposalDocumentError,
+    ProposalReview,
+    ProposalStatus,
+    ProposalTarget,
+    ReviewVerdict,
+    TargetRole,
+    add_review,
+    amend,
+    mark_applied,
+    mark_stale,
+    new_proposal,
+    proposal_from_document,
+    proposal_to_document,
+    validate_proposal,
+)
+
+__all__ += [
+    "PROPOSAL_KEY",
+    "PROPOSAL_SCHEMA",
+    "Proposal",
+    "ProposalDisposition",
+    "ProposalDocumentError",
+    "ProposalReview",
+    "ProposalStatus",
+    "ProposalTarget",
+    "ReviewVerdict",
+    "TargetRole",
+    "add_review",
+    "amend",
+    "mark_applied",
+    "mark_stale",
+    "new_proposal",
+    "proposal_from_document",
+    "proposal_to_document",
+    "validate_proposal",
+]
+
+# -- the deterministic pre-apply checks (bh-hrx2r) ---------------------------------------------
+
+from .contracts import (  # noqa: E402
+    DEFAULT_REPORTER_TEXT_LIMIT,
+    CheckContext,
+    CheckFinding,
+    CheckKind,
+    LeakPolicy,
+    ProposalCheck,
+    TargetFact,
+    adopt_computed_fix,
+    check_proposal,
+    check_run,
+    cited_paths,
+    version_key,
+)
+
+__all__ += [
+    "DEFAULT_REPORTER_TEXT_LIMIT",
+    "CheckContext",
+    "CheckFinding",
+    "CheckKind",
+    "LeakPolicy",
+    "ProposalCheck",
+    "TargetFact",
+    "adopt_computed_fix",
+    "check_proposal",
+    "check_run",
+    "cited_paths",
+    "version_key",
+]
+
+# -- review packets (bh-hrx2r) -------------------------------------------------------------------
+
+from .application import ReviewService  # noqa: E402
+from .contracts import (  # noqa: E402
+    COMMENTS_ENABLED_KEY,
+    COMMENTS_READ_KEY,
+    DEFAULT_BATCH_SIZE,
+    Cluster,
+    ClusterBatch,
+    ClusterItem,
+    ClusterLink,
+    ClusterPolicy,
+    ClusterSignal,
+    IndexEntry,
+    PassMetrics,
+    ReviewBatch,
+    ReviewMetrics,
+    ReviewPacket,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewRun,
+)
+
+__all__ += [
+    "COMMENTS_ENABLED_KEY",
+    "COMMENTS_READ_KEY",
+    "DEFAULT_BATCH_SIZE",
+    "Cluster",
+    "ClusterBatch",
+    "ClusterItem",
+    "ClusterLink",
+    "ClusterPolicy",
+    "ClusterSignal",
+    "IndexEntry",
+    "PassMetrics",
+    "ReviewBatch",
+    "ReviewMetrics",
+    "ReviewPacket",
+    "ReviewPolicy",
+    "ReviewRequest",
+    "ReviewRun",
+    "ReviewService",
+]
+
+# -- the label projection (bh-uim9i) ------------------------------------------------------------
+
+from .application import LabelProjection  # noqa: E402
+from .contracts import (  # noqa: E402
+    AuditLog,
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchItem,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefinePlan,
+    LabelDefineRequest,
+    LabelSyncItem,
+    LabelSyncOutcome,
+    LabelSyncRequest,
+)
+
+__all__ += [
+    "AuditLog",
+    "LabelBatch",
+    "LabelBatchApprove",
+    "LabelBatchItem",
+    "LabelBatchOutcome",
+    "LabelDefineOutcome",
+    "LabelDefinePlan",
+    "LabelDefineRequest",
+    "LabelProjection",
+    "LabelSyncItem",
+    "LabelSyncOutcome",
+    "LabelSyncRequest",
+]
+
+# -- propose, review and apply-reviewed (bh-9aqmv) ---------------------------------------------
+
+from .application import ProposalService, TriageBinding  # noqa: E402
+from .contracts import (  # noqa: E402
+    ApplyItem,
+    ApplyOutcome,
+    ApplyRequest,
+    ApplyStatus,
+    ApplyStep,
+    LandedCommits,
+    ProposalReviewOutcome,
+    ProposalReviewRequest,
+    ProposeKind,
+    ProposeOutcome,
+    ProposeRequest,
+)
+
+__all__ += [
+    "ApplyItem",
+    "ApplyOutcome",
+    "ApplyRequest",
+    "ApplyStatus",
+    "ApplyStep",
+    "LandedCommits",
+    "ProposalReviewOutcome",
+    "ProposalReviewRequest",
+    "ProposalService",
+    "ProposeKind",
+    "ProposeOutcome",
+    "ProposeRequest",
+    "TriageBinding",
+]

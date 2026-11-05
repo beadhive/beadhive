@@ -4,23 +4,26 @@ Rules (tested package-locally): this is the only place ``githubkit`` may be impo
 inside functions, never at module top level; it reads no configuration and imports no plugin
 kernel; from the plugin layer it imports only ``beadhive_plugins.credentials``.
 
-=================  ==========================================================================
-Module             Holds
-=================  ==========================================================================
-``tracker``        :class:`GitHubTrackerAdapter` (reader, identity, ``IssueResolver``)
-``compose``        the writers of the enabled write operations composed onto it
-``comments``       the ``comment.create`` writer (``CommentWriter.post_comment``)
-``labels``         the ``labels.change`` writer (``LabelWriter.change_labels``): owned labels only
-``grants``         the in-process single-use ``WriteGrant`` ledger every writer spends from
-``transport``      the githubkit seam: one credential per operation, adapter retry, writes
-``retry``          the pure retry classification and budget decision (injected clock)
-``diagnostics``    the exact scrubbed one-line refusal wording and its port errors
-``identity``       the read-only tri-state capability probe (pure)
-``mapping``        GitHub JSON to port records (pure)
-``marker``         the own-message marker codec (``bh:v1``)
-``urls``           the repository location and the ``IssueResolver`` URL grammar
-``settings``       the folded ``plugins.tracker-github`` fragment to constructor arguments
-=================  ==========================================================================
+=====================  =========================================================================
+Module                 Holds
+=====================  =========================================================================
+``tracker``            :class:`GitHubTrackerAdapter` (reader, identity, ``IssueResolver``)
+``compose``            the writers of the enabled write operations composed onto it
+``comments``           the ``comment.create`` writer (``CommentWriter.post_comment``)
+``labels``             the ``labels.change`` writer (``LabelWriter.change_labels``): owned
+                       labels only
+``label_definitions``  ``labels.read`` (``LabelReader``) and the ``labels.define`` writer
+                       (``LabelDefiner.define_labels``): repository label definitions, owned only
+``grants``             the in-process single-use ``WriteGrant`` ledger every writer spends from
+``transport``          the githubkit seam: one credential per operation, adapter retry, writes
+``retry``              the pure retry classification and budget decision (injected clock)
+``diagnostics``        the exact scrubbed one-line refusal wording and its port errors
+``identity``           the read-only tri-state capability probe (pure)
+``mapping``            GitHub JSON to port records (pure)
+``marker``             the own-message marker codec (``bh:v1``)
+``urls``               the repository location and the ``IssueResolver`` URL grammar
+``settings``           the folded ``plugins.tracker-github`` fragment to constructor arguments
+=====================  =========================================================================
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from .comments import CommentCreate
 from .compose import adapter_class, new_adapter
 from .diagnostics import diagnose, refusal_error
 from .grants import GrantLedger
+from .label_definitions import LabelDefining, LabelDefinitionReading
 from .labels import LabelWriting
 from .marker import decode_marker, encode_marker
 from .settings import AdapterSettings, parse_settings
@@ -51,6 +55,8 @@ __all__ = [
     "CommentCreate",
     "GitHubTrackerAdapter",
     "GrantLedger",
+    "LabelDefining",
+    "LabelDefinitionReading",
     "LabelWriting",
     "adapter_class",
     "build_adapter",

@@ -321,7 +321,8 @@ def test_the_accept_command_body_routes_work_options_and_leaves_a_plain_accept_a
     monkeypatch.setattr(registry, "hive_dir_for", lambda cfg, hive: rig.hive)
     work_intake.accept("w-9", "bug", "1", "dev/me", "widget")
 
-    assert seen and seen[0][1] == {"issue_type": "bug", "priority": "1"}  # the plain path
+    assert seen  # the plain path; cfg lets the opt-in transition label refresh run (bh-v3fe7)
+    assert seen[0][1] == {"issue_type": "bug", "priority": "1", "cfg": seen[0][1]["cfg"]}
 
 
 def test_the_typer_functions_delegate_and_are_catalogued_verbs(rig, monkeypatch) -> None:

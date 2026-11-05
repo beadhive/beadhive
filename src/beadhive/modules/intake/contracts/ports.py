@@ -4,7 +4,9 @@
 ones: :class:`ReportStore` (the bead store holding report beads), :class:`CheckpointStore` (opaque
 resume tokens), :class:`LabelPolicy` (the closed label vocabulary), :class:`IntakeLock` (the one
 per-binding lock), :class:`OutboxView` (what own-message recognition reads of the outbox),
-:class:`Sanitizer` (the egress secret scan) and :class:`IdSource` (the outbox's opaque ids).
+:class:`Sanitizer` (the egress secret scan), :class:`IdSource` (the outbox's opaque ids),
+:class:`ReleaseVerifier` (what a tag contains), :class:`RepoFacts` (what the proposal checks
+read of the repository) and :class:`LandedCommits` (the commits that landed a work bead).
 No bd argv, label string or store path crosses :class:`IntakePort`. Standard library plus this
 module's domain records.
 """
@@ -16,6 +18,8 @@ from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from ..domain import (
+    ApplyOutcome,
+    ApplyRequest,
     BeadView,
     Checkpoint,
     ConsiderRequest,
@@ -32,6 +36,13 @@ from ..domain import (
     InvestigateOutcome,
     InvestigateRequest,
     IssueBinding,
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefineRequest,
+    LabelSyncOutcome,
+    LabelSyncRequest,
     LinkOutcome,
     LinkRequest,
     MergeFact,
@@ -47,6 +58,11 @@ from ..domain import (
     OutboxResult,
     PresenceOutcome,
     PresenceRequest,
+    Proposal,
+    ProposalReviewOutcome,
+    ProposalReviewRequest,
+    ProposeOutcome,
+    ProposeRequest,
     QueueQuery,
     QueueView,
     ReleaseFact,
@@ -54,6 +70,9 @@ from ..domain import (
     ReplyDraft,
     ReportDraft,
     ReportRelations,
+    ReviewMetrics,
+    ReviewRequest,
+    ReviewRun,
     SanitizerFinding,
     SourceSnapshot,
     StartFact,
@@ -184,6 +203,43 @@ class IntakePort(Protocol):
 
     def relations(self, report: str) -> ReportRelations: ...  # tracks + investigated by
 
+    # review-gated triage (bh-hrx2r): cluster-aware review packets over the pending reports, each
+    # with its full thread (ingested first; refused, naming both switches, while comment ingestion
+    # is off), its proposal and review history and the global index; and the triage-quality
+    # metrics, computed from the reviews stored on the proposals.
+
+    def review_packets(self, request: ReviewRequest) -> ReviewRun: ...  # triage review
+
+    def review_metrics(self) -> ReviewMetrics: ...  # read-only
+
+    # the label projection (bh-uim9i): bead state onto the issue's OWNED labels. ``sync`` reads
+    # live labels fresh (one listing per run) and DRAFTS at most one ``labels`` record per issue;
+    # ``define`` converges the repository's label definitions, approved in the command by digest;
+    # the batch renders every drafted labels operation and approving its digest mints one
+    # single-use grant per item. Nothing here sends: ``send`` does, per record, as for comments.
+
+    def sync_labels(self, request: LabelSyncRequest) -> LabelSyncOutcome: ...  # labels sync
+
+    def define_labels(self, request: LabelDefineRequest) -> LabelDefineOutcome: ...  # define
+
+    def review_label_batch(self) -> LabelBatch: ...  # labels review; read-only
+
+    def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome: ...
+
+    # propose, review and apply-reviewed (bh-9aqmv): an analyst's proposal and a verifier's
+    # verdict are stored on the report (codec and leak lint first: a refusal writes nothing);
+    # apply runs every pre-apply check, then maps each proposal a review stands behind onto the
+    # triage verbs above, canonicals first, drafting replies and questions and never sending.
+    # An applied proposal is skipped, so a second apply changes nothing.
+
+    def propose(self, request: ProposeRequest) -> ProposeOutcome: ...  # triage propose
+
+    def review_proposal(
+        self, request: ProposalReviewRequest
+    ) -> ProposalReviewOutcome: ...  # triage propose --review-of
+
+    def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome: ...  # triage apply --reviewed
+
 
 @runtime_checkable
 class ReportStore(Protocol):
@@ -313,6 +369,27 @@ class ReportStore(Protocol):
         """Every report carrying an ``intake.outbox`` document, of every status."""
         ...
 
+    # review-gated triage (bh-hrx2r): the ``intake.proposal`` document, on ANY report (native or
+    # bound), private operational data that is never published
+
+    def read_proposal(self, bead: str) -> Proposal | None: ...  # None: no ``intake.proposal``
+
+    def write_proposal(self, bead: str, proposal: Proposal, *, expect_seq: int, actor: str) -> None:
+        """Rewrite ``bead``'s whole ``intake.proposal`` document, leaving every other document on
+        the bead untouched, in ONE store write.
+
+        As :meth:`write_outbox`: the store re-reads the stored ``seq`` and refuses with
+        ``IntakeRefused(PROPOSAL_MOVED)`` (writing nothing) unless it still equals ``expect_seq``
+        (0 for a bead without a proposal); ``proposal.seq`` must exceed it. A stored proposal that
+        is already ``applied`` is immutable: any write over it is refused with
+        ``IntakeRefused(PROPOSAL_IMMUTABLE)``. Unlike the outbox, a born-native report may carry
+        one."""
+        ...
+
+    def reports_with_proposal(self) -> tuple[BeadView, ...]:
+        """Every report carrying an ``intake.proposal`` document, of every status."""
+        ...
+
 
 @runtime_checkable
 class IntakeLock(Protocol):
@@ -381,6 +458,45 @@ class ReleaseVerifier(Protocol):
 
 
 @runtime_checkable
+class RepoFacts(Protocol):
+    """The repository facts the pre-apply proposal checks read (bh-hrx2r), read-only.
+
+    ``is_ancestor`` answers whether ``commit`` is in ``branch``'s history: only ``Verdict.YES`` is
+    proof, and ``NO`` and ``UNKNOWN`` both fail a fix claim. ``first_tag_containing`` is the first
+    tag, in version order, whose history contains ``commit`` (``None``: no tag yet, or no
+    answer), so a fix version is COMPUTED, never claimed. ``changed_paths`` lists the paths
+    ``until`` changed since it diverged from ``since`` (``None``: no answer), which tells a
+    proposal analysed at ``since`` that a path its evidence cites has moved. The root implements it
+    with ``git`` (copying :class:`ReleaseVerifier`'s pattern); tests inject a fake. The domain's
+    ``RepoQueries`` is the same three questions, structurally."""
+
+    def is_ancestor(self, commit: str, branch: str) -> Verdict: ...
+
+    def first_tag_containing(self, commit: str) -> str | None: ...
+
+    def changed_paths(self, since: str, until: str) -> tuple[str, ...] | None: ...
+
+
+@runtime_checkable
+class LandedCommits(Protocol):
+    """The commits that landed a work bead (bh-9aqmv), read-only: its ``git.commits`` linkage,
+    oldest first (``()``: none recorded). A closed fixing bead's landed commits are what the
+    pre-apply checks prove on the integration branch and compute the fix version from. The root
+    reads the linkage; tests inject a fake."""
+
+    def landed_commits(self, bead: str) -> tuple[str, ...]: ...
+
+
+@runtime_checkable
+class AuditLog(Protocol):
+    """A local, append-only audit trail of an operator-approved repository-level write
+    (``bh-uim9i``): ``labels define --approve`` notes what it applied, under which grants and by
+    whom. The root keeps it locally; it never reaches the tracker. Tests record the notes."""
+
+    def note(self, text: str, *, actor: str) -> None: ...
+
+
+@runtime_checkable
 class CheckpointStore(Protocol):
     """Opaque, local, non-secret resume tokens keyed per binding (not configuration)."""
 
@@ -397,13 +513,16 @@ class LabelPolicy(Protocol):
 
 
 __all__ = [
+    "AuditLog",
     "CheckpointStore",
     "IdSource",
     "IntakeLock",
     "IntakePort",
     "LabelPolicy",
+    "LandedCommits",
     "OutboxView",
     "ReleaseVerifier",
+    "RepoFacts",
     "ReportStore",
     "Sanitizer",
 ]

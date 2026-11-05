@@ -286,3 +286,209 @@ __all__ += ["NoticeFact", "StartFact"]
 from ..domain import INVESTIGATES_EDGE, TRACKS_EDGE  # noqa: E402
 
 __all__ += ["INVESTIGATES_EDGE", "TRACKS_EDGE"]
+
+# -- review-gated triage proposals (bh-hrx2r) ---------------------------------------------------
+
+from ..domain import (  # noqa: E402
+    PROPOSAL_KEY,
+    PROPOSAL_SCHEMA,
+    Proposal,
+    ProposalDisposition,
+    ProposalDocumentError,
+    ProposalReview,
+    ProposalStatus,
+    ProposalTarget,
+    ReviewVerdict,
+    TargetRole,
+    add_review,
+    amend,
+    mark_applied,
+    mark_stale,
+    new_proposal,
+    proposal_from_document,
+    proposal_to_document,
+    validate_proposal,
+)
+
+__all__ += [
+    "PROPOSAL_KEY",
+    "PROPOSAL_SCHEMA",
+    "Proposal",
+    "ProposalDisposition",
+    "ProposalDocumentError",
+    "ProposalReview",
+    "ProposalStatus",
+    "ProposalTarget",
+    "ReviewVerdict",
+    "TargetRole",
+    "add_review",
+    "amend",
+    "mark_applied",
+    "mark_stale",
+    "new_proposal",
+    "proposal_from_document",
+    "proposal_to_document",
+    "validate_proposal",
+]
+
+# -- the deterministic pre-apply checks and the repository facts they read (bh-hrx2r) ---------
+
+from ..domain import (  # noqa: E402
+    DEFAULT_REPORTER_TEXT_LIMIT,
+    CheckContext,
+    CheckFinding,
+    CheckKind,
+    LeakPolicy,
+    ProposalCheck,
+    TargetFact,
+    adopt_computed_fix,
+    check_proposal,
+    check_run,
+    cited_paths,
+    version_key,
+)
+from .ports import RepoFacts  # noqa: E402
+
+__all__ += [
+    "DEFAULT_REPORTER_TEXT_LIMIT",
+    "CheckContext",
+    "CheckFinding",
+    "CheckKind",
+    "LeakPolicy",
+    "ProposalCheck",
+    "TargetFact",
+    "adopt_computed_fix",
+    "check_proposal",
+    "check_run",
+    "cited_paths",
+    "version_key",
+    "RepoFacts",
+]
+
+# -- review packets (bh-hrx2r) -------------------------------------------------------------------
+
+from ..domain import (  # noqa: E402
+    COMMENTS_ENABLED_KEY,
+    COMMENTS_READ_KEY,
+    DEFAULT_BATCH_SIZE,
+    Cluster,
+    ClusterBatch,
+    ClusterItem,
+    ClusterLink,
+    ClusterPolicy,
+    ClusterSignal,
+    IndexEntry,
+    PassMetrics,
+    ReviewBatch,
+    ReviewMetrics,
+    ReviewPacket,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewRun,
+)
+
+__all__ += [
+    "COMMENTS_ENABLED_KEY",
+    "COMMENTS_READ_KEY",
+    "DEFAULT_BATCH_SIZE",
+    "Cluster",
+    "ClusterBatch",
+    "ClusterItem",
+    "ClusterLink",
+    "ClusterPolicy",
+    "ClusterSignal",
+    "IndexEntry",
+    "PassMetrics",
+    "ReviewBatch",
+    "ReviewMetrics",
+    "ReviewPacket",
+    "ReviewPolicy",
+    "ReviewRequest",
+    "ReviewRun",
+]
+
+# -- the label projection (bh-uim9i) ------------------------------------------------------------
+
+from ..domain import (  # noqa: E402
+    LabelBatch,
+    LabelBatchApprove,
+    LabelBatchItem,
+    LabelBatchOutcome,
+    LabelDefineOutcome,
+    LabelDefinePlan,
+    LabelDefineRequest,
+    LabelSyncItem,
+    LabelSyncOutcome,
+    LabelSyncRequest,
+)
+from .ports import AuditLog  # noqa: E402
+
+__all__ += [
+    "AuditLog",
+    "LabelBatch",
+    "LabelBatchApprove",
+    "LabelBatchItem",
+    "LabelBatchOutcome",
+    "LabelDefineOutcome",
+    "LabelDefinePlan",
+    "LabelDefineRequest",
+    "LabelSyncItem",
+    "LabelSyncOutcome",
+    "LabelSyncRequest",
+]
+
+# -- propose, review and apply-reviewed (bh-9aqmv) ---------------------------------------------
+
+from ..domain import (  # noqa: E402
+    ANALYST_FIELDS,
+    REOPENABLE,
+    VERDICT_FIELDS,
+    ApplyItem,
+    ApplyOutcome,
+    ApplyPlan,
+    ApplyRequest,
+    ApplyStatus,
+    ApplyStep,
+    ProposalReviewOutcome,
+    ProposalReviewRequest,
+    ProposeKind,
+    ProposeOutcome,
+    ProposeRequest,
+    VerdictInput,
+    apply_order,
+    check_rewrite,
+    content_from_document,
+    may_reopen,
+    new_round,
+    plan_apply,
+    verdict_from_document,
+    verification_gap,
+)
+from .ports import LandedCommits  # noqa: E402
+
+__all__ += [
+    "ANALYST_FIELDS",
+    "REOPENABLE",
+    "VERDICT_FIELDS",
+    "ApplyItem",
+    "ApplyOutcome",
+    "ApplyPlan",
+    "ApplyRequest",
+    "ApplyStatus",
+    "ApplyStep",
+    "LandedCommits",
+    "ProposalReviewOutcome",
+    "ProposalReviewRequest",
+    "ProposeKind",
+    "ProposeOutcome",
+    "ProposeRequest",
+    "VerdictInput",
+    "apply_order",
+    "check_rewrite",
+    "content_from_document",
+    "may_reopen",
+    "new_round",
+    "plan_apply",
+    "verdict_from_document",
+    "verification_gap",
+]

@@ -897,14 +897,19 @@ def _docs_managed_hives(cfg) -> list[str]:
     return out
 
 
-def docs():
+def docs(sections=None):
+    """Write the registry and label taxonomy page. ``sections`` adds generated sections after
+    the dimensions (``bh label docs`` passes the projected GitHub label table, bh-hrx2r); each is
+    called with the loaded config and returns its markdown lines."""
     cfg = config.load()
+    extra = [line for section in sections or () for line in section(cfg)]
     out = [
         *_docs_header(),
         *_docs_providers(cfg),
         *_docs_orgs(cfg),
         *_docs_excluded(cfg),
         *_docs_dimensions(cfg),
+        *extra,
         *_docs_managed_hives(cfg),
     ]
 

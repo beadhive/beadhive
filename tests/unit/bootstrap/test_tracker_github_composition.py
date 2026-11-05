@@ -31,10 +31,16 @@ from beadhive.modules.tracker.contracts import (
     CommentWriter,
     IssueKey,
     IssueResolver,
+    LabelDefiner,
+    LabelDefinition,
+    LabelPruner,
+    LabelReader,
     LabelWriter,
     Operation,
+    OperationNotEnabled,
     ProjectRef,
     TrackerAdapter,
+    WriteGrant,
 )
 from beadhive_tracker_github.factory import build
 
@@ -172,6 +178,8 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
         Operation.COMMENTS_READ,
         Operation.COMMENT_CREATE,
         Operation.LABELS_CHANGE,
+        Operation.LABELS_READ,
+        Operation.LABELS_DEFINE,
     }
     assert not isinstance(port, CommentWriter)  # comment.create was not enabled
     assert not isinstance(port, LabelWriter)  # labels.change is not enabled: no writer exposed
@@ -254,3 +262,185 @@ def test_the_factory_refuses_a_malformed_call_and_names_no_configuration():
             sleep=lambda _s: None,
         )
     assert "must-not-appear" not in str(caught_value.value)
+
+
+# ---- labels.read / labels.define (bh-la587): flags wired, adapter implementation is later ----
+
+
+def test_the_operation_flag_keys_match_the_plugins_settings_and_the_config_model():
+    from beadhive_tracker_github.adapter import settings as plugin_settings
+
+    assert dict(tracker_root.OPERATION_FLAG_KEYS) == dict(plugin_settings.OPERATION_FLAG_KEYS)
+    assert set(tracker_root.OPERATION_FLAG_KEYS) == set(Operation)
+    assert tracker_root.OPERATION_FLAG_KEYS[Operation.LABELS_READ] == "read.labels.enabled"
+    assert (
+        tracker_root.OPERATION_FLAG_KEYS[Operation.LABELS_DEFINE]
+        == "write.label_definitions.enabled"
+    )
+    config = TrackerGithubConfig().model_dump()
+    for key in tracker_root.OPERATION_FLAG_KEYS.values():
+        node = config
+        for part in key.split("."):
+            node = node[part]
+        assert node is False  # every operation flag exists in the model and defaults off
+
+
+def test_the_adapter_settings_parse_the_two_label_flags():
+    from beadhive_tracker_github.adapter.settings import parse_settings
+
+    assert parse_settings({}).enabled == frozenset()
+    flags = {
+        "read": {"labels": {"enabled": True}},
+        "write": {"label_definitions": {"enabled": True}},
+    }
+    # labels.define only ever writes owned names, so it is off without an owned prefix.
+    assert parse_settings(flags).enabled == {Operation.LABELS_READ}
+    owned = {**flags, "write": {**flags["write"], "labels": {"owned_prefixes": ["bh:"]}}}
+    parsed = parse_settings(owned)
+    assert parsed.enabled == {Operation.LABELS_READ, Operation.LABELS_DEFINE}
+    with pytest.raises(ValueError):
+        parse_settings({"read": {"labels": {"enabled": "true"}}})
+
+
+def test_the_two_label_flags_are_folded_into_the_enabled_operations():
+    plugins = {
+        "tracker-github": enabled_plugin(
+            read={"issues": {"enabled": True}, "labels": {"enabled": True}},
+            write={"label_definitions": {"enabled": True}},
+        )
+    }
+    settings = tracker_root.plugin_settings("tracker-github", plugins)
+
+    assert settings.operations() == {
+        Operation.ISSUES_READ,
+        Operation.LABELS_READ,
+        Operation.LABELS_DEFINE,
+    }
+    assert tracker_root.plugin_settings("tracker-github", {}).operations() == frozenset()
+
+
+class _LabelAdapter:
+    """A bare adapter implementing both optional label protocols."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def describe(self):
+        raise AssertionError("not used")
+
+    def list_label_definitions(self):
+        self.calls.append("read")
+        return (LabelDefinition("bh:intake/accepted", "0E8A16", "x"),)
+
+    def define_labels(self, definitions, *, grant):
+        self.calls.append("define")
+        return grant
+
+    def delete_labels(self, names, *, grant):
+        self.calls.append("delete")
+        return grant
+
+
+class _DefineOnlyAdapter:
+    """An adapter that defines labels but cannot delete them (no ``LabelPruner``)."""
+
+    def describe(self):
+        raise AssertionError("not used")
+
+    def define_labels(self, definitions, *, grant):
+        return grant
+
+
+def test_narrow_binds_the_label_reader_and_definer_only_when_their_operation_is_enabled():
+    adapter = _LabelAdapter()
+    off = tracker_root.narrow(adapter, frozenset())
+    only_read = tracker_root.narrow(adapter, frozenset({Operation.LABELS_READ}))
+    only_define = tracker_root.narrow(adapter, frozenset({Operation.LABELS_DEFINE}))
+    both = tracker_root.narrow(adapter, frozenset({Operation.LABELS_READ, Operation.LABELS_DEFINE}))
+
+    assert not isinstance(off, LabelReader) and not isinstance(off, LabelDefiner)
+    assert isinstance(only_read, LabelReader) and not isinstance(only_read, LabelDefiner)
+    assert isinstance(only_define, LabelDefiner) and not isinstance(only_define, LabelReader)
+    assert isinstance(both, LabelReader) and isinstance(both, LabelDefiner)
+    assert not isinstance(both, LabelWriter) and not isinstance(both, CommentWriter)
+    assert both.list_label_definitions()[0].name == "bh:intake/accepted"
+    assert adapter.calls == ["read"]
+
+
+def test_narrow_binds_the_label_pruner_only_when_labels_define_is_enabled_and_implemented():
+    adapter = _LabelAdapter()
+    off = tracker_root.narrow(adapter, frozenset())
+    only_read = tracker_root.narrow(adapter, frozenset({Operation.LABELS_READ}))
+    only_define = tracker_root.narrow(adapter, frozenset({Operation.LABELS_DEFINE}))
+    define_only = tracker_root.narrow(_DefineOnlyAdapter(), frozenset({Operation.LABELS_DEFINE}))
+
+    assert not isinstance(off, LabelPruner) and not hasattr(off, "delete_labels")
+    assert not isinstance(only_read, LabelPruner)
+    assert isinstance(only_define, LabelPruner) and isinstance(only_define, LabelDefiner)
+    assert isinstance(define_only, LabelDefiner) and not isinstance(define_only, LabelPruner)
+    assert not hasattr(define_only, "delete_labels")
+
+
+def test_a_label_deletion_needs_a_matching_single_use_grant_of_the_define_operation():
+    adapter = _LabelAdapter()
+    port = tracker_root.narrow(adapter, frozenset({Operation.LABELS_DEFINE}))
+    project = ProjectRef("github", "acme/widget")
+
+    with pytest.raises(OperationNotEnabled):
+        port.delete_labels(("bh:x",), grant="approved")  # type: ignore[attr-defined]
+    with pytest.raises(OperationNotEnabled):
+        port.delete_labels(  # type: ignore[attr-defined]
+            ("bh:x",), grant=WriteGrant("g-1", Operation.LABELS_CHANGE, project)
+        )
+    assert adapter.calls == []
+    grant = WriteGrant("g-2", Operation.LABELS_DEFINE, project)
+    assert port.delete_labels(("bh:x",), grant=grant) is grant  # type: ignore[attr-defined]
+    assert adapter.calls == ["delete"]
+
+
+def test_the_built_github_adapter_is_a_pruner_in_the_root_view_only_when_define_is_enabled(
+    loads,
+):
+    write = {
+        "label_definitions": {"enabled": True},
+        "labels": {"owned_prefixes": ["bh:"]},
+    }
+    enabled = root({"tracker-github": enabled_plugin(write=write)}).for_store(
+        entry(), requested=READ | {Operation.LABELS_DEFINE}
+    )
+    assert Operation.LABELS_DEFINE in enabled.enabled
+    assert isinstance(enabled.port, LabelDefiner) and isinstance(enabled.port, LabelPruner)
+
+    off = root({"tracker-github": enabled_plugin()}).for_store(entry(), requested=READ)
+    assert not isinstance(off.port, LabelDefiner) and not isinstance(off.port, LabelPruner)
+    assert not hasattr(off.port, "delete_labels")
+
+
+def test_a_label_definition_write_needs_a_matching_single_use_grant():
+    adapter = _LabelAdapter()
+    port = tracker_root.narrow(adapter, frozenset({Operation.LABELS_DEFINE}))
+    project = ProjectRef("github", "acme/widget")
+
+    with pytest.raises(OperationNotEnabled):
+        port.define_labels((), grant="approved")  # type: ignore[attr-defined]
+    with pytest.raises(OperationNotEnabled):
+        port.define_labels(  # type: ignore[attr-defined]
+            (), grant=WriteGrant("g-1", Operation.LABELS_CHANGE, project)
+        )
+    assert adapter.calls == []
+    grant = WriteGrant("g-2", Operation.LABELS_DEFINE, project)
+    assert port.define_labels((), grant=grant) is grant  # type: ignore[attr-defined]
+    assert adapter.calls == ["define"]
+
+
+def test_a_requested_but_disabled_label_operation_names_its_flag():
+    adapters = root({"tracker-github": enabled_plugin()})
+    error = refusal(
+        adapters,
+        entry(),
+        requested=READ | {Operation.LABELS_READ, Operation.LABELS_DEFINE},
+    )
+
+    assert error.rule is TrackerRule.WRITE_NOT_ENABLED
+    assert "plugins.tracker-github.read.labels.enabled" in error.message
+    assert "plugins.tracker-github.write.label_definitions.enabled" in error.message

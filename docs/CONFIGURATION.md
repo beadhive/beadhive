@@ -419,12 +419,14 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `base_url` | unset (public API) | GitHub Enterprise Server prefix: https, no userinfo, query or fragment |
 | `credential.sources` | `[env, gh]` | credential source names in precedence order; empty means anonymous |
 | `read.issues.enabled` / `read.comments.enabled` | `false` | enable `issues.read` / `comments.read` |
+| `read.labels.enabled` | `false` | enable `labels.read`: read the repository's label definitions (name, color, description). A read, so no grant; new (bh-la587), see the rotation note below |
 | `read.include_closed` | `true` | scope within a read, not a feature switch |
 | `read.page_size` | unset | listing page size, 1 to 100 |
 | `http_cache.enabled` | `false` | conditional requests for the id-reconcile pass |
 | `timeout_seconds` | `30` | seconds before a connect or read is abandoned; a number in the range `(0, 300]` (an integer or a float): zero, negative, boolean, non-numeric, `inf`/`nan` and any value above 300 are refused at config load, by `bh config validate` and by `bh config set` (nothing is written), never clamped, and the refusal does not repeat the value. There is no way to disable the timeout, and 300 s is a hard maximum rather than a default: an effectively unbounded timeout would reopen that hole, and one hung request would stall `bh work discover`, the host-daemon discovery timer and the outbox sender for that tracker binding. GitHub API calls do not legitimately need longer, and `retry.max_total_wait_seconds` already bounds the waits between attempts. The adapter's transport enforces the same bound from the same constant |
 | `retry.max_retries` / `retry.max_single_wait_seconds` / `retry.max_total_wait_seconds` | `3` / `60` / `120` | the retry budget; single wait at most the total |
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
+| `write.label_definitions.enabled` | `false` | enable `labels.define`: create or update the repository's label definitions. Repository-scoped, necessary and never sufficient (each use needs an operator-approved single-use grant); new (bh-la587), see the rotation note below |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
 
 The adapter ships the read path and both writers, `comment.create` and `labels.change` (owned
@@ -437,6 +439,15 @@ above, never on githubkit's built-in retry.
 
 As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
 to every host (`bh-uf986`).
+
+`read.labels.enabled` and `write.label_definitions.enabled` are new (bh-la587) and were added with
+the `labels.read` and `labels.define` tracker operations. `BeadhiveConfig` forbids unknown keys, so
+**an older host rejects both keys: upgrade every host before setting either one** (the `bh-tfko9`
+rotation pattern); the same holds for the `intake.external.labels` section below. Both default
+off, and `bh plugin tracker-github status` lists the two operations as disabled rows until set.
+When `intake.external.labels.enabled` is on and either label write flag is on, the projection
+`prefix` must be covered by `write.labels.owned_prefixes`, or the config is refused at load
+naming both keys.
 
 `plugins.beadlog-xtdb` configures the opt-in XTDB BeadLog store
 ([beadlog-format-adr.md](design/beadlog-format-adr.md) amendment A6): with it enabled,
@@ -491,6 +502,13 @@ and no key can enable or pre-approve a tracker write.
 | `comments.max_body_chars` | unset | optional cap on a stored comment body (the digest is of the full body) |
 | `needs_info.enabled` | `false` | allow `bh work needs-info <report> --ask <text>` (draft the question as a supervised reply and move a bound report to `intake:needs-info`; also needs `outbox.enabled` and `comments.enabled`) and `bh work wake <report>` (back to `intake:untriaged` once its ingested thread holds a reply from the reporter). Nothing is sent: the question posts only after an operator approves it. Off refuses naming this key |
 | `needs_info.sweep` | `false` | allow `bh work wake --all` over every waiting report; needs `needs_info.enabled` too |
+| `labels.enabled` | `false` | enable the registry-derived GitHub label projection (new, bh-la587): `bh work labels sync` and `bh work labels define` (bh-v3fe7). The section only shapes the label catalog: it reads and writes nothing itself, and every label write still needs `plugins.tracker-github.write.labels.enabled` / `write.label_definitions.enabled` and an operator-approved single-use grant. `sync` and `define` read through `plugins.tracker-github.read.labels.enabled` (and `read.issues`); a sync that drafts also needs `outbox.enabled` and `outbox.labels_enabled`. Off refuses naming this key |
+| `labels.prefix` | `bh:` | the namespace prefix of every projected label; non-empty and trimmed. When `labels.enabled` and a tracker label write flag are on it must be covered by an entry of `plugins.tracker-github.write.labels.owned_prefixes`, else the config is refused naming `intake.external.labels.prefix` |
+| `labels.project` | `[intake, delivery, progress, type, priority, component]` | the registry dimensions projected as labels (unique; any other name is refused naming `intake.external.labels.project`) |
+| `labels.aliases` | `{}` | dimension to display group, replacing the dimension name in a projected label; a key that is not a projected-dimension name is refused |
+| `labels.colors` | `{}` | dimension to label color: exactly six hex digits, no `#`; a bad color or an unknown dimension is refused naming `intake.external.labels.colors` |
+| `labels.overrides` | `{}` | `dimension/value` to `{name, description, color}` (each optional; `color` is six hex digits) overriding one label; a key without a known dimension is refused naming `intake.external.labels.overrides` |
+| `labels.on_transition` | `false` | reflect a state change onto the labels when it happens (only acts with `labels.enabled`): every disposition (`accept`, `reject`, `reroute`, `promote`), `needs-info`, `wake`, `link` / `unlink` and the milestone triggers also draft or refresh the report's ONE `labels` outbox record from stored state, with no tracker request. It only drafts (it needs `outbox.enabled` and `outbox.labels_enabled` to draft anything) and never fails the transition |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
 plugin's `read.issues.enabled` ([tracker-adapter-plugin-adr.md](design/tracker-adapter-plugin-adr.md));
@@ -544,6 +562,32 @@ nothing in a shared config should set them until the release has rotated to ever
 supersedes an unsent older one), only while a report's delivery is `pending`, never move a
 dimension and never complete a report. The `blocked` / `deprioritised` reason is the one free text
 a milestone carries: the leak check holds a record whose reason names a bead id, branch or path.
+
+The `labels.*` keys are new (bh-la587): an older host rejects the whole `intake.external.labels`
+section (`extra=forbid`), so nothing in a shared config should set them until the release has
+rotated to every host (the `bh-tfko9` pattern). They are host-owned and plain data: no key holds a
+credential, a grant or an approval. The issue label changes they draft are the new `labels`
+outbox record type, which an older host cannot decode: run `bh work labels sync` only once every
+outbox-reading host runs 0.35.0 ([UPGRADING.md](UPGRADING.md)).
+
+The `bh work labels` verbs (bh-v3fe7, wire 2.22.0) read these keys: `sync [<report>|--all]
+[--include-closed] [--dry-run] [--prune-unmapped]` drafts at most one `labels` record per issue
+(one issue listing and one `labels.read` per run; never sent), `define [--dry-run] [--prune]
+[--approve <digest>]` renders the repository's definitions plan with a digest and, from an
+operator seat, applies it with one single-use grant per tracker write (noted in the private
+`.bh/intake/audit.log`), `review` renders the batch of drafted label changes with its digest, and
+`approve --batch <digest>` (operator seats) mints one grant per issue; a send is still
+`bh work outbox send <id> --kind labels`. `bh label docs` adds a "Projected GitHub labels" table
+while `labels.enabled` is on.
+
+The `bh work triage` verbs (bh-v3fe7, wire 2.22.0) add no key. `review --pending` needs
+`comments.enabled` and the tracker's `read.comments.enabled` (a packet without its full thread is
+refused); `propose`, `check` and `apply --reviewed` need only `enabled`. `apply` drafts a reply or a
+question through the outbox (`outbox.enabled`) and asks through `needs-info` (`comments.enabled`),
+so with either off the report that needs it fails and nothing is written for it; it refreshes the
+touched reports' labels while `labels.enabled` is on. The pre-apply checks read the hive checkout's
+git (ancestry, tags, changed paths; read-only) against `work.integration_branch`, and the fixing
+commits from each closed work bead's `git.commits` linkage.
 
 ### `backfill.judge` {#backfill-judge}
 

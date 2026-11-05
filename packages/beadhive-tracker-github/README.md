@@ -4,11 +4,13 @@ The GitHub tracker adapter **plugin** (`tracker-github`, capability `tracker.ada
 Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin-adr.md) and
 [tracker-adapter-port-adr.md](../../docs/design/tracker-adapter-port-adr.md).
 
-> **Read path plus `comment.create` and `labels.change`.** The adapter lists issues (closed
-> included) and comments, takes full id snapshots for deletion reconciliation, resolves issue URLs
-> (`IssueResolver`), reports the actor and a GET-only tri-state capability probe. Its two landed
-> writers are `comment.create` (`CommentWriter.post_comment`, W8 `bh-03s4w`) and `labels.change`
-> (`LabelWriter.change_labels`, W9 `bh-t082i`). A writer method exists only when its write flag is
+> **Read path plus `comment.create`, `labels.change` and `labels.define`.** The adapter lists
+> issues (closed included), comments and repository label definitions (`labels.read`,
+> `LabelReader`), takes full id snapshots for deletion reconciliation, resolves issue URLs
+> (`IssueResolver`), reports the actor and a GET-only tri-state capability probe. Its landed
+> writers are `comment.create` (`CommentWriter.post_comment`, W8 `bh-03s4w`), `labels.change`
+> (`LabelWriter.change_labels`, W9 `bh-t082i`) and `labels.define` (`LabelDefiner.define_labels` and
+> `LabelPruner.delete_labels`, `bh-uv09p`). A writer method exists only when its write flag is
 > on, and even then every call needs a fresh, single-use, operator-approved `WriteGrant`. **No live
 > GitHub write has been made yet**: the first real write is an operator-approved step recorded on
 > the writer's bead, outside the tests.
@@ -23,7 +25,7 @@ Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin
 
 Inside `adapter/`: `tracker` (the port implementation), `compose` (the writers of the enabled
 write operations), `comments` (the `comment.create` writer), `labels` (the `labels.change`
-writer), `grants` (the one in-process single-use grant ledger every writer spends from),
+writer), `label_definitions` (the `labels.read` reader and the `labels.define` writer), `grants` (the one in-process single-use grant ledger every writer spends from),
 `transport` (githubkit: one credential per operation; writes only through `Session.send`, the one
 write seam of an operation opened for one), `retry` (the adapter-owned retry decision on an
 injected sleep and clock),
@@ -63,6 +65,24 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
   timeout, dropped connection, redirect, unreadable answer) is `WriteOutcomeUnknown`, never
   retried. Adds go first, then removes; a `404` on a remove is told apart from an invisible issue
   by reading the issue back.
+* **`labels.read`** lists every repository label definition, owned or not (`GET .../labels`,
+  `per_page=100`, following `Link: rel="next"`); like every read it is refused before any request
+  while `read.labels.enabled` is off.
+* **`labels.define`** converges repository label definitions inside `write.labels.owned_prefixes`
+  (the ONLY ownership: the port's call carries none, and no prefix means the operation is not
+  enabled) under one repository-scoped grant (`WriteGrant.target` is the `ProjectRef`). It is
+  refused before any request on a malformed batch (a color must be six hex digits without `#`, a
+  description at most 100 characters), the flag off (`write.label_definitions.enabled`), a
+  mismatched or spent grant, a foreign name or a missing credential. It then reads the live
+  definitions once and sends only the difference, in sorted name order: `POST .../labels` to
+  create, `PATCH .../labels/{name}` to update (a case-variant of an owned label is renamed, never
+  duplicated). Pruning is the separate optional `LabelPruner.delete_labels(names, *, grant)` (same
+  operation, scope and refusal order; a name the repository does not hold is already gone):
+  `DELETE .../labels/{name}`, whose `204 No Content` is a known success. Every `{name}` is
+  percent-encoded. The grant is spent after the read, just before the first write.
+* **`204 No Content`** answering a write is a known success with no body, never
+  `WriteOutcomeUnknown`; an empty `2xx` is one too where the caller declares the endpoint
+  documents `204`.
 
 ## Install and enablement
 
@@ -94,13 +114,15 @@ enabled.
   `beadhive_plugins.credentials`.
 * **Conformance**: the shared `beadhive.testing.tracker` suite runs over an offline
   `httpx.MockTransport` stand-in (`tests/tracker_github_fake.py`), on github.com and a GHES prefix;
-  every case passes, the `comment.create` cases and `labels.only-owned` included (no expected
-  failure is left).
+  every case passes, the `comment.create` cases, `labels.only-owned` and the seven
+  `labels.*` definition cases included (no expected failure is left).
 * **Refusal diagnostics** are replayed from `tests/recorded/comment_create_refusals.json`, one
   exchange per row of the `bh-mqvdq` table, each labelled with its evidence: only the `401` and
   `404` status and message were observed live (on read-only GETs, `bh-mqvdq` Evidence 10); every
   other row is the documented form. **Live re-verification is pending** the first
-  operator-approved write.
+  operator-approved write. `tests/recorded/label_definitions_*.json` replay the paged listing, one
+  create / update / `204` delete batch and the refusals GitHub's documentation is silent on (a
+  duplicate name, a missing permission, a delete answered "not found").
 * **Offline**: `tests/conftest.py` disables the real transport and outbound sockets for every
   test; recorded exchanges (`tests/recorded/`) are synthetic, never captured with a credential.
 

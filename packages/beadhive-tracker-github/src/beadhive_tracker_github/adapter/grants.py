@@ -1,7 +1,9 @@
 """The in-process half of single-use write grants (tracker-adapter-port-adr.md section 3).
 
 Every write call carries its own :class:`~beadhive.modules.tracker.contracts.WriteGrant`, minted
-by the consumer's operator-approved gate for ONE operation on ONE issue. The adapter refuses,
+by the consumer's operator-approved gate for ONE operation on ONE target: an issue, or the
+repository itself (a :class:`~beadhive.modules.tracker.contracts.ProjectRef`) for a
+repository-scoped write such as ``labels.define``. The adapter refuses,
 **before any request**, a call whose grant is missing, names another operation or issue, or was
 already presented. Durable single use across processes is the consumer's outbox; this ledger is
 the plugin ADR's in-process layer ("one adapter per (hive, store scope) per process", so the
@@ -25,6 +27,7 @@ from beadhive.modules.tracker.contracts import (
     IssueKey,
     Operation,
     OperationNotEnabled,
+    ProjectRef,
     WriteGrant,
 )
 
@@ -34,10 +37,10 @@ __all__ = ["GrantLedger"]
 class GrantLedger:
     """The grants this adapter instance has seen; spending is atomic.
 
-    ONE ledger serves every writer (``comment.create``, ``labels.change``): a grant names its
-    operation, so the spent set is keyed by ``(operation, grant_id)`` and each writer's
-    single-use rule is exactly per operation. Each writer decides WHEN it spends (after all of its
-    own local refusals); a spent grant is never refunded."""
+    ONE ledger serves every writer (``comment.create``, ``labels.change``, ``labels.define``): a
+    grant names its operation, so the spent set is keyed by ``(operation, grant_id)`` and each
+    writer's single-use rule is exactly per operation. Each writer decides WHEN it spends (after
+    all of its own local refusals); a spent grant is never refunded."""
 
     def __init__(self) -> None:
         self._spent: set[tuple[Operation, str]] = set()
@@ -47,7 +50,7 @@ class GrantLedger:
         return f"GrantLedger(spent={len(self._spent)})"
 
     @staticmethod
-    def check(grant: object, operation: Operation, target: IssueKey) -> WriteGrant:
+    def check(grant: object, operation: Operation, target: IssueKey | ProjectRef) -> WriteGrant:
         """Refuse a grant that is not a ``WriteGrant`` for exactly ``operation`` on ``target``."""
         if not isinstance(grant, WriteGrant):
             raise OperationNotEnabled(
@@ -56,7 +59,8 @@ class GrantLedger:
         if grant.operation is not operation:
             raise OperationNotEnabled(f"the grant does not cover {operation.value}")
         if grant.target != target:
-            raise OperationNotEnabled(f"the grant does not cover {target.identifier}")
+            name = target.identifier if isinstance(target, IssueKey) else target.locator
+            raise OperationNotEnabled(f"the grant does not cover {name}")
         return grant
 
     def refuse_if_spent(self, grant: WriteGrant) -> None:

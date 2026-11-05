@@ -121,7 +121,7 @@ figures).
 | Capability | **External intake**: getting reports into the one shared queue, binding them to their source, disposing of them, linking them to work, the conversation model, the outbox and the report dimensions |
 | Package | `beadhive.modules.intake` with `domain/`, `contracts/`, `application/` (the `modules/hives` shape), layout as in `bh-mj7cl` section 1 |
 | Consumer port | `beadhive.modules.intake.contracts.IntakePort` (`Protocol`); `IntakeService` its one implementation; `NullIntake` bound when intake is off (empty queue reads, `reports_for_work` returns `()`, every write raises `IntakeRefused(INTAKE_DISABLED)`) |
-| Outbound ports | `ReportStore` (intake's own narrow bead-store port), `CheckpointStore`, `LabelPolicy`, `Sanitizer`, `ReleaseVerifier`, `IntakeLock` (section 4), `IdSource`; plus the tracker port's `TrackerReader`, `CommentWriter`, `LabelWriter` and the optional `IssueResolver` (A1) |
+| Outbound ports | `ReportStore` (intake's own narrow bead-store port), `CheckpointStore`, `LabelPolicy`, `Sanitizer`, `ReleaseVerifier`, `RepoFacts` (the proposal checks' ancestry, computed fix version and changed paths, bh-hrx2r), `IntakeLock` (section 4), `IdSource`; plus the tracker port's `TrackerReader`, `CommentWriter`, `LabelWriter` and the optional `IssueResolver` (A1) |
 | Adapters | `beadhive.adapters.intake`: `BdReportStore` over an injected `beadhive_bd_cli.CliRoutes`, `ApiReportStore` (the same store served from the supervised Beads service under `work.beads.route`, bh-9o12j; creates, gates, `set-state` and `find-duplicates` stay on the CLI), a file-backed `CheckpointStore` in the hive's private `.bh/` state |
 | Test kit | `beadhive.testing.intake`: `MemoryReportStore` and `ReportStore` contract cases run against both implementations; consumer tests use `MemoryTracker` from `beadhive.testing.tracker` |
 | Composition | `beadhive.intake_services`, a legacy composition root (the `hive_services.py` precedent: neither `bootstrap` nor an adapter may import legacy) |
@@ -1339,6 +1339,106 @@ behave exactly as today.
 | Offline, clock-free tests | All cases run on `MemoryTracker`/`MemoryWorld` with explicit `at=`, in-memory stores, a deterministic `IdSource` and an in-process lock; ordering is asserted on `seq`, `rev`, `Attempt.n` and `write_requests()` only. Test plans: `bh-fptob` R8 (T1 to T19), `bh-6wj9y` R14 (X1 to X18, K1), `bh-mj7cl` section 4 refusals |
 | Public `refs/dolt/data` frozen pending `bh-l3zvc.5` | Nothing here writes the public store or its ref |
 | Never `bd compact` / `bd flatten` | Event beads are limited to rare report-level transitions; per-message state lives in documents; tombstone purging is documented as not erasure |
+
+### 17. The label projection and review-gated triage verbs (`bh-hrx2r`, 0.35.0)
+
+**As built (`bh-v3fe7`, wire 2.22.0).** Two new `bh work` groups reach the services earlier
+slices built (`LabelProjection`, the outbox's batch approval, `ReviewService`,
+`ProposalService`) through `intake_services` only; `bh work intake` is unchanged. Every verb
+takes `--hive` and `--json` (one document; refusals carry `reason` and `error`), and every one
+refuses naming the switch it needs before any store write or tracker request.
+
+| Verb | Port call | Needs | Writes |
+|---|---|---|---|
+| `labels sync [<report>\|--all] [--include-closed] [--dry-run] [--prune-unmapped]` | `sync_labels` | `labels.enabled`; `read.labels`, `read.issues`; drafting: `outbox.enabled`, `outbox.labels_enabled` | at most one `labels` record per issue (found or refreshed, never stacked); nothing on `--dry-run` |
+| `labels define [--dry-run] [--prune] [--approve <digest>]` | `define_labels` | `labels.enabled`; `read.labels`; `--approve`: `write.label_definitions`, an operator seat | with `--approve`: the repository's definitions, one single-use `ProjectRef` grant per tracker write, one line in `.bh/intake/audit.log` |
+| `labels review` | `review_label_batch` | `outbox.enabled` | nothing |
+| `labels approve --batch <digest>` | `approve_label_batch` | `outbox.labels_enabled`, an operator seat | one grant per issue (stale items skipped); sends nothing |
+| `triage review --pending [--batch-size N] [--out DIR]` | `review_packets` | `comments.enabled`, `read.comments` | the thread ingest only (and the `--out` files) |
+| `triage propose <report> <file\|-> [--review-of <pass>]` | `propose` / `review_proposal` | `enabled` | `intake.proposal` |
+| `triage check [--pending]` | `apply_reviewed(dry_run=True)` | `enabled` | nothing (exit 1 on any finding) |
+| `triage apply --reviewed [--dry-run] [--reroute-to <report>=<hive>]` | `apply_reviewed` | `enabled`; an operator seat unless `--dry-run` | the triage verbs, outbox drafts, the label refresh; nothing on `--dry-run` |
+
+Root wiring decisions:
+
+- **`TriageBinding`.** `repo` is `GitRepoFacts` on the hive checkout, `branch` the hive's
+  `work.integration_branch`, `leak_policy` and `sanitizer` the outbox's (`leak_policy(cfg)`,
+  `ScrubSanitizer`), `landed` a root `LinkageLandedCommits` reading each closed work bead's
+  `git.commits` linkage (the commits submit and merge record), `reporter_text_limit` the module
+  default.
+- **Reroute destination.** A proposal has no destination field, and none was added: the
+  destination is the operator's, given at apply time as `--reroute-to <report>=<hive>` (by report
+  id, repeatable). With no `--reroute-to` the binding has no re-filer and every reroute is
+  `blocked`; a report missing from the map fails before anything is written for it; an unknown
+  hive exits before any write. The re-filer files the report into the destination through the
+  `bh report` write path (type kept, the bound issue's URL as its description) and the source is
+  closed as `rerouted`, exactly as `bh work reroute --to`.
+- **Review passes.** The store numbers review passes 1, 2, ... in recording order, across rounds
+  (a re-proposal keeps the reviews). `--review-of` takes that number, and it must be the next
+  pass (a replayed verdict is refused `proposal_moved`). The batch skill's letters are accepted as
+  `B` = 1 and `C` = 2 (its verifier and tie-break of a proposal's first round); `A` is refused,
+  since pass A is the analyst's proposal itself. A verdict's own `pass` must agree.
+- **`ReviewPolicy`.** `comments_enabled` is `intake.external.comments.enabled`; `comments_read` is
+  whether the plugin binding serves `comments.read` (bound with the operation enabled). No probe
+  is sent to decide it.
+- **Projection.** `LabelSettings` from `intake.external.labels`, the registry from
+  `dimensions.*`, the leak policy owning the projection prefix (plus the plugin's
+  `write.labels.owned_prefixes`), the outbox policy, and `FileAuditLog` (mode 0600). With
+  `labels.on_transition` the transition composers bind a tracker-free projection and
+  `refresh_on_transition`; dispositions get it when the caller passes the config.
+- **Seats.** `labels define --approve` and `labels approve --batch` are refused for an agent
+  seat by the module (`OPERATOR_SEAT_REQUIRED`); `triage apply` (not a dry run) is refused by the
+  root with the same rule and the same `OutboxPolicy.agent_seat_prefixes`.
+
+The `--json` shapes are flat records: a sync item (`add`, `remove`, `drift`, `undefined`,
+`swaps`, `drafted`, `pending`, `superseded`, `discarded`, `held`, `note`, `error`), a define plan
+(`create`, `update`, `delete`, `kept`, `problems`, `findings`, `digest`, `short_digest`), a batch
+(`items`, `digest`, `stale`), a review run (`reports`, `batches` of `packets`, the global
+`index`, `clusters`, `ingested`, `metrics`), a proposal as its stored `intake.proposal` document,
+a check (`passed`, `findings` of `kind`/`detail`/`fix`, `computed_fixed_in`, the dry-run `plan`
+and its `detail`) and an apply item (`status`, `steps`, `work`, `fixed_in`, `drafted`,
+`findings`, `detail`, `reroute_to`). `triage review --out DIR` writes `batch-NNN.json` (one
+batch's clusters and packets, with the global index) and `index.json` (the batch list with each
+file, the index, clusters, ingested threads and metrics).
+
+**The dry-run walkthrough.** On a fixture hive with two imported reports (one untriaged with a
+reporter comment, its proposal stored and confirmed by review pass 1; one rejected and closed),
+threads already ingested and no label defined, the five dry runs below write nothing (no store
+write, no outbox write, no tracker write, no audit line;
+`tests/test_intake_labels_triage_cli.py`):
+
+```text
+$ bh work labels define --dry-run
+labels define on memory:acme/widget: plan 4dba7beef8d0
+  create bh:intake/accepted (#fbca04) Triage state: accepted
+  ...
+  create bh:priority/p4 (#d93f0b) Priority: p4
+  → 22 to create, 0 to update; approve 4dba7beef8d0 to apply
+  → an operator applies it with `bh work labels define --approve 4dba7beef8d0`
+
+$ bh work labels sync --dry-run --include-closed
+labels sync (dry run: nothing written): 2 report(s), 2 to change, 0 drafted
+  w-0001: +bh:intake/untriaged +bh:type/bug; not defined yet: bh:intake/untriaged, bh:type/bug (run `bh work labels define`)
+  w-0002: +bh:intake/rejected +bh:type/bug; not defined yet: bh:intake/rejected, bh:type/bug (run `bh work labels define`)
+
+$ bh work triage review --pending
+triage review: 1 pending report(s) in 1 batch(es), 1 cluster(s); 1 thread(s) ingested
+  batch 1: w-0001
+  review pass 1: 0/1 corrected (0%), 0 unsure
+
+$ bh work triage check
+triage check: 1 open proposal(s), 0 failing
+  ✓ w-0001: passed
+
+$ bh work triage apply --reviewed --dry-run
+triage apply (dry run: nothing written): 0 applied, 1 planned, 0 blocked, 0 decision(s)
+  planned  w-0001: reject; draft reply → reject
+```
+
+A real run then goes: `labels define --approve <digest>` (operator), `labels sync` (drafts),
+`labels review`, `labels approve --batch <digest>` (operator), `bh work outbox send <id> --kind
+labels` per issue; and `triage apply --reviewed` (operator), whose drafted replies an operator
+reviews, approves and sends with `bh work outbox`.
 
 ## Resolutions
 

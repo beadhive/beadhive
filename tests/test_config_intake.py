@@ -12,6 +12,7 @@ from beadhive.modules.config.contracts import (
     IntakeConfig,
     IntakeDiscoveryConfig,
     IntakeExternalConfig,
+    IntakeLabelsConfig,
     IntakeNeedsInfoConfig,
     ManagedRepoEntry,
     iter_schema_fields,
@@ -115,6 +116,16 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "draft_on_start",
         "draft_on_blocked",
         "draft_on_deprioritised",
+        "labels",  # the label projection section (bh-la587)
+        "prefix",
+        "project",
+        "aliases",
+        "colors",
+        "overrides",
+        "name",
+        "description",
+        "color",
+        "on_transition",
     }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
 
@@ -353,3 +364,172 @@ def test_the_progress_switches_are_off_validate_and_are_host_owned() -> None:
 def test_bad_progress_values_and_unknown_keys_fail_closed(milestones) -> None:
     with pytest.raises(ValidationError):
         BeadhiveConfig.model_validate({"intake": {"external": {"milestones": milestones}}})
+
+
+# -- intake.external.labels (bh-la587): the registry-derived label projection, off by default --
+
+LABEL_DIMENSIONS = ["intake", "delivery", "progress", "type", "priority", "component"]
+
+
+def _labels(section=None, github=None) -> dict:
+    document: dict = {"intake": {"external": {"labels": section or {}}}}
+    if github is not None:
+        document["plugins"] = {"tracker-github": github}
+    return document
+
+
+def test_the_label_projection_is_off_by_default_with_the_documented_defaults() -> None:
+    labels = IntakeConfig().external.labels
+
+    assert labels == IntakeLabelsConfig()
+    assert (labels.enabled, labels.prefix, labels.on_transition) == (False, "bh:", False)
+    assert labels.project == LABEL_DIMENSIONS
+    assert (labels.aliases, labels.colors, labels.overrides) == ({}, {}, {})
+
+
+def test_a_full_label_projection_section_validates() -> None:
+    config = BeadhiveConfig.model_validate(
+        _labels(
+            {
+                "enabled": True,
+                "prefix": "bh:",
+                "project": ["intake", "delivery"],
+                "aliases": {"intake": "triage"},
+                "colors": {"intake": "0E8A16", "delivery": "5319e7"},
+                "overrides": {
+                    "intake/accepted": {"name": "bh:triage/ok", "color": "00ff00"},
+                    "delivery/merged": {"description": "Merged to main"},
+                },
+                "on_transition": True,
+            }
+        )
+    )
+
+    assert config.intake is not None
+    labels = config.intake.external.labels
+    assert (labels.enabled, labels.on_transition, labels.project) == (
+        True,
+        True,
+        ["intake", "delivery"],
+    )
+    assert labels.overrides["intake/accepted"].color == "00ff00"
+    assert labels.overrides["delivery/merged"].name is None
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ({"colors": {"intake": "#0E8A16"}}, "intake.external.labels.colors"),
+        ({"colors": {"intake": "0E8A1"}}, "intake.external.labels.colors"),
+        ({"colors": {"intake": "gggggg"}}, "intake.external.labels.colors"),
+        ({"colors": {"nonsense": "0E8A16"}}, "intake.external.labels.colors"),
+        ({"project": ["intake", "nonsense"]}, "intake.external.labels.project"),
+        ({"project": ["intake", "intake"]}, "intake.external.labels.project"),
+        ({"aliases": {"nonsense": "x"}}, "intake.external.labels.aliases"),
+        ({"aliases": {"intake": " "}}, "intake.external.labels.aliases"),
+        ({"overrides": {"intake": {}}}, "intake.external.labels.overrides"),
+        ({"overrides": {"nonsense/x": {}}}, "intake.external.labels.overrides"),
+        ({"overrides": {"intake/x": {"color": "red"}}}, "color"),
+        ({"overrides": {"intake/x": {"name": " "}}}, "name"),
+        ({"prefix": ""}, "intake.external.labels.prefix"),
+        ({"prefix": " bh:"}, "intake.external.labels.prefix"),
+        ({"enabled": "true"}, "enabled"),
+        ({"on_transition": 1}, "on_transition"),
+        ({"token": "x"}, "token"),  # unknown keys fail closed
+    ],
+)
+def test_a_bad_label_projection_is_refused_naming_the_key(section, key) -> None:
+    with pytest.raises(ValidationError) as error:
+        BeadhiveConfig.model_validate(_labels(section))
+
+    assert key in str(error.value)
+
+
+def test_a_label_projection_error_never_repeats_the_input() -> None:
+    planted = "ghp_" + "a" * 36
+    with pytest.raises(ValidationError) as error:
+        BeadhiveConfig.model_validate(_labels({"colors": {"intake": planted}}))
+
+    assert planted not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        {"labels": {"enabled": True, "owned_prefixes": ["other:"]}},
+        {"label_definitions": {"enabled": True}},
+    ],
+)
+def test_the_projection_prefix_must_be_owned_when_labels_may_be_written(write) -> None:
+    document = _labels({"enabled": True}, {"enabled": True, "write": write})
+
+    with pytest.raises(ValidationError) as error:
+        BeadhiveConfig.model_validate(document)
+
+    text = str(error.value)
+    assert "intake.external.labels.prefix" in text
+    assert "plugins.tracker-github.write.labels.owned_prefixes" in text
+
+
+@pytest.mark.parametrize(
+    ("section", "github"),
+    [
+        # owned
+        (
+            {"enabled": True},
+            {
+                "write": {
+                    "label_definitions": {"enabled": True},
+                    "labels": {"owned_prefixes": ["bh:"]},
+                }
+            },
+        ),
+        (
+            {"enabled": True, "prefix": "bh:x/"},
+            {"write": {"labels": {"enabled": True, "owned_prefixes": ["bh:"]}}},
+        ),
+        # nothing may write labels: ownership is not consulted
+        ({"enabled": True}, {"write": {"labels": {"owned_prefixes": ["other:"]}}}),
+        ({"enabled": True}, None),
+        # the projection is off
+        ({}, {"write": {"label_definitions": {"enabled": True}}}),
+    ],
+)
+def test_the_ownership_check_only_applies_when_both_sides_are_on(section, github) -> None:
+    BeadhiveConfig.model_validate(_labels(section, github and {"enabled": True, **github}))
+
+
+def test_the_tracker_github_label_flags_are_strict_and_off_by_default() -> None:
+    from beadhive.modules.config.contracts import TrackerGithubConfig
+
+    config = TrackerGithubConfig()
+    assert (config.read.labels.enabled, config.write.label_definitions.enabled) == (False, False)
+    for fragment in (
+        {"read": {"labels": {"enabled": "true"}}},
+        {"write": {"label_definitions": {"enabled": 1}}},
+    ):
+        with pytest.raises(ValidationError):
+            TrackerGithubConfig.model_validate(fragment)
+    ok = TrackerGithubConfig.model_validate(
+        {"read": {"labels": {"enabled": True}}, "write": {"label_definitions": {"enabled": True}}}
+    )
+    assert (ok.read.labels.enabled, ok.write.label_definitions.enabled) == (True, True)
+
+
+def test_the_label_keys_are_host_owned_so_a_fleet_push_cannot_set_them() -> None:
+    paths = [
+        f.path
+        for f in iter_schema_fields()
+        if f.path.startswith(
+            (
+                "intake.external.labels",
+                "plugins.tracker-github.read.labels",
+                "plugins.tracker-github.write.label_definitions",
+            )
+        )
+    ]
+
+    assert "intake.external.labels.prefix" in paths
+    assert "plugins.tracker-github.read.labels.enabled" in paths
+    assert "plugins.tracker-github.write.label_definitions.enabled" in paths
+    assert {partition.partition_of(path) for path in paths} == {partition.HOST}
