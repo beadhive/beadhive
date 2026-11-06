@@ -530,6 +530,7 @@ def test_backfill_then_approve_and_send_the_close_after_the_reply(rig, monkeypat
             "drafted": False,
             "detail": "",
             "reply_text": "",
+            "duplicate_of": "",
         }
     ]
     human = bh("outbox", "backfill-close", "--hive", "widget", "--as", OPERATOR)

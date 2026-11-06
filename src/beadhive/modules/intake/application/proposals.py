@@ -49,6 +49,7 @@ from ..domain import (
     ApplyStep,
     BeadView,
     CheckContext,
+    CloseReason,
     ConsiderRequest,
     Disposition,
     DispositionOutcome,
@@ -526,7 +527,12 @@ class ProposalService:
                     linked = self._actions.link(LinkRequest(report, plan.work, actor))
                     milestones = linked.milestones
                 elif step is ApplyStep.DRAFT_REPLY:
-                    reply = ReplyDraft(report, plan.reason, actor, close=plan.close)
+                    # a duplicate's close names its canonical report; the sender resolves its
+                    # bound issue (bh-iamru)
+                    canonical = proposal.share_with if plan.close is CloseReason.DUPLICATE else ""
+                    reply = ReplyDraft(
+                        report, plan.reason, actor, close=plan.close, duplicate_of=canonical
+                    )
                     drafted.append(self._actions.draft_reply(reply).outbox_id)
                 elif step is ApplyStep.REJECT:
                     self._actions.dispose(

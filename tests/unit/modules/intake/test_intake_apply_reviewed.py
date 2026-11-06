@@ -34,6 +34,7 @@ from beadhive.modules.intake.domain import (
     ApplyRequest,
     ApplyStatus,
     ApplyStep,
+    CanonicalIssue,
     CheckKind,
     CloseBackfill,
     CloseReason,
@@ -1181,6 +1182,19 @@ def test_a_rerun_after_a_later_failure_drafts_the_reply_once() -> None:
     again = hive.intake.draft_reply(ReplyDraft(member, record.message.text, TRIAGE))
 
     assert again.outbox_id == record.outbox_id and len(hive.records(member)) == 1
+
+
+def test_a_duplicates_close_names_its_canonicals_issue() -> None:
+    """bh-iamru: the member closes as a duplicate OF the canonical's bound issue."""
+    hive = Hive(outbox=CLOSING)
+    canonical, member = _family(hive)
+
+    assert item(hive.apply(), member).status is ApplyStatus.APPLIED
+
+    _, close = _close_of(hive, member)
+    issue = hive.issues[canonical]
+    assert close.close is CloseReason.DUPLICATE
+    assert close.duplicate_of == CanonicalIssue(issue.identifier, issue.url)
 
 
 def test_the_close_backfill_composes_a_fixed_reply_from_the_computed_version() -> None:

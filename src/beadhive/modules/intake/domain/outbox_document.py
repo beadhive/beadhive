@@ -5,10 +5,11 @@ schema-versioned and rewritten whole, beside ``intake.source`` and ``intake.thre
 is an opaque id, a local integer, a tracker value or recorded intent; no token, and never a
 secret's text (a secret finding is stored redacted). Pure; no I/O.
 
-An ``issue.close`` operation's ``close`` reason and a receipt's ``state_after`` are written only
-when set, so a document without a close is byte-identical to one an older host wrote. A host
-older than 0.35.3 cannot decode ``issue.close`` and fails closed on such a document (the 0.35.0
-rotation order: every outbox-reading host upgrades before any hive turns closes on).
+An ``issue.close`` operation's ``close`` reason, a duplicate close's ``duplicate_of`` canonical
+(``bh-iamru``) and a receipt's ``state_after`` are written only when set, so a document without a
+close is byte-identical to one an older host wrote. A host older than 0.35.3 cannot decode
+``issue.close`` and fails closed on such a document (the 0.35.0 rotation order: every
+outbox-reading host upgrades before any hive turns closes on).
 
 Decoding fails closed (:class:`OutboxDocumentError`) on a malformed document or one written by a
 newer schema: a store must never read such a document as an empty outbox, because the next write
@@ -27,6 +28,7 @@ from .outbox import (
     OUTBOX_SCHEMA,
     Approval,
     Attempt,
+    CanonicalIssue,
     CloseReason,
     DeliveryFacts,
     DraftKey,
@@ -67,6 +69,8 @@ def _operation(op: OutboxOperation) -> dict[str, Any]:
     row = _operation_row(op)
     if op.close is not None:  # omitted when unset: a document without a close is unchanged
         row["close"] = op.close.value
+    if op.duplicate_of is not None:  # likewise: a close naming no canonical is unchanged
+        row["duplicate_of"] = {"identifier": op.duplicate_of.identifier, "url": op.duplicate_of.url}
     if op.receipt is not None and op.receipt.state_after is not None:
         row["receipt"]["state_after"] = op.receipt.state_after
     return row
@@ -253,11 +257,18 @@ def _decode_operation(value: Any) -> OutboxOperation:
     close = None if raw.get("close") is None else CloseReason(raw["close"])
     if (kind is OpKind.CLOSE) != (close is not None):
         raise OutboxDocumentError("an issue.close operation, and only one, carries a close reason")
+    duplicate_of = None
+    if raw.get("duplicate_of") is not None:
+        canonical = _mapping(raw["duplicate_of"], "duplicate_of")
+        if close is not CloseReason.DUPLICATE:
+            raise OutboxDocumentError("only a duplicate close names a canonical issue")
+        duplicate_of = CanonicalIssue(str(canonical["identifier"]), str(canonical["url"]))
     return OutboxOperation(
         kind=kind,
         state=OpState(raw["state"]),
         labels=diff,
         close=close,
+        duplicate_of=duplicate_of,
         findings=tuple(
             LeakFinding(str(f["id"]), LeakKind(f["kind"]), str(f["match"]), int(f["start"]))
             for f in (_mapping(item, "finding") for item in raw.get("findings", ()))

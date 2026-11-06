@@ -730,6 +730,7 @@ def _rendered_row(rendered) -> dict:
         "add": sorted(rendered.add),
         "remove": sorted(rendered.remove),
         "close": rendered.close.value if rendered.close is not None else None,
+        "duplicate_of": rendered.duplicate_of.url if rendered.duplicate_of is not None else None,
         "findings": [
             {
                 "id": finding.id,
@@ -761,6 +762,8 @@ def _stored_operation_row(op) -> dict:
         row["add"], row["remove"] = sorted(op.labels.add), sorted(op.labels.remove)
     if op.close is not None:
         row["close"] = op.close.value
+    if op.duplicate_of is not None:
+        row["duplicate_of"] = op.duplicate_of.url
     return row
 
 
@@ -951,6 +954,7 @@ def _backfill_row(item) -> dict:
         "drafted": item.drafted,
         "detail": item.detail,
         "reply_text": item.reply_text,
+        "duplicate_of": item.duplicate_of,
     }
 
 
@@ -982,6 +986,8 @@ def render_close_backfill(call, as_json: bool) -> None:
             elif item.drafted or outcome.dry_run:
                 where = item.outbox_id or "a new reply"
                 typer.echo(f"✓ {item.report} {verb} issue.close as {reason} on {where}")
+                if item.duplicate_of:
+                    typer.echo(f"    as a duplicate of {item.duplicate_of}")
                 if item.reply_text:
                     typer.echo(f"    with the reply it never got: {item.reply_text}")
         if outcome.drafted:

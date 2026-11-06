@@ -21,6 +21,7 @@ import pytest
 
 from beadhive.modules.intake.application import IntakeService, OutboxService
 from beadhive.modules.intake.domain import (
+    CanonicalIssue,
     CloseBackfill,
     CloseReason,
     DraftRequest,
@@ -483,3 +484,77 @@ def test_an_abandoned_latest_labels_record_asks_for_a_re_sync() -> None:
 
     assert labels in error.detail and "re-sync the labels" in error.detail
     assert "send it first" not in error.detail and s.issue_state() is IssueState.OPEN
+
+
+# -- a duplicate closes as duplicate OF its canonical (bh-iamru) -------------------------------
+
+
+def test_a_duplicate_close_names_the_canonical_reports_issue_and_the_tracker_records_it() -> None:
+    s = Scene()
+    canonical, canonical_issue = s.report, s.issue
+    member, member_issue = s.new_report("the same bug again")
+    draft = ReplyDraft(member, REPLY, "alice", close=CloseReason.DUPLICATE, duplicate_of=canonical)
+    oid = s.intake.draft_reply(draft).outbox_id
+
+    close = s.op(oid, X, member)
+    assert close.duplicate_of == CanonicalIssue(canonical_issue.identifier, canonical_issue.url)
+    rendered = s.intake.render(oid).of(X)
+    assert rendered.payload == (
+        f"state: closed\nstate_reason: duplicate\nduplicate_of: {canonical_issue.url}"
+    )
+    assert rendered.findings == ()  # the canonical's URL is the tracker's own, never a leak
+
+    for kind in (C, X):
+        s.approve(oid, kind)
+    s.send(oid, C)
+    assert s.send(oid, X).state is OpState.SENT
+    row = s.world.issues[member_issue.identifier]
+    assert row.state is IssueState.CLOSED and row.closed_reason == "duplicate"
+    assert s.world.duplicate_of(member_issue) == canonical_issue.url
+    assert s.issue_state(canonical_issue) is IssueState.OPEN  # the canonical is never touched
+
+
+def test_a_canonical_with_no_issue_in_this_project_closes_as_a_plain_duplicate() -> None:
+    s = Scene()
+    member, member_issue = s.new_report("a duplicate")
+    native = s.store.create(ReportDraft("filed natively", "bug", "origin:report", "dev/report"))
+    elsewhere = s.store.create(
+        ReportDraft(
+            "bound to another project",
+            "bug",
+            "origin:github",
+            "dev/import",
+            binding=IssueBinding("", "memory", "acme/other", "memory://acme/other/issues/1", "#1"),
+        )
+    )
+    for n, canonical in enumerate((native, elsewhere, "acme-missing", member)):
+        text = f"{REPLY} ({n})"  # a fresh draft key each time
+        reply = ReplyDraft(
+            member, text, "alice", close=CloseReason.DUPLICATE, duplicate_of=canonical
+        )
+        oid = s.intake.draft_reply(reply).outbox_id
+        assert s.op(oid, X, member).duplicate_of is None, canonical
+        assert "duplicate_of" not in s.intake.render(oid).of(X).payload
+
+
+def test_the_backfill_names_the_canonical_of_a_duplicate() -> None:
+    s = Scene()
+    canonical, canonical_issue = s.report, s.issue
+    replied, _ = s.new_report("a duplicate that got its reply")
+    silent, _ = s.new_report("a duplicate that never got one")
+    _sent_reply(s, replied)
+    for report in (replied, silent):
+        _applied(s, report, ProposalDisposition.DUPLICATE_OF, share_with=canonical)
+
+    planned = s.intake.backfill_closes(CloseBackfill("alice", dry_run=True))
+    assert {(i.report, i.duplicate_of) for i in planned.planned} == {
+        (replied, canonical_issue.url),
+        (silent, canonical_issue.url),
+    }
+
+    done = s.intake.backfill_closes(CloseBackfill("alice"))
+
+    assert {i.report for i in done.drafted} == {replied, silent}
+    for item in done.drafted:
+        close = s.op(item.outbox_id, X, item.report)
+        assert close.duplicate_of == CanonicalIssue(canonical_issue.identifier, canonical_issue.url)
