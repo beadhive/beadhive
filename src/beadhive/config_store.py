@@ -7,8 +7,9 @@ import json
 import os
 import tempfile
 import threading
+import time
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -19,6 +20,7 @@ from pathlib import Path
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 
+from . import config_publish_signal
 from .hq_document_validation import (
     DocumentValidationError,
     validate_settings_mapping,
@@ -52,6 +54,57 @@ _fleet_read_host: ContextVar[Mapping | None] = ContextVar("fleet_read_host", def
 #: Set for a command whose config reads only feed hive-local work (the ``bh bd`` passthrough);
 #: only then may an ordinary SQL fleet read degrade to the cached verified snapshot (bh-kjxe9).
 _hive_local_reads: ContextVar[bool] = ContextVar("hive_local_reads", default=False)
+
+
+#: The per-invocation effective-config memo (``bh-pc9rf``): OPT-IN, entered by a one-shot CLI
+#: verb (``cli_entrypoint.main`` before the command tree is imported, and ``cli._root``) and
+#: never by a long-lived service. On a SQL-HQ host every ``load`` re-qualifies the committed
+#: fleet snapshot (about 1.3 s); one ``bh work outbox show`` used to pay it 7 times. Inside the
+#: scope the first successful load is reused while the HOST / Git-fleet file signatures still
+#: match and it is younger than :data:`PROCESS_LOAD_TTL_SECONDS` (the backstop for a SQL fleet
+#: change made by another process); an in-process write clears it (:func:`clear_load_cache`),
+#: and leaving the outermost scope drops it, so nothing outlives the invocation or a test.
+PROCESS_LOAD_TTL_SECONDS = 30.0
+
+#: Injectable monotonic clock so the TTL is tested with a fake, never with sleeps.
+_clock: Callable[[], float] = time.monotonic
+_process_depth = 0
+_process_entry: tuple[tuple, float, str] | None = None  # (key, loaded at, effective JSON)
+
+
+@contextmanager
+def process_load_memo() -> Iterator[None]:
+    """Opt this invocation into one effective-config load (see :data:`PROCESS_LOAD_TTL_SECONDS`).
+    Re-entrant; the memo is dropped when the outermost scope ends."""
+    global _process_depth, _process_entry
+    with _load_cache_lock:
+        _process_depth += 1
+    try:
+        yield
+    finally:
+        with _load_cache_lock:
+            _process_depth -= 1
+            if _process_depth <= 0:
+                _process_depth, _process_entry = 0, None
+
+
+def _memoized(key: tuple | None) -> str | None:
+    if key is None:
+        return None
+    with _load_cache_lock:
+        entry = _process_entry if _process_depth > 0 else None
+    if entry is None or entry[0] != key or _clock() - entry[1] >= PROCESS_LOAD_TTL_SECONDS:
+        return None
+    return entry[2]
+
+
+def _memoize(key: tuple | None, loaded_at: float, payload: str) -> None:
+    global _process_entry
+    if key is None:
+        return
+    with _load_cache_lock:
+        if _process_depth > 0:
+            _process_entry = (key, loaded_at, payload)
 
 
 @contextmanager
@@ -319,10 +372,15 @@ def _file_signature(path: Path) -> tuple:
 
 def clear_load_cache() -> None:
     """Invalidate the process-local effective-config memo after an in-process write."""
+    global _process_entry
     with _load_cache_lock:
         _load_cache.clear()
+        _process_entry = None
     with _sql_effective_lock:
         _sql_effective.clear()
+
+
+config_publish_signal.subscribe(clear_load_cache)  # a direct store publish (bh-pc9rf)
 
 
 def leaf_paths(node, prefix: str = ""):
@@ -437,6 +495,13 @@ def load(api):
             # An unreadable optional local fleet path cannot prevent the HOST
             # selector from choosing the authenticated SQL service.
             pass
+    # The invocation memo is keyed like the filesystem memo plus the hive-local read mode (a
+    # hive-local read may be served a degraded snapshot no other read may reuse).
+    invocation_key = (key, _hive_local_reads.get()) if key is not None else None
+    loaded_at = _clock()
+    remembered = _memoized(invocation_key)
+    if remembered is not None:
+        return json.loads(remembered)
     with _load_cache_lock:
         payload = _load_cache.get(key) if key is not None else None
         if payload is None:
@@ -448,7 +513,8 @@ def load(api):
                 _load_cache[key] = payload
     if payload is None:
         # No global effective-cache mutex is held during broker/SQL I/O.
-        return json.loads(_load_sql(api, prepared))
+        payload = _load_sql(api, prepared)
+    _memoize(invocation_key, loaded_at, payload)
     return json.loads(payload)
 
 

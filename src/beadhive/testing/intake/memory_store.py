@@ -162,6 +162,14 @@ class MemoryReportStore:
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         return tuple(r.view for r in self._rows.values() if OUTBOX_KEY in r.metadata)
 
+    def read_outboxes(self) -> dict[str, OutboxDocument]:
+        docs: dict[str, OutboxDocument] = {}
+        for view in self.reports_with_outbox():
+            doc = self.read_outbox(view.id)
+            if doc is not None:
+                docs[view.id] = doc
+        return docs
+
     def read_proposal(self, bead: str) -> Proposal | None:
         row = self._rows.get(bead)
         if row is None or PROPOSAL_KEY not in row.metadata:

@@ -546,3 +546,78 @@ def test_backfill_then_approve_and_send_the_close_after_the_reply(rig, monkeypat
     assert sent.exit_code == 0 and doc(sent)["results"][0]["state"] == "sent"
     assert rig.world.issues[issue.identifier].state.value == "closed"
     assert rig.world.write_requests() == 2  # the reply, then the close
+
+
+# -- the one-process batch send (bh-pc9rf): outbox send-approved -----------------------------------
+
+
+def test_send_approved_is_listed_with_help() -> None:
+    assert "send-approved" in bh("outbox", "--help").stdout
+    usage = " ".join(bh("outbox", "send-approved", "--help").stdout.split())
+    assert "--kind" in usage and "--bead" in usage and "own single-use grant" in usage
+
+
+def test_send_approved_refuses_while_the_outbox_is_off(rig) -> None:
+    switch(rig, ENABLED)
+
+    result = bh("outbox", "send-approved", "--hive", "widget", "--as", OPERATOR, "--json")
+
+    assert result.exit_code == 1 and doc(result)["reason"] == "outbox_disabled"
+    assert rig.world.write_requests() == 0
+
+
+def test_send_approved_sends_every_approved_reply_in_one_process(rig, monkeypatch) -> None:
+    _close_rig(rig, monkeypatch, close_enabled=False)
+    common = ("--hive", "widget", "--as", OPERATOR, "--json")
+    sent_ids = []
+    for title in ("A bug", "Another bug"):
+        report = doc(bh("import", rig.issue(title).url, "--hive", "widget", "--json"))["report"]
+        oid = doc(bh("outbox", "draft", report, "--text", "Thanks, fixed.", *common))["results"][0][
+            "outbox_id"
+        ]
+        (comment,) = doc(bh("outbox", "show", oid, "--hive", "widget", "--json"))["renders"]
+        approved = bh("outbox", "approve", oid, "--op", f"comment:{comment['digest']}", *common)
+        assert approved.exit_code == 0
+        sent_ids.append(oid)
+    unapproved = doc(bh("outbox", "draft", report, "--text", "One more thing.", *common))
+
+    result = bh("outbox", "send-approved", *common)
+
+    payload = doc(result)
+    assert result.exit_code == 0 and payload["ok"] is True and payload["sent"] == 2
+    assert [r["outbox_id"] for r in payload["results"]] == sent_ids
+    assert {r["state"] for r in payload["results"]} == {"sent"} and payload["failed"] == []
+    assert rig.world.write_requests() == 2  # one request per approved operation, no more
+    left = unapproved["results"][0]["outbox_id"]
+    shown = doc(bh("outbox", "show", left, "--hive", "widget", "--json"))
+    assert shown["record"]["operations"][0]["state"] == "drafted"  # never approved, never sent
+
+    again = bh("outbox", "send-approved", "--hive", "widget", "--as", OPERATOR)
+    assert again.exit_code == 0 and "nothing approved to send" in again.stdout
+
+
+def test_send_approved_reports_an_unknown_outcome_and_fails_the_batch(rig, monkeypatch) -> None:
+    _close_rig(rig, monkeypatch, close_enabled=False)
+    common = ("--hive", "widget", "--as", OPERATOR, "--json")
+    report = doc(bh("import", rig.issue("A bug").url, "--hive", "widget", "--json"))["report"]
+    oid = doc(bh("outbox", "draft", report, "--text", "Thanks.", *common))["results"][0][
+        "outbox_id"
+    ]
+    (comment,) = doc(bh("outbox", "show", oid, "--hive", "widget", "--json"))["renders"]
+    approved = bh("outbox", "approve", oid, "--op", f"comment:{comment['digest']}", *common)
+    assert approved.exit_code == 0
+    rig.world.fail_next_write_ambiguously(applied=False)
+
+    result = bh("outbox", "send-approved", "--bead", report, "--hive", "widget", "--as", OPERATOR)
+
+    assert result.exit_code == 1
+    assert f"{oid} comment.create: unknown" in result.stdout
+    assert "sent 0, unsettled 1, refused 0" in result.stdout
+
+
+def test_send_approved_names_a_bad_kind(rig, monkeypatch) -> None:
+    _close_rig(rig, monkeypatch, close_enabled=False)
+
+    result = bh("outbox", "send-approved", "--kind", "nope", "--hive", "widget", "--json")
+
+    assert result.exit_code == 2 and doc(result)["reason"] == "bad_argument"

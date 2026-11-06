@@ -61,7 +61,7 @@ def test_dependency_ledger_records_indirect_adapter_patch_points_exactly(built):
     points = ledger["current"]["config_patch_points"]
 
     assert ledger["schema_version"] == 2
-    assert ledger["current"]["config_patch_point_count"] == 338
+    assert ledger["current"]["config_patch_point_count"] == 339
     provisioning_patches = {
         (point["line"], point["target"], point["facade_target"], point["kind"])
         for point in points

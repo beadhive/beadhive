@@ -284,6 +284,12 @@ def load_fleet():
     return _config_store.load_fleet(_facade())
 
 
+def process_load_memo():
+    """Context: resolve the effective config once for this one-shot invocation (``bh-pc9rf``;
+    see :func:`beadhive.config_store.process_load_memo`). Long-lived services never enter it."""
+    return _config_store.process_load_memo()
+
+
 def hive_local_config_reads():
     """Context: config reads here only feed hive-local work; a trusted frame may then serve
     them from the bounded-age cached verified HQ snapshot during a transient outage."""

@@ -39,6 +39,8 @@ from ..domain import (
     UNTRIAGED,
     ApplyOutcome,
     ApplyRequest,
+    BatchSend,
+    BatchSendOutcome,
     BeadView,
     CloseBackfill,
     CloseBackfillOutcome,
@@ -728,6 +730,9 @@ class IntakeService:
     def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         return self._outbox_service().send(outbox_id, actor=actor, kind=kind)
 
+    def send_approved(self, request: BatchSend) -> BatchSendOutcome:
+        return self._outbox_service().send_approved(request)
+
     def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:
         return self._outbox_service().reconcile(outbox_id, actor=actor)
 
@@ -961,6 +966,9 @@ class NullIntake:
         raise _disabled()
 
     def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
+        raise _disabled()
+
+    def send_approved(self, request: BatchSend) -> BatchSendOutcome:
         raise _disabled()
 
     def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:

@@ -106,6 +106,7 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "outbox",
         "labels_enabled",
         "mode",
+        "batch_recheck_seconds",  # how long a one-process batch reuses its host check (bh-pc9rf)
         "comments",
         "deletion_confirmations",
         "purge_deleted_bodies",

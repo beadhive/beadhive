@@ -45,7 +45,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 38
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 39
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -305,6 +305,17 @@ class _OutboxAnyBead(MemoryReportStore):
             self._row(bead).metadata[OUTBOX_KEY] = outbox_to_document(document)
 
 
+class _OutboxesSkipClosed(MemoryReportStore):
+    """Lists only the open reports' outboxes, which the one-pass read must never do."""
+
+    def read_outboxes(self):
+        return {
+            bead: doc
+            for bead, doc in super().read_outboxes().items()
+            if (view := self.get(bead)) is not None and view.status == "open"
+        }
+
+
 class _OutboxForEveryBead(MemoryReportStore):
     def read_outbox(self, bead):
         return super().read_outbox(bead) or outbox(0, texts=())
@@ -459,6 +470,7 @@ _BROKEN = [
     (_ThreadClobbersOutbox, "store.outbox-keeps-other-documents"),
     (_OutboxAnyBead, "store.outbox-on-every-status-and-bound-only"),
     (_OutboxForEveryBead, "store.outbox-absent-reads-none"),
+    (_OutboxesSkipClosed, "store.read-outboxes-is-every-document-in-one-pass"),
     (_ProposalForEveryBead, "store.proposal-absent-reads-none"),
     (_ProposalMerged, "store.proposal-round-trips-whole"),
     (_ProposalSeqUnchecked, "store.proposal-write-rechecks-seq"),

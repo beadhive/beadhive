@@ -729,6 +729,24 @@ review approves each with its own digest and grant. `OutboxPolicy.type_enabled` 
 value back. The tracker port's optional `IssueTypeWriter` / `IssueFieldWriter` are the writers.
 Tests: `tests/unit/modules/intake/test_intake_issue_values.py`.
 
+Finding a record and sending in bulk (`bh-pc9rf`): the sender takes an optional `OutboxIndex`
+port (outbox id to report; `beadhive.adapters.intake.FileOutboxIndex` over
+`.bh/intake/outbox-index.json` in production, `MemoryOutboxIndex` in the kit), confirms every
+answer against that report's document, and on a miss scans once with the new
+`ReportStore.read_outboxes()` (one listing whose rows carry the documents on `ApiReportStore`) and
+rebuilds the index. `IntakePort.send_approved(BatchSend)` (`bh work outbox send-approved`, wire
+2.24.0) sends every approved operation in one process, per report in `SEND_ORDER` (comment,
+labels, type, fields, close), each through the same O9 to O13 as `send` with its own grant and
+receipt, and reports a refused one in `BatchSendOutcome.failed` while the rest continue (losing the
+primary host stops it with `BatchSendOutcome.stopped`, keeping what was sent). It and
+`approve_label_batch` run inside the lock's optional `BatchLock.batch()` scope, where
+`FlockIntakeLock` reuses one host check and epoch read for at most
+`intake.external.outbox.batch_recheck_seconds` (default `0`: every operation checks; reuse is
+opt-in). Tests:
+`tests/unit/modules/intake/test_intake_outbox_batch_send.py`,
+`tests/test_intake_outbox_batch_root.py` and the perf check
+`tests/test_intake_outbox_batch_perf.py` (`-m perf`).
+
 The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
 `IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on

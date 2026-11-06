@@ -54,6 +54,14 @@ listing, ONE pass over the outbox documents and (to approve) ONE capability prob
 its digest mints one single-use grant per item; an item whose owned labels moved since its draft is
 skipped and reported for re-draft.
 
+**Finding a record reads one report** (``bh-pc9rf``): an outbox id is opaque, so the report that
+holds it comes from the injected :class:`OutboxIndex`, confirmed against that report's own
+document; only a miss scans (one :meth:`ReportStore.read_outboxes` pass) and rebuilds the index.
+:meth:`OutboxService.send_approved` sends every approved operation in ONE process: one pass over
+the outbox documents, one issue listing for the labels, and the lock's batch scope
+(:class:`BatchLock`), ordered per report comment, labels, close; each operation is the same
+write-ahead, single request and receipt as ``send``, with its own grant.
+
 The render is the dry run: no store write, and no tracker request beyond that one label read. The
 marker line is encoded by
 the injected ``marker_line`` (the adapter's own codec) and joined to the body by the port's
@@ -65,6 +73,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager, nullcontext
 
 from beadhive.modules.tracker.contracts import CloseReason as TrackerCloseReason
 from beadhive.modules.tracker.contracts import (
@@ -87,10 +96,14 @@ from beadhive.modules.tracker.contracts import (
     join_marker_line,
 )
 
-from ..contracts import IdSource, IntakeLock, ReportStore, Sanitizer
+from ..contracts import BatchLock, IdSource, IntakeLock, OutboxIndex, ReportStore, Sanitizer
 from ..domain import (
     NOTIFIED_DIM,
+    SEND_ORDER,
     ApprovalRequest,
+    BatchSend,
+    BatchSendFailure,
+    BatchSendOutcome,
     CanonicalIssue,
     CloseBackfill,
     CloseBackfillItem,
@@ -193,6 +206,7 @@ class OutboxService:
         posture: StorePosture,
         holder: str = "intake",
         completion: Callable[[str, str], bool] | None = None,
+        index: OutboxIndex | None = None,
     ) -> None:
         self._store = store
         self._tracker = tracker
@@ -206,20 +220,20 @@ class OutboxService:
         self._posture = posture
         self._holder = holder
         self._completion = completion
+        self._index = index
 
     # -- reads -------------------------------------------------------------------------------
 
     def outbox(self, query: OutboxQuery) -> OutboxListing:
         """The records, oldest first per report (no tracker request, no lock, no write)."""
         self._require_enabled()
-        reports = (
-            [query.report] if query.report else [v.id for v in self._store.reports_with_outbox()]
-        )
+        if query.report:
+            one = self._store.read_outbox(query.report)
+            docs = {query.report: one} if one is not None else {}
+        else:
+            docs = self._all_outboxes()  # one pass, and the index rebuilt from it
         entries: list[OutboxEntry] = []
-        for report in reports:
-            doc = self._store.read_outbox(report)
-            if doc is None:
-                continue
+        for report, doc in docs.items():
             for record in sorted(doc.records.values(), key=lambda r: r.created_seq):
                 if query.open_only and all(op.terminal for op in record.operations):
                     continue
@@ -275,6 +289,8 @@ class OutboxService:
                 ctx=self._ctx(request.report, binding, outbox_id),
             )
             self._commit(request.report, applied, expect, request.actor)
+        if applied.changed:
+            self._indexed({applied.outbox_id: request.report})
         return self._result(request.report, applied, rules, OpKind.COMMENT)
 
     # -- O5: the gate ------------------------------------------------------------------------
@@ -341,6 +357,21 @@ class OutboxService:
         binding = self._bound_here(report)
         writer = self._writer(kind)
         fresh = self._fresh(binding) if kind is OpKind.LABELS else None
+        return self._send_op(report, binding, outbox_id, kind, writer, fresh, actor)
+
+    def _send_op(
+        self,
+        report: str,
+        binding: IssueBinding,
+        outbox_id: str,
+        kind: OpKind,
+        writer: object,
+        fresh: LabelBase | None,
+        actor: str,
+    ) -> OutboxResult:
+        """One operation's O9 to O13 under one hold of the binding's lock (``send`` and every
+        item of ``send_approved``): the O7 re-check, the write-ahead, the ONE request with the
+        grant, then the receipt or the outcome, each a durable write."""
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, rules = self._open(report, epoch, actor)
             record = self._record(doc, outbox_id)
@@ -391,6 +422,82 @@ class OutboxService:
         detail = _joined(detail, self._complete(report, outcome, actor))  # outside the lock
         result = self._result(report, outcome, (*rules, *(s.rule for s in ahead.steps)), kind)
         return dataclasses.replace(result, notified=notified, detail=detail or result.detail)
+
+    def send_approved(self, request: BatchSend) -> BatchSendOutcome:
+        """Send every APPROVED operation (of ``request.kinds``, on ``request.reports``) in one
+        process (``bh-pc9rf``): ONE pass over the outbox documents, ONE issue listing when a
+        labels operation is due, and the lock's batch scope, so a batch of N pays the per-process
+        costs once instead of N times. Per report the order is :data:`SEND_ORDER` (every comment,
+        oldest first, then the labels, then the close), and every operation is exactly ``send``'s
+        O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a store
+        failure on one operation is reported in ``failed`` and the rest continue (a close whose
+        comment did not go out is refused by ``close_not_ready``); only a host-level refusal
+        (``not_primary``) stops the batch, since nothing else could be sent either: the outcome
+        so far is returned with ``stopped`` set, so what WAS sent is still reported."""
+        self._require_enabled()
+        kinds = request.kinds or SEND_ORDER
+        for kind in request.kinds:  # a named kind is checked before any tracker request
+            machine.require_kind_enabled(kind, self._policy)
+        require_private_store(self._posture)
+        if request.reports:
+            docs = {r: d for r in request.reports if (d := self._store.read_outbox(r)) is not None}
+        else:
+            docs = self._all_outboxes()
+        due = [
+            (report, record.outbox_id, kind)
+            for report in sorted(docs)
+            for kind in SEND_ORDER
+            if kind in kinds
+            for record in sorted(docs[report].records.values(), key=_created)
+            if (op := record.op(kind)) is not None and op.state is OpState.APPROVED
+        ]
+        if not due:
+            return BatchSendOutcome()
+        live = self._listing_or_none() if any(k is OpKind.LABELS for _, _, k in due) else None
+        results: list[OutboxResult] = []
+        failed: list[BatchSendFailure] = []
+        stopped = ""
+        bindings: dict[str, IssueBinding] = {}
+        with self._batch():
+            for report, outbox_id, kind in due:
+                try:
+                    machine.require_kind_enabled(kind, self._policy)
+                    if report not in bindings:
+                        bindings[report] = self._bound_here(report)
+                    binding = bindings[report]
+                    writer = self._writer(kind)
+                    fresh = None
+                    if kind is OpKind.LABELS:
+                        issue = live.get(binding.url) if live is not None else None
+                        fresh = label_base(issue) if issue is not None else self._fresh(binding)
+                    sent = self._send_op(
+                        report, binding, outbox_id, kind, writer, fresh, request.actor
+                    )
+                    results.append(sent)
+                except IntakeRefused as exc:
+                    failed.append(
+                        BatchSendFailure(report, outbox_id, kind, exc.reason.value, exc.detail)
+                    )
+                    if exc.reason is RefusalReason.NOT_PRIMARY:
+                        stopped = exc.detail
+                        break
+                except IntakeStoreError as exc:
+                    failed.append(
+                        BatchSendFailure(report, outbox_id, kind, "store_error", exc.detail)
+                    )
+        return BatchSendOutcome(tuple(results), tuple(failed), stopped)
+
+    def _listing_or_none(self) -> dict[str, TrackerIssue] | None:
+        """The issues by URL from ONE listing, or ``None`` when it cannot be made (each labels
+        operation then reads its own issue, as ``send`` does)."""
+        try:
+            return issue_index(self._tracker, include_closed=True)
+        except TrackerError:
+            return None
+
+    def _batch(self) -> AbstractContextManager[None]:
+        """The lock's batch scope when it has one (:class:`BatchLock`), else nothing."""
+        return self._lock.batch() if isinstance(self._lock, BatchLock) else nullcontext()
 
     def _writer(self, kind: OpKind) -> object:
         """The bound adapter as the writer ``kind`` needs (refused when it has none)."""
@@ -476,15 +583,14 @@ class OutboxService:
             report, _ = self._locate(outbox_id)
             targets[report] = [outbox_id]
         else:
-            for view in self._store.reports_with_outbox():
-                doc = self._store.read_outbox(view.id)
+            for report, doc in self._all_outboxes().items():
                 wanted = [
                     r.outbox_id
-                    for r in sorted((doc.records if doc else {}).values(), key=_created)
+                    for r in sorted(doc.records.values(), key=_created)
                     if _needs_reconcile(r)
                 ]
                 if wanted:
-                    targets[view.id] = wanted
+                    targets[report] = wanted
         results: list[OutboxResult] = []
         for report, outbox_ids in targets.items():
             results.extend(self._reconcile_report(report, outbox_ids, actor))
@@ -742,8 +848,8 @@ class OutboxService:
         ``(outbox_id, digest)`` list. One pass over the outbox documents and one issue listing (none
         when nothing is drafted); no store write."""
         self._require_enabled()
-        docs = self._outbox_index()
-        return self._batch(docs, self._live_for(docs))
+        docs = self._all_outboxes()
+        return self._label_batch(docs, self._live_for(docs))
 
     def approve_label_batch(self, request: LabelBatchApprove) -> LabelBatchOutcome:
         """Approve the batch whose digest an operator reviewed: re-render it (ONE capability
@@ -762,9 +868,9 @@ class OutboxService:
                 f"approving a batch needs a human operator seat, not {request.actor!r}",
             )
         capabilities = translate.capabilities(self._tracker.probe_capabilities())
-        docs = self._outbox_index()
+        docs = self._all_outboxes()
         live = self._live_for(docs)
-        batch = self._batch(docs, live)
+        batch = self._label_batch(docs, live)
         if not batch.items:
             raise IntakeRefused(RefusalReason.UNKNOWN_OUTBOX, "no drafted labels operation")
         if not machine.digest_matches(request.digest, batch.digest):
@@ -775,28 +881,36 @@ class OutboxService:
         approved: list[OutboxResult] = []
         stale: list[LabelBatchItem] = []
         failed: list[tuple[str, str]] = []
-        for item in batch.items:
-            if item.stale:
-                stale.append(item)
-                continue
-            try:
-                approved.append(self._approve_item(item, live[item.url], capabilities, request))
-            except IntakeRefused as exc:
-                if exc.reason is RefusalReason.STALE_DIGEST:
-                    stale.append(dataclasses.replace(item, stale=True, note=exc.detail))
-                else:
-                    failed.append((item.outbox_id, str(exc)))
+        bindings: dict[str, IssueBinding] = {}
+        with self._batch():  # one process, one host check (bh-pc9rf)
+            for item in batch.items:
+                if item.stale:
+                    stale.append(item)
+                    continue
+                try:
+                    if item.report not in bindings:
+                        bindings[item.report] = self._bound_here(item.report)
+                    approved.append(
+                        self._approve_item(
+                            item, bindings[item.report], live[item.url], capabilities, request
+                        )
+                    )
+                except IntakeRefused as exc:
+                    if exc.reason is RefusalReason.STALE_DIGEST:
+                        stale.append(dataclasses.replace(item, stale=True, note=exc.detail))
+                    else:
+                        failed.append((item.outbox_id, str(exc)))
         return LabelBatchOutcome(batch, tuple(approved), tuple(stale), tuple(failed))
 
     def _approve_item(
         self,
         item: LabelBatchItem,
+        binding: IssueBinding,
         issue: TrackerIssue,
         capabilities: machine.Capabilities,
         request: LabelBatchApprove,
     ) -> OutboxResult:
         """O5 for one batch item, against the listing's labels, minting its own grant."""
-        binding = self._bound_here(item.report)
         fresh = label_base(issue)
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, rules = self._open(item.report, epoch, request.actor)
@@ -821,14 +935,19 @@ class OutboxService:
             detail=f"approved {rendered.short_digest} in batch; `send` changes it once",
         )
 
-    def _outbox_index(self) -> dict[str, OutboxDocument]:
-        """Every outbox document, read once, by report (the batch's one pass)."""
-        docs: dict[str, OutboxDocument] = {}
-        for view in self._store.reports_with_outbox():
-            doc = self._store.read_outbox(view.id)
-            if doc is not None:
-                docs[view.id] = doc
+    def _all_outboxes(self) -> dict[str, OutboxDocument]:
+        """Every outbox document, read once, by report (a batch's or a scan's one pass), and the
+        outbox index rebuilt from it: the pass is complete, so it is the index's truth."""
+        docs = dict(self._store.read_outboxes())
+        if self._index is not None:
+            self._index.rebuild(
+                {oid: report for report, doc in docs.items() for oid in doc.records}
+            )
         return docs
+
+    def _indexed(self, entries: dict[str, str]) -> None:
+        if self._index is not None:
+            self._index.add(entries)
 
     def _drafted(
         self, docs: dict[str, OutboxDocument]
@@ -860,7 +979,9 @@ class OutboxService:
                 RefusalReason.TRACKER_ERROR, f"the issue listing failed: {type(exc).__name__}"
             ) from exc
 
-    def _batch(self, docs: dict[str, OutboxDocument], live: dict[str, TrackerIssue]) -> LabelBatch:
+    def _label_batch(
+        self, docs: dict[str, OutboxDocument], live: dict[str, TrackerIssue]
+    ) -> LabelBatch:
         items: list[LabelBatchItem] = []
         for report, record, op in self._drafted(docs):
             if op.kind in VALUE_KINDS:
@@ -935,15 +1056,24 @@ class OutboxService:
 
     def _locate(self, outbox_id: str) -> tuple[str, OutboxDocument]:
         """The report holding ``outbox_id`` and its document. An id is opaque (``ob1_`` plus 26
-        base32 characters), never a bead id."""
+        base32 characters), never a bead id. The index answers with ONE report read, confirmed
+        against that report's document (a record never leaves its report); a miss, or an answer
+        the document does not confirm, scans every outbox once and rebuilds the index."""
         if not is_outbox_id(outbox_id):
             raise IntakeRefused(
                 RefusalReason.INVALID_OUTBOX_ID, f"{outbox_id!r} is not an outbox id (ob1_...)"
             )
-        for view in self._store.reports_with_outbox():
-            doc = self._store.read_outbox(view.id)
+        hint = self._index.report_of(outbox_id) if self._index is not None else None
+        if hint:
+            try:
+                doc = self._store.read_outbox(hint)
+            except IntakeStoreError:  # e.g. the hinted bead is gone: a miss, so scan
+                doc = None
             if doc is not None and outbox_id in doc.records:
-                return view.id, doc
+                return hint, doc
+        for report, doc in self._all_outboxes().items():
+            if outbox_id in doc.records:
+                return report, doc
         raise IntakeRefused(RefusalReason.UNKNOWN_OUTBOX, f"no outbox record {outbox_id}")
 
     @staticmethod
@@ -1199,9 +1329,9 @@ class StoreOutboxView:
         self._ledgers: tuple | None = None
 
     def _all(self) -> tuple:
-        if self._ledgers is None:
-            docs = (self._store.read_outbox(v.id) for v in self._store.reports_with_outbox())
-            self._ledgers = tuple(outbox_view(doc) for doc in docs if doc is not None)
+        if self._ledgers is None:  # one pass over every outbox document (bh-pc9rf)
+            docs = self._store.read_outboxes().values()
+            self._ledgers = tuple(outbox_view(doc) for doc in docs)
         return self._ledgers
 
     def receipt_ids(self) -> frozenset[str]:

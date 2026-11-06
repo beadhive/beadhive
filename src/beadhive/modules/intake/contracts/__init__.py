@@ -79,11 +79,13 @@ from ..domain import (
     thread_to_document,
 )
 from .ports import (
+    BatchLock,
     CheckpointStore,
     IdSource,
     IntakeLock,
     IntakePort,
     LabelPolicy,
+    OutboxIndex,
     OutboxView,
     ReleaseVerifier,
     ReportStore,
@@ -104,6 +106,7 @@ __all__ = [
     "hold_findings",
     "is_hold_gate",
     "THREAD_KEY",
+    "BatchLock",
     "BeadView",
     "Checkpoint",
     "CheckpointScope",
@@ -136,6 +139,7 @@ __all__ = [
     "LinkKind",
     "LinkOutcome",
     "LinkRequest",
+    "OutboxIndex",
     "OutboxView",
     "OwnIdentity",
     "OwnMark",
@@ -213,6 +217,10 @@ __all__ += [
 # -- the supervised sender's port records (I9a) -----------------------------------------------
 
 from ..domain import (  # noqa: E402
+    SEND_ORDER,
+    BatchSend,
+    BatchSendFailure,
+    BatchSendOutcome,
     CloseBackfill,
     CloseBackfillItem,
     CloseBackfillOutcome,
@@ -226,6 +234,10 @@ from ..domain import (  # noqa: E402
 )
 
 __all__ += [
+    "SEND_ORDER",
+    "BatchSend",
+    "BatchSendFailure",
+    "BatchSendOutcome",
     "CloseBackfill",
     "CloseBackfillItem",
     "CloseBackfillOutcome",

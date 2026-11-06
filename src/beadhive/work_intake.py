@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import typer
@@ -787,11 +788,49 @@ def _outbox_payload(call, verb: str) -> dict:
         payload["renders"] = [_rendered_row(r) for r in value.renders]
     elif hasattr(value, "entries"):  # an OutboxListing
         payload["records"] = [_record_row(e.report, e.record) for e in value.entries]
+    elif isinstance(value, intake_services.BatchSendOutcome):  # outbox send-approved (bh-pc9rf)
+        payload["ok"] = call.code == 0 and value.ok
+        payload["results"] = [_outbox_result_row(r) for r in value.results]
+        payload["failed"] = [_batch_failure_row(f) for f in value.failed]
+        payload["sent"] = len(value.sent)
+        payload["stopped"] = value.stopped
     elif isinstance(value, tuple):
         payload["results"] = [_outbox_result_row(r) for r in value]
     else:
         payload["results"] = [_outbox_result_row(value)]
     return payload
+
+
+def _batch_failure_row(failure) -> dict:
+    return {
+        "report": failure.report,
+        "outbox_id": failure.outbox_id,
+        "kind": failure.kind.value,
+        "reason": failure.reason,
+        "error": failure.detail,
+    }
+
+
+def _batch_send_lines(outcome) -> list[str]:
+    """``outbox send-approved``: every attempted operation, then every refused one, then a tally."""
+    lines: list[str] = []
+    for result in outcome.results:
+        lines += _outbox_result_lines(result)
+    for failure in outcome.failed:
+        lines.append(
+            f"✗ {failure.outbox_id} {failure.kind.value} on {failure.report} "
+            f"({failure.reason}): {failure.detail}"
+        )
+    if outcome.stopped:
+        lines.append(f"✗ stopped, the rest not tried: {outcome.stopped}")
+    if not outcome.results and not outcome.failed:
+        lines.append("nothing approved to send")
+    else:
+        lines.append(
+            f"sent {len(outcome.sent)}, unsettled {len(outcome.unsettled)}, "
+            f"refused {len(outcome.failed)}"
+        )
+    return lines
 
 
 def _outbox_result_lines(result) -> list[str]:
@@ -840,14 +879,18 @@ def _stored_lines(stored) -> list[str]:
 
 def render_outbox(call, verb: str, as_json: bool) -> None:
     """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal."""
+    value = call.value
+    batch_failed = isinstance(value, intake_services.BatchSendOutcome) and not value.ok
     if as_json:
         typer.echo(json.dumps(_outbox_payload(call, verb), sort_keys=True))
-        if call.code:
-            raise typer.Exit(call.code)
+        if call.code or batch_failed:
+            raise typer.Exit(call.code or 1)
         return
-    value = call.value
     done = value if isinstance(value, tuple) else ((value,) if value is not None else ())
-    if isinstance(value, intake_services.StoredOutboxRecord):
+    if isinstance(value, intake_services.BatchSendOutcome):
+        for line in _batch_send_lines(value):
+            typer.echo(line)
+    elif isinstance(value, intake_services.StoredOutboxRecord):
         for line in _stored_lines(value):
             typer.echo(line)
     elif hasattr(value, "renders"):
@@ -875,6 +918,8 @@ def render_outbox(call, verb: str, as_json: bool) -> None:
         code = f" ({call.reason})" if call.reason else ""
         typer.echo(f"✗ outbox {verb} refused{code}: {call.error}", err=True)
         raise typer.Exit(call.code)
+    if batch_failed:  # every item was tried; a refused or unsettled one fails the batch
+        raise typer.Exit(1)
 
 
 def _outbox(verb: str, hive: str, as_json: bool, run) -> None:
@@ -947,6 +992,25 @@ def outbox_send(
         as_json,
         lambda cfg, entry, directory: intake_services.outbox_send(
             cfg, entry, directory, outbox_id, kind, actor, hive=hive
+        ),
+    )
+
+
+def outbox_send_approved(
+    kind: str = "",
+    beads: Sequence[str] = (),
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Send every approved operation in one process (``bh-pc9rf``)."""
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "send-approved",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_send_approved(
+            cfg, entry, directory, kind, beads, actor, hive=hive
         ),
     )
 

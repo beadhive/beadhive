@@ -68,6 +68,8 @@ def test_port_names_match_the_adr() -> None:
         "render",
         "approve",
         "send",
+        # the one-process batch send (bh-pc9rf), additive
+        "send_approved",
         "reconcile",
         "discard",
         "retry",

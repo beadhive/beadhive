@@ -596,3 +596,20 @@ def test_a_metadata_document_is_data_and_keeps_its_own_timestamp_spelling() -> N
 
     assert spelled["created_at"] == "2026-01-01T00:00:00Z"
     assert spelled["metadata"] == {"intake.thread": document}
+
+
+def test_every_outbox_document_comes_from_one_listing_over_the_api() -> None:
+    """``read_outboxes`` (bh-pc9rf): the service's rows carry their metadata, so a scan of N
+    reports is ONE listing, not a listing plus N reads, and no ``bd`` at all."""
+    store, bd, service = _rig()
+    reports = [store.create(draft(f"report {i}", bound=True)) for i in range(4)]
+    for i, report in enumerate(reports):
+        store.write_outbox(report, outbox(2 + i, texts=(f"t{i}",)), expect_seq=0, actor=ACTOR)
+    bd.calls.clear()
+    service.requests.clear()
+
+    docs = dict(store.read_outboxes())
+    requests = list(service.operations())
+
+    assert bd.calls == [] and len(requests) == 1  # one listing request, nothing per report
+    assert docs == {report: store.read_outbox(report) for report in reports}
