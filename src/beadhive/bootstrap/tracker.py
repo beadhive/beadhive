@@ -69,6 +69,7 @@ from ..modules.tracker.contracts import (
     PORT_API_VERSION,
     WRITE_OPERATIONS,
     CommentWriter,
+    IssueCloser,
     IssueResolver,
     LabelDefiner,
     LabelPruner,
@@ -98,6 +99,7 @@ OPERATION_FLAG_KEYS: Mapping[Operation, str] = MappingProxyType(
         Operation.LABELS_CHANGE: "write.labels.enabled",
         Operation.LABELS_READ: "read.labels.enabled",
         Operation.LABELS_DEFINE: "write.label_definitions.enabled",
+        Operation.ISSUE_CLOSE: "write.issue_close.enabled",
     }
 )
 
@@ -598,6 +600,12 @@ class _LabelPruning:
         return self._inner.delete_labels(names, grant=grant)  # type: ignore[attr-defined]
 
 
+class _IssueClosing:
+    def close_issue(self, issue, *, reason, grant):
+        self._check_grant(grant, Operation.ISSUE_CLOSE)  # type: ignore[attr-defined]
+        return self._inner.close_issue(issue, reason=reason, grant=grant)  # type: ignore[attr-defined]
+
+
 class _Resolving:
     def resolve(self, url):
         return self._inner.resolve(url)  # type: ignore[attr-defined]
@@ -622,8 +630,9 @@ def _view_type(
     label_reader: bool = False,
     label_definer: bool = False,
     label_pruner: bool = False,
+    closer: bool = False,
 ) -> type:
-    key = (comment, labels, resolver, marker, label_reader, label_definer, label_pruner)
+    key = (comment, labels, resolver, marker, label_reader, label_definer, label_pruner, closer)
     if key not in _VIEW_TYPES:
         mixins = tuple(
             mixin
@@ -635,6 +644,7 @@ def _view_type(
                 (label_reader, _LabelReading),
                 (label_definer, _LabelDefining),
                 (label_pruner, _LabelPruning),
+                (closer, _IssueClosing),
             )
             if present
         )
@@ -655,6 +665,7 @@ def narrow(adapter: object, enabled: frozenset[Operation]) -> TrackerAdapter:
         Operation.LABELS_READ in enabled and isinstance(adapter, LabelReader),
         Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelDefiner),
         Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelPruner),
+        Operation.ISSUE_CLOSE in enabled and isinstance(adapter, IssueCloser),
     )
     return view(adapter, enabled)
 

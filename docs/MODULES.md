@@ -659,6 +659,20 @@ approve and at send. `IntakePort.send` and `retry` take `kind` (default `comment
 `external-intake-module-adr.md` section 11. Tests:
 `tests/unit/modules/intake/test_intake_outbox_labels_sender.py`.
 
+The sender also carries `issue.close` (`bh-pr5ll`) as a third gate: `OutboxPolicy.close_enabled`
+is set by the composition root from the bound adapter's own `issue.close` enable
+(`plugins.tracker-github.write.issue_close.enabled`; there is no separate intake key), and a close
+is refused with `CLOSE_DISABLED` otherwise. A close rides on a reply record (`ReplyDraft.close`;
+triage apply asks for one on a `fixed`, `reject` or `duplicate-of` reply, never on `needs-info`),
+has its own digest, grant and receipt, and O9 refuses it with `CLOSE_NOT_READY` until the record's
+comment is `sent`, no other comment of the report is unsent, and the report's latest labels record
+is `sent`. `reconcile` reads the issue's state back. Apply drafts a reply before any other verb; a
+`duplicate-of` gets one only while an outbox is bound (`ProposalService(replies=)`).
+`IntakePort.backfill_closes` (`bh work outbox backfill-close`) adds the close to the latest reply of
+every report closed in the store whose issue is still open, and drafts the reply a report never
+got from its applied proposal (`ProposalService.backfill_reply`). Tests:
+`tests/unit/modules/intake/test_intake_outbox_close_sender.py`.
+
 The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
 `IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on

@@ -213,6 +213,9 @@ __all__ += [
 # -- the supervised sender's port records (I9a) -----------------------------------------------
 
 from ..domain import (  # noqa: E402
+    CloseBackfill,
+    CloseBackfillItem,
+    CloseBackfillOutcome,
     OutboxApprove,
     OutboxEntry,
     OutboxListing,
@@ -223,6 +226,9 @@ from ..domain import (  # noqa: E402
 )
 
 __all__ += [
+    "CloseBackfill",
+    "CloseBackfillItem",
+    "CloseBackfillOutcome",
     "OutboxApprove",
     "OutboxEntry",
     "OutboxListing",

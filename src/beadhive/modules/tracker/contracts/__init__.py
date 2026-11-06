@@ -24,6 +24,7 @@ from .errors import (
 )
 from .ports import (
     CommentWriter,
+    IssueCloser,
     IssueResolver,
     LabelDefiner,
     LabelPruner,
@@ -46,6 +47,7 @@ from .records import (
     CapabilityReport,
     CapabilityState,
     Checkpoint,
+    CloseReason,
     CommentKey,
     CommentQuery,
     IdPage,
@@ -87,6 +89,7 @@ __all__ = [
     "CapabilityState",
     "ChangeRequestUrl",
     "Checkpoint",
+    "CloseReason",
     "CommentKey",
     "CommentQuery",
     "CommentWriter",
@@ -95,6 +98,7 @@ __all__ = [
     "IdSnapshot",
     "IdSubject",
     "IntegrationRef",
+    "IssueCloser",
     "IssueKey",
     "IssueQuery",
     "IssueResolver",

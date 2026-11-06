@@ -2979,6 +2979,12 @@ class TrackerGithubWrite(_QuietSection):
         description="`labels.define`: create or update repository label definitions "
         "(default off; each use needs an operator-approved single-use grant).",
     )
+    issue_close: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag,
+        description="`issue.close`: close an issue with its reason (completed, not_planned or "
+        "duplicate), never touching its labels (default off; each use needs an "
+        "operator-approved single-use grant).",
+    )
 
 
 class TrackerGithubConfig(_QuietSection):

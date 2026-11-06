@@ -14,6 +14,8 @@ Module                 Holds
                        labels only
 ``label_definitions``  ``labels.read`` (``LabelReader``) and the ``labels.define`` writer
                        (``LabelDefiner.define_labels``): repository label definitions, owned only
+``closing``            the ``issue.close`` writer (``IssueCloser.close_issue``): the state and
+                       its reason only, never the labels
 ``grants``             the in-process single-use ``WriteGrant`` ledger every writer spends from
 ``transport``          the githubkit seam: one credential per operation, adapter retry, writes
 ``retry``              the pure retry classification and budget decision (injected clock)
@@ -35,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from beadhive.modules.tracker.contracts import ProjectRef
 from beadhive_plugins.credentials import TokenSource
 
+from .closing import IssueClosing
 from .comments import CommentCreate
 from .compose import adapter_class, new_adapter
 from .diagnostics import diagnose, refusal_error
@@ -55,6 +58,7 @@ __all__ = [
     "CommentCreate",
     "GitHubTrackerAdapter",
     "GrantLedger",
+    "IssueClosing",
     "LabelDefining",
     "LabelDefinitionReading",
     "LabelWriting",

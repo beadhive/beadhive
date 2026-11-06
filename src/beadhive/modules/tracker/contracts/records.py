@@ -249,12 +249,27 @@ class Operation(StrEnum):
     LABELS_CHANGE = "labels.change"
     LABELS_READ = "labels.read"
     LABELS_DEFINE = "labels.define"
+    ISSUE_CLOSE = "issue.close"
 
 
 READ_OPERATIONS = frozenset({Operation.ISSUES_READ, Operation.COMMENTS_READ, Operation.LABELS_READ})
 WRITE_OPERATIONS = frozenset(
-    {Operation.COMMENT_CREATE, Operation.LABELS_CHANGE, Operation.LABELS_DEFINE}
+    {
+        Operation.COMMENT_CREATE,
+        Operation.LABELS_CHANGE,
+        Operation.LABELS_DEFINE,
+        Operation.ISSUE_CLOSE,
+    }
 )
+
+
+class CloseReason(StrEnum):
+    """Why an ``issue.close`` closes an issue (additive; the API version stays 1). The values
+    are the outcome, not one tracker's field: an adapter maps each to its own vocabulary."""
+
+    COMPLETED = "completed"  # done: fixed, shipped or answered
+    NOT_PLANNED = "not_planned"  # declined: it will not be acted on
+    DUPLICATE = "duplicate"  # another issue tracks it
 
 
 class Tri(StrEnum):
@@ -334,6 +349,9 @@ class WriteReceipt:
     target: IssueKey | ProjectRef
     comment: TrackerComment | None = None
     labels_after: frozenset[str] | None = None
+    #: An ``issue.close``: the issue's state and reason as the tracker answered the write.
+    state_after: IssueState | None = None
+    closed_reason: str | None = None  # tracker vocabulary, passed through verbatim
 
 
 @dataclass(frozen=True)
@@ -356,6 +374,7 @@ __all__ = [
     "CapabilityReport",
     "CapabilityState",
     "Checkpoint",
+    "CloseReason",
     "CommentKey",
     "CommentQuery",
     "IdPage",

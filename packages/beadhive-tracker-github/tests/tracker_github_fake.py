@@ -25,6 +25,11 @@ behaviour it reproduces (API version 2022-11-28):
   missing repository label) and ``DELETE /issues/{n}/labels/{name}`` removes (``404 Label does
   not exist`` when absent), both answering the issue's complete label list, so a human's
   concurrent label is never lost;
+* ``PATCH /issues/{n}`` (``issue.close``): ``state`` and ``state_reason`` (``completed``,
+  ``not_planned``, ``duplicate``; ``422 Validation Failed`` for any other value or a reason
+  without ``state``) answering ``200`` with the issue; a ``labels`` member REPLACES the issue's
+  whole label set, as on GitHub (the adapter must never send one); ``403`` on an archived
+  repository;
 * repository label definitions: ``GET /labels`` (paged by ``per_page``/``page`` with a
   ``Link: rel="next"``, ``description`` ``null`` when unset), ``POST /labels`` (``201``; ``422
   Validation Failed`` with ``code: already_exists`` for a name already defined in any case),
@@ -502,6 +507,8 @@ class FakeGitHub:
         issue = rf"{re.escape(self.root)}/issues/(\d+)"
         if request.method == "POST" and (match := re.fullmatch(rf"{issue}/comments", path)):
             return self._post_comment(request, int(match.group(1)))
+        if request.method == "PATCH" and (match := re.fullmatch(issue, path)):
+            return self._patch_issue(request, int(match.group(1)))
         if match := re.fullmatch(rf"{issue}/labels(?:/(.+))?", path):
             return self._change_labels(request, int(match.group(1)), match.group(2))
         if match := re.fullmatch(rf"{re.escape(self.root)}/labels(?:/(.+))?", path):
@@ -529,6 +536,32 @@ class FakeGitHub:
         issue["comments"] += 1
         issue["updated_at"] = iso(self.write_time)
         return httpx.Response(201, json=row, headers={"location": row["url"]})
+
+    def _patch_issue(self, request: httpx.Request, number: int) -> httpx.Response:
+        if self.repo_meta.get("archived"):
+            return httpx.Response(403, json={"message": "Repository was archived so is read-only."})
+        if (refused := self._missing(number)) is not None:
+            return refused
+        row = self._row(number)
+        edit = json.loads(request.content or b"{}")
+        state, reason = edit.get("state"), edit.get("state_reason")
+        if state not in (None, "open", "closed") or reason not in (
+            None,
+            "completed",
+            "not_planned",
+            "duplicate",
+            "reopened",
+        ):
+            return httpx.Response(422, json={"message": "Validation Failed"})
+        when = iso(self.write_time or self.clock.now())
+        if state is not None:
+            row["state"] = state
+            row["closed_at"] = when if state == "closed" else None
+            row["state_reason"] = reason or ("completed" if state == "closed" else "reopened")
+        if isinstance(edit.get("labels"), list):  # the whole set is REPLACED, as on GitHub
+            row["labels"] = [self._label(n) for n in edit["labels"]]
+        row["updated_at"] = when
+        return httpx.Response(200, json=row)
 
     def _change_labels(
         self, request: httpx.Request, number: int, name: str | None

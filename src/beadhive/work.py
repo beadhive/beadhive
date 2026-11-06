@@ -612,14 +612,14 @@ def delivery_deprioritised_cmd(
 _OUTBOX_ID = typer.Argument(..., metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_ID_OPT = typer.Argument("", metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_KIND = typer.Option(
-    "", "--kind", help="operation: comment (default) or labels (each is its own gate)"
+    "", "--kind", help="operation: comment (default), labels or close (each is its own gate)"
 )
 _JSON = typer.Option(False, "--json", help="emit one JSON document")
 _OUTBOX_OP = typer.Option(
     ...,
     "--op",
-    help="<comment|labels>:<digest> reviewed in `outbox show` (full digest or 12-hex prefix); "
-    "repeat to approve several, each as its own gate with its own single-use grant",
+    help="<comment|labels|close>:<digest> reviewed in `outbox show` (full digest or 12-hex "
+    "prefix); repeat to approve several, each as its own gate with its own single-use grant",
 )
 _OUTBOX_PUBLISH = typer.Option(
     [], "--publish", help="a finding id to publish deliberately (needs exactly one --op)"
@@ -639,13 +639,33 @@ def outbox_approve_cmd(
     return work_intake.outbox_approve(outbox_id, op, publish, as_, hive, as_json)
 
 
+def outbox_backfill_close_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="read and list what would be drafted; write nothing"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Draft the issue close a report closed before closes existed never got: for every report
+    closed in this hive whose applied triage outcome was fixed, reject or duplicate-of and whose
+    bound issue is still open, add a close (completed, not_planned or duplicate) to its latest
+    reply; a report that never got its reply gets one drafted from the reviewed text (or apply's
+    template), the close attached. One issue listing; nothing is approved or sent (approve with
+    `outbox approve --op close:<digest>`, send with `outbox send <id> --kind close` after the reply
+    and the labels).
+    Off unless `intake.external.outbox.enabled` and the tracker plugin's
+    `write.issue_close.enabled`."""
+    return work_intake.outbox_backfill_close(dry_run, as_, hive, as_json)
+
+
 def outbox_discard_cmd(
     outbox_id: str = _OUTBOX_ID,
     reason: str = typer.Option(..., "--reason", help="why the operation is abandoned"),
     accept_unknown: bool = typer.Option(
         False, "--accept-unknown", help="also abandon an operation whose outcome is unknown"
     ),
-    kind: str = typer.Option("", "--kind", help="only this operation: comment or labels"),
+    kind: str = typer.Option("", "--kind", help="only this operation: comment, labels or close"),
     as_: str = _AS,
     hive: str = _HIVE,
     as_json: bool = _JSON,
@@ -2280,6 +2300,7 @@ CLI_HANDLERS = {
     "work.delivery.deprioritised": delivery_deprioritised_cmd,
     "work.delivery.release": delivery_release_cmd,
     "work.outbox.approve": outbox_approve_cmd,
+    "work.outbox.backfill-close": outbox_backfill_close_cmd,
     "work.outbox.discard": outbox_discard_cmd,
     "work.outbox.draft": outbox_draft_cmd,
     "work.outbox.reconcile": outbox_reconcile_cmd,
@@ -2356,6 +2377,7 @@ delivery_blocked_cmd = _CLI_CALLBACKS["work.delivery.blocked"]
 delivery_deprioritised_cmd = _CLI_CALLBACKS["work.delivery.deprioritised"]
 delivery_release_cmd = _CLI_CALLBACKS["work.delivery.release"]
 outbox_approve_cmd = _CLI_CALLBACKS["work.outbox.approve"]
+outbox_backfill_close_cmd = _CLI_CALLBACKS["work.outbox.backfill-close"]
 outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]
 outbox_draft_cmd = _CLI_CALLBACKS["work.outbox.draft"]
 outbox_reconcile_cmd = _CLI_CALLBACKS["work.outbox.reconcile"]

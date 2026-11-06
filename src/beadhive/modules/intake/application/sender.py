@@ -1,5 +1,5 @@
-"""``OutboxService``: the supervised sender for ``comment.create`` and ``labels.change``
-(``bh-6wj9y`` R6, R7; D2).
+"""``OutboxService``: the supervised sender for ``comment.create``, ``labels.change`` and
+``issue.close`` (``bh-6wj9y`` R6, R7; D2; ``bh-pr5ll``).
 
 The pure O1 to O19 machine lives in :mod:`..domain.outbox` and the translation to and from the
 tracker port in :mod:`.outbox`; this layer runs the machine against a :class:`ReportStore` and a
@@ -8,7 +8,9 @@ tracker in R6's order, and is the only code that ever calls a writer:
 * **Off by default, twice per operation.** Every operation refuses with ``OUTBOX_DISABLED``
   unless the injected :class:`OutboxPolicy` is enabled, and a ``labels.change`` additionally
   refuses with ``LABELS_DISABLED`` unless ``OutboxPolicy.labels_enabled`` (its own flag,
-  separate from the comment's). Even then nothing is written without the adapter's own
+  separate from the comment's), and an ``issue.close`` with ``CLOSE_DISABLED`` unless
+  ``OutboxPolicy.close_enabled`` (set from the bound adapter's own ``issue.close`` enable). Even
+  then nothing is written without the adapter's own
   per-operation enable (``probe_capabilities`` reports the operation usable, else O5 refuses; a
   disabled writer refuses before any request, which is O11) AND an operator approval of THAT
   operation that minted its own single-use grant (O5); approving the comment never approves the
@@ -17,15 +19,22 @@ tracker in R6's order, and is the only code that ever calls a writer:
   store's ``seq`` re-check. On every lock acquisition a ``sending`` operation is recovered to
   ``unknown`` first (O13): this holder has the lock its writer held, so that writer is gone.
 * **Write-ahead, then exactly one request.** O9 (the attempt, the consumed grant) is persisted
-  BEFORE ``post_comment`` / ``change_labels``; the grant is handed to the adapter once. A proof
-  of no write is O11, any other exception O12; nothing here retries.
+  BEFORE ``post_comment`` / ``change_labels`` / ``close_issue``; the grant is handed to the
+  adapter once. A proof of no write is O11, any other exception O12; nothing here retries.
+* **A close goes last.** A reply drafted with ``ReplyDraft.close`` carries an ``issue.close``
+  operation, and O9 refuses it (``close_not_ready``, before any request) until that record's
+  comment is ``sent``, no other comment of the report is unsent and the report's latest labels
+  record is ``sent``: per report, comment, labels, close. :meth:`OutboxService.backfill_closes`
+  drafts the close a report closed before this existed never got, on its latest reply (or on the
+  reply it drafts when the report never got one).
 * **Only owned labels.** A label operation is refused unless every label it adds or removes lies
   under the root's owned prefixes (``LeakPolicy.owned_label_prefixes``, the adapter's
   ``write.labels.owned_prefixes``): at draft, at the leak check (``label_not_owned``, never
   overridable), at approve and at send before the write-ahead, and the same prefixes travel as
   the ``LabelOwnership`` the writer checks again before any request.
 * **Reconcile** reads, per call and outside the lock, one complete comment listing (for a
-  comment) and one read of the issue's labels (for a label operation; labels carry no marker),
+  comment) and one read of the issue (its labels for a label operation, its state for a close;
+  neither carries a marker),
   each begun after the attempt ended (its ``start_seq`` is the document ``seq`` read before the
   read), and applies it under the lock: the own marker from a known actor, or labels that
   already satisfy the diff, is O14 (or O19 late); a complete read without it is one absence
@@ -54,9 +63,11 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable, Iterable
 
+from beadhive.modules.tracker.contracts import CloseReason as TrackerCloseReason
 from beadhive.modules.tracker.contracts import (
     CommentQuery,
     CommentWriter,
+    IssueCloser,
     IssueQuery,
     IssueResolver,
     LabelOwnership,
@@ -74,6 +85,10 @@ from ..contracts import IdSource, IntakeLock, ReportStore, Sanitizer
 from ..domain import (
     NOTIFIED_DIM,
     ApprovalRequest,
+    CloseBackfill,
+    CloseBackfillItem,
+    CloseBackfillOutcome,
+    CloseReason,
     DraftRequest,
     IntakeRefused,
     IntakeStoreError,
@@ -100,6 +115,8 @@ from ..domain import (
     OutboxRecord,
     OutboxResult,
     OwnIdentity,
+    Proposal,
+    ProposalStatus,
     RefusalReason,
     RenderContext,
     RenderedRecord,
@@ -109,6 +126,7 @@ from ..domain import (
     ThreadActor,
     ThreadState,
     batch_digest,
+    close_reason_for,
     is_outbox_id,
     outbox_view,
     reply_revision,
@@ -217,7 +235,8 @@ class OutboxService:
 
     def draft_reply(self, request: ReplyDraft) -> OutboxResult:
         """O1 for an operator reply (O2 when the same text already answers the same thread seq),
-        checked at once (O3 holds a leak). Drafting never sends and needs no grant."""
+        checked at once (O3 holds a leak). With ``request.close`` and the close gate on, the record
+        also carries an ``issue.close`` operation. Drafting never sends and needs no grant."""
         self._require_enabled()
         require_private_store(self._posture)
         binding = self._binding(request.report)
@@ -231,6 +250,8 @@ class OutboxService:
                 reply_revision(request.text, thread.seq if thread is not None else 0),
                 request.actor,
                 message=Message("reply", request.text),
+                # the close rides on the reply only while the hive's close gate is on
+                close=request.close if self._policy.close_enabled else None,
             )
             applied = machine.draft(
                 doc,
@@ -294,9 +315,11 @@ class OutboxService:
     # -- O9 to O13: send ---------------------------------------------------------------------
 
     def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
-        """O9 persisted, then exactly one ``post_comment`` / ``change_labels``, then O10, O11 or
-        O12, all under one hold of the binding's lock. An approval whose render moved is
-        invalidated instead (O7) and nothing is sent."""
+        """O9 persisted, then exactly one ``post_comment`` / ``change_labels`` / ``close_issue``,
+        then O10, O11 or O12, all under one hold of the binding's lock. An approval whose render
+        moved is invalidated instead (O7) and nothing is sent; a close whose comment or the
+        report's latest labels are not sent yet is refused (``close_not_ready``) before any
+        request."""
         self._require_enabled()
         machine.require_kind_enabled(kind, self._policy)  # before any tracker request
         require_private_store(self._posture)
@@ -363,6 +386,12 @@ class OutboxService:
                     RefusalReason.CAPABILITY_UNUSABLE,
                     "the bound tracker adapter has no comment writer",
                 )
+        elif kind is OpKind.CLOSE:
+            if not isinstance(self._tracker, IssueCloser):
+                raise IntakeRefused(
+                    RefusalReason.CAPABILITY_UNUSABLE,
+                    "the bound tracker adapter cannot close an issue (issue.close is not enabled)",
+                )
         elif not isinstance(self._tracker, LabelWriter):
             raise IntakeRefused(
                 RefusalReason.CAPABILITY_UNUSABLE, "the bound tracker adapter has no label writer"
@@ -385,6 +414,11 @@ class OutboxService:
                 marker=translate.own_marker(self._identity, plan.outbox_id),
                 grant=grant,
             )
+        if kind is OpKind.CLOSE:
+            assert isinstance(writer, IssueCloser) and plan.close is not None
+            return writer.close_issue(
+                issue, reason=TrackerCloseReason(plan.close.value), grant=grant
+            )
         assert isinstance(writer, LabelWriter)
         return writer.change_labels(
             issue, add=plan.add, remove=plan.remove, ownership=self._ownership(), grant=grant
@@ -395,8 +429,8 @@ class OutboxService:
     def reconcile(self, outbox_id: str | None = None, *, actor: str) -> tuple[OutboxResult, ...]:
         """One reconcile pass: for ``outbox_id``, or for every record that is ambiguous or could
         still turn up late. Tracker-read-only; per report one comment listing (when a comment
-        needs it) and one read of the issue's labels (when a label operation does). One result per
-        operation that was reconciled."""
+        needs it) and one read of the issue (when a label or close operation does: its labels or
+        its state). One result per operation that was reconciled."""
         self._require_enabled()
         require_private_store(self._posture)
         targets: dict[str, list[str]] = {}
@@ -434,7 +468,9 @@ class OutboxService:
         wanted = {kind for kinds in pending.values() for kind in kinds}
         # a read nobody needs is not made, and is vacuously complete
         comments, complete = self._listing(binding) if OpKind.COMMENT in wanted else ((), True)
-        labels = self._labels(binding) if OpKind.LABELS in wanted else None
+        issue = self._read_issue(binding) if wanted & {OpKind.LABELS, OpKind.CLOSE} else None
+        labels = frozenset(issue.labels) if issue is not None and OpKind.LABELS in wanted else None
+        state = issue.state.value if issue is not None and OpKind.CLOSE in wanted else None
         results: list[OutboxResult] = []
         with self._lock.hold(key) as epoch:
             doc, expect, again = self._open(report, epoch, actor)
@@ -444,7 +480,7 @@ class OutboxService:
             if me is not None:
                 known.add(me)
             marked = translate.marked_comments(comments, self._identity, frozenset(known))
-            observation = OutboxObservation(start_seq, complete, marked, labels)
+            observation = OutboxObservation(start_seq, complete, marked, labels, state)
             applied: list[OutboxApplied] = []
             for outbox_id in outbox_ids:
                 step = machine.observe(
@@ -458,13 +494,17 @@ class OutboxService:
                 notified, detail = self._notify(report, step.outbox_id, step, actor)
                 for kind in pending.get(step.outbox_id) or [None]:
                     result = self._result(report, step, (*recovered, *again), kind)
-                    read_ok = labels is not None if kind is OpKind.LABELS else complete
+                    read_ok = {
+                        OpKind.LABELS: labels is not None,
+                        OpKind.CLOSE: state is not None,
+                    }.get(kind, complete)  # type: ignore[arg-type]
+                    commented = kind in (None, OpKind.COMMENT)
                     results.append(
                         dataclasses.replace(
                             result,
                             complete=read_ok,
-                            notified=notified if kind is not OpKind.LABELS else "",
-                            detail=(detail if kind is not OpKind.LABELS else "")
+                            notified=notified if commented else "",
+                            detail=(detail if commented else "")
                             or self._reconcile_detail(step, kind, read_ok),
                         )
                     )
@@ -522,6 +562,115 @@ class OutboxService:
             self._commit(report, applied, expect, actor)
         result = self._result(report, applied, rules, kind)
         return dataclasses.replace(result, detail="drafted again; render, approve and send anew")
+
+    # -- the close backfill (bh-pr5ll) -------------------------------------------------------
+
+    def backfill_closes(
+        self,
+        request: CloseBackfill,
+        *,
+        reply_text: Callable[[str, Proposal], str] | None = None,
+    ) -> CloseBackfillOutcome:
+        """Draft the ``issue.close`` a report closed before closes existed never got: for every
+        report CLOSED in the store, bound to this tracker project, whose applied proposal ends
+        the thread (:func:`~..domain.triage.close_reason_for`) and whose issue ONE listing shows
+        still open, add the close to its latest reply record (O1, checked at once). A report that
+        never got its reply gets one drafted, with the close attached, from ``reply_text(report,
+        proposal)`` (the reviewed text, or the template apply would have used); without that
+        text it is reported and skipped. A reply that already carries a close is skipped, so a
+        re-run drafts nothing twice. ``dry_run`` makes the same reads and writes nothing; neither
+        approves nor sends anything."""
+        self._require_enabled()
+        machine.require_kind_enabled(OpKind.CLOSE, self._policy)  # before any tracker request
+        require_private_store(self._posture)
+        candidates: list[tuple[str, IssueBinding, Proposal, CloseReason]] = []
+        project = self._tracker.describe().project
+        for view in self._store.reports_with_proposal():
+            proposal = self._store.read_proposal(view.id)
+            if view.status != "closed" or view.binding is None or proposal is None:
+                continue
+            reason = close_reason_for(proposal.disposition)
+            if proposal.status is not ProposalStatus.APPLIED or reason is None:
+                continue
+            if (view.binding.tracker, view.binding.project) != (project.tracker, project.locator):
+                continue
+            candidates.append((view.id, view.binding, proposal, reason))
+        if not candidates:
+            return CloseBackfillOutcome((), request.dry_run)
+        try:
+            live = issue_index(self._tracker, include_closed=True)
+        except TrackerError as exc:
+            raise IntakeRefused(
+                RefusalReason.TRACKER_ERROR, f"the issue listing failed: {type(exc).__name__}"
+            ) from exc
+        items = []
+        for report, binding, proposal, reason in candidates:
+            issue = live.get(binding.url)
+            if issue is not None and issue.state.value == "closed":
+                continue  # nothing to do: the issue is closed already
+            if issue is None:
+                missing = "the issue is not in the listing"
+                items.append(CloseBackfillItem(report, reason=reason, detail=missing))
+                continue
+            items.append(self._backfill_one(report, binding, proposal, reason, request, reply_text))
+        return CloseBackfillOutcome(tuple(items), request.dry_run)
+
+    def _backfill_one(
+        self,
+        report: str,
+        binding: IssueBinding,
+        proposal: Proposal,
+        reason: CloseReason,
+        request: CloseBackfill,
+        reply_text: Callable[[str, Proposal], str] | None,
+    ) -> CloseBackfillItem:
+        doc = self._store.read_outbox(report) or OutboxDocument()
+        replies = sorted(
+            (r for r in doc.records.values() if r.event is OutboxEvent.REPLY),
+            key=_created,
+        )
+        if not replies or replies[-1].op(OpKind.COMMENT) is None:
+            return self._backfill_reply(report, proposal, reason, request, reply_text)
+        carrier = replies[-1]
+        if carrier.op(OpKind.CLOSE) is not None:
+            detail = "its reply already carries a close"
+            return CloseBackfillItem(report, carrier.outbox_id, reason, detail=detail)
+        if request.dry_run:
+            return CloseBackfillItem(report, carrier.outbox_id, reason)
+        with self._lock.hold(binding_key(binding)) as epoch:
+            doc, expect, _ = self._open(report, epoch, request.actor)
+            if carrier.outbox_id not in doc.records:  # pragma: no cover - a record never leaves
+                raise IntakeRefused(RefusalReason.UNKNOWN_OUTBOX, carrier.outbox_id)
+            applied = machine.add_close(
+                doc,
+                carrier.outbox_id,
+                reason,
+                actor=request.actor,
+                policy=self._policy,
+                ctx=self._ctx(report, binding, carrier.outbox_id),
+            )
+            self._commit(report, applied, expect, request.actor)
+        return CloseBackfillItem(report, carrier.outbox_id, reason, drafted=applied.changed)
+
+    def _backfill_reply(
+        self,
+        report: str,
+        proposal: Proposal,
+        reason: CloseReason,
+        request: CloseBackfill,
+        reply_text: Callable[[str, Proposal], str] | None,
+    ) -> CloseBackfillItem:
+        """The report never got its reply: draft it from the applied proposal, close attached.
+        The text is leak-checked like every draft (O3 holds it), and both operations still need
+        their own operator approval."""
+        text = reply_text(report, proposal) if reply_text is not None else ""
+        if not text.strip():
+            detail = "no reply to carry the close, and no reviewed text to draft one from"
+            return CloseBackfillItem(report, reason=reason, detail=detail)
+        if request.dry_run:
+            return CloseBackfillItem(report, reason=reason, reply_text=text)
+        drafted = self.draft_reply(ReplyDraft(report, text, request.actor, close=reason))
+        return CloseBackfillItem(report, drafted.outbox_id, reason, drafted=True, reply_text=text)
 
     # -- the batch (bh-uim9i): one review of every drafted labels operation -------------------
 
@@ -854,7 +1003,10 @@ class OutboxService:
         return None
 
     def _reconcile_detail(self, applied: OutboxApplied, kind: OpKind | None, read_ok: bool) -> str:
-        noun = "label read" if kind is OpKind.LABELS else "comment listing"
+        noun = {OpKind.LABELS: "label read", OpKind.CLOSE: "issue read"}.get(
+            kind,  # type: ignore[arg-type]
+            "comment listing",
+        )
         if not read_ok:
             return f"the {noun} failed part-way; nothing was inferred"
         record = applied.record

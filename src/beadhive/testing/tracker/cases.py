@@ -37,10 +37,12 @@ from beadhive.modules.tracker.contracts import (
     ActorKind,
     ChangeRequestUrl,
     Checkpoint,
+    CloseReason,
     CommentQuery,
     CommentWriter,
     IdQuery,
     IdSubject,
+    IssueCloser,
     IssueKey,
     IssueQuery,
     IssueResolver,
@@ -534,6 +536,109 @@ def _labels_only_owned(factory: TrackerFactory) -> None:
     assert receipt.labels_after == expected == s.world.server_labels(issue)
 
 
+# ---- cases: closing an issue (issue.close) --------------------------------------------------
+#
+# Optional, like labels.define: a case whose operation is not in ``describe().supported`` returns,
+# but an adapter that DECLARES ``issue.close`` must expose ``IssueCloser`` and pass every case.
+
+
+def _closer_subject(factory: TrackerFactory, **kwargs: Any) -> TrackerSubject | None:
+    """A subject with issue.close enabled, or ``None`` when the adapter does not support it."""
+    if Operation.ISSUE_CLOSE not in factory().adapter.describe().supported:
+        return None
+    s = factory(enabled=frozenset({Operation.ISSUE_CLOSE}), **kwargs)
+    assert isinstance(s.adapter, IssueCloser), "issue.close is supported but has no closer"
+    return s
+
+
+def _close_refused_when_not_enabled(factory: TrackerFactory) -> None:
+    s = factory()  # no write enabled
+    issue = s.world.add_issue("thread", at=at(2))
+    s.world.set_write_time(at(5))
+    if isinstance(s.adapter, IssueCloser):  # an absent closer is the structural refusal
+        _refused(
+            lambda: s.adapter.close_issue(
+                issue, reason=CloseReason.COMPLETED, grant=grant(Operation.ISSUE_CLOSE, issue)
+            ),
+            OperationNotEnabled,
+            "an issue was closed with issue.close disabled",
+        )
+    assert s.world.write_requests() == 0
+    found = find_by_listing(s.adapter, issue.url)
+    assert found is not None and found.state is IssueState.OPEN
+
+
+def _close_grant_matches_and_single_use(factory: TrackerFactory) -> None:
+    s = _closer_subject(factory)
+    if s is None:
+        return
+    issue = s.world.add_issue("thread", at=at(2))
+    other = s.world.add_issue("other", at=at(2))
+    project = s.adapter.describe().project
+    s.world.set_write_time(at(5))
+    wrong = [
+        grant(Operation.ISSUE_CLOSE, other, "g-other"),  # another issue
+        grant(Operation.ISSUE_CLOSE, project, "g-repo"),  # a close is issue-scoped
+        grant(Operation.COMMENT_CREATE, issue, "g-op"),  # another operation
+    ]
+    for bad in wrong:
+        _refused(
+            lambda bad=bad: s.adapter.close_issue(issue, reason=CloseReason.COMPLETED, grant=bad),
+            OperationNotEnabled,
+            f"a mismatched grant was accepted: {bad}",
+        )
+    assert s.world.write_requests() == 0
+    good = grant(Operation.ISSUE_CLOSE, issue, "g-once")
+    s.adapter.close_issue(issue, reason=CloseReason.COMPLETED, grant=good)
+    _refused(
+        lambda: s.adapter.close_issue(issue, reason=CloseReason.COMPLETED, grant=good),
+        OperationNotEnabled,
+        "a grant was used twice",
+    )
+    assert s.world.write_requests() == 1
+
+
+def _close_round_trip(factory: TrackerFactory) -> None:
+    """The issue is closed with its reason, read back as such, and nothing else changes."""
+    s = _closer_subject(factory)
+    if s is None:
+        return
+    issue = s.world.add_issue("thread", at=at(2), labels=("bug", "bh:triage"))
+    s.world.add_human_label(issue, "needs-love")
+    s.world.set_write_time(at(6))
+    receipt = s.adapter.close_issue(
+        issue, reason=CloseReason.NOT_PLANNED, grant=grant(Operation.ISSUE_CLOSE, issue)
+    )
+    assert_contract_only(receipt)
+    assert receipt.grant_id == "g-1" and receipt.operation is Operation.ISSUE_CLOSE
+    assert receipt.target == issue and receipt.state_after is IssueState.CLOSED
+    found = find_by_listing(s.adapter, issue.url)
+    assert found is not None and found.state is IssueState.CLOSED
+    assert found.closed_reason == receipt.closed_reason and receipt.closed_reason
+    assert s.world.server_labels(issue) == {"bug", "bh:triage", "needs-love"}  # never a label
+    assert s.world.comment_count(issue) == 0 and s.world.write_requests() == 1
+
+
+def _close_ambiguous_not_retried(factory: TrackerFactory) -> None:
+    """Applied, but the caller cannot know: surfaced, never retried, read back as closed."""
+    s = _closer_subject(factory)
+    if s is None:
+        return
+    issue = s.world.add_issue("thread", at=at(2))
+    s.world.set_write_time(at(6))
+    s.world.fail_next_write_ambiguously()
+    _refused(
+        lambda: s.adapter.close_issue(
+            issue, reason=CloseReason.DUPLICATE, grant=grant(Operation.ISSUE_CLOSE, issue)
+        ),
+        WriteOutcomeUnknown,
+        "an ambiguous close was not surfaced",
+    )
+    assert s.world.write_requests() == 1  # never retried by the adapter
+    found = find_by_listing(s.adapter, issue.url)  # the outbox reconciles by reading the state
+    assert found is not None and found.state is IssueState.CLOSED
+
+
 # ---- cases: repository label definitions (labels.read / labels.define) ---------------------
 #
 # Both operations are optional: a case whose operation is not in ``describe().supported`` returns
@@ -975,6 +1080,10 @@ TRACKER_CASES: tuple[TrackerCase, ...] = (
     TrackerCase("write.ambiguous-not-retried", _ambiguous_write_not_retried),
     TrackerCase("write.ambiguous-not-applied", _ambiguous_write_not_applied),
     TrackerCase("labels.only-owned", _labels_only_owned),
+    TrackerCase("close.refused-when-not-enabled", _close_refused_when_not_enabled),
+    TrackerCase("close.grant-matches-and-single-use", _close_grant_matches_and_single_use),
+    TrackerCase("close.round-trip", _close_round_trip),
+    TrackerCase("close.ambiguous-not-retried", _close_ambiguous_not_retried),
     TrackerCase("labels.read-lists-every-definition", _labels_read_lists_every_definition),
     TrackerCase("labels.define-only-owned", _labels_define_only_owned),
     TrackerCase(

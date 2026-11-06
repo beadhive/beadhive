@@ -84,9 +84,16 @@ def test_with_no_write_enabled_the_adapter_has_no_write_method():
         Operation.LABELS_CHANGE,
         Operation.LABELS_READ,
         Operation.LABELS_DEFINE,
+        Operation.ISSUE_CLOSE,
     }
+    assert not hasattr(adapter, "close_issue")
     report = adapter.probe_capabilities()
-    for op in (Operation.COMMENT_CREATE, Operation.LABELS_CHANGE, Operation.LABELS_DEFINE):
+    for op in (
+        Operation.COMMENT_CREATE,
+        Operation.LABELS_CHANGE,
+        Operation.LABELS_DEFINE,
+        Operation.ISSUE_CLOSE,
+    ):
         assert report.states[op].supported  # implemented, but neither enabled nor usable
         assert not report.states[op].enabled and not report.states[op].usable
     assert subject.world.write_requests() == 0

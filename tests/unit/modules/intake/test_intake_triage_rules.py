@@ -37,7 +37,13 @@ from beadhive.modules.intake.contracts import (
     verdict_from_document,
     verification_gap,
 )
-from beadhive.modules.intake.domain import CLOSE_REASON_LIMIT, close_reason, half_rejected
+from beadhive.modules.intake.domain import (
+    CLOSE_REASON_LIMIT,
+    CloseReason,
+    close_reason,
+    close_reason_for,
+    half_rejected,
+)
 
 D = ProposalDisposition
 SEAT = "dev/verifier"
@@ -268,26 +274,55 @@ def test_every_disposition_maps_onto_the_existing_verbs() -> None:
     no_bead = _plan(D.FIXED, fix_commit="abc1234", fixed_in="v1.2.0")
     assert isinstance(no_bead, ApplyPlan)
     assert no_bead.steps == (ApplyStep.DRAFT_REPLY, ApplyStep.REJECT)
-    assert "v1.2.0" in no_bead.reason
+    assert "v1.2.0" in no_bead.reason and no_bead.close is CloseReason.COMPLETED
     assert _plan(D.PARTIALLY_FIXED, targets=owner).steps == (ApplyStep.ACCEPT_WORK,)
     assert _plan(D.PARTIALLY_FIXED).steps == (ApplyStep.ACCEPT_NEW_WORK,)
     member = _plan(D.DUPLICATE_OF, share_with="r-1", canonical_work="w-7", canonical_ref="#4")
     assert member == ApplyPlan(
-        (ApplyStep.LINK, ApplyStep.REJECT),
+        (ApplyStep.DRAFT_REPLY, ApplyStep.LINK, ApplyStep.REJECT),
         work="w-7",
         reason="This is a duplicate of #4; the work is tracked there.",
+        close=CloseReason.DUPLICATE,
     )
+    unbound = _plan(
+        D.DUPLICATE_OF, bound=False, share_with="r-1", canonical_work="w-7", canonical_ref="#4"
+    )
+    assert isinstance(unbound, ApplyPlan) and unbound.close is None
+    assert unbound.steps == (ApplyStep.LINK, ApplyStep.REJECT)
+    # the outbox off (the default): linked and rejected with no reply and no close, as on 0.35.2
+    silent = plan_apply(
+        new_proposal(D.DUPLICATE_OF, share_with="r-1"),
+        bound=True,
+        canonical_work="w-7",
+        canonical_ref="#4",
+        replies=False,
+    )
+    assert isinstance(silent, ApplyPlan) and silent.close is None
+    assert silent.steps == (ApplyStep.LINK, ApplyStep.REJECT)
+    # a fixed or reject reply still needs the outbox: its draft refuses first, nothing written
+    assert _plan(D.REJECT, reporter_text="No.").steps[0] is ApplyStep.DRAFT_REPLY
     assert "tracks no work" in _plan(D.DUPLICATE_OF, share_with="r-1")
     assert _plan(D.NEEDS_INFO, reporter_text="Which OS?") == ApplyPlan(
         (ApplyStep.NEEDS_INFO,), question="Which OS?"
-    )
+    )  # never a close
     assert isinstance(_plan(D.NEEDS_INFO, bound=False, reporter_text="?"), str)
     assert _plan(D.REJECT, reporter_text="Works as designed.") == ApplyPlan(
-        (ApplyStep.DRAFT_REPLY, ApplyStep.REJECT), reason="Works as designed."
+        (ApplyStep.DRAFT_REPLY, ApplyStep.REJECT),
+        reason="Works as designed.",
+        close=CloseReason.NOT_PLANNED,
     )
-    assert _plan(D.REJECT, bound=False, reporter_text="No.").steps == (ApplyStep.REJECT,)
+    born_native = _plan(D.REJECT, bound=False, reporter_text="No.")
+    assert born_native.steps == (ApplyStep.REJECT,) and born_native.close is None
     assert _plan(D.REROUTE).steps == (ApplyStep.REROUTE,)
     assert "never applied" in _plan(D.DECISION)
+
+
+def test_only_a_thread_ending_outcome_closes_the_issue() -> None:
+    assert close_reason_for(D.FIXED) is CloseReason.COMPLETED
+    assert close_reason_for(D.REJECT) is CloseReason.NOT_PLANNED
+    assert close_reason_for(D.DUPLICATE_OF) is CloseReason.DUPLICATE
+    for keeps_open in (D.NEEDS_INFO, D.NEW, D.TRACKED, D.PARTIALLY_FIXED, D.REROUTE, D.DECISION):
+        assert close_reason_for(keeps_open) is None
 
 
 # -- closing a fielded report (bh-mqv12) ------------------------------------------------------

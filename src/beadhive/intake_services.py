@@ -55,7 +55,7 @@ import re
 import socket
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -1166,18 +1166,22 @@ def outbox_service_for(
     ids=None,
     owned_label_prefixes: tuple[str, ...] = (),
     threads: ThreadPolicy | None = None,
+    close_enabled: bool = False,
+    triage: Any = None,
 ) -> IntakeService:
     """The intake service for ``entry`` with the supervised sender bound over the INJECTED
     ``tracker`` (and its ``marker_line`` codec). With ``threads`` (the comment-ingestion policy,
     passed only when ``intake.external.comments.enabled``) the same tracker, identity and lock
-    also serve the thread operations (:func:`thread_service_for`).
+    also serve the thread operations (:func:`thread_service_for`). ``close_enabled`` is the bound
+    adapter's own ``issue.close`` enable (:func:`tracker_wiring`): the sender's close gate;
+    ``triage`` (:func:`triage_binding`) lets the close backfill compute a missing reply's text.
 
     Off by default: with ``policy`` absent or disabled no sender is bound at all, so every outbox
     operation refuses with ``OUTBOX_DISABLED`` before the tracker is touched. Enabling it here is
     still never sufficient to post: the adapter's own per-operation enable and an operator
     approval minting a single-use grant are both required. ``sanitizer`` defaults to the shared
     :class:`~beadhive.adapters.intake.ScrubSanitizer`; the store is the OPERATIONAL one only."""
-    policy = policy or OutboxPolicy()
+    policy = with_close(policy or OutboxPolicy(), close_enabled)
     store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
     labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
     if not policy.enabled:
@@ -1221,8 +1225,21 @@ def outbox_service_for(
     )
     refresh = transition_refresh(cfg, entry, directory, store, held, ids=source, sanitizer=scrubber)
     return IntakeService(
-        store, labels, outbox=sender, milestones=milestones, threads=conversation, **refresh
+        store,
+        labels,
+        outbox=sender,
+        milestones=milestones,
+        threads=conversation,
+        triage=triage,
+        **refresh,
     )
+
+
+def with_close(policy: OutboxPolicy, close_enabled: Any) -> OutboxPolicy:
+    """``policy`` with the ``issue.close`` gate set from the bound adapter's own enable: on only
+    with the outbox on and the tracker plugin's ``write.issue_close.enabled`` resolved true for
+    the hive's binding. There is no separate intake key: the adapter switch is the one gate."""
+    return replace(policy, close_enabled=policy.enabled and close_enabled is True)
 
 
 # -- the merge and release milestones (I10): they draft, they never send ---------------------
@@ -1616,7 +1633,7 @@ def tracker_wiring(
     including ``requested`` operations not enabled) is ``IntakeRefused(INTAKE_DISABLED)`` with
     the binding's message, which names the key to set. Building sends no tracker request."""
     from .bootstrap import tracker as tracker_root  # lazy: the plugin kernel loads only on use
-    from .modules.tracker.contracts import MarkerCodec
+    from .modules.tracker.contracts import MarkerCodec, Operation
 
     try:
         bound = adapters.for_store(entry, requested=frozenset(requested))
@@ -1635,6 +1652,8 @@ def tracker_wiring(
         "identity": OwnIdentity(bound.project.locator, install_id(directory)),
         "marker_line": codec,
         "owned_label_prefixes": _owned_label_prefixes(cfg, bound),
+        # the sender's close gate: the binding's own issue.close enable (no separate intake key)
+        "close_enabled": Operation.ISSUE_CLOSE in bound.enabled,
     }
 
 
@@ -1692,6 +1711,8 @@ def _outbox_port(
     owned_label_prefixes: tuple[str, ...],
     needs_tracker: bool,
     refusal: IntakeRefused | None = None,
+    close_enabled: bool = False,
+    triage: Any = None,
 ):
     """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
@@ -1725,6 +1746,8 @@ def _outbox_port(
             ids=ids,
             owned_label_prefixes=owned_label_prefixes,
             threads=thread_policy if comments_on and wired else None,
+            close_enabled=close_enabled,
+            triage=triage() if callable(triage) else triage,
         )
 
     return bind_intake(enabled, build)
@@ -1750,6 +1773,8 @@ def outbox_call(
     sanitizer: Any = None,
     owned_label_prefixes: tuple[str, ...] = (),
     wiring: Mapping[str, Any] | None = None,
+    close_enabled: bool = False,
+    triage: Any = None,
 ) -> OutboxCall:
     """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
     failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
@@ -1779,6 +1804,8 @@ def outbox_call(
             or tuple(wiring.get("owned_label_prefixes", ())),
             needs_tracker=needs_tracker,
             refusal=wiring.get("refusal"),
+            close_enabled=close_enabled or wiring.get("close_enabled") is True,
+            triage=triage,
         )
         value = run(port)
     except IntakeRefused as exc:
@@ -1795,12 +1822,15 @@ _OUTBOX_KINDS = {
     "comment.create": "comment.create",
     "labels": "labels.change",
     "labels.change": "labels.change",
+    "close": "issue.close",
+    "issue.close": "issue.close",
 }
 
 
 def outbox_kind(text: str) -> Any:
-    """The :class:`OpKind` an operator typed (``comment`` | ``labels``, or the full operation
-    name), or ``None`` when it names neither. An empty string is the default, ``comment.create``."""
+    """The :class:`OpKind` an operator typed (``comment`` | ``labels`` | ``close``, or the full
+    operation name), or ``None`` when it names none. An empty string is the default,
+    ``comment.create``."""
     from .modules.intake.domain import OpKind
 
     name = _OUTBOX_KINDS.get((text or "comment").strip().lower())
@@ -1808,7 +1838,9 @@ def outbox_kind(text: str) -> Any:
 
 
 def _bad_kind(text: str) -> OutboxCall:
-    return OutboxCall(2, f"unknown operation {text!r}: use comment or labels", "bad_argument")
+    return OutboxCall(
+        2, f"unknown operation {text!r}: use comment, labels or close", "bad_argument"
+    )
 
 
 def outbox_draft(cfg, entry, directory, report: str, text: str, actor: str, **kwargs) -> OutboxCall:
@@ -1917,13 +1949,16 @@ def outbox_approve(
     """``bh work outbox approve <id> --op <kind>:<digest> [--op ...] [--publish <finding>]``.
 
     Each ``--op`` is its own approval and mints its own single-use grant (approving the comment
-    never approves the labels). ``--publish`` names a finding to publish deliberately and is only
-    accepted with exactly one ``--op``, so the finding belongs to that operation. An approval
-    already made stays made when a later one is refused: the result carries those so far."""
+    never approves the labels or the close). ``--publish`` names a finding to publish deliberately
+    and is only accepted with exactly one ``--op``, so the finding belongs to that operation. An
+    approval already made stays made when a later one is refused: the result carries those so
+    far."""
     from .modules.intake.contracts import OutboxApprove
 
     if not ops:
-        return OutboxCall(2, "pass at least one --op <comment|labels>:<digest>", "bad_argument")
+        return OutboxCall(
+            2, "pass at least one --op <comment|labels|close>:<digest>", "bad_argument"
+        )
     if publish and len(ops) != 1:
         return OutboxCall(2, "--publish needs exactly one --op", "bad_argument")
     requests = []
@@ -1961,6 +1996,39 @@ def outbox_send(
         return _bad_kind(kind)
     return outbox_call(
         cfg, entry, directory, lambda port: port.send(outbox_id, actor=actor, kind=op), **kwargs
+    )
+
+
+def outbox_backfill_close(
+    cfg,
+    entry,
+    directory,
+    actor: str,
+    dry_run: bool = False,
+    *,
+    branch: str = "main",
+    repo: Any = None,
+    landed: Any = None,
+    **kwargs,
+) -> OutboxCall:
+    """``bh work outbox backfill-close [--dry-run]``: draft the ``issue.close`` of every report
+    already closed in the store whose bound issue is still open and whose applied triage outcome
+    ends the thread, on its latest reply; a report that never got its reply gets one drafted too,
+    from the reviewed ``reporter_text`` or the template apply uses (the fix version computed over
+    ``branch`` through :func:`triage_binding`). One issue listing; drafts only, never approves or
+    sends. Off unless the outbox is on and the tracker plugin's ``write.issue_close.enabled``."""
+    from .modules.intake.contracts import CloseBackfill
+
+    def binding():  # built only once the switches let the port be bound
+        return triage_binding(cfg, entry, directory, branch=branch, repo=repo, landed=landed)
+
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.backfill_closes(CloseBackfill(actor, dry_run=dry_run)),
+        triage=binding,
+        **kwargs,
     )
 
 
@@ -2636,7 +2704,7 @@ def _compose(
             ids=source,
             identity=outbox["identity"],
             marker_line=outbox["marker_line"],
-            policy=policy,
+            policy=with_close(policy, outbox.get("close_enabled")),
             leak_policy=leaks,
             sanitizer=scrubber,
             posture=posture,

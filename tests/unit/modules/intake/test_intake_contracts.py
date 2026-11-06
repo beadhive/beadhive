@@ -71,6 +71,7 @@ def test_port_names_match_the_adr() -> None:
         "reconcile",
         "discard",
         "retry",
+        "backfill_closes",
         "on_work_merged",
         "on_release",
         # waiting for the reporter (bh-61xkc), additive

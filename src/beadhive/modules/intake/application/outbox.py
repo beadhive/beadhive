@@ -3,7 +3,7 @@
 The pure machine lives in :mod:`..domain.outbox`; this is the only tracker-typed code of the
 outbox, and it is translation only: it never calls a writer or a reader. The supervised sender
 that holds ``IntakeLock``, persists O9 before the request and calls ``post_comment`` /
-``change_labels`` exactly once is :mod:`.sender` (``bh-6wj9y`` R6, I9a and I9b).
+``change_labels`` / ``close_issue`` exactly once is :mod:`.sender` (``bh-6wj9y`` R6, I9a and I9b).
 
 * :func:`write_grant` turns an O5 approval into the port's single-use ``WriteGrant``, scoped to
   one operation and the record's own issue.
@@ -113,13 +113,14 @@ def capabilities(report: CapabilityReport) -> Capabilities:
 
 
 def receipt(answer: WriteReceipt) -> Receipt:
-    """O10's receipt: the remote comment key, or the labels after."""
+    """O10's receipt: the remote comment key, the labels after, or the issue's state after."""
     comment = answer.comment
     return Receipt(
         comment_id=None if comment is None else comment.key.id,
         global_id=None if comment is None else comment.key.global_id,
         labels_after=answer.labels_after,
         actor=None if comment is None else thread_actor(comment.author),
+        state_after=None if answer.state_after is None else answer.state_after.value,
     )
 
 

@@ -18,9 +18,12 @@ only those whose last review confirmed them or whose correction they adopted, wi
 Each maps onto the existing triage verbs (:func:`~..domain.triage.plan_apply`) through the
 :class:`TriageActions` it is given (the :class:`~.service.IntakeService` itself), so every
 refusal those verbs make still holds. A reply or a question is DRAFTED in the outbox and never
-sent. An applied proposal is skipped, so a second apply changes nothing. With the label
-projection bound (``intake.external.labels.enabled``) the touched reports' labels are refreshed
-(drafted, like every label change). ``dry_run`` checks and plans and writes nothing.
+sent; a reply that ends the thread (``fixed``, ``reject``, ``duplicate-of``) asks for the issue's
+close on the same record, which the sender drafts only while the close gate is on and sends only
+after the reply and the report's labels. An applied proposal is skipped, so a second apply
+changes nothing. With the label projection bound (``intake.external.labels.enabled``) the touched
+reports' labels are refreshed (drafted, like every label change). ``dry_run`` checks and plans
+and writes nothing.
 
 The repository facts, the landed commits, the integration branch, the leak policy and the
 reroute re-filer come in as a :class:`TriageBinding` from the composition root: this module reads
@@ -77,11 +80,13 @@ from ..domain import (
     add_review,
     amend,
     apply_order,
+    check_proposal,
     check_run,
     content_from_document,
     content_seq,
     duplicate_text,
     evidence_after,
+    fixed_text,
     half_rejected,
     leak_check,
     mark_applied,
@@ -171,11 +176,14 @@ class ProposalService:
         binding: TriageBinding | None,
         *,
         projection: LabelProjection | None = None,
+        replies: bool = True,
     ) -> None:
         self._store = store
         self._actions = actions
         self._binding = binding
         self._projection = projection
+        #: an outbox is bound, so apply can draft a duplicate's reply (``plan_apply``)
+        self._replies = replies
 
     def _require_binding(self) -> TriageBinding:
         if self._binding is None:
@@ -378,6 +386,22 @@ class ProposalService:
             labels_error=labels_error,
         )
 
+    def backfill_reply(self, report: str, proposal: Proposal) -> str:
+        """The reply an applied ``proposal`` would have drafted for ``report`` (``""``: none can
+        be composed now), for the close backfill of a report that never got one: its reviewed
+        ``reporter_text``, else the template apply uses: ``duplicate_text`` naming the canonical's
+        issue, or ``fixed_text`` with the fix version COMPUTED now (needs the triage binding; a
+        claim whose checks no longer pass composes nothing). Reads only."""
+        if proposal.reporter_text:
+            return proposal.reporter_text
+        if proposal.disposition is ProposalDisposition.DUPLICATE_OF:
+            return duplicate_text(self._reference(proposal.share_with))
+        if proposal.disposition is ProposalDisposition.FIXED and self._binding is not None:
+            context = self._context({report: proposal}, self._binding)
+            check = check_proposal(report, proposal, context)
+            return fixed_text(check.computed_fixed_in) if check.passed else ""
+        return ""
+
     def _reference(self, report: str) -> str:
         view = self._store.get(report)
         return view.binding.identifier if view is not None and view.binding is not None else ""
@@ -432,13 +456,19 @@ class ProposalService:
             fixed_in=check.computed_fixed_in,
             canonical_work=(canonical.work or None) if canonical is not None else None,
             canonical_ref=canonical.reference if canonical is not None else "",
+            replies=self._replies,
         )
         if canonical is not None and canonical.planned and not canonical.work:
             # the canonical is only planned: its new work does not exist yet on a dry run
-            plan = ApplyPlan(
-                (ApplyStep.LINK, ApplyStep.REJECT),
-                reason=proposal.reporter_text or duplicate_text(canonical.reference),
+            planned = plan_apply(
+                proposal,
+                bound=view.binding is not None,
+                canonical_work="(planned)",
+                canonical_ref=canonical.reference,
+                replies=self._replies,
             )
+            assert isinstance(planned, ApplyPlan)  # a duplicate with canonical work always plans
+            plan = dataclasses.replace(planned, work="")
         if isinstance(plan, str):
             return _with(base, detail=plan)
         if resuming:
@@ -496,9 +526,8 @@ class ProposalService:
                     linked = self._actions.link(LinkRequest(report, plan.work, actor))
                     milestones = linked.milestones
                 elif step is ApplyStep.DRAFT_REPLY:
-                    drafted.append(
-                        self._actions.draft_reply(ReplyDraft(report, plan.reason, actor)).outbox_id
-                    )
+                    reply = ReplyDraft(report, plan.reason, actor, close=plan.close)
+                    drafted.append(self._actions.draft_reply(reply).outbox_id)
                 elif step is ApplyStep.REJECT:
                     self._actions.dispose(
                         DispositionRequest(report, Disposition.REJECT, actor, reason=plan.reason)

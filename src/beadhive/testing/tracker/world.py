@@ -123,6 +123,7 @@ class _Issue:
     created: datetime
     updated: datetime
     change_request: bool = False
+    closed_reason: str | None = None  # the reason of the last close (``issue.close``)
     #: Moved to another project: no longer listed here, but still answers its old key with its new
     #: canonical one (what a tracker's redirect for a transferred issue does).
     transferred: bool = False

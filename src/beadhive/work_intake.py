@@ -729,6 +729,7 @@ def _rendered_row(rendered) -> dict:
         "payload": rendered.payload,
         "add": sorted(rendered.add),
         "remove": sorted(rendered.remove),
+        "close": rendered.close.value if rendered.close is not None else None,
         "findings": [
             {
                 "id": finding.id,
@@ -758,6 +759,8 @@ def _stored_operation_row(op) -> dict:
     row: dict = {"kind": op.kind.value, "state": op.state.value}
     if op.labels is not None:
         row["add"], row["remove"] = sorted(op.labels.add), sorted(op.labels.remove)
+    if op.close is not None:
+        row["close"] = op.close.value
     return row
 
 
@@ -819,6 +822,8 @@ def _stored_lines(stored) -> list[str]:
             changes = [f"+{label}" for label in sorted(op.labels.add)]
             changes += [f"-{label}" for label in sorted(op.labels.remove)]
             line += f" ({' '.join(changes)})" if changes else ""
+        if op.close is not None:
+            line += f" (as {op.close.value})"
         lines.append(line)
     lines += [f"  | {line}" for line in stored.text.splitlines() or [""]]
     lines.append(f"  → {stored.note}")
@@ -936,6 +941,77 @@ def outbox_send(
             cfg, entry, directory, outbox_id, kind, actor, hive=hive
         ),
     )
+
+
+def _backfill_row(item) -> dict:
+    return {
+        "report": item.report,
+        "outbox_id": item.outbox_id,
+        "reason": item.reason.value if item.reason is not None else "",
+        "drafted": item.drafted,
+        "detail": item.detail,
+        "reply_text": item.reply_text,
+    }
+
+
+def render_close_backfill(call, as_json: bool) -> None:
+    """Print ``bh work outbox backfill-close`` (human or ``--json``); non-zero on a refusal."""
+    outcome = call.value
+    if as_json:
+        payload: dict = {
+            "ok": call.code == 0,
+            "verb": "backfill-close",
+            "reason": call.reason,
+            "error": call.error,
+        }
+        if outcome is not None:
+            payload["dry_run"] = outcome.dry_run
+            payload["items"] = [_backfill_row(item) for item in outcome.items]
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if call.code:
+            raise typer.Exit(call.code)
+        return
+    if outcome is not None:
+        if not outcome.items:
+            typer.echo("no closed report has an open issue to close")
+        verb = "would draft" if outcome.dry_run else "drafted"
+        for item in outcome.items:
+            reason = item.reason.value if item.reason is not None else "?"
+            if item.skipped:
+                typer.echo(f"- {item.report} skipped: {item.detail}")
+            elif item.drafted or outcome.dry_run:
+                where = item.outbox_id or "a new reply"
+                typer.echo(f"✓ {item.report} {verb} issue.close as {reason} on {where}")
+                if item.reply_text:
+                    typer.echo(f"    with the reply it never got: {item.reply_text}")
+        if outcome.drafted:
+            typer.echo(
+                "  → review each with `outbox show <id>`, approve with `--op close:<digest>`, "
+                "send with `--kind close` after the reply and the labels"
+            )
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ outbox backfill-close refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+
+
+def outbox_backfill_close(
+    dry_run: bool = False, as_: str = "", hive: str = "", as_json: bool = False
+):
+    """Draft the missing issue closes of reports already closed (drafts only; never sends)."""
+    actor = identity.resolve_actor(as_)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    call = intake_services.outbox_backfill_close(
+        cfg,
+        entry,
+        Path(registry.hive_dir(entry)),
+        actor,
+        dry_run,
+        branch=str(config.integration_branch(cfg, entry)),
+        hive=hive,
+    )
+    render_close_backfill(call, as_json)
 
 
 def outbox_reconcile(outbox_id: str = "", as_: str = "", hive: str = "", as_json: bool = False):
