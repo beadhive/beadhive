@@ -201,8 +201,11 @@ def probe_one(name: str, which_binary: str, version_cmd: list[str]) -> dict[str,
 
     Presence is determined by ``shutil.which(which_binary)`` — a missing binary
     immediately returns ``found=False``.  When found, ``version_cmd`` is run to
-    get the first line of stdout/stderr; a failure there still returns ``found=True``
-    with ``version=None``.
+    get the first line of stdout/stderr; a failure there — an OSError, a timeout, OR a
+    non-zero exit — still returns ``found=True`` with ``version=None``. The exit code is
+    honoured on purpose: a command that failed printed an error, not a version, and
+    rendering that error after a green ✓ is how macOS showed
+    ``✓ procps  (ps: illegal option -- -)`` for a probe that had in fact failed.
 
     Probe helpers are intentionally importable from this module so doctor.py can
     reuse them without duplicating the subprocess logic.
@@ -218,6 +221,8 @@ def probe_one(name: str, which_binary: str, version_cmd: list[str]) -> dict[str,
             text=True,
             timeout=5,
         )
+        if result.returncode != 0:
+            return {"found": True, "version": None}
         out = (result.stdout or result.stderr or "").strip()
         version = out.splitlines()[0] if out else None
         return {"found": True, "version": version}
