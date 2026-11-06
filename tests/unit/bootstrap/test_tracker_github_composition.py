@@ -473,9 +473,11 @@ def test_a_close_through_the_root_view_needs_a_close_grant():
     class _Closer:
         def __init__(self):
             self.calls: list[str] = []
+            self.canonicals: list[IssueKey | None] = []
 
-        def close_issue(self, issue, *, reason, grant):
+        def close_issue(self, issue, *, reason, grant, duplicate_of=None):
             self.calls.append(reason.value)
+            self.canonicals.append(duplicate_of)
             return grant
 
     adapter = _Closer()
@@ -491,4 +493,10 @@ def test_a_close_through_the_root_view_needs_a_close_grant():
     grant = WriteGrant("g-1", Operation.ISSUE_CLOSE, issue)
     assert port.close_issue(issue, reason=CloseReason.DUPLICATE, grant=grant) is grant  # type: ignore[attr-defined]
     assert adapter.calls == ["duplicate"]
+    canonical = IssueKey("#1", "https://github.com/acme/widget/issues/1")
+    again = WriteGrant("g-2", Operation.ISSUE_CLOSE, issue)
+    port.close_issue(  # type: ignore[attr-defined]
+        issue, reason=CloseReason.DUPLICATE, grant=again, duplicate_of=canonical
+    )
+    assert adapter.canonicals == [None, canonical]  # the canonical passes through the view
     assert not isinstance(tracker_root.narrow(adapter, frozenset()), IssueCloser)

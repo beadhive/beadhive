@@ -20,12 +20,18 @@ The checks, per proposal of a run:
 * field consistency: ``new`` has no ``fixed_in``; ``fixed`` has no type or priority; and so on;
 * ``reporter_text``: no unresolved :mod:`.leaks` finding (bead ids, internal labels, seats,
   paths, secrets; no sanitizer is itself a finding) and within the length limit;
+* mentions (``bh-iamru``): every ``#N`` the ``reporter_text`` names is an issue of the bound
+  tracker project (the tracker autolinks it, so a wrong number points the reporter at the wrong
+  issue); a ``#N`` that is another bound report is returned in ``ProposalCheck.relates`` so apply
+  records a bh-side ``relates-to``. The issues come in as plain data (:class:`MentionFact`, from
+  ONE listing per run); without that listing a mention cannot be verified, which is a finding;
 * staleness: the report's thread advanced past the ``thread_seq`` the analysis read, or the
   integration branch moved past ``analysed_commit`` in a path the evidence cites.
 
 Pure: no I/O, no clock. Repository facts come from an injected :class:`RepoQueries` (the
 contracts' ``RepoFacts`` port, implemented over git at the root), every other fact (target status,
-landed commits, the stored thread seq) is passed in by the caller as plain data.
+landed commits, the stored thread seq, the bound project's issues) is passed in by the caller as
+plain data.
 """
 
 from __future__ import annotations
@@ -96,6 +102,8 @@ class CheckKind(StrEnum):
     STALE_THREAD = "stale_thread"  # the thread advanced since the analysis read it
     STALE_PATHS = "stale_paths"  # the branch changed a cited path since analysed_commit
     STALE_UNKNOWN = "stale_unknown"  # staleness cannot be established
+    MENTION_MISSING = "mention_missing"  # reporter_text names a #N that is no issue of the project
+    MENTION_UNVERIFIED = "mention_unverified"  # no issue listing to verify a #N against
 
 
 #: The kinds that mean "re-review": the proposal was right once, and the world moved.
@@ -117,13 +125,25 @@ class TargetFact:
 
 
 @dataclass(frozen=True)
+class MentionFact:
+    """One issue of the bound tracker project a ``#N`` may name: its identifier (``#12``), its
+    URL, and the bound report it is (``""``: none in this hive)."""
+
+    identifier: str
+    url: str
+    report: str = ""
+
+
+@dataclass(frozen=True)
 class CheckContext:
     """Everything a run of checks reads besides the proposals.
 
     ``branch`` is the integration branch; ``targets`` the store's facts of every target named;
     ``thread_seqs`` each report's current ``intake.thread`` seq (absent: no thread, so 0);
     ``leak_policy`` and ``sanitizer`` what the outbox's leak check uses (``None``: no sanitizer is
-    bound, itself a finding)."""
+    bound, itself a finding). ``issues`` is the bound project's issues by identifier, read once
+    for the run when some ``reporter_text`` mentions a ``#N`` (``None``: not read, so a mention is
+    unverified, and ``issues_gap`` says why)."""
 
     branch: str
     repo: RepoQueries
@@ -132,6 +152,8 @@ class CheckContext:
     targets: Mapping[str, TargetFact] = field(default_factory=dict)
     thread_seqs: Mapping[str, int] = field(default_factory=dict)
     reporter_text_limit: int = DEFAULT_REPORTER_TEXT_LIMIT
+    issues: Mapping[str, MentionFact] | None = None
+    issues_gap: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,11 +171,14 @@ class ProposalCheck:
 
     ``computed_fixed_in`` is the fix version computed from the repository for a fix claim whose
     commits are all on the branch (``""``: merged but in no release yet); ``None`` when there is
-    no fix claim or it could not be computed. Apply reads it, never the claimed ``fixed_in``."""
+    no fix claim or it could not be computed. Apply reads it, never the claimed ``fixed_in``.
+    ``relates`` are the other bound reports whose issues the ``reporter_text`` mentions (sorted):
+    apply records a ``relates-to`` to each."""
 
     report: str
     findings: tuple[CheckFinding, ...] = ()
     computed_fixed_in: str | None = None
+    relates: tuple[str, ...] = ()
 
     @property
     def passed(self) -> bool:
@@ -472,6 +497,58 @@ def _reporter_text(proposal: Proposal, context: CheckContext) -> list[CheckFindi
     return found
 
 
+#: A ``#N`` issue reference as the tracker autolinks it: not part of a word, a path, a URL
+#: fragment, an HTML entity or an ``owner/repo#N`` cross-reference (another project's).
+_MENTION = re.compile(r"(?<![\w#/&.-])#([1-9][0-9]{0,9})\b")
+#: Code is never autolinked: fenced blocks first, then inline spans.
+_CODE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.DOTALL)
+
+
+def mentions(text: str) -> tuple[str, ...]:
+    """Every ``#N`` issue reference ``text`` makes, outside code, as identifiers in number order
+    (``("#7", "#12")``). Pure."""
+    found = {int(n) for n in _MENTION.findall(_CODE.sub(" ", text))}
+    return tuple(f"#{n}" for n in sorted(found))
+
+
+def _mentions(
+    report: str, proposal: Proposal, context: CheckContext
+) -> tuple[list[CheckFinding], tuple[str, ...]]:
+    named = mentions(proposal.reporter_text)
+    if not named:
+        return [], ()
+    if context.issues is None:
+        why = f" ({context.issues_gap})" if context.issues_gap else ""
+        return [
+            CheckFinding(
+                CheckKind.MENTION_UNVERIFIED,
+                f"reporter_text mentions {', '.join(named)}, which cannot be verified: no "
+                f"listing of the bound project's issues{why}",
+                "bind the tracker with issues.read enabled, or drop the issue references",
+            )
+        ], ()
+    missing = [n for n in named if n not in context.issues]
+    found = []
+    if missing:
+        found.append(
+            CheckFinding(
+                CheckKind.MENTION_MISSING,
+                f"reporter_text mentions {', '.join(missing)}, which "
+                + ("is not an issue" if len(missing) == 1 else "are not issues")
+                + " of the bound project",
+                "name an existing issue, or rewrite the text without the reference",
+            )
+        )
+    relates = sorted(
+        {
+            fact.report
+            for n in named
+            if (fact := context.issues.get(n)) is not None and fact.report not in ("", report)
+        }
+    )
+    return found, tuple(relates)
+
+
 def _staleness(
     report: str, proposal: Proposal, context: CheckContext, repo: RepoQueries
 ) -> list[CheckFinding]:
@@ -528,15 +605,17 @@ def _check(
     repo: RepoQueries,
 ) -> ProposalCheck:
     fix_findings, computed = _fix(proposal, context, repo)
+    mention_findings, relates = _mentions(report, proposal, context)
     findings = [
         *_fields(proposal),
         *_targets(proposal, context),
         *fix_findings,
         *_family(report, proposal, run),
         *_reporter_text(proposal, context),
+        *mention_findings,
         *_staleness(report, proposal, context, repo),
     ]
-    return ProposalCheck(report, tuple(findings), computed)
+    return ProposalCheck(report, tuple(findings), computed, relates)
 
 
 def check_proposal(
@@ -580,6 +659,7 @@ __all__ = [
     "CheckContext",
     "CheckFinding",
     "CheckKind",
+    "MentionFact",
     "ProposalCheck",
     "RepoQueries",
     "TargetFact",
@@ -587,5 +667,6 @@ __all__ = [
     "check_proposal",
     "check_run",
     "cited_paths",
+    "mentions",
     "version_key",
 ]

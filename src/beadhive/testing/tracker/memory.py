@@ -58,6 +58,7 @@ from beadhive.modules.tracker.contracts import (
     WriteGrant,
     WriteOutcomeUnknown,
     WriteReceipt,
+    check_close,
 )
 
 from .world import MemoryWorld, _Comment, _Issue
@@ -357,12 +358,28 @@ class MemoryTracker:
         return WriteReceipt(grant.grant_id, grant.operation, issue, labels_after=frozenset(labels))
 
     def close_issue(
-        self, issue: IssueKey, *, reason: CloseReason, grant: WriteGrant
+        self,
+        issue: IssueKey,
+        *,
+        reason: CloseReason,
+        grant: WriteGrant,
+        duplicate_of: IssueKey | None = None,
     ) -> WriteReceipt:
         """Close ``issue`` with ``reason`` under an ``issue.close`` grant. Only the state changes
-        (never a label); an issue already closed is closed again with the new reason."""
-        if not isinstance(reason, CloseReason):
-            raise ValueError("a close needs a CloseReason")
+        (never a label); an issue already closed is closed again with the new reason. A
+        ``duplicate_of`` canonical is recorded on the closed issue; one this project does not
+        hold is refused before the write, with the grant kept."""
+        check_close(issue, reason, duplicate_of)
+        self._require(Operation.ISSUE_CLOSE)
+        if duplicate_of is not None:
+            canonical = self.world.issues.get(duplicate_of.identifier)
+            if (
+                canonical is None
+                or canonical.change_request
+                or canonical.transferred
+                or canonical.key != duplicate_of
+            ):
+                raise NotVisible(f"{duplicate_of.identifier} is not visible")
         self._authorise(Operation.ISSUE_CLOSE, issue, grant)
         self._request(write=True)
         self.world.writes += 1
@@ -371,6 +388,7 @@ class MemoryTracker:
             raise WriteOutcomeUnknown("the tracker did not confirm the close")
         row = self.world.issues[issue.identifier]
         row.state, row.closed_reason, row.updated = IssueState.CLOSED, reason.value, self._when()
+        row.duplicate_of = duplicate_of.url if duplicate_of is not None else None
         if ambiguous:  # applied, but the caller cannot know
             raise WriteOutcomeUnknown("the tracker did not confirm the close")
         return WriteReceipt(
@@ -492,9 +510,14 @@ class _WithoutResolver:
         )
 
     def close_issue(
-        self, issue: IssueKey, *, reason: CloseReason, grant: WriteGrant
+        self,
+        issue: IssueKey,
+        *,
+        reason: CloseReason,
+        grant: WriteGrant,
+        duplicate_of: IssueKey | None = None,
     ) -> WriteReceipt:
-        return self._inner.close_issue(issue, reason=reason, grant=grant)
+        return self._inner.close_issue(issue, reason=reason, grant=grant, duplicate_of=duplicate_of)
 
 
 def without_resolver(tracker: MemoryTracker) -> TrackerAdapter:

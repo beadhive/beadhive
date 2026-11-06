@@ -13,7 +13,7 @@ module's domain records.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
@@ -346,6 +346,18 @@ class ReportStore(Protocol):
         """Every bead that investigates ``report`` (sorted), of every status."""
         ...
 
+    def relate(self, report: str, other: str, *, actor: str) -> None:
+        """Record that ``report`` and ``other`` are related reports (``bh-iamru``: one's reply
+        mentions the other's issue): one native ``relates-to`` edge, non-blocking, distinct from
+        ``tracks`` and investigations, surviving either bead's closure. Idempotent in BOTH
+        directions: a pair already related either way is left as it is."""
+        ...
+
+    def related_reports(self, report: str) -> tuple[str, ...]:
+        """Every bead related to ``report`` by a ``relates-to`` edge in either direction (sorted),
+        of every status."""
+        ...
+
     def read_thread(self, bead: str) -> Thread | None: ...  # None: no ``intake.thread`` yet
 
     def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
@@ -484,6 +496,21 @@ class RepoFacts(Protocol):
 
 
 @runtime_checkable
+class ProjectIssues(Protocol):
+    """The bound tracker project's issues, for the pre-apply mention check (``bh-iamru``),
+    read-only.
+
+    ``identifiers`` answers every issue of the bound project, open AND closed, as identifier
+    (``#12``) to canonical URL, from ONE paged listing, so a run's every ``#N`` costs one listing,
+    never one request per mention. It raises ``IntakeRefused`` when it cannot answer (no tracker
+    is bound with ``issues.read``, or the listing failed part-way): never a partial answer, so a
+    mention is never refused as missing on an incomplete read. The application implements it over
+    the tracker port; tests inject a fake."""
+
+    def identifiers(self) -> Mapping[str, str]: ...
+
+
+@runtime_checkable
 class LandedCommits(Protocol):
     """The commits that landed a work bead (bh-9aqmv), read-only: its ``git.commits`` linkage,
     oldest first (``()``: none recorded). A closed fixing bead's landed commits are what the
@@ -527,6 +554,7 @@ __all__ = [
     "LabelPolicy",
     "LandedCommits",
     "OutboxView",
+    "ProjectIssues",
     "ReleaseVerifier",
     "RepoFacts",
     "ReportStore",

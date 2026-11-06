@@ -32,7 +32,7 @@ from tests.unit.bootstrap.test_tracker_composition import plugin, roots
 from typer.testing import CliRunner
 
 from beadhive import cli, intake_services, registry, run, store_target, work_intake
-from beadhive.modules.intake import IntakeStoreError, OwnIdentity
+from beadhive.modules.intake import IntakeRefused, IntakeStoreError, OwnIdentity, RefusalReason
 from beadhive.modules.intake.domain import WorkDraft
 from beadhive.modules.tracker.contracts import CommentWriter, MarkerCodec, OwnMarker
 from beadhive.testing.intake import draft
@@ -153,6 +153,31 @@ def test_the_close_gate_follows_the_bindings_own_issue_close_enable(tmp_path, mo
     assert missing.exit_code == 1 and doc(missing)["reason"] == "unknown_outbox"
     off = bh("outbox", "backfill-close", "--dry-run", *COMMON)
     assert off.exit_code == 0 and doc(off)["items"] == []
+
+
+def test_the_mention_checks_issue_listing_comes_from_the_binding_lazily(rig) -> None:
+    """bh-iamru: the pre-apply mention check lists the bound project's issues through the same
+    plugin binding (issues.read only), and building it binds and reads nothing."""
+    rig.process = SimpleNamespace(for_store=lambda *a, **k: pytest.fail("bound too early"))
+    issues = intake_services.project_issues(rig.cfg, rig.entry, rig.hive)
+    rig.process = rig.adapters
+    _report, issue = rig.report()
+    reads = rig.world.read_requests()
+
+    listed = issues.identifiers()
+
+    assert listed[issue.identifier] == issue.url
+    assert rig.world.read_requests() > reads and rig.world.write_requests() == 0
+
+
+def test_the_mention_checks_listing_without_a_tracker_refuses_naming_the_key(rig) -> None:
+    rig.plugin_off()
+
+    with pytest.raises(IntakeRefused) as caught:
+        intake_services.project_issues(rig.cfg, rig.entry, rig.hive).identifiers()
+
+    assert caught.value.reason is RefusalReason.INTAKE_DISABLED
+    assert "plugins.tracker-github.enabled" in caught.value.detail
 
 
 @pytest.mark.parametrize(

@@ -27,7 +27,9 @@ behaviour it reproduces (API version 2022-11-28):
   concurrent label is never lost;
 * ``PATCH /issues/{n}`` (``issue.close``): ``state`` and ``state_reason`` (``completed``,
   ``not_planned``, ``duplicate``; ``422 Validation Failed`` for any other value or a reason
-  without ``state``) answering ``200`` with the issue; a ``labels`` member REPLACES the issue's
+  without ``state``; ``duplicate_issue_id``, the canonical's numeric issue id, only with
+  ``duplicate`` and naming an existing issue, else ``422``) answering ``200`` with the issue; a
+  ``labels`` member REPLACES the issue's
   whole label set, as on GitHub (the adapter must never send one); ``403`` on an archived
   repository;
 * repository label definitions: ``GET /labels`` (paged by ``per_page``/``page`` with a
@@ -127,6 +129,8 @@ class FakeGitHub:
     deleted: set[int] = field(default_factory=set)
     transferred: dict[int, str] = field(default_factory=dict)  # number -> "owner/name"
     moved: dict[int, dict[str, Any]] = field(default_factory=dict)  # number -> its new row
+    #: A close's ``duplicate_issue_id``: the closed issue's number -> the canonical's issue id.
+    duplicates: dict[int, int] = field(default_factory=dict)
     requests: list[httpx.Request] = field(default_factory=list)
     scripted: deque[httpx.Response] = field(default_factory=deque)
     repo_meta: dict[str, Any] = field(
@@ -346,6 +350,12 @@ class FakeGitHub:
         row = self._row(int(issue.identifier[1:]))
         return frozenset(label["name"] for label in row["labels"])
 
+    def duplicate_of(self, issue: IssueKey) -> str | None:
+        """The canonical's ``html_url`` the last close of ``issue`` named (observation only)."""
+        canonical = self.duplicates.get(int(issue.identifier.removeprefix("#")))
+        row = next((i for i in self.issues if i["id"] == canonical), None)
+        return None if row is None else self._key(row).url
+
     def comment_count(self, issue: IssueKey) -> int:
         suffix = f"/issues/{issue.identifier[1:]}"
         return sum(1 for c in self.comments if c["issue_url"].endswith(suffix))
@@ -553,11 +563,21 @@ class FakeGitHub:
             "reopened",
         ):
             return httpx.Response(422, json={"message": "Validation Failed"})
+        canonical = edit.get("duplicate_issue_id")
+        if canonical is not None:
+            # the canonical's numeric issue id (not its number); it must exist and be visible
+            target = next((i for i in self.issues if i["id"] == canonical), None)
+            if reason != "duplicate" or target is None or target["number"] in self.deleted:
+                return httpx.Response(422, json={"message": "Validation Failed"})
         when = iso(self.write_time or self.clock.now())
         if state is not None:
             row["state"] = state
             row["closed_at"] = when if state == "closed" else None
             row["state_reason"] = reason or ("completed" if state == "closed" else "reopened")
+            if canonical is not None:
+                self.duplicates[number] = canonical
+            else:
+                self.duplicates.pop(number, None)
         if isinstance(edit.get("labels"), list):  # the whole set is REPLACED, as on GitHub
             row["labels"] = [self._label(n) for n in edit["labels"]]
         row["updated_at"] = when

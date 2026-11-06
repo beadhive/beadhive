@@ -289,9 +289,9 @@ __all__ += ["NoticeFact", "StartFact"]
 
 # -- reproduction work (bh-u3a53): the investigates relation's native edge type ----------------
 
-from ..domain import INVESTIGATES_EDGE, TRACKS_EDGE  # noqa: E402
+from ..domain import INVESTIGATES_EDGE, RELATES_EDGE, TRACKS_EDGE  # noqa: E402
 
-__all__ += ["INVESTIGATES_EDGE", "TRACKS_EDGE"]
+__all__ += ["INVESTIGATES_EDGE", "RELATES_EDGE", "TRACKS_EDGE"]
 
 # -- review-gated triage proposals (bh-hrx2r) ---------------------------------------------------
 
@@ -345,15 +345,17 @@ from ..domain import (  # noqa: E402
     CheckFinding,
     CheckKind,
     LeakPolicy,
+    MentionFact,
     ProposalCheck,
     TargetFact,
     adopt_computed_fix,
     check_proposal,
     check_run,
     cited_paths,
+    mentions,
     version_key,
 )
-from .ports import RepoFacts  # noqa: E402
+from .ports import ProjectIssues, RepoFacts  # noqa: E402
 
 __all__ += [
     "DEFAULT_REPORTER_TEXT_LIMIT",
@@ -361,13 +363,16 @@ __all__ += [
     "CheckFinding",
     "CheckKind",
     "LeakPolicy",
+    "MentionFact",
     "ProposalCheck",
     "TargetFact",
     "adopt_computed_fix",
     "check_proposal",
     "check_run",
     "cited_paths",
+    "mentions",
     "version_key",
+    "ProjectIssues",
     "RepoFacts",
 ]
 

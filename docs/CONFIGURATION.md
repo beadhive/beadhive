@@ -453,7 +453,12 @@ close`, and only after that record's comment and every other comment of the repo
 and the report's latest labels record is sent (`close_not_ready` otherwise, before any request).
 `bh work outbox backfill-close [--dry-run]` drafts the close for reports already closed whose
 issue is still open, drafting the missing reply too when the report never got one. The probe reports
-`issue.close` as `no` below the triage role.
+`issue.close` as `no` below the triage role. A `duplicate-of` close also names the canonical
+report's issue (bh-iamru): the PATCH adds `duplicate_issue_id` (the canonical's numeric issue id,
+read with one GET before the write), and the close's digest shows `duplicate_of: <url>`. It needs
+no other key; a canonical with no issue in the same repository closes as a plain duplicate.
+GitHub's issue dependencies and sub-issues have no key: bh does not write them (no bead edge means
+the same thing).
 
 `read.labels.enabled` and `write.label_definitions.enabled` are new (bh-la587) and were added with
 the `labels.read` and `labels.define` tracker operations. `BeadhiveConfig` forbids unknown keys, so
@@ -602,7 +607,10 @@ question through the outbox (`outbox.enabled`) and asks through `needs-info` (`c
 so with either off the report that needs it fails and nothing is written for it; it refreshes the
 touched reports' labels while `labels.enabled` is on. The pre-apply checks read the hive checkout's
 git (ancestry, tags, changed paths; read-only) against `work.integration_branch`, and the fixing
-commits from each closed work bead's `git.commits` linkage.
+commits from each closed work bead's `git.commits` linkage. Since 0.35.3 (bh-iamru) they also
+resolve every `#N` a `reporter_text` names against the bound repository, with ONE issue listing per
+run and only when a `#N` appears: this needs the tracker plugin with `read.issues.enabled`, and
+without it such a text fails as `mention_unverified` (no new key).
 
 Since 0.35.2 a proposal goes stale only when a comment changed after its `thread_seq` (recording a
 triage read with `thread considered` no longer counts), `apply` records the analysis's read through

@@ -549,6 +549,30 @@ def test_check_reports_findings_and_exits_1(rig) -> None:
     assert doc(result)["failed"] == [bad]
 
 
+def test_check_resolves_every_issue_a_reply_mentions_with_one_listing(rig) -> None:
+    """bh-iamru: a #N that is no issue of the bound project fails the check; a #N that is another
+    bound report is reported as a relates-to; the run lists the issues once."""
+    original, original_issue = rig.report("First")
+    missing, _ = rig.report("Second")
+    related, _ = rig.report("Third")
+    named = original_issue.identifier
+    propose(original, REJECT)
+    propose(missing, {"disposition": "reject", "reporter_text": f"See {named} and #999."})
+    propose(related, {"disposition": "reject", "reporter_text": f"Answered in {named}."})
+    reads = rig.world.read_requests()
+
+    result = triage("check")
+
+    assert result.exit_code == 1
+    rows = {row["report"]: row for row in doc(result)["checks"]}
+    assert [f["kind"] for f in rows[missing]["findings"]] == ["mention_missing"]
+    assert "#999" in rows[missing]["findings"][0]["detail"]
+    assert rows[related]["passed"] is True and rows[related]["relates"] == [original]
+    assert rows[original]["relates"] == []
+    assert rig.world.read_requests() - reads == 1  # one listing (one page) for the whole run
+    assert rig.world.write_requests() == 0
+
+
 def test_check_pending_keeps_only_reports_still_awaiting_triage(rig) -> None:
     kept, _ = rig.report("First")
     fielded, _ = rig.report("Second")

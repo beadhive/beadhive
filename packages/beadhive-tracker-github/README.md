@@ -75,6 +75,13 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
   is refused before the grant is spent. Closing an already closed issue succeeds. An ambiguous
   outcome, or an answer that is not a closed issue, is `WriteOutcomeUnknown`, never retried (the
   outbox reconciles by reading the issue's state back). The probe reports it `no` below triage.
+  A `duplicate` close may name its canonical (`duplicate_of`, `bh-iamru`): the adapter reads the
+  canonical once (`GET .../issues/{n}`) inside the write's session, before the grant is spent, and
+  adds its numeric issue `id` as `duplicate_issue_id` to the same PATCH ("Update an issue";
+  GraphQL's `closeIssue` `duplicateIssueId` is the same link). A canonical of another repository,
+  or the issue itself, or with another reason, is refused before any request; one that is missing,
+  a pull request, moved or unreadable is refused (`NotVisible`) with the grant kept. Issue
+  dependencies and sub-issues are not written.
 * **`labels.read`** lists every repository label definition, owned or not (`GET .../labels`,
   `per_page=100`, following `Link: rel="next"`); like every read it is refused before any request
   while `read.labels.enabled` is off.

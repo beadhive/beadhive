@@ -84,7 +84,7 @@ def test_memory_tracker_conforms(impl: str, case: TrackerCase) -> None:
 
 def test_case_set_covers_the_acceptance_scenarios() -> None:
     ids = {case.case_id for case in TRACKER_CASES}
-    assert len(ids) == len(TRACKER_CASES) == 43
+    assert len(ids) == len(TRACKER_CASES) == 44
     assert {
         "issues.closed-included",
         "issues.checkpoint-incremental",
@@ -105,6 +105,7 @@ def test_case_set_covers_the_acceptance_scenarios() -> None:
         "close.grant-matches-and-single-use",
         "close.round-trip",
         "close.ambiguous-not-retried",
+        "close.duplicate-of-canonical",
         "resolver.resolve-is-pure-and-canonical",
         "resolver.refusals",
         "resolver.get-reads-one-issue",

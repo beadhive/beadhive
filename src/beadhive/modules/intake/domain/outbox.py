@@ -22,7 +22,9 @@ state.
 ``sent``, no other comment of the report is unsent, AND the report's latest labels record (if
 there is one) is ``sent``, so the reporter reads every reply and the final labels before the issue
 closes. Send order per report: comment,
-labels, close.
+labels, close. A ``duplicate`` close may name the canonical issue it duplicates
+(:class:`CanonicalIssue`, ``bh-iamru``): the canonical is part of the close's rendered bytes, so
+its digest, and so the operator's approval, covers it.
 
 **The machine** is per operation, because each write is its own gate:
 
@@ -161,6 +163,16 @@ class CloseReason(StrEnum):
     COMPLETED = "completed"
     NOT_PLANNED = "not_planned"
     DUPLICATE = "duplicate"
+
+
+@dataclass(frozen=True)
+class CanonicalIssue:
+    """The issue a ``duplicate`` close is a duplicate OF (``bh-iamru``): the canonical report's
+    binding, an issue of the same tracker project as the closed one. ``identifier`` routes the
+    write; ``url`` is what the digest covers."""
+
+    identifier: str
+    url: str
 
 
 class OpState(StrEnum):
@@ -318,6 +330,7 @@ class OutboxOperation:
     state: OpState = OpState.DRAFTED
     labels: LabelDiff | None = None  # set for a labels.change operation only
     close: CloseReason | None = None  # set for an issue.close operation only
+    duplicate_of: CanonicalIssue | None = None  # a duplicate close's canonical (bh-iamru)
     findings: tuple[LeakFinding, ...] = ()  # the latest check's findings
     overrides: tuple[Override, ...] = ()  # deliberate publishes awaiting the next approval
     approvals: tuple[Approval, ...] = ()
@@ -494,6 +507,7 @@ class Rendered:
     add: frozenset[str] = frozenset()
     remove: frozenset[str] = frozenset()
     close: CloseReason | None = None
+    duplicate_of: CanonicalIssue | None = None
 
     @property
     def short_digest(self) -> str:
@@ -503,7 +517,8 @@ class Rendered:
 @dataclass(frozen=True)
 class DraftRequest:
     """O1. ``binding`` is the report's binding (``None``: born native, nothing to send to).
-    ``close`` adds an ``issue.close`` operation, which needs the comment it is sent after."""
+    ``close`` adds an ``issue.close`` operation, which needs the comment it is sent after;
+    ``duplicate_of`` names the canonical a ``duplicate`` close is a duplicate of."""
 
     binding: IssueBinding | None
     event: OutboxEvent
@@ -514,6 +529,7 @@ class DraftRequest:
     comment: bool = True
     labels: LabelIntent | None = None
     close: CloseReason | None = None
+    duplicate_of: CanonicalIssue | None = None
 
 
 @dataclass(frozen=True)
@@ -538,6 +554,7 @@ class SendPlan:
     add: frozenset[str] = frozenset()
     remove: frozenset[str] = frozenset()
     close: CloseReason | None = None
+    duplicate_of: CanonicalIssue | None = None
 
 
 @dataclass(frozen=True)
@@ -630,9 +647,27 @@ def digest_matches(typed: str, digest: str) -> bool:
     return len(want) >= 12 and have.startswith(want)
 
 
-def close_payload(reason: CloseReason) -> str:
-    """The rendered bytes of a close: the state and its reason, nothing else (digested)."""
-    return f"state: closed\nstate_reason: {reason.value}"
+def close_payload(reason: CloseReason, duplicate_of: CanonicalIssue | None = None) -> str:
+    """The rendered bytes of a close: the state and its reason, and a duplicate's canonical issue
+    when it names one; nothing else (digested, so approving it approves the canonical too)."""
+    payload = f"state: closed\nstate_reason: {reason.value}"
+    return payload if duplicate_of is None else f"{payload}\nduplicate_of: {duplicate_of.url}"
+
+
+def _require_canonical(
+    reason: CloseReason, duplicate_of: CanonicalIssue | None, target_url: str
+) -> None:
+    """A canonical goes only with a ``duplicate`` close and is never the closed issue itself."""
+    if duplicate_of is None:
+        return
+    if reason is not CloseReason.DUPLICATE:
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "only a duplicate close names a canonical issue"
+        )
+    if duplicate_of.url == target_url:
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "an issue cannot be closed as a duplicate of itself"
+        )
 
 
 def _owned(labels: Iterable[str], policy: LeakPolicy) -> frozenset[str]:
@@ -682,7 +717,7 @@ def render(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> Rendered:
         reason = op.close
         if reason is None:  # pragma: no cover - a close operation always carries its reason
             raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a close operation has no reason")
-        payload = close_payload(reason)
+        payload = close_payload(reason, op.duplicate_of)
         return Rendered(
             record.outbox_id,
             kind,
@@ -693,6 +728,7 @@ def render(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> Rendered:
             digest_of(record.binding.url, kind, payload, None),
             check(payload, ctx.policy, sanitizer=ctx.sanitizer),
             close=reason,
+            duplicate_of=op.duplicate_of,
         )
     diff = op.labels
     if diff is None:  # pragma: no cover - a labels operation always carries its diff
@@ -1044,13 +1080,21 @@ def draft(
             _owned(ctx.labels.labels, ctx.policy),
         )
         operations.append(OutboxOperation(OpKind.LABELS, labels=base))
+    if request.duplicate_of is not None and request.close is None:
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "only a duplicate close names a canonical issue"
+        )
     if request.close is not None:
         require_kind_enabled(OpKind.CLOSE, policy)
         if not request.comment:
             raise IntakeRefused(
                 RefusalReason.INVALID_DRAFT, "a close rides on a record with a comment"
             )
-        operations.append(OutboxOperation(OpKind.CLOSE, close=CloseReason(request.close)))
+        reason = CloseReason(request.close)
+        _require_canonical(reason, request.duplicate_of, binding.url)
+        operations.append(
+            OutboxOperation(OpKind.CLOSE, close=reason, duplicate_of=request.duplicate_of)
+        )
     if not operations:
         raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a record needs an operation")
 
@@ -1126,10 +1170,12 @@ def add_close(
     actor: str,
     policy: OutboxPolicy,
     ctx: RenderContext,
+    duplicate_of: CanonicalIssue | None = None,
 ) -> OutboxApplied:
     """O1 for one ``issue.close`` operation on an EXISTING record (the backfill of a report closed
     before closes were drafted), checked at once (O3). The record must carry a comment; one that
-    already has a close is unchanged (no write), so a re-run never drafts twice."""
+    already has a close is unchanged (no write), so a re-run never drafts twice. ``duplicate_of``
+    names a ``duplicate`` close's canonical issue."""
     if not policy.enabled:
         raise IntakeRefused(
             RefusalReason.OUTBOX_DISABLED, "intake.external.outbox.enabled is off (the default)"
@@ -1141,9 +1187,11 @@ def add_close(
     if record.op(OpKind.CLOSE) is not None:
         return OutboxApplied(doc, outbox_id=outbox_id)
     _require_target(record, ctx)
+    reason = CloseReason(reason)
+    _require_canonical(reason, duplicate_of, record.binding.url)
     tx = _Tx(doc)
     step = Step(tx.seq, "O1", "draft", None, OpState.DRAFTED, actor, "backfill")
-    op = OutboxOperation(OpKind.CLOSE, close=CloseReason(reason), history=(step,))
+    op = OutboxOperation(OpKind.CLOSE, close=reason, duplicate_of=duplicate_of, history=(step,))
     tx.put(dataclasses.replace(record, operations=(*record.operations, op)))
     tx.steps.append(step)
     _check(tx, outbox_id, OpKind.CLOSE, ctx, actor)
@@ -1471,6 +1519,7 @@ def begin_send(
         fresh.add,
         fresh.remove,
         fresh.close,
+        fresh.duplicate_of,
     )
     return tx.done(outbox_id, plan)
 
@@ -1820,6 +1869,7 @@ __all__ = [
     "Approval",
     "ApprovalRequest",
     "Attempt",
+    "CanonicalIssue",
     "Capabilities",
     "CloseReason",
     "DeliveryFacts",

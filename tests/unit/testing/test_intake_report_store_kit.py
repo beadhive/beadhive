@@ -45,7 +45,7 @@ def test_memory_report_store_conforms_and_satisfies_the_port() -> None:
 
 
 def test_case_ids_are_unique_and_stable() -> None:
-    assert len(_CASES) == len(REPORT_STORE_CASES) == 37
+    assert len(_CASES) == len(REPORT_STORE_CASES) == 38
     assert all(case_id.startswith("store.") for case_id in _CASES)
 
 
@@ -393,6 +393,23 @@ class _WorkBornAsUntriagedReport(MemoryReportStore):
         return bead
 
 
+class _RelatesOneWayOnly(MemoryReportStore):
+    """Reads a relates-to edge from the recording side only."""
+
+    def related_reports(self, report):
+        return tuple(
+            sorted(
+                o for pair in self._relations for o in pair if o != report and min(pair) == report
+            )
+        )
+
+
+class _RelateTracks(MemoryReportStore):
+    def relate(self, report, other, *, actor):
+        super().relate(report, other, actor=actor)
+        self.track(report, other, actor=actor)
+
+
 class _WorkDropsPriority(MemoryReportStore):
     def create_work(self, draft):
         return super().create_work(dataclasses.replace(draft, priority=""))
@@ -413,6 +430,8 @@ _BROKEN = [
     (_InvestigateTracks, "store.investigates-is-not-tracks"),
     (_UninvestigateUntracks, "store.investigates-is-not-tracks"),
     (_InvestigationDiesWithTheReport, "store.investigates-is-not-tracks"),
+    (_RelatesOneWayOnly, "store.relates-reports-either-way"),
+    (_RelateTracks, "store.relates-reports-either-way"),
     (_WorkBornAsUntriagedReport, "store.create-work-is-plain-work"),
     (_WorkDropsPriority, "store.create-work-is-plain-work"),
     (_SilentOnUnknown, "store.unknown-bead-is-a-store-error"),

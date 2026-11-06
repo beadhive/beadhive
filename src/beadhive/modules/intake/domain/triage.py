@@ -121,7 +121,9 @@ class ApplyItem:
     ``share_with`` the canonical a family member shares with; ``fixed_in`` the COMPUTED fix
     version of a fix claim (``""``: merged, unreleased; ``None``: no fix claim); ``drafted`` the
     outbox ids drafted (never sent); ``findings`` the check findings and ``detail`` why a blocked
-    or failed proposal was not applied."""
+    or failed proposal was not applied. ``relates`` are the other bound reports whose issues the
+    reply mentions (``bh-iamru``): apply records a ``relates-to`` to each before its verbs (planned
+    on a dry run)."""
 
     report: str
     disposition: ProposalDisposition
@@ -134,6 +136,7 @@ class ApplyItem:
     findings: tuple[CheckFinding, ...] = ()
     detail: str = ""
     milestones: tuple[Any, ...] = ()
+    relates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

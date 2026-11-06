@@ -365,6 +365,23 @@ def _investigates_is_not_tracks(factory: ReportStoreFactory) -> None:
     assert store.investigations_of(other) == (repro,)
 
 
+def _relates_reports_either_way(factory: ReportStoreFactory) -> None:
+    """A relates-to pair (bh-iamru) is one edge read from both sides, recorded once whichever
+    side records it, never a ``tracks`` link or an investigation, and it survives closure."""
+    store = factory()
+    a, b, c = store.create(draft("a")), store.create(draft("b")), store.create(draft("c"))
+    assert store.related_reports(a) == ()
+    store.relate(a, b, actor="dev/test")
+    store.relate(a, b, actor="dev/test")  # idempotent
+    store.relate(b, a, actor="dev/test")  # and in the other direction
+    store.relate(c, a, actor="dev/test")
+    assert store.related_reports(a) == tuple(sorted((b, c)))
+    assert store.related_reports(b) == (a,) and store.related_reports(c) == (a,)
+    assert store.tracked_work(a) is None and store.investigations_of(a) == ()
+    store.close(b, reason="dup", actor="dev/test")
+    assert store.related_reports(a) == tuple(sorted((b, c)))
+
+
 def _create_work_is_plain_work(factory: ReportStoreFactory) -> None:
     store = factory()
     work = store.create_work(
@@ -768,6 +785,7 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.duplicate-pairs", _duplicate_pairs),
     ReportStoreCase("store.tracks-many-reports-to-one-work", _tracks_many_reports_to_one_work),
     ReportStoreCase("store.investigates-is-not-tracks", _investigates_is_not_tracks),
+    ReportStoreCase("store.relates-reports-either-way", _relates_reports_either_way),
     ReportStoreCase("store.create-work-is-plain-work", _create_work_is_plain_work),
     ReportStoreCase("store.unknown-bead-is-a-store-error", _unknown_bead_is_a_store_error),
     ReportStoreCase("store.thread-absent-reads-none", _thread_absent_reads_none),

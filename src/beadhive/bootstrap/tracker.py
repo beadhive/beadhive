@@ -601,9 +601,11 @@ class _LabelPruning:
 
 
 class _IssueClosing:
-    def close_issue(self, issue, *, reason, grant):
+    def close_issue(self, issue, *, reason, grant, duplicate_of=None):
         self._check_grant(grant, Operation.ISSUE_CLOSE)  # type: ignore[attr-defined]
-        return self._inner.close_issue(issue, reason=reason, grant=grant)  # type: ignore[attr-defined]
+        return self._inner.close_issue(  # type: ignore[attr-defined]
+            issue, reason=reason, grant=grant, duplicate_of=duplicate_of
+        )
 
 
 class _Resolving:

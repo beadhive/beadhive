@@ -141,6 +141,7 @@ from .vocabulary import (
     ORIGIN_GITHUB,
     ORIGIN_IMPORT,
     ORIGIN_REPORT,
+    RELATES_EDGE,
     TRACKS_EDGE,
     DeliveryAfterUnlink,
     channel_of,
@@ -193,6 +194,7 @@ __all__ = [
     "DEFAULT_POLICY",
     "THREAD_SCHEMA",
     "INVESTIGATES_EDGE",
+    "RELATES_EDGE",
     "TRACKS_EDGE",
     "TRIAGE_FLAGS",
     "Applied",
@@ -331,6 +333,7 @@ from .outbox import (  # noqa: E402
     Approval,
     ApprovalRequest,
     Attempt,
+    CanonicalIssue,
     Capabilities,
     CloseReason,
     DeliveryFacts,
@@ -390,6 +393,7 @@ __all__ += [
     "Approval",
     "ApprovalRequest",
     "Attempt",
+    "CanonicalIssue",
     "Capabilities",
     "CloseReason",
     "CompletionPolicy",
@@ -588,6 +592,7 @@ from .proposal_checks import (  # noqa: E402
     CheckContext,
     CheckFinding,
     CheckKind,
+    MentionFact,
     ProposalCheck,
     RepoQueries,
     TargetFact,
@@ -595,6 +600,7 @@ from .proposal_checks import (  # noqa: E402
     check_proposal,
     check_run,
     cited_paths,
+    mentions,
     version_key,
 )
 from .proposal_document import (  # noqa: E402
@@ -695,6 +701,7 @@ __all__ += [
     "CheckContext",
     "CheckFinding",
     "CheckKind",
+    "MentionFact",
     "ProposalCheck",
     "RepoQueries",
     "TargetFact",
@@ -702,6 +709,7 @@ __all__ += [
     "check_proposal",
     "check_run",
     "cited_paths",
+    "mentions",
     "version_key",
 ]
 

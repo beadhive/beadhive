@@ -18,12 +18,16 @@ from .outbox import CloseReason, OpKind, OpState, OutboxRecord, Rendered
 class ReplyDraft:
     """O1 for an operator reply: ``text`` is posted (with the marker) to ``report``'s issue.
     ``close`` asks for an ``issue.close`` operation on the same record, sent after the comment;
-    it is drafted only while the hive's close gate is on (``OutboxPolicy.close_enabled``)."""
+    it is drafted only while the hive's close gate is on (``OutboxPolicy.close_enabled``).
+    ``duplicate_of`` is the CANONICAL REPORT a ``duplicate`` close is a duplicate of
+    (``bh-iamru``): the sender resolves it to that report's bound issue, and closes as a plain
+    duplicate when it has none in the same tracker project."""
 
     report: str
     text: str
     actor: str
     close: CloseReason | None = None
+    duplicate_of: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,7 @@ class CloseBackfillItem:
     drafted: bool = False
     detail: str = ""
     reply_text: str = ""
+    duplicate_of: str = ""  # the canonical issue's URL a duplicate close names (bh-iamru)
 
     @property
     def skipped(self) -> bool:

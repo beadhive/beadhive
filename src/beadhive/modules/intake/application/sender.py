@@ -68,6 +68,7 @@ from beadhive.modules.tracker.contracts import (
     CommentQuery,
     CommentWriter,
     IssueCloser,
+    IssueKey,
     IssueQuery,
     IssueResolver,
     LabelOwnership,
@@ -85,6 +86,7 @@ from ..contracts import IdSource, IntakeLock, ReportStore, Sanitizer
 from ..domain import (
     NOTIFIED_DIM,
     ApprovalRequest,
+    CanonicalIssue,
     CloseBackfill,
     CloseBackfillItem,
     CloseBackfillOutcome,
@@ -236,10 +238,15 @@ class OutboxService:
     def draft_reply(self, request: ReplyDraft) -> OutboxResult:
         """O1 for an operator reply (O2 when the same text already answers the same thread seq),
         checked at once (O3 holds a leak). With ``request.close`` and the close gate on, the record
-        also carries an ``issue.close`` operation. Drafting never sends and needs no grant."""
+        also carries an ``issue.close`` operation, naming ``request.duplicate_of``'s bound issue as
+        a duplicate's canonical (:meth:`_canonical`). Drafting never sends and needs no grant."""
         self._require_enabled()
         require_private_store(self._posture)
         binding = self._binding(request.report)
+        close = request.close if self._policy.close_enabled else None
+        canonical = None
+        if close is CloseReason.DUPLICATE and request.duplicate_of:
+            canonical = self._canonical(request.duplicate_of, binding)
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, rules = self._open(request.report, epoch, request.actor)
             thread = self._store.read_thread(request.report)
@@ -251,7 +258,8 @@ class OutboxService:
                 request.actor,
                 message=Message("reply", request.text),
                 # the close rides on the reply only while the hive's close gate is on
-                close=request.close if self._policy.close_enabled else None,
+                close=close,
+                duplicate_of=canonical,
             )
             applied = machine.draft(
                 doc,
@@ -416,8 +424,14 @@ class OutboxService:
             )
         if kind is OpKind.CLOSE:
             assert isinstance(writer, IssueCloser) and plan.close is not None
+            canonical = plan.duplicate_of
             return writer.close_issue(
-                issue, reason=TrackerCloseReason(plan.close.value), grant=grant
+                issue,
+                reason=TrackerCloseReason(plan.close.value),
+                grant=grant,
+                duplicate_of=(
+                    None if canonical is None else IssueKey(canonical.identifier, canonical.url)
+                ),
             )
         assert isinstance(writer, LabelWriter)
         return writer.change_labels(
@@ -635,8 +649,12 @@ class OutboxService:
         if carrier.op(OpKind.CLOSE) is not None:
             detail = "its reply already carries a close"
             return CloseBackfillItem(report, carrier.outbox_id, reason, detail=detail)
+        canonical = None
+        if reason is CloseReason.DUPLICATE and proposal.share_with:
+            canonical = self._canonical(proposal.share_with, binding)
+        named = canonical.url if canonical is not None else ""
         if request.dry_run:
-            return CloseBackfillItem(report, carrier.outbox_id, reason)
+            return CloseBackfillItem(report, carrier.outbox_id, reason, duplicate_of=named)
         with self._lock.hold(binding_key(binding)) as epoch:
             doc, expect, _ = self._open(report, epoch, request.actor)
             if carrier.outbox_id not in doc.records:  # pragma: no cover - a record never leaves
@@ -648,9 +666,12 @@ class OutboxService:
                 actor=request.actor,
                 policy=self._policy,
                 ctx=self._ctx(report, binding, carrier.outbox_id),
+                duplicate_of=canonical,
             )
             self._commit(report, applied, expect, request.actor)
-        return CloseBackfillItem(report, carrier.outbox_id, reason, drafted=applied.changed)
+        return CloseBackfillItem(
+            report, carrier.outbox_id, reason, drafted=applied.changed, duplicate_of=named
+        )
 
     def _backfill_reply(
         self,
@@ -667,10 +688,18 @@ class OutboxService:
         if not text.strip():
             detail = "no reply to carry the close, and no reviewed text to draft one from"
             return CloseBackfillItem(report, reason=reason, detail=detail)
+        canonical = proposal.share_with if reason is CloseReason.DUPLICATE else ""
+        named = ""
+        if canonical:
+            found = self._canonical(canonical, self._binding(report))
+            named = found.url if found is not None else ""
         if request.dry_run:
-            return CloseBackfillItem(report, reason=reason, reply_text=text)
-        drafted = self.draft_reply(ReplyDraft(report, text, request.actor, close=reason))
-        return CloseBackfillItem(report, drafted.outbox_id, reason, drafted=True, reply_text=text)
+            return CloseBackfillItem(report, reason=reason, reply_text=text, duplicate_of=named)
+        reply = ReplyDraft(report, text, request.actor, close=reason, duplicate_of=canonical)
+        drafted = self.draft_reply(reply)
+        return CloseBackfillItem(
+            report, drafted.outbox_id, reason, drafted=True, reply_text=text, duplicate_of=named
+        )
 
     # -- the batch (bh-uim9i): one review of every drafted labels operation -------------------
 
@@ -861,6 +890,19 @@ class OutboxService:
                 f"{report} is not bound to an external issue, so it has nowhere to post",
             )
         return view.binding
+
+    def _canonical(self, report: str, member: IssueBinding) -> CanonicalIssue | None:
+        """The issue a duplicate close names as its canonical (``bh-iamru``): ``report``'s bound
+        issue when it is another issue of ``member``'s tracker project. ``None`` (a plain
+        duplicate close, naming no original) when the canonical report is missing, born native or
+        bound elsewhere: a tracker links duplicates within one project. Reads the store only."""
+        view = self._store.get(report)
+        canonical = view.binding if view is not None else None
+        if canonical is None or canonical.url == member.url:
+            return None
+        if (canonical.tracker, canonical.project) != (member.tracker, member.project):
+            return None
+        return CanonicalIssue(canonical.identifier, canonical.url)
 
     def _bound_here(self, report: str) -> IssueBinding:
         """The binding, refused unless it names the bound tracker project (no request)."""
