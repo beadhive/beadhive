@@ -589,7 +589,7 @@ touched reports' labels while `labels.enabled` is on. The pre-apply checks read 
 git (ancestry, tags, changed paths; read-only) against `work.integration_branch`, and the fixing
 commits from each closed work bead's `git.commits` linkage.
 
-Since 0.35.1 a proposal goes stale only when a comment changed after its `thread_seq` (recording a
+Since 0.35.2 a proposal goes stale only when a comment changed after its `thread_seq` (recording a
 triage read with `thread considered` no longer counts), `apply` records the analysis's read through
 `thread_seq` before it asks a needs-info question, an owner target that is itself a report fails the
 checks (`owner_not_work`), and a reject's close reason is cut to the 255 characters Beads stores

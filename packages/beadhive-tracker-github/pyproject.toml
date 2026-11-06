@@ -9,8 +9,9 @@ requires-python = ">=3.11"
 # `beadhive[github]` extra carries only githubkit, which is this distribution's own dependency,
 # never the root's base one, and is imported only lazily under beadhive_tracker_github/adapter/
 # (the `github` dependency group is the editable dev/CI spelling).
-# The transitive `hishel` needs the osv-scanner.toml licence override (bh-h8kab).
-dependencies = ["beadhive", "githubkit>=0.16.1,<1"]
+# The transitive `hishel` needs the osv-scanner.toml licence override (bh-h8kab), and is capped
+# below 2: hishel 2.0.0 fails githubkit's import, which allows it (bh-coqtn).
+dependencies = ["beadhive", "githubkit>=0.16.1,<1", "hishel<2"]
 classifiers = ["Private :: Do Not Upload"]
 
 [tool.uv.sources]
