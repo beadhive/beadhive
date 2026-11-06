@@ -43,10 +43,12 @@ from beadhive.modules.tracker.contracts import (
     IdQuery,
     IdSubject,
     IssueCloser,
+    IssueFieldWriter,
     IssueKey,
     IssueQuery,
     IssueResolver,
     IssueState,
+    IssueTypeWriter,
     LabelDefiner,
     LabelDefinition,
     LabelNotOwned,
@@ -59,6 +61,7 @@ from beadhive.modules.tracker.contracts import (
     OperationNotEnabled,
     OtherProject,
     OwnMarker,
+    PayloadRejected,
     ProjectRef,
     RateLimited,
     RetryBudget,
@@ -674,6 +677,203 @@ def _close_duplicate_of_canonical(factory: TrackerFactory) -> None:
     assert s.world.write_requests() == 1
 
 
+# ---- cases: an issue's type and field values (issue.type / issue.fields) --------------------
+#
+# Optional, like issue.close: a case whose operation is not in ``describe().supported`` returns,
+# but an adapter that DECLARES it must expose its writer and pass every case. Each operation's
+# switch also gates its read: the issue's type (fields) is reported only while it is enabled.
+
+
+def _value_subject(factory: TrackerFactory, op: Operation, writer: type) -> TrackerSubject | None:
+    if op not in factory().adapter.describe().supported:
+        return None
+    s = factory(enabled=frozenset({op}))
+    assert isinstance(s.adapter, writer), f"{op.value} is supported but has no writer"
+    return s
+
+
+def _set_type(s: TrackerSubject, issue: IssueKey, value: str, g: WriteGrant):
+    return s.adapter.set_issue_type(issue, value, grant=g)
+
+
+def _set_priority(s: TrackerSubject, issue: IssueKey, value: str, g: WriteGrant):
+    return s.adapter.set_issue_fields(issue, {"Priority": value}, grant=g)
+
+
+_VALUE_OPS = (
+    (Operation.ISSUE_TYPE, IssueTypeWriter, _set_type, "Bug"),
+    (Operation.ISSUE_FIELDS, IssueFieldWriter, _set_priority, "High"),
+)
+
+
+def _values_refused_when_not_enabled(factory: TrackerFactory) -> None:
+    for op, writer, write, value in _VALUE_OPS:
+        s = factory()  # no write enabled
+        issue = s.world.add_issue("thread", at=at(2))
+        s.world.set_write_time(at(5))
+        if isinstance(s.adapter, writer):  # an absent writer is the structural refusal
+            _refused(
+                lambda s=s, issue=issue, write=write, value=value, op=op: write(
+                    s, issue, value, grant(op, issue)
+                ),
+                OperationNotEnabled,
+                f"{op.value} wrote while disabled",
+            )
+        assert s.world.write_requests() == 0
+        assert s.world.server_issue_type(issue) == "" and s.world.server_issue_fields(issue) == {}
+
+
+def _values_read_gated(factory: TrackerFactory) -> None:
+    """Disabled: the issue's type and fields are not reported (``None``, never a guess)."""
+    s = factory()
+    issue = s.world.add_issue("thread", at=at(2))
+    found = find_by_listing(s.adapter, issue.url)
+    assert found is not None and found.issue_type is None and found.fields is None
+    for op, writer, _, _ in _VALUE_OPS:
+        e = _value_subject(factory, op, writer)
+        if e is None:
+            continue
+        issue = e.world.add_issue("thread", at=at(2))
+        found = find_by_listing(e.adapter, issue.url)
+        assert found is not None
+        if op is Operation.ISSUE_TYPE:
+            assert found.issue_type == "" and found.fields is None  # read, and none is set
+        else:
+            assert found.fields == () and found.issue_type is None
+
+
+def _values_grant_matches_and_single_use(factory: TrackerFactory) -> None:
+    for op, writer, write, value in _VALUE_OPS:
+        s = _value_subject(factory, op, writer)
+        if s is None:
+            continue
+        issue = s.world.add_issue("thread", at=at(2))
+        other = s.world.add_issue("other", at=at(2))
+        project = s.adapter.describe().project
+        s.world.set_write_time(at(5))
+        wrong = [
+            grant(op, other, "g-other"),  # another issue
+            grant(op, project, "g-repo"),  # issue-scoped
+            grant(Operation.COMMENT_CREATE, issue, "g-op"),  # another operation
+        ]
+        for bad in wrong:
+            _refused(
+                lambda bad=bad, s=s, issue=issue, write=write, value=value: write(
+                    s, issue, value, bad
+                ),
+                OperationNotEnabled,
+                f"a mismatched {op.value} grant was accepted: {bad}",
+            )
+        assert s.world.write_requests() == 0
+        good = grant(op, issue, "g-once")
+        write(s, issue, value, good)
+        _refused(
+            lambda s=s, issue=issue, write=write, value=value, good=good: write(
+                s, issue, value, good
+            ),
+            OperationNotEnabled,
+            f"an {op.value} grant was used twice",
+        )
+
+
+def _type_round_trip(factory: TrackerFactory) -> None:
+    """The type is set, read back as such, and nothing else changes."""
+    s = _value_subject(factory, Operation.ISSUE_TYPE, IssueTypeWriter)
+    if s is None:
+        return
+    issue = s.world.add_issue("thread", at=at(2), labels=("bug", "bh:type/bug"))
+    s.world.set_write_time(at(6))
+    receipt = s.adapter.set_issue_type(issue, "Bug", grant=grant(Operation.ISSUE_TYPE, issue))
+    assert_contract_only(receipt)
+    assert receipt.operation is Operation.ISSUE_TYPE and receipt.target == issue
+    assert receipt.type_after == "Bug" == s.world.server_issue_type(issue)
+    found = find_by_listing(s.adapter, issue.url)
+    assert found is not None and found.issue_type == "Bug" and found.state is IssueState.OPEN
+    assert s.world.server_labels(issue) == {"bug", "bh:type/bug"}  # never a label
+    assert s.world.comment_count(issue) == 0
+
+
+def _fields_round_trip(factory: TrackerFactory) -> None:
+    """Only the named field changes: another field and the labels stay as they were."""
+    s = _value_subject(factory, Operation.ISSUE_FIELDS, IssueFieldWriter)
+    if s is None:
+        return
+    s.world.seed_issue_field("Effort", ("High", "Low"))
+    issue = s.world.add_issue("thread", at=at(2), labels=("bh:priority/p1",))
+    s.world.set_write_time(at(6))
+    s.adapter.set_issue_fields(
+        issue, {"Effort": "Low"}, grant=grant(Operation.ISSUE_FIELDS, issue, "g-0")
+    )
+    receipt = s.adapter.set_issue_fields(
+        issue, {"Priority": "Urgent"}, grant=grant(Operation.ISSUE_FIELDS, issue)
+    )
+    assert_contract_only(receipt)
+    assert receipt.operation is Operation.ISSUE_FIELDS and receipt.target == issue
+    assert receipt.fields_after == (("Effort", "Low"), ("Priority", "Urgent"))
+    assert s.world.server_issue_fields(issue) == {"Effort": "Low", "Priority": "Urgent"}
+    found = find_by_listing(s.adapter, issue.url)
+    assert found is not None and found.field_value("Priority") == "Urgent"
+    assert found.field_value("Start date") == ""  # read, and not set
+    assert s.world.server_labels(issue) == {"bh:priority/p1"}
+
+
+def _values_undefined_refused(factory: TrackerFactory) -> None:
+    """A type or option the tracker does not define is refused, and nothing changes; an
+    undefined field or option is refused before any write, so its grant is kept."""
+    s = _value_subject(factory, Operation.ISSUE_TYPE, IssueTypeWriter)
+    if s is not None:
+        issue = s.world.add_issue("thread", at=at(2))
+        s.world.set_write_time(at(6))
+        _refused(
+            lambda: s.adapter.set_issue_type(
+                issue, "Chore", grant=grant(Operation.ISSUE_TYPE, issue)
+            ),
+            PayloadRejected,
+            "an undefined issue type was accepted",
+        )
+        assert s.world.server_issue_type(issue) == ""
+    s = _value_subject(factory, Operation.ISSUE_FIELDS, IssueFieldWriter)
+    if s is None:
+        return
+    issue = s.world.add_issue("thread", at=at(2))
+    s.world.set_write_time(at(6))
+    kept = grant(Operation.ISSUE_FIELDS, issue, "g-kept")
+    for bad in ({"Priority": "Whenever"}, {"Severity": "High"}):
+        _refused(
+            lambda bad=bad: s.adapter.set_issue_fields(issue, bad, grant=kept),
+            PayloadRejected,
+            f"an undefined field value was accepted: {bad}",
+        )
+    assert s.world.write_requests() == 0 and s.world.server_issue_fields(issue) == {}
+    s.adapter.set_issue_fields(issue, {"Priority": "Low"}, grant=kept)  # never spent above
+    assert s.world.server_issue_fields(issue) == {"Priority": "Low"}
+
+
+def _values_ambiguous_not_retried(factory: TrackerFactory) -> None:
+    """Applied, but the caller cannot know: surfaced, never retried, read back as set."""
+    for op, writer, write, value in _VALUE_OPS:
+        s = _value_subject(factory, op, writer)
+        if s is None:
+            continue
+        issue = s.world.add_issue("thread", at=at(2))
+        s.world.set_write_time(at(6))
+        s.world.fail_next_write_ambiguously()
+        _refused(
+            lambda s=s, issue=issue, write=write, value=value, op=op: write(
+                s, issue, value, grant(op, issue)
+            ),
+            WriteOutcomeUnknown,
+            f"an ambiguous {op.value} write was not surfaced",
+        )
+        assert s.world.write_requests() == 1  # never retried by the adapter
+        found = find_by_listing(s.adapter, issue.url)
+        assert found is not None
+        if op is Operation.ISSUE_TYPE:
+            assert found.issue_type == value
+        else:
+            assert found.field_value("Priority") == value
+
+
 # ---- cases: repository label definitions (labels.read / labels.define) ---------------------
 #
 # Both operations are optional: a case whose operation is not in ``describe().supported`` returns
@@ -1120,6 +1320,13 @@ TRACKER_CASES: tuple[TrackerCase, ...] = (
     TrackerCase("close.round-trip", _close_round_trip),
     TrackerCase("close.ambiguous-not-retried", _close_ambiguous_not_retried),
     TrackerCase("close.duplicate-of-canonical", _close_duplicate_of_canonical),
+    TrackerCase("values.refused-when-not-enabled", _values_refused_when_not_enabled),
+    TrackerCase("values.read-gated", _values_read_gated),
+    TrackerCase("values.grant-matches-and-single-use", _values_grant_matches_and_single_use),
+    TrackerCase("values.type-round-trip", _type_round_trip),
+    TrackerCase("values.fields-round-trip", _fields_round_trip),
+    TrackerCase("values.undefined-refused", _values_undefined_refused),
+    TrackerCase("values.ambiguous-not-retried", _values_ambiguous_not_retried),
     TrackerCase("labels.read-lists-every-definition", _labels_read_lists_every_definition),
     TrackerCase("labels.define-only-owned", _labels_define_only_owned),
     TrackerCase(
