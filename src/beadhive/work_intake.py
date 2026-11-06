@@ -731,6 +731,7 @@ def _rendered_row(rendered) -> dict:
         "remove": sorted(rendered.remove),
         "close": rendered.close.value if rendered.close is not None else None,
         "duplicate_of": rendered.duplicate_of.url if rendered.duplicate_of is not None else None,
+        "values": [list(pair) for pair in rendered.values],
         "findings": [
             {
                 "id": finding.id,
@@ -764,6 +765,8 @@ def _stored_operation_row(op) -> dict:
         row["close"] = op.close.value
     if op.duplicate_of is not None:
         row["duplicate_of"] = op.duplicate_of.url
+    if op.values is not None:
+        row["values"] = [list(pair) for pair in op.values.values]
     return row
 
 
@@ -827,6 +830,8 @@ def _stored_lines(stored) -> list[str]:
             line += f" ({' '.join(changes)})" if changes else ""
         if op.close is not None:
             line += f" (as {op.close.value})"
+        if op.values is not None:
+            line += f" ({_values_text(op.values.values)})"
         lines.append(line)
     lines += [f"  | {line}" for line in stored.text.splitlines() or [""]]
     lines.append(f"  → {stored.note}")
@@ -1438,8 +1443,18 @@ def _emit(payload: dict, code: int = 0) -> None:
         raise typer.Exit(code)
 
 
+def _values_text(values) -> str:
+    """``type=Bug, Priority=High``: the values a type or field operation sets."""
+    return ", ".join(f"{name}={value}" for name, value in values)
+
+
+def _value_change_text(change) -> str:
+    return f"{change.name} {change.live or '(unset)'} → {change.desired}"
+
+
 def label_sync_item_row(item) -> dict:
-    """One report's sync: the converging diff, drift, swaps and the record drafted or found."""
+    """One report's sync: the converging diff, drift, swaps, the issue type and field values it
+    sets (with their notes) and the record drafted or found."""
     return {
         "report": item.report,
         "url": item.url,
@@ -1448,6 +1463,8 @@ def label_sync_item_row(item) -> dict:
         "drift": _sorted(item.drift),
         "undefined": _sorted(item.undefined),
         "swaps": [{"dimension": dim, "removed": old, "added": new} for dim, old, new in item.swaps],
+        "values": [{"name": c.name, "live": c.live, "desired": c.desired} for c in item.values],
+        "value_notes": list(item.value_notes),
         "changed": item.changed,
         "drafted": item.drafted,
         "pending": item.pending,
@@ -1465,6 +1482,10 @@ def label_sync_row(outcome) -> dict:
         "dry_run": outcome.dry_run,
         "items": [label_sync_item_row(item) for item in items],
         "changed": [item.report for item in items if item.changed],
+        "value_drift": {
+            report: [_value_change_text(c) for c in changes]
+            for report, changes in outcome.value_drift.items()
+        },
         "drafted": list(outcome.drafted),
         "errors": [item.report for item in items if item.error],
     }
@@ -1525,6 +1546,8 @@ def _batch_item_row(item) -> dict:
         "url": item.url,
         "add": _sorted(item.add),
         "remove": _sorted(item.remove),
+        "kind": item.kind.value,
+        "values": [list(pair) for pair in item.values],
         "stale": item.stale,
         "note": item.note,
     }
@@ -1558,13 +1581,16 @@ def _label_change(add, remove) -> str:
 def _label_sync_line(item, dry_run: bool = False) -> str:
     if item.error and not (dry_run and item.undefined):
         return f"⚠ {item.report}: {item.error}"
-    parts = [_label_change(item.add, item.remove)] if item.changed else ["converged"]
+    parts = [_label_change(item.add, item.remove)] if item.labels_changed else []
+    parts += [_value_change_text(change) for change in item.values]
+    parts = parts or ["converged"]
     if item.undefined:  # a dry run: the diff, and what define must create before a sync drafts
         parts.append(
             f"not defined yet: {', '.join(sorted(item.undefined))} (run `bh work labels define`)"
         )
     if item.drift:
         parts.append(f"drift {', '.join(sorted(item.drift))}")
+    parts += list(item.value_notes)
     for what, value in (
         ("drafted", item.drafted),
         ("already drafted as", item.pending),
@@ -1718,10 +1744,12 @@ def labels_review(hive: str = "", as_json: bool = False):
         ]
         for item in batch.items:
             stale = f"  [stale: {item.note or 'the labels moved since the draft'}]"
-            out.append(
-                f"  {item.outbox_id}  {item.report}  {_label_change(item.add, item.remove)}"
-                f"{stale if item.stale else ''}"
+            change = (
+                _label_change(item.add, item.remove)
+                if not item.values
+                else f"{item.kind.value} {_values_text(item.values)}"
             )
+            out.append(f"  {item.outbox_id}  {item.report}  {change}{stale if item.stale else ''}")
         out.append(
             f"  → an operator approves it with `bh work labels approve --batch "
             f"{batch.short_digest}` (a stale item is skipped and re-drafted by the next sync)"
@@ -1748,14 +1776,17 @@ def labels_approve(batch: str, as_: str = "", hive: str = "", as_json: bool = Fa
             f"{outcome.batch.short_digest}"
         ]
         for result in outcome.approved:
-            out.append(f"  {result.outbox_id} {result.report}: grant {result.grant_id}")
+            out.append(
+                f"  {result.outbox_id} {result.report} {result.kind.value}: grant {result.grant_id}"
+            )
         for item in outcome.stale:
             out.append(f"⚠ {item.outbox_id} {item.report}: stale, skipped (re-run labels sync)")
         for outbox_id, why in outcome.failed:
             out.append(f"⚠ {outbox_id}: {why}")
         if outcome.approved:
             out.append(
-                "  → nothing is sent: send each with `bh work outbox send <id> --kind labels`"
+                "  → nothing is sent: send each with `bh work outbox send <id> --kind labels` "
+                "(`--kind type` / `--kind fields` for a type or field change)"
             )
         return out
 
