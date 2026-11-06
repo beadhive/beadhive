@@ -1,15 +1,17 @@
-"""``SequentialIdSource`` and ``RecordingSanitizer``: deterministic stand-ins for the outbox's
-id and sanitizer ports (``bh-6wj9y`` R14).
+"""``SequentialIdSource``, ``RecordingSanitizer`` and ``MemoryOutboxIndex``: deterministic
+stand-ins for the outbox's id, sanitizer and index ports (``bh-6wj9y`` R14, ``bh-pc9rf``).
 
 The id source mints well-formed opaque ids (``ob1_``/``gr1_`` plus 26 base32 characters) from a
 counter instead of random bytes, so a scenario's ids are the same on every run. The sanitizer
 flags configured secret strings and records every text it was asked to scan, so a test can
-prove the exact bytes were checked. No clock, no randomness, no I/O.
+prove the exact bytes were checked. The index is a dict that counts its lookups, merges and
+rebuilds, so a test can prove a lookup read one report rather than scanning. No clock, no
+randomness, no I/O.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from beadhive.modules.intake.contracts import SanitizerFinding, mint_grant_id, mint_outbox_id
@@ -59,4 +61,26 @@ class RecordingSanitizer:
         return text
 
 
-__all__ = ["RecordingSanitizer", "SequentialIdSource"]
+@dataclass
+class MemoryOutboxIndex:
+    """An :class:`~beadhive.modules.intake.contracts.OutboxIndex` in a dict."""
+
+    records: dict[str, str] = field(default_factory=dict)
+    lookups: int = 0
+    adds: int = 0
+    rebuilds: int = 0
+
+    def report_of(self, outbox_id: str) -> str | None:
+        self.lookups += 1
+        return self.records.get(outbox_id)
+
+    def add(self, entries: Mapping[str, str]) -> None:
+        self.adds += 1
+        self.records.update(entries)
+
+    def rebuild(self, entries: Mapping[str, str]) -> None:
+        self.rebuilds += 1
+        self.records = dict(entries)
+
+
+__all__ = ["MemoryOutboxIndex", "RecordingSanitizer", "SequentialIdSource"]

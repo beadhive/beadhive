@@ -269,6 +269,16 @@ class BdReportStore:
         rows = self._routes.issue_list(has_metadata_key=OUTBOX_KEY, all_=True, limit=0)
         return self._views(rows)
 
+    def read_outboxes(self) -> dict[str, OutboxDocument]:
+        """Every report's ``intake.outbox`` by report: the listing, then one ``bd show`` each
+        (``bd list`` rows carry no metadata)."""
+        docs: dict[str, OutboxDocument] = {}
+        for view in self.reports_with_outbox():
+            doc = self.read_outbox(view.id)
+            if doc is not None:
+                docs[view.id] = doc
+        return docs
+
     def read_proposal(self, bead: str) -> Proposal | None:
         """The bead's ``intake.proposal`` (one ``bd show``); None for no bead or no document."""
         row = self._show(bead)

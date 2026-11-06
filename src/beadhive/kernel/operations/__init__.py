@@ -296,6 +296,7 @@ work outbox draft|bead:string:r,text:string:r,as_:string:o,hive:string:o,as_json
 work outbox reconcile|outbox_id:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox retry|outbox_id:string:r,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox send|outbox_id:string:r,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
+work outbox send-approved|kind:string:o,bead:array:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox show|outbox_id:string:o,bead:string:o,open_only:boolean:o,hive:string:o,as_json:boolean:o
 work promote|bead:string:r,as_:string:o,hive:string:o
 work readiness|molecule:string:r,hive:string:o,as_json:boolean:o

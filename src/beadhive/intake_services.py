@@ -23,10 +23,12 @@ What is composed here:
   ``intake.external.enabled`` and with no tracker (a link reads and writes no tracker);
 * the supervised outbox sender (I9a): the root :class:`FlockIntakeLock` (``guard_primary`` for
   one host, an ``fcntl.flock`` on a per-binding file in the hive's private ``.bh/`` state for one
-  process, ``guard.live_epoch`` as the epoch; the store's ``seq`` re-check is the record half), a
-  random :class:`RandomIdSource`, the :class:`LeakPolicy` and store posture, and
-  :func:`outbox_service_for`; the outbox is off unless the caller passes an enabled
-  :class:`OutboxPolicy`;
+  process, ``guard.live_epoch`` as the epoch; the store's ``seq`` re-check is the record half; a
+  one-process batch reuses one host check and epoch read for at most
+  ``intake.external.outbox.batch_recheck_seconds``, opt-in, default 0), a random
+  :class:`RandomIdSource`, the outbox id index (:func:`outbox_index`, ``bh-pc9rf``), the
+  :class:`LeakPolicy` and store posture, and :func:`outbox_service_for`; the outbox is off unless
+  the caller passes an enabled :class:`OutboxPolicy`;
 * the outbox's production wiring (:func:`outbox_wiring`, ``bh-uavc2``): the tracker, own identity
   (the bound project plus :func:`install_id`), marker codec (the bound port's optional
   ``MarkerCodec``, so this root never imports the plugin) and owned label prefixes, all from the
@@ -60,7 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from . import bd, bd_cli, intake_beads, registry, store_target, validate
-from .adapters.intake import ApiReportStore, BdReportStore, FileCheckpointStore
+from .adapters.intake import ApiReportStore, BdReportStore, FileCheckpointStore, FileOutboxIndex
 from .modules.intake import (
     ORIGIN_GITHUB,
     ORIGIN_REPORT,
@@ -106,6 +108,7 @@ from .modules.intake.application import (  # the composition root may (gap G7)
     ThreadService,
 )
 from .modules.intake.domain import (  # the composition root may (gap G7)
+    BatchSendOutcome,
     CompletionPolicy,
     LeakPolicy,
     MergeFact,
@@ -974,7 +977,14 @@ class FlockIntakeLock:
     never-waiting ``fcntl.flock`` on ``<lock_dir>/<sha256(binding_key)>.lock``; held elsewhere is
     ``IntakeRefused(INTAKE_BUSY)``), and yields ``epoch()`` (``guard.live_epoch``). The record half
     is the store's ``seq`` re-check. Nothing expires by time: the kernel drops a dead holder's
-    flock, and a moved epoch marks its attempts stale. The directory is created on first hold."""
+    flock, and a moved epoch marks its attempts stale. The directory is created on first hold.
+
+    ``batch()`` (:class:`~beadhive.modules.intake.contracts.BatchLock`, ``bh-pc9rf``) is the
+    one-process batch's scope: inside it the host check and the epoch read (on the factory about
+    13 s together, every hold) are taken on the first hold and reused by the holds that follow
+    until they are ``recheck_seconds`` old, then taken again; every hold still takes its own
+    flock. ``0`` re-checks on every hold, as outside a batch. ``clock`` is injectable (monotonic
+    seconds) so the bound is tested without waiting."""
 
     def __init__(
         self,
@@ -982,10 +992,16 @@ class FlockIntakeLock:
         *,
         primary: Callable[[], None],
         epoch: Callable[[], int],
+        recheck_seconds: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._lock_dir = lock_dir
         self._primary = primary
         self._epoch = epoch
+        self._recheck = max(0.0, float(recheck_seconds))
+        self._clock = clock
+        self._batch_depth = 0
+        self._checked: tuple[float, int] | None = None  # (taken at, epoch), inside a batch only
 
     def _path(self, binding_key: str) -> Path:
         directory = self._lock_dir() if callable(self._lock_dir) else self._lock_dir
@@ -994,8 +1010,28 @@ class FlockIntakeLock:
         return directory / f"{name}.lock"
 
     @contextlib.contextmanager
+    def batch(self) -> Iterator[None]:
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if not self._batch_depth:
+                self._checked = None  # the next batch, or a single hold, checks afresh
+
+    def _reused(self) -> int | None:
+        """The batch's epoch when its host check is still fresh enough to reuse, else None."""
+        if not self._batch_depth or self._checked is None:
+            return None
+        taken, epoch = self._checked
+        return epoch if self._clock() - taken < self._recheck else None
+
+    @contextlib.contextmanager
     def hold(self, binding_key: str) -> Iterator[int]:
-        self._primary()
+        reused = self._reused()
+        taken = self._clock()
+        if reused is None:
+            self._primary()
         with self._path(binding_key).open("a+") as handle:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1005,7 +1041,11 @@ class FlockIntakeLock:
                     f"{binding_key} is held by another intake operation; try again when it ends",
                 ) from None
             try:
-                yield self._epoch()
+                if reused is None:
+                    reused = self._epoch()
+                    if self._batch_depth:
+                        self._checked = (taken, reused)
+                yield reused
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -1068,6 +1108,32 @@ def lock_dir(directory) -> Path:
     return _intake_state_dir(directory, "intake lock", "lock") / "locks"
 
 
+def outbox_index(directory) -> FileOutboxIndex:
+    """``<hive>/.bh/intake/outbox-index.json``: which report holds each outbox id (``bh-pc9rf``),
+    a local cache the sender confirms on every read and rebuilds from any full scan. Resolved on
+    first use, so building it touches nothing."""
+    from .adapters.intake.outbox_index import INDEX_FILE
+
+    return FileOutboxIndex(
+        lambda: _intake_state_dir(directory, "outbox index", "outbox_index") / INDEX_FILE
+    )
+
+
+#: How long a one-process batch reuses its host check and epoch read (``bh-pc9rf``), unless
+#: ``intake.external.outbox.batch_recheck_seconds`` says otherwise: 0, every hold checks (opt-in).
+DEFAULT_BATCH_RECHECK_SECONDS = 0
+
+
+def batch_recheck_seconds(cfg: Mapping[str, Any]) -> float:
+    """``intake.external.outbox.batch_recheck_seconds`` (a non-negative number; anything else is
+    the default)."""
+    section = ((cfg.get("intake") or {}).get("external") or {}).get("outbox") or {}
+    value = section.get("batch_recheck_seconds", DEFAULT_BATCH_RECHECK_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return float(DEFAULT_BATCH_RECHECK_SECONDS)
+    return float(value)
+
+
 #: ``<hive>/.bh/intake/install-id``: 32 lowercase hex characters, nothing else.
 INSTALL_ID_FILE = "install-id"
 _INSTALL_ID = re.compile(r"[0-9a-f]{32}")
@@ -1114,6 +1180,7 @@ def intake_lock(
         lambda: lock_dir(directory),
         primary=_primary_guard(cfg, hive, verb),
         epoch=_live_epoch(cfg, hive),
+        recheck_seconds=batch_recheck_seconds(cfg),
     )
 
 
@@ -1170,6 +1237,7 @@ def outbox_service_for(
     triage: Any = None,
     type_enabled: bool = False,
     fields_enabled: bool = False,
+    index: Any = None,
 ) -> IntakeService:
     """The intake service for ``entry`` with the supervised sender bound over the INJECTED
     ``tracker`` (and its ``marker_line`` codec). With ``threads`` (the comment-ingestion policy,
@@ -1178,7 +1246,8 @@ def outbox_service_for(
     adapter's own ``issue.close`` enable (:func:`tracker_wiring`): the sender's close gate, and
     ``type_enabled`` / ``fields_enabled`` its ``issue.type`` / ``issue.fields`` enables, the
     gates of those two operations; ``triage`` (:func:`triage_binding`) lets the close backfill
-    compute a missing reply's text.
+    compute a missing reply's text; ``index`` is the outbox id index (default
+    :func:`outbox_index` in the hive's private state).
 
     Off by default: with ``policy`` absent or disabled no sender is bound at all, so every outbox
     operation refuses with ``OUTBOX_DISABLED`` before the tracker is touched. Enabling it here is
@@ -1223,6 +1292,7 @@ def outbox_service_for(
         posture=posture,
         holder=f"{socket.gethostname()}:{os.getpid()}",
         completion=milestones.complete,
+        index=index if index is not None else outbox_index(directory),
     )
     conversation = (
         thread_service_for(store, tracker, held, posture=posture, identity=identity, policy=threads)
@@ -1932,7 +2002,12 @@ class StoredOutboxRecord:
     note: str
 
 
-def _stored_record(outbox_id: str, report: str, note: str) -> Callable[[Any], StoredOutboxRecord]:
+def _stored_record(
+    outbox_id: str, report: str, note: str, index: Any = None
+) -> Callable[[Any], StoredOutboxRecord]:
+    """The stored record of ``outbox_id``: ONE report's listing when ``report`` is given or the
+    outbox index names it (``bh-pc9rf``), else (or when that report does not hold it) every
+    report's, which also rebuilds the index."""
     from .modules.intake.contracts import OutboxQuery
     from .modules.intake.domain import is_outbox_id
     from .modules.intake.domain.outbox import render_text
@@ -1942,10 +2017,13 @@ def _stored_record(outbox_id: str, report: str, note: str) -> Callable[[Any], St
             raise IntakeRefused(
                 RefusalReason.INVALID_OUTBOX_ID, f"{outbox_id!r} is not an outbox id (ob1_...)"
             )
-        for found in port.outbox(OutboxQuery(report, False)).entries:
-            if found.record.outbox_id == outbox_id:
-                text = render_text(found.record.message, found.record.facts)
-                return StoredOutboxRecord(found.report, found.record, text, note)
+        hint = report or (index.report_of(outbox_id) if index is not None else None) or ""
+        scopes = [hint, ""] if hint and not report else [report]
+        for scope in scopes:
+            for found in port.outbox(OutboxQuery(scope, False)).entries:
+                if found.record.outbox_id == outbox_id:
+                    text = render_text(found.record.message, found.record.facts)
+                    return StoredOutboxRecord(found.report, found.record, text, note)
         raise IntakeRefused(RefusalReason.UNKNOWN_OUTBOX, f"no outbox record {outbox_id}")
 
     return run
@@ -1993,7 +2071,7 @@ def outbox_show(
         cfg,
         entry,
         directory,
-        _stored_record(outbox_id, report, note),
+        _stored_record(outbox_id, report, note, outbox_index(directory)),
         needs_tracker=False,
         **kwargs,
     )
@@ -2060,6 +2138,26 @@ def outbox_send(
     return outbox_call(
         cfg, entry, directory, lambda port: port.send(outbox_id, actor=actor, kind=op), **kwargs
     )
+
+
+def outbox_send_approved(
+    cfg, entry, directory, kind: str, reports: Sequence[str], actor: str, **kwargs
+) -> OutboxCall:
+    """``bh work outbox send-approved [--kind K] [--bead <id>]...``: every approved operation in
+    ONE process and one store session (``bh-pc9rf``), ordered per report comment, labels, close;
+    each still spends its own single-use grant and writes its own receipt. ``kind`` empty means
+    every kind. The value is a :class:`~beadhive.modules.intake.domain.BatchSendOutcome`; a
+    refused or unsettled item is reported there and the rest still go."""
+    from .modules.intake.domain import BatchSend
+
+    kinds: tuple[Any, ...] = ()
+    if kind:
+        op = outbox_kind(kind)
+        if op is None:
+            return _bad_kind(kind)
+        kinds = (op,)
+    request = BatchSend(actor, kinds, tuple(dict.fromkeys(r for r in reports if r)))
+    return outbox_call(cfg, entry, directory, lambda port: port.send_approved(request), **kwargs)
 
 
 def outbox_backfill_close(
@@ -3531,6 +3629,7 @@ def projected_label_lines(cfg: Mapping[str, Any]) -> list[str]:
 
 __all__ = [
     "AUDIT_LOG_FILE",
+    "BatchSendOutcome",
     "DEFAULT_REVIEW_BATCH_SIZE",
     "LABELS_ENABLED_KEY",
     "REVIEW_PASS_ALIASES",

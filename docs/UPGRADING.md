@@ -100,8 +100,36 @@ operation, so:
 With both keys unset nothing is drafted, read or sent for the type or fields, and a labels record
 is byte-identical to one 0.35.2 wrote.
 
-No new verb or option: `bh work outbox send|discard --kind` and `approve --op` accept `type` and
-`fields`, so the operation catalog (wire 2.23.0) is unchanged.
+No new verb or option for these: `bh work outbox send|discard --kind` and `approve --op` accept
+`type` and `fields`. The operation catalog moves to wire 2.24.0 only for `bh-pc9rf`'s new
+`bh work outbox send-approved` verb (below).
+
+### Faster outbox verbs and a one-process batch send
+
+`bh work outbox show`, `approve` and `send <id>` now find a record through a local outbox-id index
+(`<hive>/.bh/intake/outbox-index.json`, `bh-pc9rf`) and read ONE report instead of every report's
+outbox. The index is only a cache: every answer is confirmed against the report's own document, a
+miss scans once and rebuilds it, and deleting it is always safe. A one-shot `bh` verb also loads
+the effective config once (one `outbox show` used to re-qualify the SQL fleet snapshot 7 times);
+a config publish inside the same command drops that memo, and the long-lived `bh host` / `bh mcp`
+never use it. Deriving a GitHub token now runs `gh auth token` alone and only on its failure
+`gh auth status` (for the diagnostic), one subprocess per GitHub operation instead of two; the
+token is still never cached. On the factory `bh work outbox show <id>` went from about 21 s to
+about 8 s.
+
+`bh work outbox send-approved [--kind comment|labels|type|fields|close] [--bead <id>]...` sends
+every approved operation in one process and one store session, per report the comments, then the
+labels, the type, the fields, then the close. Each operation still spends its own single-use grant
+and writes its own receipt, and a refused or unknown one is reported while the rest go (the command
+exits non-zero unless every operation was sent; a close whose comment did not go out is refused as
+`close_not_ready`; losing the primary host stops the batch and reports what was sent).
+`bh work labels approve --batch` runs on the same path. By default either batch still checks the
+primary host and reads the epoch on every operation (about 13 s each on the factory). The new key
+`intake.external.outbox.batch_recheck_seconds` (default `0`) opts a batch into reusing ONE check
+for at most that many seconds; every operation still takes its own lock, grant and receipt. An
+older host rejects the key (`extra=forbid`), so the factory sets it to `300` only after every host
+runs 0.35.3. **Wire 2.24.0** (`docs/schemas/wire/v2.24.0/`): additive, the one new verb
+`bh work outbox send-approved`.
 
 ## 0.35.0 → 0.35.2 — triage apply fixes and a hishel cap
 

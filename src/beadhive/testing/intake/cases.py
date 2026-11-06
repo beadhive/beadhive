@@ -576,6 +576,20 @@ def _outbox_on_every_status_and_bound_only(factory: ReportStoreFactory) -> None:
     assert store.read_outbox(native) is None
 
 
+def _read_outboxes_is_every_document_in_one_pass(factory: ReportStoreFactory) -> None:
+    store = factory()
+    assert dict(store.read_outboxes()) == {}
+    first = store.create(draft(bound=True))
+    closed = store.create(draft("another", bound=True))
+    store.create(draft("no outbox", bound=True))
+    store.write_outbox(first, outbox(2, texts=("one",)), expect_seq=0, actor="dev/test")
+    store.write_outbox(closed, outbox(3, texts=("two",)), expect_seq=0, actor="dev/test")
+    store.close(closed, reason="done", actor="dev/test")
+    docs = dict(store.read_outboxes())
+    assert docs == {first: store.read_outbox(first), closed: store.read_outbox(closed)}
+    assert list(docs) == [v.id for v in store.reports_with_outbox()]  # the listing's order
+
+
 def _expect_refused(reason: RefusalReason, call: Callable[[], object]) -> None:
     try:
         call()
@@ -807,6 +821,10 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.outbox-keeps-other-documents", _outbox_keeps_other_documents),
     ReportStoreCase(
         "store.outbox-on-every-status-and-bound-only", _outbox_on_every_status_and_bound_only
+    ),
+    ReportStoreCase(
+        "store.read-outboxes-is-every-document-in-one-pass",
+        _read_outboxes_is_every_document_in_one_pass,
     ),
     ReportStoreCase(
         "store.holds-open-and-resolve-one-at-a-time", _holds_open_and_resolve_one_at_a_time

@@ -3,7 +3,9 @@
 :class:`IntakePort` is the one consumer-facing port. The outbound ports are intake's own narrow
 ones: :class:`ReportStore` (the bead store holding report beads), :class:`CheckpointStore` (opaque
 resume tokens), :class:`LabelPolicy` (the closed label vocabulary), :class:`IntakeLock` (the one
-per-binding lock), :class:`OutboxView` (what own-message recognition reads of the outbox),
+per-binding lock, and :class:`BatchLock`, its optional batch scope), :class:`OutboxView` (what
+own-message recognition reads of the outbox), :class:`OutboxIndex` (which report holds an outbox
+id),
 :class:`Sanitizer` (the egress secret scan), :class:`IdSource` (the outbox's opaque ids),
 :class:`ReleaseVerifier` (what a tag contains), :class:`RepoFacts` (what the proposal checks
 read of the repository) and :class:`LandedCommits` (the commits that landed a work bead).
@@ -20,6 +22,8 @@ from typing import Protocol, runtime_checkable
 from ..domain import (
     ApplyOutcome,
     ApplyRequest,
+    BatchSend,
+    BatchSendOutcome,
     BeadView,
     Checkpoint,
     CloseBackfill,
@@ -150,6 +154,8 @@ class IntakePort(Protocol):
     def send(
         self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT
     ) -> OutboxResult: ...  # O9 to O13
+
+    def send_approved(self, request: BatchSend) -> BatchSendOutcome: ...  # O9 to O13, per op
 
     def reconcile(
         self, outbox_id: str | None = None, *, actor: str
@@ -387,6 +393,14 @@ class ReportStore(Protocol):
         """Every report carrying an ``intake.outbox`` document, of every status."""
         ...
 
+    def read_outboxes(self) -> Mapping[str, OutboxDocument]:
+        """Every report's ``intake.outbox`` document by report, of every status, in
+        :meth:`reports_with_outbox` order: the one pass a scan, a listing or a batch makes. A
+        store whose listing carries the documents answers it in one read (``bh-pc9rf``); every
+        document decodes as :meth:`read_outbox` would, so a corrupt one is a store error, never
+        an empty outbox."""
+        ...
+
     # review-gated triage (bh-hrx2r): the ``intake.proposal`` document, on ANY report (native or
     # bound), private operational data that is never published
 
@@ -422,6 +436,19 @@ class IntakeLock(Protocol):
 
 
 @runtime_checkable
+class BatchLock(Protocol):
+    """The optional batch scope of an :class:`IntakeLock` (``bh-pc9rf``).
+
+    Inside ``batch()`` every ``hold`` still takes its own per-binding lock and yields the live
+    epoch, but the lock may reuse ONE host check and epoch read for the holds of the batch (the
+    root's re-checks them once they are older than its bound), so a batch of N sends pays the
+    host check about once rather than N times. Only a one-process batch (``outbox send-approved``,
+    ``labels approve --batch``) enters it; nothing about a single hold changes."""
+
+    def batch(self) -> AbstractContextManager[None]: ...
+
+
+@runtime_checkable
 class OutboxView(Protocol):
     """The read-only view of the outbox own-message recognition needs (``bh-fptob`` R7, with
     ``bh-6wj9y``'s ``issued``). The outbox owns the records; the thread only reads them."""
@@ -433,6 +460,24 @@ class OutboxView(Protocol):
     def issued(self, outbox_id: str) -> bool: ...  # an operation that ever had an attempt
 
     def known_actors(self) -> frozenset[ThreadActor]: ...  # every actor on an outbox receipt
+
+
+@runtime_checkable
+class OutboxIndex(Protocol):
+    """Which report holds an outbox id (``bh-pc9rf``): a cache, so ``show`` / ``approve`` /
+    ``send`` read ONE report instead of scanning every report's outbox.
+
+    Never authoritative: the sender confirms every answer against the report's own document (a
+    record never leaves the report it was drafted on) and on a miss or a wrong answer scans, then
+    rebuilds the index from that scan. So a lost or concurrent update only costs one scan, and
+    deleting the index is always safe. ``add`` merges entries; ``rebuild`` replaces the whole
+    index with a complete scan's."""
+
+    def report_of(self, outbox_id: str) -> str | None: ...
+
+    def add(self, entries: Mapping[str, str]) -> None: ...  # outbox id -> report, merged
+
+    def rebuild(self, entries: Mapping[str, str]) -> None: ...  # a complete scan, replaced
 
 
 @runtime_checkable
@@ -547,12 +592,14 @@ class LabelPolicy(Protocol):
 
 __all__ = [
     "AuditLog",
+    "BatchLock",
     "CheckpointStore",
     "IdSource",
     "IntakeLock",
     "IntakePort",
     "LabelPolicy",
     "LandedCommits",
+    "OutboxIndex",
     "OutboxView",
     "ProjectIssues",
     "ReleaseVerifier",

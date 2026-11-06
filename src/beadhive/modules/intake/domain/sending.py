@@ -1,8 +1,8 @@
 """The records the supervised sender speaks across ``IntakePort`` (``bh-6wj9y`` R6, R11).
 
 The outbox operations of the port (``draft_reply``, ``outbox``, ``render``, ``approve``,
-``send``, ``reconcile``, ``discard``, ``retry``) take and return these intake-owned values; the
-records they carry are the domain's own :class:`~.outbox.OutboxRecord` and
+``send``, ``send_approved``, ``reconcile``, ``discard``, ``retry``) take and return these
+intake-owned values; the records they carry are the domain's own :class:`~.outbox.OutboxRecord` and
 :class:`~.outbox.Rendered`. No tracker type, bd argv or store path appears here. Standard
 library only.
 """
@@ -97,6 +97,71 @@ class OutboxResult:
     notified: str = ""
     complete: bool = True
     detail: str = ""
+
+
+#: The order a batch sends a report's approved operations in (``bh-pc9rf``): every comment
+#: (oldest draft first), then the labels, the type and the field values (``bh-poqy0``, on the same
+#: labels record), then the close, so the reporter reads every reply and the final labels before
+#: the issue closes (the order :func:`~.outbox.close_blocker` enforces).
+#: EVERY :class:`OpKind` must appear here exactly once (a test pins it), so a new operation kind
+#: is placed in the order, before the close, rather than silently skipped by the batch.
+SEND_ORDER: tuple[OpKind, ...] = (
+    OpKind.COMMENT,
+    OpKind.LABELS,
+    OpKind.TYPE,
+    OpKind.FIELDS,
+    OpKind.CLOSE,
+)
+
+
+@dataclass(frozen=True)
+class BatchSend:
+    """``bh work outbox send-approved``: send every APPROVED operation in one process, ordered
+    per report by :data:`SEND_ORDER`. ``kinds`` narrows it to those operations (empty: every
+    kind); ``reports`` to those reports (empty: every report with an outbox). Each operation
+    still spends its own single-use grant and writes its own receipt, exactly as ``send``."""
+
+    actor: str
+    kinds: tuple[OpKind, ...] = ()
+    reports: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BatchSendFailure:
+    """One operation the batch could not send: refused (``reason`` is the stable refusal code,
+    ``store_error`` for a store failure) before or instead of its one request."""
+
+    report: str
+    outbox_id: str
+    kind: OpKind
+    reason: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class BatchSendOutcome:
+    """``results`` has one :class:`OutboxResult` per operation the batch attempted, in send order
+    (``sent``, or ``unknown`` / ``failed`` after its one request, or ``drafted`` when its approval
+    was invalidated because the render moved); ``failed`` every operation refused before any
+    request. One item's failure never stops the rest; only a host-level refusal does, and then
+    ``stopped`` says why (the refused item is the last of ``failed``, the rest were not tried)."""
+
+    results: tuple[OutboxResult, ...] = ()
+    failed: tuple[BatchSendFailure, ...] = ()
+    stopped: str = ""
+
+    @property
+    def sent(self) -> tuple[OutboxResult, ...]:
+        return tuple(r for r in self.results if r.state is OpState.SENT)
+
+    @property
+    def unsettled(self) -> tuple[OutboxResult, ...]:
+        """Attempted but not ``sent``: an unknown outcome, a failure, an invalidated approval."""
+        return tuple(r for r in self.results if r.state is not OpState.SENT)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed and not self.unsettled and not self.stopped
 
 
 @dataclass(frozen=True)

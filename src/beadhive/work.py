@@ -722,8 +722,35 @@ def outbox_send_cmd(
 ):
     """Send one approved operation (write-ahead, receipt). Needs the adapter's own enable, an
     unspent grant and a clean leak check on the exact bytes; off unless
-    `intake.external.outbox.enabled`."""
+    `intake.external.outbox.enabled`. `outbox send-approved` sends every approved operation in
+    one process."""
     return work_intake.outbox_send(outbox_id, kind, as_, hive, as_json)
+
+
+_SEND_KIND = typer.Option(
+    "",
+    "--kind",
+    help="only this operation: comment, labels, type, fields or close (default: every kind)",
+)
+_SEND_BEAD = typer.Option(
+    [], "--bead", help="only this report's records (repeatable; default: every report)"
+)
+
+
+def outbox_send_approved_cmd(
+    kind: str = _SEND_KIND,
+    bead: list[str] = _SEND_BEAD,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Send every approved operation in one process: per report the comments (oldest first),
+    then the labels, the type and the fields, then the close. Each still spends its own
+    single-use grant and writes its own receipt, exactly as `outbox send <id>`; a refused or
+    unknown one is reported and the rest still go (a close whose comment did not go out is
+    refused). Exits non-zero unless every operation was sent. Off unless
+    `intake.external.outbox.enabled`."""
+    return work_intake.outbox_send_approved(kind, bead, as_, hive, as_json)
 
 
 def outbox_show_cmd(
@@ -2315,6 +2342,7 @@ CLI_HANDLERS = {
     "work.outbox.reconcile": outbox_reconcile_cmd,
     "work.outbox.retry": outbox_retry_cmd,
     "work.outbox.send": outbox_send_cmd,
+    "work.outbox.send-approved": outbox_send_approved_cmd,
     "work.outbox.show": outbox_show_cmd,
     "work.thread.considered": thread_considered_cmd,
     "work.thread.ingest": thread_ingest_cmd,
@@ -2392,6 +2420,7 @@ outbox_draft_cmd = _CLI_CALLBACKS["work.outbox.draft"]
 outbox_reconcile_cmd = _CLI_CALLBACKS["work.outbox.reconcile"]
 outbox_retry_cmd = _CLI_CALLBACKS["work.outbox.retry"]
 outbox_send_cmd = _CLI_CALLBACKS["work.outbox.send"]
+outbox_send_approved_cmd = _CLI_CALLBACKS["work.outbox.send-approved"]
 outbox_show_cmd = _CLI_CALLBACKS["work.outbox.show"]
 labels_approve_cmd = _CLI_CALLBACKS["work.labels.approve"]
 labels_define_cmd = _CLI_CALLBACKS["work.labels.define"]

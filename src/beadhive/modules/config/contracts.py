@@ -3328,7 +3328,8 @@ class IntakeOutboxConfig(_QuietSection):
     anything by itself, and the adapter's own write flag and a per-record approval minting a
     single-use grant are still required to post. ``labels_enabled`` is the separate switch for
     the ``labels.change`` operation: without it (and ``enabled``) no label operation can be
-    approved or sent, whatever the adapter's labels capability allows.
+    approved or sent, whatever the adapter's labels capability allows. ``batch_recheck_seconds``
+    bounds how long a one-process batch reuses its host check (``bh-pc9rf``).
     """
 
     enabled: StrictBool = Field(
@@ -3343,6 +3344,18 @@ class IntakeOutboxConfig(_QuietSection):
     )
     mode: Literal["supervised"] = Field(
         "supervised", description="The only accepted mode: every send needs an operator approval."
+    )
+    batch_recheck_seconds: int = Field(
+        0,
+        ge=0,
+        description=(
+            "How long a one-process batch (`bh work outbox send-approved`, `bh work labels "
+            "approve --batch`) reuses its primary-host check and epoch read before taking them "
+            "again; every operation still holds its own per-binding lock, spends its own grant "
+            "and writes its own receipt. 0 (the default) re-checks on every operation, as a "
+            "single send does; a positive value is an opt-in (the factory sets 300 once every "
+            "host runs 0.35.3)."
+        ),
     )
 
 

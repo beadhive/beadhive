@@ -463,6 +463,10 @@ __all__ += [
 # -- the supervised sender's port records (I9a) -----------------------------------------------
 
 from .sending import (  # noqa: E402
+    SEND_ORDER,
+    BatchSend,
+    BatchSendFailure,
+    BatchSendOutcome,
     CloseBackfill,
     CloseBackfillItem,
     CloseBackfillOutcome,
@@ -476,6 +480,10 @@ from .sending import (  # noqa: E402
 )
 
 __all__ += [
+    "SEND_ORDER",
+    "BatchSend",
+    "BatchSendFailure",
+    "BatchSendOutcome",
     "CloseBackfill",
     "CloseBackfillItem",
     "CloseBackfillOutcome",
