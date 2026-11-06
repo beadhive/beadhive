@@ -1,7 +1,8 @@
 """The ``issue.close`` writer: ``IssueCloser.close_issue`` for GitHub (``bh-pr5ll``).
 
 ``PATCH /repos/{owner}/{repo}/issues/{number}`` with exactly ``{"state": "closed",
-"state_reason": <reason>}``. It is a mixin of
+"state_reason": <reason>}``, plus ``duplicate_issue_id`` for a duplicate that names its
+canonical. It is a mixin of
 :class:`~beadhive_tracker_github.adapter.tracker.GitHubTrackerAdapter`, composed in only when
 ``issue.close`` is enabled (:mod:`.compose`), so a disabled write has no method at all.
 
@@ -32,6 +33,17 @@ unconfirmed redirect or an answer that is not a closed issue raises ``WriteOutco
 never retried: the consumer reconciles by reading the issue's state back. Closing an issue that is
 already closed is accepted by GitHub and answers the closed issue, so it is a success here too.
 
+**A duplicate names its canonical** (``bh-iamru``). With ``duplicate_of`` the same PATCH also
+carries ``duplicate_issue_id``: the canonical's numeric issue ``id`` (not its number), which
+GitHub's "Update an issue" documents as "the ID of the issue that this issue duplicates, used when
+marking this issue as a duplicate with ... state_reason: duplicate" (GraphQL's
+``closeIssue(input: {duplicateIssueId})`` is the same link by node id). The ``id`` is read with ONE
+``GET .../issues/{n}`` of the canonical inside the write's session, after the credential is
+resolved and BEFORE the grant is spent, so a canonical that is missing, a pull request, moved to
+another repository or unreadable is refused (``NotVisible``, a proof of no write) with the grant
+kept. ``duplicate_of`` must be an issue of this repository and goes only with ``duplicate``
+(``ValueError``, before any request).
+
 **No live GitHub write happens in the test suite**; the wire form is asserted on the fake.
 """
 
@@ -45,17 +57,22 @@ from beadhive.modules.tracker.contracts import (
     CloseReason,
     IssueKey,
     IssueState,
+    NotVisible,
     Operation,
+    PermissionDenied,
+    RateLimited,
+    TrackerError,
     WriteGrant,
     WriteOutcomeUnknown,
     WriteReceipt,
+    check_close,
 )
 
 from . import mapping
 from .grants import GrantLedger
 
 if TYPE_CHECKING:
-    from .transport import Transport
+    from .transport import Session, Transport
     from .urls import GitHubLocation
 
 __all__ = ["STATE_REASONS", "IssueClosing", "close_payload"]
@@ -70,11 +87,21 @@ STATE_REASONS: Mapping[CloseReason, str] = {
 }
 
 
-def close_payload(reason: CloseReason) -> dict[str, str]:
-    """The request body: the state and its reason, and nothing else (pure)."""
+def close_payload(reason: CloseReason, duplicate_issue_id: int | None = None) -> dict[str, object]:
+    """The request body: the state and its reason, and for a duplicate that names its canonical
+    the canonical's numeric issue id; nothing else (pure)."""
     if not isinstance(reason, CloseReason):
         raise ValueError("a close needs a CloseReason")
-    return {"state": "closed", "state_reason": STATE_REASONS[reason]}
+    body: dict[str, object] = {"state": "closed", "state_reason": STATE_REASONS[reason]}
+    if duplicate_issue_id is not None:
+        if reason is not CloseReason.DUPLICATE:
+            raise ValueError("duplicate_issue_id goes only with the duplicate reason")
+        body["duplicate_issue_id"] = duplicate_issue_id
+    return body
+
+
+#: The canonical read's own refusals, already a proof that nothing was written.
+_PROOFS = (AuthenticationFailed, PermissionDenied, NotVisible, RateLimited)
 
 
 class IssueClosing:
@@ -88,13 +115,19 @@ class IssueClosing:
     _issue_number: Callable[[IssueKey], int]
 
     def close_issue(
-        self, issue: IssueKey, *, reason: CloseReason, grant: WriteGrant
+        self,
+        issue: IssueKey,
+        *,
+        reason: CloseReason,
+        grant: WriteGrant,
+        duplicate_of: IssueKey | None = None,
     ) -> WriteReceipt:
         self._require(_OPERATION)
         ledger = self._grants
         checked = ledger.check(grant, _OPERATION, issue)
         number = self._issue_number(issue)
-        payload = close_payload(reason)
+        check_close(issue, reason, duplicate_of)
+        canonical = self._issue_number(duplicate_of) if duplicate_of is not None else None
         ledger.refuse_if_spent(checked)  # read-only: spending waits for the credential
         path = f"{self._location.repo_path}/issues/{number}"
         with self._transport.operation(_OPERATION, write=True) as session:
@@ -102,6 +135,10 @@ class IssueClosing:
                 raise AuthenticationFailed(
                     "issue.close needs a credential; none was resolved (anonymous)"
                 )
+            duplicate_id = None
+            if canonical is not None:  # one read, before the grant is spent
+                duplicate_id = self._canonical_id(session, canonical)
+            payload = close_payload(reason, duplicate_id)
             ledger.spend(checked)  # only now: a missing credential never burns the approval
             reply = session.send("PATCH", path, payload)
         try:
@@ -121,3 +158,23 @@ class IssueClosing:
             state_after=closed.state,
             closed_reason=closed.closed_reason,
         )
+
+    def _canonical_id(self, session: Session, number: int) -> int:
+        """The numeric ``id`` of canonical issue ``number`` of this repository (one GET). Every
+        failure is a refusal before the write: nothing has been sent yet."""
+        label = f"the canonical #{number}"
+        try:
+            row = session.get(f"{self._location.repo_path}/issues/{number}").body
+            if mapping.is_change_request(row):
+                raise NotVisible(f"{label} is a pull request, not an issue")
+            parsed = self._location.parse_html_url(mapping.issue_key(row).url)
+        except _PROOFS:
+            raise
+        except TrackerError as exc:
+            raise NotVisible(f"{label} could not be read ({type(exc).__name__})") from None
+        if parsed is None or not self._location.same_repository(parsed[0], parsed[1]):
+            raise NotVisible(f"{label} was moved to another repository")
+        ident = row.get("id")
+        if not isinstance(ident, int) or isinstance(ident, bool):
+            raise NotVisible(f"{label} has no numeric issue id")
+        return ident

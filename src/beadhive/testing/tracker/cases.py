@@ -64,6 +64,7 @@ from beadhive.modules.tracker.contracts import (
     RetryBudget,
     TrackerAdapter,
     TrackerComment,
+    TrackerError,
     TrackerIssue,
     TrackerReader,
     Tri,
@@ -639,6 +640,40 @@ def _close_ambiguous_not_retried(factory: TrackerFactory) -> None:
     assert found is not None and found.state is IssueState.CLOSED
 
 
+def _close_duplicate_of_canonical(factory: TrackerFactory) -> None:
+    """A duplicate close names its canonical (``bh-iamru``): the tracker records the link. A
+    canonical with another reason, the issue itself, another project's or a missing issue is
+    refused before the write, and the grant still works afterwards."""
+    s = _closer_subject(factory)
+    if s is None:
+        return
+    member = s.world.add_issue("member", at=at(2))
+    canonical = s.world.add_issue("canonical", at=at(2))
+    gone = s.world.add_issue("gone", at=at(2))
+    s.world.delete_issue(gone)
+    s.world.set_write_time(at(6))
+    once = grant(Operation.ISSUE_CLOSE, member, "g-dup")
+
+    def close(reason: CloseReason, of: IssueKey) -> Any:
+        return s.adapter.close_issue(member, reason=reason, grant=once, duplicate_of=of)
+
+    for reason, of in (
+        (CloseReason.COMPLETED, canonical),  # only a duplicate names a canonical
+        (CloseReason.DUPLICATE, member),  # never itself
+    ):
+        _refused(lambda r=reason, o=of: close(r, o), ValueError, f"{reason} of {of} was accepted")
+    foreign = IssueKey("#1", s.world.foreign_issue_url())
+    for of in (foreign, gone):
+        _refused(lambda o=of: close(CloseReason.DUPLICATE, o), TrackerError, f"{of} was accepted")
+    assert s.world.write_requests() == 0
+    receipt = close(CloseReason.DUPLICATE, canonical)  # the grant was never spent
+    assert_contract_only(receipt)
+    assert receipt.state_after is IssueState.CLOSED and receipt.closed_reason
+    assert s.world.duplicate_of(member) == canonical.url
+    assert s.world.duplicate_of(canonical) is None
+    assert s.world.write_requests() == 1
+
+
 # ---- cases: repository label definitions (labels.read / labels.define) ---------------------
 #
 # Both operations are optional: a case whose operation is not in ``describe().supported`` returns
@@ -1084,6 +1119,7 @@ TRACKER_CASES: tuple[TrackerCase, ...] = (
     TrackerCase("close.grant-matches-and-single-use", _close_grant_matches_and_single_use),
     TrackerCase("close.round-trip", _close_round_trip),
     TrackerCase("close.ambiguous-not-retried", _close_ambiguous_not_retried),
+    TrackerCase("close.duplicate-of-canonical", _close_duplicate_of_canonical),
     TrackerCase("labels.read-lists-every-definition", _labels_read_lists_every_definition),
     TrackerCase("labels.define-only-owned", _labels_define_only_owned),
     TrackerCase(

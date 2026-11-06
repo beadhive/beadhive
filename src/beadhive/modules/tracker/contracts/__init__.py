@@ -34,6 +34,7 @@ from .ports import (
     TrackerAdapter,
     TrackerIdentity,
     TrackerReader,
+    check_close,
     join_marker_line,
 )
 from .records import (
@@ -139,5 +140,6 @@ __all__ = [
     "WriteGrant",
     "WriteOutcomeUnknown",
     "WriteReceipt",
+    "check_close",
     "join_marker_line",
 ]

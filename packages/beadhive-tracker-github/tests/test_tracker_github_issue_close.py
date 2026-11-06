@@ -24,6 +24,7 @@ from beadhive.modules.tracker.contracts import (
     OperationNotEnabled,
     ProjectRef,
     TargetStateRefused,
+    TrackerError,
     Tri,
     WriteGrant,
     WriteOutcomeUnknown,
@@ -52,9 +53,12 @@ def grant(issue: IssueKey, grant_id: str = "g-1", op: Operation = CLOSE) -> Writ
     return WriteGrant(grant_id, op, issue)
 
 
-def close(adapter, issue, reason=CloseReason.COMPLETED, the_grant=None):
+def close(adapter, issue, reason=CloseReason.COMPLETED, the_grant=None, duplicate_of=None):
     return adapter.close_issue(
-        issue, reason=reason, grant=grant(issue) if the_grant is None else the_grant
+        issue,
+        reason=reason,
+        grant=grant(issue) if the_grant is None else the_grant,
+        duplicate_of=duplicate_of,
     )
 
 
@@ -231,6 +235,83 @@ def test_an_archived_repository_refuses_the_close():
     with pytest.raises(TargetStateRefused, match="archived"):
         close(adapter, issue)
     assert world.write_requests() == 1 and _row(world, issue)["state"] == "open"
+
+
+# ---- a duplicate names its canonical (bh-iamru) -----------------------------------------------
+
+
+def test_a_duplicate_names_its_canonical_by_issue_id_after_one_read():
+    world, issue, adapter = setup()
+    canonical = world.add_issue("canonical", at=EPOCH)
+
+    receipt = close(adapter, issue, CloseReason.DUPLICATE, duplicate_of=canonical)
+
+    read, patch = world.requests
+    assert (read.method, read.url.path) == ("GET", "/repos/acme/widgets/issues/2")
+    assert (patch.method, patch.url.path) == ("PATCH", "/repos/acme/widgets/issues/1")
+    canonical_id = _row(world, canonical)["id"]
+    assert canonical_id != 2  # the issue id, never the number
+    assert json.loads(patch.content) == {
+        "state": "closed",
+        "state_reason": "duplicate",
+        "duplicate_issue_id": canonical_id,
+    }
+    assert receipt.state_after is IssueState.CLOSED and receipt.closed_reason == "duplicate"
+    assert world.duplicate_of(issue) == canonical.url
+    assert world.server_labels(issue) == {"bug", "bh:triage"}
+
+
+def test_the_payload_carries_a_canonical_only_for_a_duplicate():
+    assert close_payload(CloseReason.DUPLICATE, 7) == {
+        "state": "closed",
+        "state_reason": "duplicate",
+        "duplicate_issue_id": 7,
+    }
+    with pytest.raises(ValueError, match="duplicate"):
+        close_payload(CloseReason.COMPLETED, 7)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["another-reason", "itself", "another-repository"],
+)
+def test_a_misnamed_canonical_is_refused_before_any_request(shape):
+    world, issue, adapter = setup()
+    canonical = world.add_issue("canonical", at=EPOCH)
+    reason, of = {
+        "another-reason": (CloseReason.NOT_PLANNED, canonical),
+        "itself": (CloseReason.DUPLICATE, issue),
+        "another-repository": (
+            CloseReason.DUPLICATE,
+            IssueKey("#2", "https://github.com/someone-else/elsewhere/issues/2"),
+        ),
+    }[shape]
+    with pytest.raises((ValueError, TrackerError)):  # TrackerError: OtherProject, pure
+        close(adapter, issue, reason, the_grant=grant(issue, "g-shape"), duplicate_of=of)
+    assert world.requests == []
+    close(adapter, issue, CloseReason.DUPLICATE, the_grant=grant(issue, "g-shape"))
+    assert world.write_requests() == 1  # the grant was kept
+
+
+@pytest.mark.parametrize("shape", ["deleted", "pull-request", "transferred", "unreadable"])
+def test_an_unreadable_canonical_is_refused_before_the_write_and_keeps_the_grant(shape):
+    world, issue, adapter = setup()
+    canonical = world.add_issue("canonical", at=EPOCH)
+    if shape == "deleted":
+        world.delete_issue(canonical)
+    elif shape == "pull-request":  # an issue URL whose number GitHub answers with a pull request
+        pull = world.add_change_request("a pull request", at=EPOCH)
+        number = pull.identifier.removeprefix("#")
+        canonical = IssueKey(pull.identifier, f"{world.web}/acme/widgets/issues/{number}")
+    elif shape == "transferred":
+        world.transfer_issue(canonical, "acme/elsewhere")
+    else:
+        world.scripted.append(httpx.Response(200, json={"id": 1}))
+    with pytest.raises(NotVisible):
+        close(adapter, issue, CloseReason.DUPLICATE, grant(issue, "g-dup"), duplicate_of=canonical)
+    assert world.write_requests() == 0 and _row(world, issue)["state"] == "open"
+    close(adapter, issue, CloseReason.DUPLICATE, the_grant=grant(issue, "g-dup"))
+    assert world.write_requests() == 1 and world.duplicate_of(issue) is None
 
 
 # ---- the ambiguous outcome ------------------------------------------------------------------

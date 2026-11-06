@@ -76,6 +76,11 @@ class TrackerWorld(Protocol):
 
     def comment_count(self, issue: IssueKey) -> int: ...
 
+    def duplicate_of(self, issue: IssueKey) -> str | None:
+        """The URL of the canonical issue ``issue`` was last closed as a duplicate of (``None``:
+        none recorded). Observation only: no request."""
+        ...
+
     def seed_label_definition(self, definition: LabelDefinition) -> None:
         """Create (or replace, by name) a repository label definition, as a human would on the
         tracker: owned or not, with no grant and no request counted."""
@@ -124,6 +129,7 @@ class _Issue:
     updated: datetime
     change_request: bool = False
     closed_reason: str | None = None  # the reason of the last close (``issue.close``)
+    duplicate_of: str | None = None  # the canonical's URL the last close named (``bh-iamru``)
     #: Moved to another project: no longer listed here, but still answers its old key with its new
     #: canonical one (what a tracker's redirect for a transferred issue does).
     transferred: bool = False
@@ -250,6 +256,9 @@ class MemoryWorld:
 
     def comment_count(self, issue: IssueKey) -> int:
         return sum(1 for c in self.comments.values() if c.issue == issue)
+
+    def duplicate_of(self, issue: IssueKey) -> str | None:
+        return self.issues[issue.identifier].duplicate_of
 
     def seed_label_definition(self, definition: LabelDefinition) -> None:
         self.label_defs[definition.name] = definition
