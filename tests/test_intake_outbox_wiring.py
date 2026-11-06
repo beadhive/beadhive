@@ -116,6 +116,7 @@ def test_with_every_switch_on_the_wiring_comes_from_the_plugin_binding(rig) -> N
     )
     assert wiring["owned_label_prefixes"] == ()  # labels.change is not enabled
     assert wiring["close_enabled"] is False  # issue.close is off by default
+    assert (wiring["type_enabled"], wiring["fields_enabled"]) == (False, False)
     assert rig.world.read_requests() == rig.world.write_requests() == 0  # building reads nothing
 
 
@@ -178,6 +179,51 @@ def test_the_mention_checks_listing_without_a_tracker_refuses_naming_the_key(rig
 
     assert caught.value.reason is RefusalReason.INTAKE_DISABLED
     assert "plugins.tracker-github.enabled" in caught.value.detail
+
+
+@pytest.mark.parametrize(
+    ("key", "gate"), [("issue_type", "type_enabled"), ("issue_fields", "fields_enabled")]
+)
+def test_each_value_gate_follows_the_bindings_own_enable(tmp_path, monkeypatch, key, gate) -> None:
+    on = plugin(comments=True, comment=True)
+    on["write"][key] = {"enabled": True}
+    rig = Wired(tmp_path, monkeypatch, {"tracker-github": on})
+
+    wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
+
+    other = "fields_enabled" if gate == "type_enabled" else "type_enabled"
+    assert wiring[gate] is True and wiring[other] is False
+    expected = (gate == "type_enabled", gate == "fields_enabled")
+    assert intake_services.value_gates(rig.cfg, rig.entry) == expected  # config alone agrees
+    off = dict(rig.cfg, plugins={"tracker-github": dict(on, enabled=False)})
+    assert intake_services.value_gates(off, rig.entry) == (False, False)
+
+
+def test_the_outbox_kinds_name_type_and_fields() -> None:
+    from beadhive.modules.intake.domain import OpKind
+
+    assert intake_services.outbox_kind("type") is OpKind.TYPE
+    assert intake_services.outbox_kind("issue.fields") is OpKind.FIELDS
+    assert intake_services.outbox_kind("priority") is None
+
+
+def test_the_value_maps_are_read_from_intake_external_labels() -> None:
+    default = intake_services.labels_config({})
+    assert default.values.issue_types["chore"] == "Task"
+    assert default.values.priorities["p4"] == "Low"
+    section = {
+        "issue_type": {"map": {"Bug": "Defect"}},
+        "priority_field": {"name": "Severity", "map": {"P0": "Sev1"}},
+    }
+    custom = intake_services.labels_config({"intake": {"external": {"labels": section}}})
+    assert dict(custom.values.issue_types) == {"bug": "Defect"}
+    assert (custom.values.priority_field, dict(custom.values.priorities)) == (
+        "Severity",
+        {"p0": "Sev1"},
+    )
+    bad = {"priority_field": {"map": {"urgent": "Sev1"}}}
+    broken = intake_services.labels_config({"intake": {"external": {"labels": bad}}})
+    assert broken.settings is None and "P0 to P4" in broken.error
 
 
 @pytest.mark.parametrize(

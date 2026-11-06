@@ -49,7 +49,7 @@ from ..domain import (
     SendPlan,
     ThreadActor,
 )
-from ..domain.outbox import OutboxRecord
+from ..domain.outbox import TYPE_VALUE, OutboxRecord
 from .threads import thread_actor
 
 #: The port's errors that prove nothing was written (``bh-6wj9y`` E11; ``LabelNotOwned`` is an
@@ -113,14 +113,19 @@ def capabilities(report: CapabilityReport) -> Capabilities:
 
 
 def receipt(answer: WriteReceipt) -> Receipt:
-    """O10's receipt: the remote comment key, the labels after, or the issue's state after."""
+    """O10's receipt: the remote comment key, the labels after, the issue's state after, or the
+    type / field values after."""
     comment = answer.comment
+    values = answer.fields_after
+    if answer.type_after is not None:
+        values = ((TYPE_VALUE, answer.type_after),)
     return Receipt(
         comment_id=None if comment is None else comment.key.id,
         global_id=None if comment is None else comment.key.global_id,
         labels_after=answer.labels_after,
         actor=None if comment is None else thread_actor(comment.author),
         state_after=None if answer.state_after is None else answer.state_after.value,
+        values_after=values,
     )
 
 

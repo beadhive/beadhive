@@ -1,5 +1,6 @@
-"""``OutboxService``: the supervised sender for ``comment.create``, ``labels.change`` and
-``issue.close`` (``bh-6wj9y`` R6, R7; D2; ``bh-pr5ll``).
+"""``OutboxService``: the supervised sender for ``comment.create``, ``labels.change``,
+``issue.close``, ``issue.type`` and ``issue.fields`` (``bh-6wj9y`` R6, R7; D2; ``bh-pr5ll``;
+``bh-poqy0``).
 
 The pure O1 to O19 machine lives in :mod:`..domain.outbox` and the translation to and from the
 tracker port in :mod:`.outbox`; this layer runs the machine against a :class:`ReportStore` and a
@@ -9,7 +10,9 @@ tracker in R6's order, and is the only code that ever calls a writer:
   unless the injected :class:`OutboxPolicy` is enabled, and a ``labels.change`` additionally
   refuses with ``LABELS_DISABLED`` unless ``OutboxPolicy.labels_enabled`` (its own flag,
   separate from the comment's), and an ``issue.close`` with ``CLOSE_DISABLED`` unless
-  ``OutboxPolicy.close_enabled`` (set from the bound adapter's own ``issue.close`` enable). Even
+  ``OutboxPolicy.close_enabled`` (set from the bound adapter's own ``issue.close`` enable), and
+  an ``issue.type`` / ``issue.fields`` with ``TYPE_DISABLED`` / ``FIELDS_DISABLED`` unless
+  ``OutboxPolicy.type_enabled`` / ``fields_enabled`` (likewise the adapter's own enables). Even
   then nothing is written without the adapter's own
   per-operation enable (``probe_capabilities`` reports the operation usable, else O5 refuses; a
   disabled writer refuses before any request, which is O11) AND an operator approval of THAT
@@ -68,9 +71,11 @@ from beadhive.modules.tracker.contracts import (
     CommentQuery,
     CommentWriter,
     IssueCloser,
+    IssueFieldWriter,
     IssueKey,
     IssueQuery,
     IssueResolver,
+    IssueTypeWriter,
     LabelOwnership,
     LabelWriter,
     OwnMarker,
@@ -135,6 +140,7 @@ from ..domain import (
     require_private_store,
 )
 from ..domain import outbox as machine
+from ..domain.outbox import TYPE_VALUE, VALUE_KINDS
 from . import outbox as translate
 from .labels import issue_index, label_base
 from .paging import iterate_pages
@@ -400,6 +406,18 @@ class OutboxService:
                     RefusalReason.CAPABILITY_UNUSABLE,
                     "the bound tracker adapter cannot close an issue (issue.close is not enabled)",
                 )
+        elif kind is OpKind.TYPE:
+            if not isinstance(self._tracker, IssueTypeWriter):
+                raise IntakeRefused(
+                    RefusalReason.CAPABILITY_UNUSABLE,
+                    "the bound tracker adapter cannot set a type (issue.type is not enabled)",
+                )
+        elif kind is OpKind.FIELDS:
+            if not isinstance(self._tracker, IssueFieldWriter):
+                raise IntakeRefused(
+                    RefusalReason.CAPABILITY_UNUSABLE,
+                    "the bound tracker adapter cannot set fields (issue.fields is not enabled)",
+                )
         elif not isinstance(self._tracker, LabelWriter):
             raise IntakeRefused(
                 RefusalReason.CAPABILITY_UNUSABLE, "the bound tracker adapter has no label writer"
@@ -433,6 +451,12 @@ class OutboxService:
                     None if canonical is None else IssueKey(canonical.identifier, canonical.url)
                 ),
             )
+        if kind is OpKind.TYPE:
+            assert isinstance(writer, IssueTypeWriter) and plan.values
+            return writer.set_issue_type(issue, dict(plan.values)[TYPE_VALUE], grant=grant)
+        if kind is OpKind.FIELDS:
+            assert isinstance(writer, IssueFieldWriter) and plan.values
+            return writer.set_issue_fields(issue, dict(plan.values), grant=grant)
         assert isinstance(writer, LabelWriter)
         return writer.change_labels(
             issue, add=plan.add, remove=plan.remove, ownership=self._ownership(), grant=grant
@@ -482,9 +506,12 @@ class OutboxService:
         wanted = {kind for kinds in pending.values() for kind in kinds}
         # a read nobody needs is not made, and is vacuously complete
         comments, complete = self._listing(binding) if OpKind.COMMENT in wanted else ((), True)
-        issue = self._read_issue(binding) if wanted & {OpKind.LABELS, OpKind.CLOSE} else None
+        reads_issue = wanted & {OpKind.LABELS, OpKind.CLOSE, *VALUE_KINDS}
+        issue = self._read_issue(binding) if reads_issue else None
         labels = frozenset(issue.labels) if issue is not None and OpKind.LABELS in wanted else None
         state = issue.state.value if issue is not None and OpKind.CLOSE in wanted else None
+        issue_type = issue.issue_type if issue is not None and OpKind.TYPE in wanted else None
+        fields = issue.fields if issue is not None and OpKind.FIELDS in wanted else None
         results: list[OutboxResult] = []
         with self._lock.hold(key) as epoch:
             doc, expect, again = self._open(report, epoch, actor)
@@ -494,7 +521,9 @@ class OutboxService:
             if me is not None:
                 known.add(me)
             marked = translate.marked_comments(comments, self._identity, frozenset(known))
-            observation = OutboxObservation(start_seq, complete, marked, labels, state)
+            observation = OutboxObservation(
+                start_seq, complete, marked, labels, state, issue_type, fields
+            )
             applied: list[OutboxApplied] = []
             for outbox_id in outbox_ids:
                 step = machine.observe(
@@ -511,6 +540,8 @@ class OutboxService:
                     read_ok = {
                         OpKind.LABELS: labels is not None,
                         OpKind.CLOSE: state is not None,
+                        OpKind.TYPE: issue_type is not None,
+                        OpKind.FIELDS: fields is not None,
                     }.get(kind, complete)  # type: ignore[arg-type]
                     commented = kind in (None, OpKind.COMMENT)
                     results.append(
@@ -704,9 +735,10 @@ class OutboxService:
     # -- the batch (bh-uim9i): one review of every drafted labels operation -------------------
 
     def review_label_batch(self) -> LabelBatch:
-        """The rendered batch (``bh work labels review``): every drafted ``labels.change``
-        operation, ordered by report then draft, each with its digest as drafted, the change it
-        makes and whether its issue's owned labels moved since (``stale``); and the digest of the
+        """The rendered batch (``bh work labels review``): every drafted ``labels.change``,
+        ``issue.type`` and ``issue.fields`` operation of a labels record (a value operation only
+        while its gate is on), ordered by report then draft, each with its digest as drafted, the
+        change it makes and whether its issue moved since (``stale``); and the digest of the
         ``(outbox_id, digest)`` list. One pass over the outbox documents and one issue listing (none
         when nothing is drafted); no store write."""
         self._require_enabled()
@@ -719,7 +751,8 @@ class OutboxService:
         still the one reviewed, then approve every item through O5, each minting its own
         single-use grant under its binding's lock. A STALE item (its owned labels moved since its
         draft) is skipped and reported for re-draft by the next sync; an item an approval refuses
-        is reported and the rest still approved. Nothing is sent."""
+        is reported and the rest still approved. Each item is approved as its own kind, so a
+        type or field operation is its own approval with its own grant. Nothing is sent."""
         self._require_enabled()
         machine.require_kind_enabled(OpKind.LABELS, self._policy)
         require_private_store(self._posture)
@@ -770,7 +803,7 @@ class OutboxService:
             ctx = self._ctx(item.report, binding, item.outbox_id, labels=fresh)
             applied = machine.approve(
                 doc,
-                ApprovalRequest(item.outbox_id, OpKind.LABELS, item.digest, request.actor),
+                ApprovalRequest(item.outbox_id, item.kind, item.digest, request.actor),
                 grant_id=self._ids.grant_id(),
                 policy=self._policy,
                 ctx=ctx,
@@ -778,9 +811,9 @@ class OutboxService:
             )
             self._commit(item.report, applied, expect, request.actor)
             record = applied.document.records[item.outbox_id]
-            rendered = machine.render(record, OpKind.LABELS, ctx)
-        approval = record.op(OpKind.LABELS).approval  # type: ignore[union-attr]
-        result = self._result(item.report, applied, rules, OpKind.LABELS)
+            rendered = machine.render(record, item.kind, ctx)
+        approval = record.op(item.kind).approval  # type: ignore[union-attr]
+        result = self._result(item.report, applied, rules, item.kind)
         return dataclasses.replace(
             result,
             rendered=rendered,
@@ -797,15 +830,23 @@ class OutboxService:
                 docs[view.id] = doc
         return docs
 
-    @staticmethod
-    def _drafted(docs: dict[str, OutboxDocument]) -> list[tuple[str, OutboxRecord]]:
-        """The records with a drafted label operation, ordered by report then draft."""
-        out: list[tuple[str, OutboxRecord]] = []
+    def _drafted(
+        self, docs: dict[str, OutboxDocument]
+    ) -> list[tuple[str, OutboxRecord, OutboxOperation]]:
+        """The drafted operations of the labels records (labels, then type, then fields, each a
+        value kind only while its gate is on), ordered by report then draft."""
+        kinds = [OpKind.LABELS]
+        kinds += [OpKind.TYPE] if self._policy.type_enabled else []
+        kinds += [OpKind.FIELDS] if self._policy.fields_enabled else []
+        out: list[tuple[str, OutboxRecord, OutboxOperation]] = []
         for report in sorted(docs):
             for record in sorted(docs[report].records.values(), key=_created):
-                op = record.op(OpKind.LABELS)
-                if op is not None and op.state is OpState.DRAFTED and op.labels is not None:
-                    out.append((report, record))
+                for kind in kinds:
+                    op = record.op(kind)
+                    if op is None or op.state is not OpState.DRAFTED:
+                        continue
+                    if (op.labels if kind is OpKind.LABELS else op.values) is not None:
+                        out.append((report, record, op))
         return out
 
     def _live_for(self, docs: dict[str, OutboxDocument]) -> dict[str, TrackerIssue]:
@@ -821,9 +862,11 @@ class OutboxService:
 
     def _batch(self, docs: dict[str, OutboxDocument], live: dict[str, TrackerIssue]) -> LabelBatch:
         items: list[LabelBatchItem] = []
-        for report, record in self._drafted(docs):
-            op = record.op(OpKind.LABELS)
-            assert op is not None and op.labels is not None
+        for report, record, op in self._drafted(docs):
+            if op.kind in VALUE_KINDS:
+                items.append(self._value_item(report, record, op, live.get(record.binding.url)))
+                continue
+            assert op.labels is not None
             url = record.binding.url
             base = LabelBase(op.labels.base_revision, op.labels.base_owned)
             drafted = machine.render(record, OpKind.LABELS, self._bare_ctx(url, base))
@@ -849,6 +892,36 @@ class OutboxService:
                 )
             )
         return LabelBatch(tuple(items), batch_digest(items))
+
+    def _value_item(
+        self, report: str, record: OutboxRecord, op: OutboxOperation, issue: TrackerIssue | None
+    ) -> LabelBatchItem:
+        """A drafted ``issue.type`` / ``issue.fields`` operation as a batch item: stale when the
+        issue is gone, its values were not read, or a value it was drafted on has moved."""
+        intent = op.values
+        assert intent is not None
+        url = record.binding.url
+        rendered = machine.render(record, op.kind, self._bare_ctx(url, LabelBase("", frozenset())))
+        stale, note = False, ""
+        live = _live_values(issue, op.kind)
+        if issue is None:
+            stale, note = True, "the issue is not in the listing (deleted or moved)"
+        elif live is None:
+            stale, note = True, f"the issue's {_noun(op.kind)} was not read; sync re-drafts it"
+        elif any(
+            not machine.same_value(name, live.get(name, ""), was) for name, was in intent.base
+        ):
+            stale, note = True, f"its {_noun(op.kind)} moved since the draft; sync re-drafts it"
+        return LabelBatchItem(
+            report,
+            record.outbox_id,
+            rendered.digest,
+            url,
+            stale=stale,
+            note=note,
+            kind=op.kind,
+            values=intent.values,
+        )
 
     def _bare_ctx(self, url: str, labels: LabelBase) -> RenderContext:
         """A label render's context: a label operation reads no marker and no thread."""
@@ -1045,7 +1118,12 @@ class OutboxService:
         return None
 
     def _reconcile_detail(self, applied: OutboxApplied, kind: OpKind | None, read_ok: bool) -> str:
-        noun = {OpKind.LABELS: "label read", OpKind.CLOSE: "issue read"}.get(
+        noun = {
+            OpKind.LABELS: "label read",
+            OpKind.CLOSE: "issue read",
+            OpKind.TYPE: "issue read",
+            OpKind.FIELDS: "issue read",
+        }.get(
             kind,  # type: ignore[arg-type]
             "comment listing",
         )
@@ -1084,6 +1162,19 @@ class OutboxService:
             (*rules, *(s.rule for s in applied.steps)),
             comment_id=(receipt.comment_id or "") if receipt is not None else "",
         )
+
+
+def _live_values(issue: TrackerIssue | None, kind: OpKind) -> dict[str, str] | None:
+    """The issue's values a ``kind`` operation sets, as one read saw them (``None``: not read)."""
+    if issue is None:
+        return None
+    if kind is OpKind.TYPE:
+        return None if issue.issue_type is None else {TYPE_VALUE: issue.issue_type}
+    return None if issue.fields is None else dict(issue.fields)
+
+
+def _noun(kind: OpKind) -> str:
+    return "type" if kind is OpKind.TYPE else "field values"
 
 
 def _joined(first: str, second: str) -> str:
