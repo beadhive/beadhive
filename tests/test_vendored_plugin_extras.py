@@ -27,7 +27,8 @@ VENDORED = {
 
 def test_extras_carry_only_third_party_dependencies() -> None:
     extras = CONFIG["project"]["optional-dependencies"]
-    assert extras["github"] == ["githubkit>=0.16.1,<1"]
+    # hishel is githubkit's own dependency, capped only (bh-coqtn)
+    assert extras["github"] == ["githubkit>=0.16.1,<1", "hishel<2"]
     assert extras["xtdb"] == ["psycopg[binary]>=3.2,<4"]
 
 

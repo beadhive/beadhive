@@ -5,12 +5,18 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
-## 0.35.0 → 0.35.1 — triage apply fixes
+## 0.35.0 → 0.35.2 — triage apply fixes and a hishel cap
+
+0.35.1 was tagged but never published: hishel 2.0.0 (released the same day) fails githubkit's
+import, and every githubkit allows it, so the release smoke of `beadhive[github]` failed. 0.35.2
+carries 0.35.1's fixes plus `hishel<2` in the `[github]` extra. A fresh install of any earlier
+`beadhive[github]` resolves hishel 2.0.0 and fails the same way; install 0.35.2, or add
+`hishel<2` yourself.
 
 No new keys and no state change. `bh work triage apply --reviewed` on 0.35.0 could leave a reject
 half done (reply drafted, `intake:rejected` set, close refused because the reply was longer than
 the 255-character close reason Beads stores) and refused needs-info questions whose comments the
-analysis had read. On 0.35.1 rerun `bh work triage apply --reviewed`: it closes the half-rejected
+analysis had read. On 0.35.2 rerun `bh work triage apply --reviewed`: it closes the half-rejected
 reports without drafting their replies again and asks the questions. A proposal re-stored only to
 move its `thread_seq` past a `thread considered` write needs no further change.
 

@@ -96,8 +96,10 @@ pants = ["beadhive-pants"]
 # lazily under `beadhive_tracker_github/adapter/`, so the root wheel installs and `import beadhive`
 # works without it; with the plugin enabled but this extra absent, bootstrap refuses cleanly
 # naming `beadhive[github]`. Installing it enables nothing: `plugins.tracker-github.enabled` is
-# false by default and a store binding never turns it on.
-github = ["githubkit>=0.16.1,<1"]
+# false by default and a store binding never turns it on. `hishel<2` caps githubkit's own
+# transitive dependency: every githubkit up to 0.17.0 allows hishel 2.0.0, which fails githubkit's
+# import (bh-coqtn), and the published wheel resolves unlocked.
+github = ["githubkit>=0.16.1,<1", "hishel<2"]
 # `beadhive[xtdb]` — the XTDB BeadLog store plugin (beadlog-format-adr.md amendment A6): binds the
 # `beadlog-xtdb` loader into `bh backfill apply|export --store xtdb` through the `beadlog.store`
 # capability. The plugin and loader import packages (`beadhive_beadlog_xtdb`, `beadlog_xtdb`) are
