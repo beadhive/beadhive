@@ -35,6 +35,8 @@ from beadhive.modules.intake.domain import (
     ApplyStatus,
     ApplyStep,
     CheckKind,
+    CloseBackfill,
+    CloseReason,
     CompletionPolicy,
     ConsiderRequest,
     Disposition,
@@ -47,6 +49,7 @@ from beadhive.modules.intake.domain import (
     LinkRequest,
     MergeFact,
     MilestonePolicy,
+    OpKind,
     OpState,
     OutboxEvent,
     OutboxPolicy,
@@ -59,6 +62,7 @@ from beadhive.modules.intake.domain import (
     ProposeRequest,
     RefusalReason,
     RegistryDimension,
+    ReplyDraft,
     ReportDraft,
     ReviewPolicy,
     ReviewRequest,
@@ -67,6 +71,7 @@ from beadhive.modules.intake.domain import (
     ThreadRequest,
     WakeRequest,
     WorkDraft,
+    mark_applied,
     version_key,
 )
 from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS, OwnMarker
@@ -272,6 +277,8 @@ class Hive:
         refile=None,
         labels: bool = False,
         milestones: bool = False,
+        outbox: OutboxPolicy = OUTBOX,
+        sender: bool = True,
     ) -> None:
         self.world = MemoryWorld()
         self.world.set_write_time(at(3))
@@ -297,7 +304,7 @@ class Hive:
             ids=self.ids,
             identity=ME,
             marker_line=marker_line,
-            policy=OUTBOX,
+            policy=outbox,
             leak_policy=LEAKS,
             sanitizer=self.sanitizer,
             posture=PRIVATE,
@@ -351,7 +358,7 @@ class Hive:
             self.store,
             _NoLabels(),
             threads=self.threads,
-            outbox=self.sender,
+            outbox=self.sender if sender else None,
             lock=self.lock,
             review=ReviewPolicy(comments_enabled=True, comments_read=True),
             projection=projection,
@@ -538,10 +545,15 @@ def test_the_verified_set_applies_canonicals_first_and_drafts_without_sending() 
     for canonical, members in FAMILIES.items():
         for member in members:
             assert order.index(reports[canonical]) < order.index(reports[member])
-            # the member shares the canonical's work, then is rejected with a reason
+            # the member is told (the reply drafted first), shares the canonical's work, and is
+            # rejected
             work = hive.store.tracked_work(reports[canonical])
             assert work and hive.store.tracked_work(reports[member]) == work
-            assert item(outcome, reports[member]).steps == (ApplyStep.LINK, ApplyStep.REJECT)
+            assert item(outcome, reports[member]).steps == (
+                ApplyStep.DRAFT_REPLY,
+                ApplyStep.LINK,
+                ApplyStep.REJECT,
+            )
             assert hive.store.get(reports[member]).status == "closed"
     applied = {replay.issue_of(r) for r in outcome.applied}
     assert applied == set(FIRST_PASS) - {40}
@@ -556,10 +568,11 @@ def test_the_verified_set_applies_canonicals_first_and_drafts_without_sending() 
     assert item(outcome, reports[25]).steps == (ApplyStep.ACCEPT_NEW_WORK,)
     assert item(outcome, reports[110]).work == replay.works["0qazu"]
     assert hive.store.get(reports[30]).labels.count(INTAKE_NEEDS_INFO) == 1
-    # the reply and the question are drafted, held for an operator, never sent
+    # the replies and the question are drafted, held for an operator, never sent
     drafted = outcome.drafted
-    assert len(drafted) == 2
-    for report in (reports[11], reports[30]):
+    members = [reports[m] for family in FAMILIES.values() for m in family]
+    assert len(drafted) == 2 + len(members)
+    for report in (reports[11], reports[30], *members):
         (record,) = hive.records(report)
         assert record.event is OutboxEvent.REPLY and record.outbox_id in drafted
         assert all(op.state is not OpState.SENT for op in record.operations)
@@ -594,7 +607,8 @@ def test_a_dry_run_plans_the_verified_set_and_writes_nothing() -> None:
     planned = {replay.issue_of(r) for r in outcome.by_status(ApplyStatus.PLANNED)}
     assert planned == set(FIRST_PASS) - {40} and outcome.dry_run
     member = item(outcome, replay.reports[44])
-    assert member.steps == (ApplyStep.LINK, ApplyStep.REJECT)  # its canonical is only planned
+    # its canonical is only planned
+    assert member.steps == (ApplyStep.DRAFT_REPLY, ApplyStep.LINK, ApplyStep.REJECT)
     assert hive.writes() == before and outcome.labels is None
 
 
@@ -1041,3 +1055,151 @@ def test_ordinary_open_work_is_a_valid_owner() -> None:
     planned = item(hive.apply(dry_run=True), report)
 
     assert planned.status is ApplyStatus.PLANNED and planned.findings == ()
+
+
+# -- closing the issue with the reply (bh-pr5ll) ----------------------------------------------
+
+CLOSING = OutboxPolicy(enabled=True, labels_enabled=True, close_enabled=True)
+
+
+def _close_of(hive: Hive, report: str):
+    (record,) = [r for r in hive.records(report) if r.event is OutboxEvent.REPLY]
+    return record, record.op(OpKind.CLOSE)
+
+
+def test_apply_drafts_the_close_with_the_reply_for_each_thread_ending_outcome() -> None:
+    hive = Hive(outbox=CLOSING)
+    replay = Replay(hive)
+    replay.first_pass()
+    replay.verifier_pass()
+
+    outcome = hive.apply()
+
+    reports = replay.reports
+    expected = {
+        reports[11]: CloseReason.NOT_PLANNED,  # a reasoned reject
+        **{reports[m]: CloseReason.DUPLICATE for f in FAMILIES.values() for m in f},
+    }
+    for report, reason in expected.items():
+        record, close = _close_of(hive, report)
+        assert close is not None and close.close is reason, report
+        assert close.state is OpState.DRAFTED and record.op(OpKind.COMMENT) is not None
+    # a needs-info question waits for the reporter: it never closes anything
+    (question,) = hive.records(reports[30])
+    assert question.op(OpKind.CLOSE) is None
+    assert len(outcome.drafted) == 2 + len(expected) - 1
+    assert hive.world.write_requests() == 0  # drafted, never sent
+
+
+def test_a_fixed_reply_closes_as_completed() -> None:
+    hive = Hive(commits={"abc1234": "v1.2.0"}, outbox=CLOSING)
+    report = hive.report("export is empty")
+    hive.propose(report, {"disposition": "fixed", "fix_commit": "abc1234"})
+    hive.review(report, {"verdict": "confirmed"})
+
+    done = item(hive.apply(), report)
+
+    assert done.status is ApplyStatus.APPLIED
+    _, close = _close_of(hive, report)
+    assert close is not None and close.close is CloseReason.COMPLETED
+
+
+def test_with_the_close_gate_off_apply_drafts_the_reply_alone() -> None:
+    hive = Hive(commits={"abc1234": "v1.2.0"})  # OUTBOX: close_enabled is off by default
+    report = hive.report("export is empty")
+    hive.propose(report, {"disposition": "fixed", "fix_commit": "abc1234"})
+    hive.review(report, {"verdict": "confirmed"})
+
+    assert item(hive.apply(), report).status is ApplyStatus.APPLIED
+    record, close = _close_of(hive, report)
+    assert close is None and [op.kind for op in record.operations] == [OpKind.COMMENT]
+
+
+# -- the reply goes first; the outbox off keeps 0.35.2's duplicate (bh-pr5ll review B1) --------
+
+
+def _family(hive: Hive) -> tuple[str, str]:
+    """A canonical (new work) and its duplicate-of member, both reviewed."""
+    canonical, member = hive.report("it crashes"), hive.report("it crashes for me too")
+    hive.propose(canonical, {"disposition": "new", "type": "bug", "priority": "2"})
+    hive.propose(member, {"disposition": "duplicate-of", "share_with": canonical})
+    for report in (canonical, member):
+        hive.review(report, {"verdict": "confirmed"})
+    return canonical, member
+
+
+def test_with_the_outbox_off_a_duplicate_is_linked_and_rejected_as_before() -> None:
+    hive = Hive(sender=False)
+    canonical, member = _family(hive)
+
+    done = item(hive.apply(), member)
+
+    assert done.status is ApplyStatus.APPLIED
+    assert done.steps == (ApplyStep.LINK, ApplyStep.REJECT) and done.drafted == ()
+    assert hive.store.get(member).status == "closed" and hive.records(member) == []
+    assert hive.store.tracked_work(member) == hive.store.tracked_work(canonical)
+    assert hive.proposal(member).status is ProposalStatus.APPLIED
+
+
+def test_with_the_outbox_off_a_reject_fails_cleanly_with_nothing_written() -> None:
+    hive = Hive(sender=False)
+    report = hive.report("not a bug")
+    hive.propose(report, {"disposition": "reject", "reporter_text": "Works as designed."})
+    hive.review(report, {"verdict": "confirmed"})
+
+    failed = item(hive.apply(), report)
+
+    assert failed.status is ApplyStatus.FAILED and failed.steps == ()
+    assert "draft reply" in failed.detail
+    assert hive.store.get(report).status != "closed" and hive.records(report) == []
+    assert hive.proposal(report).status is not ProposalStatus.APPLIED
+
+
+def test_a_duplicates_refused_reply_leaves_it_unlinked_and_open(monkeypatch) -> None:
+    hive = Hive(outbox=CLOSING)
+    _canonical, member = _family(hive)
+
+    def refuse(request):
+        raise IntakeRefused(RefusalReason.UNRESOLVED_FINDING, "the reply would leak")
+
+    monkeypatch.setattr(hive.sender, "draft_reply", refuse)
+    failed = item(hive.apply(), member)
+
+    assert failed.status is ApplyStatus.FAILED and failed.steps == ()
+    assert hive.store.tracked_work(member) is None  # the link never ran
+    assert hive.store.get(member).status != "closed"
+    assert hive.proposal(member).status is not ProposalStatus.APPLIED
+
+
+def test_a_rerun_after_a_later_failure_drafts_the_reply_once() -> None:
+    hive = Hive(outbox=CLOSING)
+    _canonical, member = _family(hive)
+    hive.apply()
+    (record,) = hive.records(member)
+
+    # the same text answering the same thread seq is the same draft key: O2, no second record
+    again = hive.intake.draft_reply(ReplyDraft(member, record.message.text, TRIAGE))
+
+    assert again.outbox_id == record.outbox_id and len(hive.records(member)) == 1
+
+
+def test_the_close_backfill_composes_a_fixed_reply_from_the_computed_version() -> None:
+    """B2: a fixed report closed before closes existed, with no reply and no reviewed text, gets
+    the reply apply would have drafted (the version computed now), its close attached."""
+    hive = Hive(commits={"abc1234": "v1.2.0"}, outbox=CLOSING)
+    report = hive.report("export is empty")
+    hive.propose(report, {"disposition": "fixed", "fix_commit": "abc1234"})
+    hive.review(report, {"verdict": "confirmed"})
+    hive.store.write_proposal(
+        report,
+        mark_applied(hive.proposal(report)),
+        expect_seq=hive.proposal(report).seq,
+        actor=TRIAGE,
+    )
+    hive.store.close(report, reason="fixed", actor=TRIAGE)
+
+    (item,) = hive.intake.backfill_closes(CloseBackfill(TRIAGE)).drafted
+
+    assert item.reason is CloseReason.COMPLETED and "v1.2.0" in item.reply_text
+    record, close = _close_of(hive, report)
+    assert record.message.text == item.reply_text and close.close is CloseReason.COMPLETED

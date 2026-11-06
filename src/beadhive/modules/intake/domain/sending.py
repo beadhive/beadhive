@@ -11,16 +11,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .outbox import OpKind, OpState, OutboxRecord, Rendered
+from .outbox import CloseReason, OpKind, OpState, OutboxRecord, Rendered
 
 
 @dataclass(frozen=True)
 class ReplyDraft:
-    """O1 for an operator reply: ``text`` is posted (with the marker) to ``report``'s issue."""
+    """O1 for an operator reply: ``text`` is posted (with the marker) to ``report``'s issue.
+    ``close`` asks for an ``issue.close`` operation on the same record, sent after the comment;
+    it is drafted only while the hive's close gate is on (``OutboxPolicy.close_enabled``)."""
 
     report: str
     text: str
     actor: str
+    close: CloseReason | None = None
 
 
 @dataclass(frozen=True)
@@ -59,7 +62,8 @@ class RenderedRecord:
 class OutboxApprove:
     """O5 (with O4 for each ``publish``): the operator approves the digest they reviewed, the full
     value or at least its 12-hex prefix. ``kind`` selects the operation: ``comment.create`` (the
-    default) or ``labels.change``; each is its own approval and mints its own grant."""
+    default), ``labels.change`` or ``issue.close``; each is its own approval and mints its own
+    grant."""
 
     outbox_id: str
     digest: str
@@ -91,7 +95,57 @@ class OutboxResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class CloseBackfill:
+    """Draft the missing closes (``bh-pr5ll``): for every report already closed in the store
+    whose bound issue is still open and whose applied triage outcome ends the thread, an
+    ``issue.close`` on its latest reply record. ``dry_run`` reads and plans and writes nothing."""
+
+    actor: str
+    dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class CloseBackfillItem:
+    """One candidate report: the reply record that carries (or would carry) the close and its
+    reason, or why it was skipped (``detail``). ``drafted`` is set only when a close was written.
+    ``reply_text`` is set when the report never got its reply and the backfill drafts (or, on a
+    dry run, would draft) that reply too, from the applied proposal."""
+
+    report: str
+    outbox_id: str = ""
+    reason: CloseReason | None = None
+    drafted: bool = False
+    detail: str = ""
+    reply_text: str = ""
+
+    @property
+    def skipped(self) -> bool:
+        return bool(self.detail)
+
+
+@dataclass(frozen=True)
+class CloseBackfillOutcome:
+    items: tuple[CloseBackfillItem, ...] = ()
+    dry_run: bool = False
+
+    @property
+    def drafted(self) -> tuple[CloseBackfillItem, ...]:
+        return tuple(i for i in self.items if i.drafted)
+
+    @property
+    def planned(self) -> tuple[CloseBackfillItem, ...]:
+        return tuple(i for i in self.items if not i.skipped and not i.drafted)
+
+    @property
+    def skipped(self) -> tuple[CloseBackfillItem, ...]:
+        return tuple(i for i in self.items if i.skipped)
+
+
 __all__ = [
+    "CloseBackfill",
+    "CloseBackfillItem",
+    "CloseBackfillOutcome",
     "OutboxApprove",
     "OutboxEntry",
     "OutboxListing",

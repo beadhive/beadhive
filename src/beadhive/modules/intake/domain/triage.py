@@ -12,7 +12,9 @@ review stands behind into the existing triage verbs:
   is listed and never applied.
 
 Apply drafts and never sends: a reply or a question is an outbox draft an operator approves and
-sends later. Pure: records and rules only, no I/O.
+sends later. A reply that ends the report's thread (``fixed``, ``reject``, ``duplicate-of``) also
+asks for the issue's close on the same record (:func:`close_reason_for`), sent after the reply and
+the labels; a ``needs-info`` question never closes anything. Pure: records and rules only, no I/O.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from enum import StrEnum
 from typing import Any
 
 from .label_sync import LabelSyncOutcome
+from .outbox import CloseReason
 from .proposal import (
     Proposal,
     ProposalDisposition,
@@ -212,12 +215,28 @@ def owner_of(proposal: Proposal) -> str:
 class ApplyPlan:
     """The verbs one proposal maps to. ``work`` is the work ``accept --work`` or ``link`` names;
     ``reason`` the reporter-visible reason of a reject (also the drafted reply's text);
-    ``question`` the needs-info question."""
+    ``question`` the needs-info question; ``close`` why the drafted reply also closes the issue
+    (``None``: it does not)."""
 
     steps: tuple[ApplyStep, ...]
     work: str = ""
     reason: str = ""
     question: str = ""
+    close: CloseReason | None = None
+
+
+#: The close each thread-ending disposition asks for. A ``needs-info`` question waits for the
+#: reporter, and every other outcome keeps the report tracked, so neither closes the issue.
+_CLOSES: Mapping[ProposalDisposition, CloseReason] = {
+    ProposalDisposition.FIXED: CloseReason.COMPLETED,
+    ProposalDisposition.REJECT: CloseReason.NOT_PLANNED,
+    ProposalDisposition.DUPLICATE_OF: CloseReason.DUPLICATE,
+}
+
+
+def close_reason_for(disposition: ProposalDisposition) -> CloseReason | None:
+    """Why a report closed with ``disposition`` closes its issue (``None``: it does not)."""
+    return _CLOSES.get(disposition)
 
 
 def fixed_text(fixed_in: str | None) -> str:
@@ -244,17 +263,25 @@ def plan_apply(
     fixed_in: str | None = None,
     canonical_work: str | None = None,
     canonical_ref: str = "",
+    replies: bool = True,
 ) -> ApplyPlan | str:
     """The verbs ``proposal`` maps to, or why it cannot be applied (a string).
 
     ``bound``: the report is bound to an external issue (a reply or question needs one, and a
     born-native report's ``new`` is a plain accept); ``fixed_in``: the COMPUTED fix version;
     ``canonical_work``: the work a member's canonical tracks (``None``: none yet);
-    ``canonical_ref``: the canonical's issue reference, for a duplicate's reason."""
+    ``canonical_ref``: the canonical's issue reference, for a duplicate's reason; ``replies``:
+    an outbox is bound to draft replies. Without one a ``duplicate-of`` is linked and rejected
+    with no reply and no close, exactly as before closes existed; a ``fixed`` or ``reject`` reply
+    still needs it (its draft refuses first, so nothing is written).
+
+    A reply is drafted BEFORE any other verb, so a draft that refuses leaves the report untouched;
+    drafting the same text again is O2 (no write), so a rerun after a later failure is safe."""
     d = proposal.disposition
     owner = owner_of(proposal)
     text = proposal.reporter_text
     reply = (ApplyStep.DRAFT_REPLY,) if bound else ()
+    close = close_reason_for(d) if bound else None  # a close rides on the drafted reply
     if d is ProposalDisposition.DECISION:
         return "a decision is listed for the operator and never applied"
     if d is ProposalDisposition.NEW or (d is ProposalDisposition.PARTIALLY_FIXED and not owner):
@@ -264,21 +291,25 @@ def plan_apply(
     if d is ProposalDisposition.FIXED:
         if owner:
             return ApplyPlan((ApplyStep.ACCEPT_WORK,), work=owner)
-        return ApplyPlan((*reply, ApplyStep.REJECT), reason=text or fixed_text(fixed_in))
+        return ApplyPlan(
+            (*reply, ApplyStep.REJECT), reason=text or fixed_text(fixed_in), close=close
+        )
     if d is ProposalDisposition.DUPLICATE_OF:
         if not canonical_work:
             return f"its canonical {proposal.share_with} tracks no work yet"
+        told = reply if replies else ()  # the outbox off: linked and rejected, as on 0.35.2
         return ApplyPlan(
-            (ApplyStep.LINK, ApplyStep.REJECT),
+            (*told, ApplyStep.LINK, ApplyStep.REJECT),
             work=canonical_work,
             reason=text or duplicate_text(canonical_ref),
+            close=close if told else None,
         )
     if d is ProposalDisposition.NEEDS_INFO:
         if not bound:
             return "needs-info asks the reporter on the bound issue; a born-native report has none"
         return ApplyPlan((ApplyStep.NEEDS_INFO,), question=text)
     if d is ProposalDisposition.REJECT:
-        return ApplyPlan((*reply, ApplyStep.REJECT), reason=text)
+        return ApplyPlan((*reply, ApplyStep.REJECT), reason=text, close=close)
     if d is ProposalDisposition.REROUTE:
         return ApplyPlan((ApplyStep.REROUTE,), reason=text)
     return f"no verb maps {d.value}"  # pragma: no cover - the enum is closed
@@ -297,6 +328,7 @@ __all__ = [
     "ProposeOutcome",
     "ProposeRequest",
     "apply_order",
+    "close_reason_for",
     "duplicate_text",
     "fixed_text",
     "owner_of",

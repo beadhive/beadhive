@@ -40,6 +40,8 @@ from ..domain import (
     ApplyOutcome,
     ApplyRequest,
     BeadView,
+    CloseBackfill,
+    CloseBackfillOutcome,
     ConsiderRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
@@ -205,7 +207,9 @@ class IntakeService:
         self._refresh_on_transition = refresh_on_transition
         self._deferred = 0  # > 0 while a caller that refreshes the touched reports itself runs
         self._refreshed: tuple[LabelSyncItem, ...] = ()
-        self._proposals = ProposalService(store, self, triage, projection=projection)
+        self._proposals = ProposalService(
+            store, self, triage, projection=projection, replies=outbox is not None
+        )
 
     # -- the opt-in label refresh on a transition (bh-gjb5w) ----------------------------------
 
@@ -743,6 +747,11 @@ class IntakeService:
     def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
         return self._outbox_service().retry(outbox_id, actor=actor, kind=kind)
 
+    def backfill_closes(self, request: CloseBackfill) -> CloseBackfillOutcome:
+        return self._outbox_service().backfill_closes(
+            request, reply_text=self._proposals.backfill_reply
+        )
+
     # -- the merge and release milestones (I10): they draft, they never send -----------------
 
     def _milestone_service(self) -> MilestoneService:
@@ -969,6 +978,9 @@ class NullIntake:
         raise _disabled()
 
     def retry(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
+        raise _disabled()
+
+    def backfill_closes(self, request: CloseBackfill) -> CloseBackfillOutcome:
         raise _disabled()
 
     def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome:

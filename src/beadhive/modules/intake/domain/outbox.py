@@ -14,7 +14,15 @@ characters, never derived from a bead id) and identified by its stable :class:`D
 trigger never drafts twice. It carries its target binding, semantic event, supersession
 ``group``, the explicit publish intent (:class:`PublicFacts` and :class:`Message`: the only values
 a render reads; a template has no path to the report, the work, notes or the thread), and at most
-one operation of each kind (``comment.create``, ``labels.change``) with its own state.
+one operation of each kind (``comment.create``, ``labels.change``, ``issue.close``) with its own
+state.
+
+**A close rides on a reply** (``bh-pr5ll``): an ``issue.close`` operation carries only its
+:class:`CloseReason`, and O9 refuses it (``close_not_ready``) until the record's own comment is
+``sent``, no other comment of the report is unsent, AND the report's latest labels record (if
+there is one) is ``sent``, so the reporter reads every reply and the final labels before the issue
+closes. Send order per report: comment,
+labels, close.
 
 **The machine** is per operation, because each write is its own gate:
 
@@ -138,10 +146,21 @@ class OutboxEvent(StrEnum):
 
 
 class OpKind(StrEnum):
-    """The two tracker writes (the values mirror the port's ``Operation``)."""
+    """The tracker writes (the values mirror the port's ``Operation``). ``issue.close`` is
+    rotation-gated like the ``labels`` event: an older host fails closed on a document holding
+    one, so every outbox-reading host runs a release that decodes it before any hive drafts one."""
 
     COMMENT = "comment.create"
     LABELS = "labels.change"
+    CLOSE = "issue.close"
+
+
+class CloseReason(StrEnum):
+    """Why a close closes the issue (the values mirror the port's ``CloseReason``)."""
+
+    COMPLETED = "completed"
+    NOT_PLANNED = "not_planned"
+    DUPLICATE = "duplicate"
 
 
 class OpState(StrEnum):
@@ -266,7 +285,8 @@ class Attempt:
 
 @dataclass(frozen=True)
 class Receipt:
-    """Proof of a write: the remote comment id or the labels after, and how it was learned."""
+    """Proof of a write: the remote comment id, the labels after or the issue's state after, and
+    how it was learned."""
 
     comment_id: str | None = None
     global_id: str | None = None
@@ -274,6 +294,7 @@ class Receipt:
     actor: ThreadActor | None = None
     reconciled: bool = False  # found by its marker or labels (O14, O19), not returned (O10)
     late: bool = False  # found after the operation was abandoned or failed(absent) (O19)
+    state_after: str | None = None  # an issue.close: the issue's state as the tracker reported it
 
 
 @dataclass(frozen=True)
@@ -296,6 +317,7 @@ class OutboxOperation:
     kind: OpKind
     state: OpState = OpState.DRAFTED
     labels: LabelDiff | None = None  # set for a labels.change operation only
+    close: CloseReason | None = None  # set for an issue.close operation only
     findings: tuple[LeakFinding, ...] = ()  # the latest check's findings
     overrides: tuple[Override, ...] = ()  # deliberate publishes awaiting the next approval
     approvals: tuple[Approval, ...] = ()
@@ -411,10 +433,14 @@ class OutboxPolicy:
 
     ``labels_enabled`` is the ``labels.change`` gate, separate from ``enabled`` (which gates the
     outbox and so ``comment.create``): with it off no label operation can be approved or sent,
-    whatever the adapter enables and whatever grant a comment holds (I9b)."""
+    whatever the adapter enables and whatever grant a comment holds (I9b). ``close_enabled`` is
+    the ``issue.close`` gate: the composition root sets it only while the bound adapter enables
+    ``issue.close`` (``plugins.<id>.write.issue_close.enabled``), so with it off no close is
+    drafted, approved or sent."""
 
     enabled: bool = False
     labels_enabled: bool = False
+    close_enabled: bool = False
     absent_confirmations: int = 2  # k in O16
     commit_links: bool = False
     agent_seat_prefixes: tuple[str, ...] = AGENT_SEAT_PREFIXES
@@ -467,6 +493,7 @@ class Rendered:
     findings: tuple[LeakFinding, ...]
     add: frozenset[str] = frozenset()
     remove: frozenset[str] = frozenset()
+    close: CloseReason | None = None
 
     @property
     def short_digest(self) -> str:
@@ -475,7 +502,8 @@ class Rendered:
 
 @dataclass(frozen=True)
 class DraftRequest:
-    """O1. ``binding`` is the report's binding (``None``: born native, nothing to send to)."""
+    """O1. ``binding`` is the report's binding (``None``: born native, nothing to send to).
+    ``close`` adds an ``issue.close`` operation, which needs the comment it is sent after."""
 
     binding: IssueBinding | None
     event: OutboxEvent
@@ -485,6 +513,7 @@ class DraftRequest:
     message: Message = Message()
     comment: bool = True
     labels: LabelIntent | None = None
+    close: CloseReason | None = None
 
 
 @dataclass(frozen=True)
@@ -508,6 +537,7 @@ class SendPlan:
     body: str = ""
     add: frozenset[str] = frozenset()
     remove: frozenset[str] = frozenset()
+    close: CloseReason | None = None
 
 
 @dataclass(frozen=True)
@@ -527,13 +557,14 @@ class MarkedComment:
 @dataclass(frozen=True)
 class OutboxObservation:
     """One reconcile read. ``start_seq`` is the document ``seq`` read before the listing began;
-    only a ``complete`` listing can count an absence. ``labels`` is the issue's labels when the
-    read included them."""
+    only a ``complete`` listing can count an absence. ``labels`` is the issue's labels and
+    ``state`` its state (``open`` or ``closed``) when the read included them."""
 
     start_seq: int
     complete: bool
     comments: tuple[MarkedComment, ...] = ()
     labels: frozenset[str] | None = None
+    state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -599,6 +630,11 @@ def digest_matches(typed: str, digest: str) -> bool:
     return len(want) >= 12 and have.startswith(want)
 
 
+def close_payload(reason: CloseReason) -> str:
+    """The rendered bytes of a close: the state and its reason, nothing else (digested)."""
+    return f"state: closed\nstate_reason: {reason.value}"
+
+
 def _owned(labels: Iterable[str], policy: LeakPolicy) -> frozenset[str]:
     return frozenset(label for label in labels if policy.owns(label))
 
@@ -641,6 +677,22 @@ def render(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> Rendered:
             None,
             digest_of(record.binding.url, kind, payload, None),
             findings,
+        )
+    if kind is OpKind.CLOSE:
+        reason = op.close
+        if reason is None:  # pragma: no cover - a close operation always carries its reason
+            raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a close operation has no reason")
+        payload = close_payload(reason)
+        return Rendered(
+            record.outbox_id,
+            kind,
+            record.binding.url,
+            payload,
+            "",
+            None,
+            digest_of(record.binding.url, kind, payload, None),
+            check(payload, ctx.policy, sanitizer=ctx.sanitizer),
+            close=reason,
         )
     diff = op.labels
     if diff is None:  # pragma: no cover - a labels operation always carries its diff
@@ -817,12 +869,52 @@ def _require_operator(actor: str, policy: OutboxPolicy, event: str) -> None:
 
 
 def require_kind_enabled(kind: OpKind, policy: OutboxPolicy) -> None:
-    """The per-operation gate: a label operation needs its own flag (off by default)."""
+    """The per-operation gate: a label or close operation needs its own flag (off by default)."""
     if kind is OpKind.LABELS and not policy.labels_enabled:
         raise IntakeRefused(
             RefusalReason.LABELS_DISABLED,
             "labels.change is off for this hive (its own flag, separate from comment.create)",
         )
+    if kind is OpKind.CLOSE and not policy.close_enabled:
+        raise IntakeRefused(
+            RefusalReason.CLOSE_DISABLED,
+            "issue.close is off for this hive (the tracker plugin's write.issue_close.enabled)",
+        )
+
+
+def close_blocker(doc: OutboxDocument, record: OutboxRecord) -> str:
+    """Why ``record``'s close may not be sent yet, or ``""`` when it may: the record's comment
+    must be ``sent``; no other comment of the report may still be unsent (a newer reply or
+    milestone goes out first, or is discarded); and the report's latest labels record for the
+    same issue (when it has one) must be ``sent``, so the reporter reads every reply and the final
+    labels before the issue closes."""
+    comment = record.op(OpKind.COMMENT)
+    if comment is None or comment.state is not OpState.SENT:
+        state = comment.state.value if comment is not None else "missing"
+        return f"{record.outbox_id} comment.create is {state}; send the comment first"
+    for other in sorted(doc.records.values(), key=lambda r: r.created_seq):
+        op = other.op(OpKind.COMMENT)
+        if other.outbox_id != record.outbox_id and op is not None and op.state not in SETTLED:
+            return (
+                f"{other.outbox_id} comment.create is {op.state.value}; send or discard it "
+                "first, so the close never goes out ahead of it"
+            )
+    labelled = [
+        r
+        for r in doc.records.values()
+        if r.event is OutboxEvent.LABELS and r.binding.url == record.binding.url
+    ]
+    if labelled:
+        latest = max(labelled, key=lambda r: r.created_seq)
+        op = latest.op(OpKind.LABELS)
+        if op is not None and op.state in (OpState.ABANDONED, OpState.FAILED):
+            return (
+                f"the latest labels record {latest.outbox_id} is {op.state.value}; re-sync the "
+                "labels (`bh work labels sync`) and send the new record first"
+            )
+        if op is not None and op.state is not OpState.SENT:
+            return f"the latest labels record {latest.outbox_id} is {op.state.value}; send it first"
+    return ""
 
 
 def _require_owned(op: OutboxOperation, policy: LeakPolicy) -> None:
@@ -952,6 +1044,13 @@ def draft(
             _owned(ctx.labels.labels, ctx.policy),
         )
         operations.append(OutboxOperation(OpKind.LABELS, labels=base))
+    if request.close is not None:
+        require_kind_enabled(OpKind.CLOSE, policy)
+        if not request.comment:
+            raise IntakeRefused(
+                RefusalReason.INVALID_DRAFT, "a close rides on a record with a comment"
+            )
+        operations.append(OutboxOperation(OpKind.CLOSE, close=CloseReason(request.close)))
     if not operations:
         raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a record needs an operation")
 
@@ -1017,6 +1116,38 @@ def recheck(
     tx = _Tx(doc)
     _check(tx, outbox_id, kind, ctx, actor)
     return tx.done(outbox_id)  # no transition: no write (refreshed findings are not kept)
+
+
+def add_close(
+    doc: OutboxDocument,
+    outbox_id: str,
+    reason: CloseReason,
+    *,
+    actor: str,
+    policy: OutboxPolicy,
+    ctx: RenderContext,
+) -> OutboxApplied:
+    """O1 for one ``issue.close`` operation on an EXISTING record (the backfill of a report closed
+    before closes were drafted), checked at once (O3). The record must carry a comment; one that
+    already has a close is unchanged (no write), so a re-run never drafts twice."""
+    if not policy.enabled:
+        raise IntakeRefused(
+            RefusalReason.OUTBOX_DISABLED, "intake.external.outbox.enabled is off (the default)"
+        )
+    require_kind_enabled(OpKind.CLOSE, policy)
+    record = _record(doc, outbox_id)
+    if record.op(OpKind.COMMENT) is None:
+        raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a close rides on a record with a comment")
+    if record.op(OpKind.CLOSE) is not None:
+        return OutboxApplied(doc, outbox_id=outbox_id)
+    _require_target(record, ctx)
+    tx = _Tx(doc)
+    step = Step(tx.seq, "O1", "draft", None, OpState.DRAFTED, actor, "backfill")
+    op = OutboxOperation(OpKind.CLOSE, close=CloseReason(reason), history=(step,))
+    tx.put(dataclasses.replace(record, operations=(*record.operations, op)))
+    tx.steps.append(step)
+    _check(tx, outbox_id, OpKind.CLOSE, ctx, actor)
+    return tx.done(outbox_id)
 
 
 # -- O4: edit and override -------------------------------------------------------------------
@@ -1132,7 +1263,8 @@ def approve(
     if op.state is not OpState.DRAFTED:
         raise _refuse_state(record, op, "approve")
     _require_operator(request.actor, policy, "approve")
-    reads = (COMMENTS_READ, ISSUES_READ) if request.kind is OpKind.LABELS else (COMMENTS_READ,)
+    # labels and a close carry no marker: an unknown outcome is reconciled by reading the issue
+    reads = (COMMENTS_READ,) if request.kind is OpKind.COMMENT else (COMMENTS_READ, ISSUES_READ)
     missing = [name for name in (request.kind.value, *reads) if name not in capabilities.usable]
     if missing:
         raise IntakeRefused(
@@ -1295,6 +1427,8 @@ def begin_send(
     if op.state is not OpState.APPROVED:
         raise _refuse_state(record, op, "send")
     _require_operator(actor, policy, "send")
+    if kind is OpKind.CLOSE and (blocker := close_blocker(doc, record)):
+        raise IntakeRefused(RefusalReason.CLOSE_NOT_READY, blocker)
     approval = op.approval
     if approval is None or approval.grant is not GrantStatus.MINTED:
         raise IntakeRefused(
@@ -1329,7 +1463,14 @@ def begin_send(
         attempts=(*op.attempts, attempt),
     )
     plan = SendPlan(
-        outbox_id, kind, approval.grant_id, record.binding.url, fresh.body, fresh.add, fresh.remove
+        outbox_id,
+        kind,
+        approval.grant_id,
+        record.binding.url,
+        fresh.body,
+        fresh.add,
+        fresh.remove,
+        fresh.close,
     )
     return tx.done(outbox_id, plan)
 
@@ -1475,6 +1616,10 @@ def observe(
                     reconciled=True,
                 )
             )
+        elif op.kind is OpKind.CLOSE:
+            present = observation.state == "closed"  # the desired state holds, whoever closed it
+            mine, found = [], None
+            receipt = Receipt(state_after=observation.state, reconciled=True) if present else None
         else:
             present = (
                 observation.labels is not None
@@ -1510,9 +1655,14 @@ def observe(
             op = tx.op(outbox_id, op.kind)
         elif op.state is OpState.UNKNOWN:
             attempt = op.attempt
+            read = {
+                OpKind.COMMENT: True,
+                OpKind.LABELS: observation.labels is not None,
+                OpKind.CLOSE: observation.state is not None,
+            }[op.kind]
             counts = (
                 observation.complete
-                and (op.kind is OpKind.COMMENT or observation.labels is not None)
+                and read
                 and attempt is not None
                 and attempt.end_seq is not None
                 and observation.start_seq > attempt.end_seq
@@ -1671,6 +1821,7 @@ __all__ = [
     "ApprovalRequest",
     "Attempt",
     "Capabilities",
+    "CloseReason",
     "DeliveryFacts",
     "DraftKey",
     "DraftRequest",
@@ -1700,8 +1851,11 @@ __all__ = [
     "SendPlan",
     "Step",
     "UnlinkedFact",
+    "add_close",
     "approve",
     "begin_send",
+    "close_blocker",
+    "close_payload",
     "close_rule",
     "digest_matches",
     "digest_of",

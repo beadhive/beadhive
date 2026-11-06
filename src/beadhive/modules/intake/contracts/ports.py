@@ -22,6 +22,8 @@ from ..domain import (
     ApplyRequest,
     BeadView,
     Checkpoint,
+    CloseBackfill,
+    CloseBackfillOutcome,
     ConsiderRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
@@ -133,9 +135,9 @@ class IntakePort(Protocol):
 
     def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep: ...  # bh doctor, hive repair
 
-    # the supervised outbox (bh-6wj9y R6, R11; D2): comment.create and labels.change, each its own
-    # gate. Nothing here runs from a timer: every write needs an operator approval minting a
-    # single-use grant.
+    # the supervised outbox (bh-6wj9y R6, R11; D2): comment.create, labels.change and issue.close,
+    # each its own gate. Nothing here runs from a timer: every write needs an operator approval
+    # minting a single-use grant.
 
     def draft_reply(self, request: ReplyDraft) -> OutboxResult: ...  # O1 for a reply
 
@@ -166,6 +168,10 @@ class IntakePort(Protocol):
     def retry(
         self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT
     ) -> OutboxResult: ...  # O17
+
+    def backfill_closes(
+        self, request: CloseBackfill
+    ) -> CloseBackfillOutcome: ...  # O1 for the closes of reports closed before closes existed
 
     # the milestone triggers (bh-6wj9y R9; I10). They DRAFT and never send: no grant, no writer, no
     # tracker request. Free under ``NullIntake``; the work layer wraps both so a failure here is

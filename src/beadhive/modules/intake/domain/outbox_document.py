@@ -5,6 +5,11 @@ schema-versioned and rewritten whole, beside ``intake.source`` and ``intake.thre
 is an opaque id, a local integer, a tracker value or recorded intent; no token, and never a
 secret's text (a secret finding is stored redacted). Pure; no I/O.
 
+An ``issue.close`` operation's ``close`` reason and a receipt's ``state_after`` are written only
+when set, so a document without a close is byte-identical to one an older host wrote. A host
+older than 0.35.3 cannot decode ``issue.close`` and fails closed on such a document (the 0.35.0
+rotation order: every outbox-reading host upgrades before any hive turns closes on).
+
 Decoding fails closed (:class:`OutboxDocumentError`) on a malformed document or one written by a
 newer schema: a store must never read such a document as an empty outbox, because the next write
 would replace it and lose the records of messages that may already exist.
@@ -22,6 +27,7 @@ from .outbox import (
     OUTBOX_SCHEMA,
     Approval,
     Attempt,
+    CloseReason,
     DeliveryFacts,
     DraftKey,
     GrantStatus,
@@ -58,6 +64,15 @@ def _override(o: Override) -> dict[str, Any]:
 
 
 def _operation(op: OutboxOperation) -> dict[str, Any]:
+    row = _operation_row(op)
+    if op.close is not None:  # omitted when unset: a document without a close is unchanged
+        row["close"] = op.close.value
+    if op.receipt is not None and op.receipt.state_after is not None:
+        row["receipt"]["state_after"] = op.receipt.state_after
+    return row
+
+
+def _operation_row(op: OutboxOperation) -> dict[str, Any]:
     receipt = op.receipt
     return {
         "kind": op.kind.value,
@@ -232,11 +247,17 @@ def _decode_operation(value: Any) -> OutboxOperation:
             ),
             reconciled=bool(rec.get("reconciled", False)),
             late=bool(rec.get("late", False)),
+            state_after=_opt(rec.get("state_after")),
         )
+    kind = OpKind(raw["kind"])  # an operation this host does not know fails closed
+    close = None if raw.get("close") is None else CloseReason(raw["close"])
+    if (kind is OpKind.CLOSE) != (close is not None):
+        raise OutboxDocumentError("an issue.close operation, and only one, carries a close reason")
     return OutboxOperation(
-        kind=OpKind(raw["kind"]),
+        kind=kind,
         state=OpState(raw["state"]),
         labels=diff,
+        close=close,
         findings=tuple(
             LeakFinding(str(f["id"]), LeakKind(f["kind"]), str(f["match"]), int(f["start"]))
             for f in (_mapping(item, "finding") for item in raw.get("findings", ()))
@@ -294,6 +315,9 @@ def _decode_record(outbox_id: str, value: Any) -> OutboxRecord:
         raise OutboxDocumentError(f"record {outbox_id} has no operation")
     event = OutboxEvent(raw["event"])  # an event this host does not know fails closed
     group = str(raw["group"])
+    kinds = [op.kind for op in operations]
+    if OpKind.CLOSE in kinds and OpKind.COMMENT not in kinds:
+        raise OutboxDocumentError(f"record {outbox_id} has a close without the comment it follows")
     if event is OutboxEvent.LABELS and (
         group != LABELS_GROUP or any(op.kind is not OpKind.LABELS for op in operations)
     ):

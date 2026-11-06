@@ -332,6 +332,7 @@ from .outbox import (  # noqa: E402
     ApprovalRequest,
     Attempt,
     Capabilities,
+    CloseReason,
     DeliveryFacts,
     DraftKey,
     DraftRequest,
@@ -361,6 +362,7 @@ from .outbox import (  # noqa: E402
     SendPlan,
     Step,
     UnlinkedFact,
+    close_blocker,
     is_grant_id,
     is_operator_seat,
     is_outbox_id,
@@ -389,6 +391,7 @@ __all__ += [
     "ApprovalRequest",
     "Attempt",
     "Capabilities",
+    "CloseReason",
     "CompletionPolicy",
     "DeliveryFacts",
     "DraftKey",
@@ -426,6 +429,7 @@ __all__ += [
     "Step",
     "UnlinkedFact",
     "Verdict",
+    "close_blocker",
     "completion_event",
     "delivery_after_merge",
     "delivery_after_release",
@@ -447,6 +451,9 @@ __all__ += [
 # -- the supervised sender's port records (I9a) -----------------------------------------------
 
 from .sending import (  # noqa: E402
+    CloseBackfill,
+    CloseBackfillItem,
+    CloseBackfillOutcome,
     OutboxApprove,
     OutboxEntry,
     OutboxListing,
@@ -457,6 +464,9 @@ from .sending import (  # noqa: E402
 )
 
 __all__ += [
+    "CloseBackfill",
+    "CloseBackfillItem",
+    "CloseBackfillOutcome",
     "OutboxApprove",
     "OutboxEntry",
     "OutboxListing",
@@ -806,6 +816,7 @@ from .triage import (  # noqa: E402
     ProposeOutcome,
     ProposeRequest,
     apply_order,
+    close_reason_for,
     duplicate_text,
     fixed_text,
     owner_of,
@@ -826,6 +837,7 @@ __all__ += [
     "ProposeOutcome",
     "ProposeRequest",
     "apply_order",
+    "close_reason_for",
     "duplicate_text",
     "fixed_text",
     "owner_of",
