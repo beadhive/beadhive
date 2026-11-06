@@ -11,7 +11,7 @@ import hashlib
 import uuid
 from dataclasses import asdict
 
-from . import gitref, hq_authority_ceiling
+from . import config_publish_signal, gitref, hq_authority_ceiling
 from . import hq_authority_guard as guard
 from .beadyard_identity import (
     BeadyardIdentityError,
@@ -234,6 +234,19 @@ class GitFleetConfigRevisionStore:
     def publish_snapshot(
         self, documents, *, expected_revision, explicit_adoption=False, publication_id=None
     ):
+        try:
+            return self._publish_snapshot(
+                documents,
+                expected_revision=expected_revision,
+                explicit_adoption=explicit_adoption,
+                publication_id=publication_id,
+            )
+        finally:
+            # a direct publish (fleet mode, beadyard, seed, release prepare-config) bypasses
+            # config_store: drop this process's config memos so its next load sees it (bh-pc9rf)
+            config_publish_signal.published()
+
+    def _publish_snapshot(self, documents, *, expected_revision, explicit_adoption, publication_id):
         if publication_id is not None:
             try:
                 parsed_id = uuid.UUID(publication_id)

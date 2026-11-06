@@ -46,6 +46,7 @@ from beadhive_hq_storage import (
     Unknown,
 )
 
+from . import config_publish_signal
 from .beadyard_identity import (
     DOCUMENT_PATH,
     BeadyardIdentityError,
@@ -1397,9 +1398,12 @@ class SqlFleetConfigRevisionStore:
 
         probe = notice.probe_authority(self)
         notice.announce_before(probe, expected_revision, documents)
-        published = self._publish_snapshot_core(
-            documents, expected_revision=expected_revision, **kwargs
-        )
+        try:
+            published = self._publish_snapshot_core(
+                documents, expected_revision=expected_revision, **kwargs
+            )
+        finally:
+            config_publish_signal.published()  # seen by this process's next config load
         notice.announce_after(probe, published.commit_revision, documents)
         return published
 

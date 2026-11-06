@@ -24,6 +24,33 @@ def _requests_root_version(argv: list[str]) -> bool:
 
 
 _WORKTREE_GROUPS = frozenset({"worktree", "wt"})
+
+#: Verbs that run for the life of a service: never under the per-invocation config memo (the
+#: same set as ``cli._LONG_LIVED_VERBS``, kept here so the memo can start before that import).
+_LONG_LIVED_VERBS = frozenset({"host", "mcp"})
+
+#: Root options that consume the next argument (``bh --hive <h> <verb> ...``).
+_ROOT_VALUE_OPTIONS = frozenset({"--hive"})
+
+
+def _invoked_verb(argv: list[str]) -> str:
+    """The subcommand *argv* selects, skipping the root options; ``""`` when there is none."""
+
+    skip = False
+    for argument in argv:
+        if skip:
+            skip = False
+            continue
+        if argument == "--":
+            return ""
+        if argument in _ROOT_VALUE_OPTIONS:
+            skip = True
+            continue
+        if not argument.startswith("-"):
+            return argument
+    return ""
+
+
 LOCAL_RECLAIM_VERB = "local-reclaim"
 
 
@@ -65,6 +92,16 @@ def main() -> None:
             args.append("--dry-run")
         raise SystemExit(local_reclaim_main(args, mode=argv[1]))
 
-    from . import cli
+    if _invoked_verb(argv) in _LONG_LIVED_VERBS:
+        from . import cli
 
-    cli.main()
+        cli.main()
+        return
+    # A one-shot verb resolves the effective config once (bh-pc9rf), from the first read on:
+    # importing the command tree already loads it (logging), before ``cli._root`` runs.
+    from . import config_store
+
+    with config_store.process_load_memo():
+        from . import cli
+
+        cli.main()
