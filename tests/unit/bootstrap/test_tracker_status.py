@@ -173,6 +173,10 @@ def test_the_disabled_default_renders_these_exact_lines():
         "[operator-approved single-use grant per use]",
         "               issue.close     disabled  probe=not-probed  "
         "[operator-approved single-use grant per use]",
+        "               issue.type      disabled  probe=not-probed  "
+        "[operator-approved single-use grant per use]",
+        "               issue.fields    disabled  probe=not-probed  "
+        "[operator-approved single-use grant per use]",
     ]
     rows = tracker_doctor(doc)
     assert codes(rows) == [("disabled-plugin", "info")]
@@ -218,6 +222,10 @@ def test_an_enabled_probed_store_renders_identity_credential_and_the_tri_state()
         "[operator-approved single-use grant per use]",
         "               issue.close     disabled  probe=yes        not usable  "
         "[operator-approved single-use grant per use]",
+        "               issue.type      disabled  probe=yes        not usable  "
+        "[operator-approved single-use grant per use]",
+        "               issue.fields    disabled  probe=yes        not usable  "
+        "[operator-approved single-use grant per use]",
     ]
     parsed = json.loads(render_json(doc))
     assert parsed["schema"] == STATUS_SCHEMA
@@ -231,6 +239,8 @@ def test_an_enabled_probed_store_renders_identity_credential_and_the_tri_state()
         "unknown",
         "yes",
         "no",
+        "yes",
+        "yes",
         "yes",
         "yes",
         "yes",

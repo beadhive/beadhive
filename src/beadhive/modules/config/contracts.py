@@ -2985,6 +2985,18 @@ class TrackerGithubWrite(_QuietSection):
         "duplicate), never touching its labels (default off; each use needs an "
         "operator-approved single-use grant).",
     )
+    issue_type: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag,
+        description="`issue.type`: read an issue's type and set it to one the organization "
+        "defines, never touching its labels (default off; each write needs an operator-approved "
+        "single-use grant).",
+    )
+    issue_fields: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag,
+        description="`issue.fields`: read an issue's field values and set the named ones (such "
+        "as Priority) to an option the organization defines, never touching its labels or other "
+        "fields (default off; each write needs an operator-approved single-use grant).",
+    )
 
 
 class TrackerGithubConfig(_QuietSection):
@@ -3368,6 +3380,83 @@ class IntakeLabelOverride(_QuietSection):
         return value
 
 
+#: The default bead type -> GitHub issue type map (the organization's default types: GitHub has
+#: no ``Chore``, so a chore is a ``Task``).
+INTAKE_ISSUE_TYPE_MAP = {"bug": "Bug", "feature": "Feature", "task": "Task", "chore": "Task"}
+#: The default bead priority -> ``Priority`` issue-field option map.
+INTAKE_PRIORITY_FIELD_MAP = {"P0": "Urgent", "P1": "High", "P2": "Medium", "P3": "Low", "P4": "Low"}
+_PRIORITY_KEY_RE = re.compile(r"[Pp][0-4]")
+
+
+def _trimmed_values(value: dict[str, str], key: str) -> dict[str, str]:
+    for name, mapped in value.items():
+        if (
+            not name.strip()
+            or name != name.strip()
+            or not mapped.strip()
+            or mapped != mapped.strip()
+        ):
+            raise ValueError(f"{key} keys and values must be non-empty and trimmed")
+    return value
+
+
+class IntakeIssueTypeConfig(_QuietSection):
+    """``intake.external.labels.issue_type`` — the bead type onto the GitHub issue type.
+
+    Drafted by `bh work labels sync` and the transition refresh beside the labels, approved in the
+    same batch and sent with `--kind type`; only while the tracker plugin's
+    ``write.issue_type.enabled`` is on (the one gate). An unmapped bead type is skipped with a
+    note, never guessed.
+    """
+
+    map: dict[str, str] = Field(
+        default_factory=lambda: dict(INTAKE_ISSUE_TYPE_MAP),
+        description="Bead type -> issue type name the organization defines (default bug->Bug, "
+        "feature->Feature, task->Task, chore->Task). Setting it replaces the whole map; a bead "
+        "type it does not name is skipped with a note.",
+    )
+
+    @field_validator("map")
+    @classmethod
+    def _trimmed(cls, value):
+        return _trimmed_values(value, "intake.external.labels.issue_type.map")
+
+
+class IntakePriorityFieldConfig(_QuietSection):
+    """``intake.external.labels.priority_field`` — the bead priority onto a single-select issue
+    field (GitHub's ``Priority``).
+
+    Drafted beside the labels like the type, sent with `--kind fields`; only while the tracker
+    plugin's ``write.issue_fields.enabled`` is on. An unmapped priority is skipped with a note.
+    """
+
+    name: str = Field("Priority", description="The issue field the priority is written to.")
+    map: dict[str, str] = Field(
+        default_factory=lambda: dict(INTAKE_PRIORITY_FIELD_MAP),
+        description="Bead priority (P0-P4) -> the field's option name (default P0->Urgent, "
+        "P1->High, P2->Medium, P3->Low, P4->Low). Setting it replaces the whole map; a priority "
+        "it does not name is skipped with a note.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _name_trimmed(cls, value):
+        if not value.strip() or value != value.strip():
+            raise ValueError(
+                "intake.external.labels.priority_field.name must be non-empty, trimmed"
+            )
+        return value
+
+    @field_validator("map")
+    @classmethod
+    def _priority_keys(cls, value):
+        if any(not _PRIORITY_KEY_RE.fullmatch(key) for key in value):
+            raise ValueError("intake.external.labels.priority_field.map keys must be P0 to P4")
+        if len({key.upper() for key in value}) != len(value):
+            raise ValueError("intake.external.labels.priority_field.map names a priority twice")
+        return _trimmed_values(value, "intake.external.labels.priority_field.map")
+
+
 class IntakeLabelsConfig(_QuietSection):
     """``intake.external.labels`` — the registry-derived GitHub label projection (host-owned, off).
 
@@ -3407,6 +3496,8 @@ class IntakeLabelsConfig(_QuietSection):
     on_transition: StrictBool = Field(
         False, description="Reflect a state change onto the label at transition time (default off)."
     )
+    issue_type: IntakeIssueTypeConfig = Field(default_factory=IntakeIssueTypeConfig)
+    priority_field: IntakePriorityFieldConfig = Field(default_factory=IntakePriorityFieldConfig)
 
     @field_validator("prefix")
     @classmethod

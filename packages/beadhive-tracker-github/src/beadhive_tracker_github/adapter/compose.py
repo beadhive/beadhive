@@ -19,6 +19,7 @@ from beadhive.modules.tracker.contracts import Operation
 
 from .closing import IssueClosing
 from .comments import CommentCreate
+from .issue_values import IssueFieldWriting, IssueTyping
 from .label_definitions import LabelDefining
 from .labels import LabelWriting
 from .tracker import GitHubTrackerAdapter
@@ -31,6 +32,8 @@ WRITERS: tuple[tuple[Operation, type], ...] = (
     (Operation.LABELS_CHANGE, LabelWriting),
     (Operation.LABELS_DEFINE, LabelDefining),
     (Operation.ISSUE_CLOSE, IssueClosing),
+    (Operation.ISSUE_TYPE, IssueTyping),
+    (Operation.ISSUE_FIELDS, IssueFieldWriting),
 )
 
 _CLASSES: dict[frozenset[Operation], type[GitHubTrackerAdapter]] = {}
