@@ -34,6 +34,17 @@ example) gets one drafted from the proposal's reviewed `reporter_text`, or the t
 (`fixed` with the fix version computed now), with the close attached. It only drafts and never
 drafts twice; approve both digests and send as above.
 
+**A duplicate closes as a duplicate OF its canonical, and every `#N` a reply names is checked**
+(bh-iamru). A `duplicate-of` close now names the canonical report's issue: the close's digest shows
+`duplicate_of: <url>`, and the PATCH carries GitHub's `duplicate_issue_id` (one extra GET of the
+canonical before the write; same switch, same grant). A canonical with no issue in the same
+repository closes as a plain duplicate. `bh work triage check` and `apply --reviewed` now refuse a
+`reporter_text` whose `#N` is not an issue of the bound repository (`mention_missing`), or whose
+`#N` cannot be verified because no tracker with `issues.read` is bound (`mention_unverified`):
+rewrite the text, or bind the tracker. One issue listing per run, only when a `#N` appears. A `#N`
+that is another bound report is recorded in beads as a `relates-to` between the two reports.
+GitHub issue dependencies and sub-issues stay unused: no bead edge means the same thing.
+
 **Wire 2.23.0** (`docs/schemas/wire/v2.23.0/`): additive, the one new verb
 `bh work outbox backfill-close`.
 
