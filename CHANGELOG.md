@@ -13,6 +13,25 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.3 (2026-11-06)
+
+### Fix
+
+- **intake**: outbox-id index, one-listing scans and a one-process send-approved batch
+- **run**: read gh auth token first and probe gh auth status only on failure
+- **config**: load the effective config once per one-shot invocation
+- **work**: show and send the issue type and field changes in labels sync, review and outbox
+- **intake**: project the issue type and Priority field beside the bh: labels
+- **tracker-github**: set an issue's type and field values behind their own switches
+- **tracker**: add the issue.type and issue.fields operations to the port
+- **intake**: resolve every #N a reply mentions at triage check and relate bound reports
+- **intake**: close a duplicate-of report as duplicate of its canonical's issue
+- **tracker**: close a duplicate as duplicate of its canonical issue
+- **work**: add bh work outbox backfill-close and the close kind to outbox approve and send
+- **intake**: close the issue after the reply and labels for fixed, reject and duplicate outcomes
+- **tracker-github**: close an issue with its reason behind write.issue_close.enabled
+- **tracker**: add the issue.close write operation and IssueCloser to the port
+
 ## v0.35.2 (2026-11-06)
 
 ### Fix
