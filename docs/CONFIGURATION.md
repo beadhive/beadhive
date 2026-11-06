@@ -428,17 +428,32 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
 | `write.label_definitions.enabled` | `false` | enable `labels.define`: create or update the repository's label definitions. Repository-scoped, necessary and never sufficient (each use needs an operator-approved single-use grant); new (bh-la587), see the rotation note below |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
+| `write.issue_close.enabled` | `false` | enable `issue.close`: close a bound issue with its reason (`completed`, `not_planned` or `duplicate`) as `PATCH /issues/{n}` with only `state` and `state_reason`, never the labels. Issue-scoped, necessary and never sufficient (each close needs its own operator-approved single-use grant). It is also the outbox's close gate: with it off no close is drafted, approved or sent (`close_disabled`); there is no separate intake key. New in 0.35.3 (bh-pr5ll), see the rotation note below |
 
-The adapter ships the read path and both writers, `comment.create` and `labels.change` (owned
-prefixes only). Each write flag binds its writer and nothing else, and each write still needs its
-own operator-approved single-use grant (no key can supply one). A read or write whose flag is off
-is refused before any request (a disabled writer has no method on the bound object).
+The adapter ships the read path and its writers, `comment.create`, `labels.change` (owned
+prefixes only), `labels.define` and `issue.close` (the state and its reason only). Each write flag
+binds its writer and nothing else, and each write still needs its own operator-approved
+single-use grant (no key can supply one). A read or write whose flag is off is refused before any
+request (a disabled writer has no method on the bound object).
 `read.include_closed: false` narrows issue listings but never the full id snapshot used to detect
 deletions (a closed issue still exists). Retries wait on the adapter's own budget
 above, never on githubkit's built-in retry.
 
 As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
 to every host (`bh-uf986`).
+
+`write.issue_close.enabled` is new in 0.35.3 (bh-pr5ll), with the `issue.close` tracker operation
+and the outbox's `issue.close` operation kind. It follows the same 0.35.0 rotation order: an older
+host rejects the key, and a host older than 0.35.3 cannot decode an `intake.outbox` document that
+holds a close (it fails closed on it), so **every host that reads the hive's outbox runs 0.35.3
+before the key is set**. A close rides on a triage reply (`fixed` closes as `completed`, `reject`
+as `not_planned`, `duplicate-of` as `duplicate`; `needs-info` never closes), is approved with
+`bh work outbox approve <id> --op close:<digest>` and sent with `bh work outbox send <id> --kind
+close`, and only after that record's comment and every other comment of the report are settled
+and the report's latest labels record is sent (`close_not_ready` otherwise, before any request).
+`bh work outbox backfill-close [--dry-run]` drafts the close for reports already closed whose
+issue is still open, drafting the missing reply too when the report never got one. The probe reports
+`issue.close` as `no` below the triage role.
 
 `read.labels.enabled` and `write.label_definitions.enabled` are new (bh-la587) and were added with
 the `labels.read` and `labels.define` tracker operations. `BeadhiveConfig` forbids unknown keys, so

@@ -115,6 +115,7 @@ def test_with_every_switch_on_the_wiring_comes_from_the_plugin_binding(rig) -> N
         f"<!-- bh:v1 hive=acme/widget install={identity.install} outbox=ob1_x -->"
     )
     assert wiring["owned_label_prefixes"] == ()  # labels.change is not enabled
+    assert wiring["close_enabled"] is False  # issue.close is off by default
     assert rig.world.read_requests() == rig.world.write_requests() == 0  # building reads nothing
 
 
@@ -127,6 +128,31 @@ def test_the_owned_label_prefixes_come_from_the_plugin_config_only_when_labels_a
     wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
 
     assert wiring["owned_label_prefixes"] == ("bh:", "status/")
+
+
+def test_the_close_gate_follows_the_bindings_own_issue_close_enable(tmp_path, monkeypatch) -> None:
+    on = plugin(comments=True, comment=True)
+    on["write"]["issue_close"] = {"enabled": True}
+    rig = Wired(tmp_path, monkeypatch, {"tracker-github": on})
+    monkeypatch.setattr(
+        work_intake,
+        "config",
+        SimpleNamespace(load=lambda: rig.cfg, integration_branch=lambda cfg, entry: "main"),
+    )
+
+    wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
+
+    assert wiring["close_enabled"] is True
+    report, _issue = rig.report()
+    replied = bh("outbox", "draft", report, "--text", "Thanks.", *COMMON)
+    assert replied.exit_code == 0
+    # past the gate: the record has no close (a CLI draft asks for none), so the send refuses
+    # on the missing operation, never on the gate
+    oid = doc(replied)["results"][0]["outbox_id"]
+    missing = bh("outbox", "send", oid, "--kind", "close", *COMMON)
+    assert missing.exit_code == 1 and doc(missing)["reason"] == "unknown_outbox"
+    off = bh("outbox", "backfill-close", "--dry-run", *COMMON)
+    assert off.exit_code == 0 and doc(off)["items"] == []
 
 
 @pytest.mark.parametrize(

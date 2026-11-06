@@ -440,3 +440,108 @@ def test_an_agent_seat_cannot_approve_or_send(rig, monkeypatch) -> None:
 
     assert approved.exit_code == 1 and doc(approved)["ok"] is False
     assert rig.world.write_requests() == 0
+
+
+# -- issue.close (bh-pr5ll): --op close, --kind close and backfill-close ---------------------------
+
+
+def _close_rig(rig, monkeypatch, *, close_enabled: bool) -> MemoryTracker:
+    """The outbox on with a wired tracker whose binding does (or does not) enable issue.close."""
+    switch(rig, OUTBOX_ON)
+    tracker = MemoryTracker(rig.world, enabled=READ_OPERATIONS | WRITE_OPERATIONS)
+    rig.world.set_write_time(at(2))
+    monkeypatch.setattr(
+        work_intake,
+        "config",
+        SimpleNamespace(load=lambda: rig.cfg, integration_branch=lambda cfg, entry: "main"),
+    )
+    monkeypatch.setattr(
+        intake_services,
+        "outbox_wiring",
+        lambda cfg, entry, directory=None: {
+            "tracker": tracker,
+            "identity": ME,
+            "marker_line": marker_line,
+            "close_enabled": close_enabled,
+        },
+    )
+    return tracker
+
+
+def test_the_backfill_verb_is_listed_with_help() -> None:
+    assert "backfill-close" in bh("outbox", "--help").stdout
+    usage = " ".join(bh("outbox", "backfill-close", "--help").stdout.split())
+    assert "--dry-run" in usage and "write.issue_close.enabled" in usage
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["send", "ob1_x", "--kind", "close"],
+        ["approve", "ob1_x", "--op", "close:abc"],
+        ["backfill-close"],
+        ["backfill-close", "--dry-run"],
+    ],
+)
+def test_close_verbs_refuse_while_the_adapter_does_not_enable_issue_close(
+    rig, monkeypatch, argv
+) -> None:
+    _close_rig(rig, monkeypatch, close_enabled=False)
+
+    result = bh("outbox", *argv, "--hive", "widget", "--as", OPERATOR, "--json")
+
+    assert result.exit_code == 1
+    assert (doc(result)["ok"], doc(result)["reason"]) == (False, "close_disabled")
+    assert "write.issue_close.enabled" in doc(result)["error"]
+    assert rig.world.write_requests() == 0
+
+
+def test_backfill_then_approve_and_send_the_close_after_the_reply(rig, monkeypatch) -> None:
+    import dataclasses
+
+    from beadhive.modules.intake.domain import ProposalDisposition, ProposalStatus
+    from beadhive.modules.intake.domain.proposal import new_proposal
+
+    _close_rig(rig, monkeypatch, close_enabled=True)
+    issue = rig.issue("A bug")
+    report = doc(bh("import", issue.url, "--hive", "widget", "--json"))["report"]
+    common = ("--hive", "widget", "--as", OPERATOR, "--json")
+    oid = doc(bh("outbox", "draft", report, "--text", "Works as designed.", *common))["results"][0][
+        "outbox_id"
+    ]
+    (comment,) = doc(bh("outbox", "show", oid, "--hive", "widget", "--json"))["renders"]
+    assert (
+        bh("outbox", "approve", oid, "--op", f"comment:{comment['digest']}", *common).exit_code == 0
+    )
+    assert bh("outbox", "send", oid, *common).exit_code == 0
+    applied = dataclasses.replace(
+        new_proposal(ProposalDisposition.REJECT), status=ProposalStatus.APPLIED
+    )
+    rig.store.write_proposal(report, applied, expect_seq=0, actor=OPERATOR)
+    rig.store.close(report, reason="works as designed", actor=OPERATOR)
+
+    planned = bh("outbox", "backfill-close", "--dry-run", *common)
+    assert planned.exit_code == 0 and doc(planned)["dry_run"] is True
+    assert doc(planned)["items"] == [
+        {
+            "report": report,
+            "outbox_id": oid,
+            "reason": "not_planned",
+            "drafted": False,
+            "detail": "",
+            "reply_text": "",
+        }
+    ]
+    human = bh("outbox", "backfill-close", "--hive", "widget", "--as", OPERATOR)
+    assert human.exit_code == 0 and f"drafted issue.close as not_planned on {oid}" in human.stdout
+
+    shown = doc(bh("outbox", "show", oid, "--hive", "widget", "--json"))
+    close = next(r for r in shown["renders"] if r["kind"] == "issue.close")
+    assert close["close"] == "not_planned" and "state_reason: not_planned" in close["payload"]
+    approved = bh("outbox", "approve", oid, "--op", f"close:{close['short_digest']}", *common)
+    assert approved.exit_code == 0 and doc(approved)["results"][0]["kind"] == "issue.close"
+    sent = bh("outbox", "send", oid, "--kind", "close", *common)
+
+    assert sent.exit_code == 0 and doc(sent)["results"][0]["state"] == "sent"
+    assert rig.world.issues[issue.identifier].state.value == "closed"
+    assert rig.world.write_requests() == 2  # the reply, then the close

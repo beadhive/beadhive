@@ -290,6 +290,7 @@ work merge|bead:string:o,hive:string:o,rm:boolean:o,molecule:boolean:o,group:str
 work needs-info|bead:string:r,ask:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work next|as_:string:o,hive:string:o,as_json:boolean:o,epic:string:o
 work outbox approve|outbox_id:string:r,op:array:r,publish:array:o,as_:string:o,hive:string:o,as_json:boolean:o
+work outbox backfill-close|dry_run:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox discard|outbox_id:string:r,reason:string:r,accept_unknown:boolean:o,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox draft|bead:string:r,text:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox reconcile|outbox_id:string:o,as_:string:o,hive:string:o,as_json:boolean:o

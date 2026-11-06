@@ -5,6 +5,50 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.2 → 0.35.3 — close the GitHub issue after the reply and labels (switch default off)
+
+`bh work triage apply --reviewed` closed fixed, rejected and duplicate reports in beads but left
+their GitHub issues open. 0.35.3 adds the `issue.close` tracker operation behind
+`plugins.tracker-github.write.issue_close.enabled` (default `false`) and an `issue.close`
+operation kind in the outbox. With the switch on, apply drafts the close on the reply record
+(`fixed` → `completed`, `reject` → `not_planned`, `duplicate-of` → `duplicate`; `needs-info` never
+closes). Each close has its own digest, single-use grant and receipt: approve it with
+`bh work outbox approve <id> --op close:<digest>` and send it with
+`bh work outbox send <id> --kind close`. A close is refused (`close_not_ready`, before any
+request) until the record's comment is sent, no other comment of the report is unsent (send or
+discard a newer reply first), and the report's latest labels record is sent (an abandoned or failed
+one needs a `bh work labels sync` first), so send per report in the order comment, labels, close.
+The close PATCH never carries labels.
+
+**`duplicate-of` changes whatever the key says.** While `intake.external.outbox.enabled` is on,
+apply now drafts a reply for a `duplicate-of` report too (the reviewed `reporter_text`, or "This is
+a duplicate of #N; the work is tracked there."), and every reply is drafted BEFORE the report is
+linked or rejected, so a reply that cannot be drafted leaves the report untouched; the steps are
+`draft reply, link, reject`. A rerun drafts the same reply once. With the outbox off (the default)
+a `duplicate-of` is linked and rejected with no reply and no close, exactly as on 0.35.2.
+
+`bh work outbox backfill-close [--dry-run]` drafts the close of every report already closed in
+beads whose bound issue is still open and whose applied triage outcome was fixed, reject or
+duplicate-of, on its latest reply. A report that never got a reply (a 0.35.2 `duplicate-of`, for
+example) gets one drafted from the proposal's reviewed `reporter_text`, or the template apply uses
+(`fixed` with the fix version computed now), with the close attached. It only drafts and never
+drafts twice; approve both digests and send as above.
+
+**Wire 2.23.0** (`docs/schemas/wire/v2.23.0/`): additive, the one new verb
+`bh work outbox backfill-close`.
+
+**Rotation order (the 0.35.0 pattern).** The new key and the new outbox operation kind both need
+every host first: an older host rejects the key (`extra=forbid`) and fails closed on an
+`intake.outbox` document holding an `issue.close` operation. So:
+
+1. Install 0.35.3 on **every** host that reads the hive's outbox (any host that runs
+   `bh work outbox`, `bh work triage apply`, `bh doctor` or a merge / release hook on that hive).
+2. Only then set `plugins.tracker-github.write.issue_close.enabled: true` in a shared config.
+3. Only then run `bh work triage apply --reviewed` or `bh work outbox backfill-close`.
+
+With the key unset no close is drafted, approved or sent; the only change is the `duplicate-of`
+reply above, and only while the outbox is on.
+
 ## 0.35.0 → 0.35.2 — triage apply fixes and a hishel cap
 
 0.35.1 was tagged but never published: hishel 2.0.0 (released the same day) fails githubkit's

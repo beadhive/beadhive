@@ -270,8 +270,8 @@ def test_every_cli_leaf_and_signature_is_declared_exactly_once() -> None:
 def test_every_projection_declares_granularity_progress_and_interactivity() -> None:
     cli = _projected_cli()
     # + delivery blocked / deprioritised (bh-dev42), investigate (bh-u3a53), then the `labels`
-    # and `triage` groups (bh-v3fe7)
-    assert len(cli) == 292
+    # and `triage` groups (bh-v3fe7), then `work outbox backfill-close` (bh-pr5ll)
+    assert len(cli) == 293
     assert {
         "hq beadyard",
         "hq beadyard-adopt",
@@ -623,7 +623,7 @@ def test_convention_8_scans_every_live_description_probe_and_test_filename() -> 
     scanned = {**cli_texts, **mcp_texts, **filename_texts}
 
     # Core catalog and package manifests are the two explicit CLI authorities.
-    assert len(cli_texts) == (292 - len(GROUP_DEFAULT_COMMANDS) + len(MANIFEST_CLI_COMMANDS)) * 2
+    assert len(cli_texts) == (293 - len(GROUP_DEFAULT_COMMANDS) + len(MANIFEST_CLI_COMMANDS)) * 2
     assert {"cli:host eligible:help", "cli:host eligible:docstring"} <= cli_texts.keys()
     assert mcp_counts == {"tools": 10, "resources": 21, "probes": 1}
     assert len(filename_texts) == len(test_files) > 0
