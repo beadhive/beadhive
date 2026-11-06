@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.2 (2026-11-06)
+
+### Fix
+
+- **packaging**: cap hishel<2 in beadhive[github]
+
 ## v0.35.1 (2026-11-05)
 
 ### Fix
