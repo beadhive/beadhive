@@ -429,9 +429,12 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `write.label_definitions.enabled` | `false` | enable `labels.define`: create or update the repository's label definitions. Repository-scoped, necessary and never sufficient (each use needs an operator-approved single-use grant); new (bh-la587), see the rotation note below |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
 | `write.issue_close.enabled` | `false` | enable `issue.close`: close a bound issue with its reason (`completed`, `not_planned` or `duplicate`) as `PATCH /issues/{n}` with only `state` and `state_reason`, never the labels. Issue-scoped, necessary and never sufficient (each close needs its own operator-approved single-use grant). It is also the outbox's close gate: with it off no close is drafted, approved or sent (`close_disabled`); there is no separate intake key. New in 0.35.3 (bh-pr5ll), see the rotation note below |
+| `write.issue_type.enabled` | `false` | enable `issue.type`: read each issue's type (`TrackerIssue.issue_type`; unread while off) and set it to a type the organization defines as `PATCH /issues/{n}` with only `type`, never the labels. Issue-scoped, necessary and never sufficient (each write needs its own operator-approved single-use grant). It is also the outbox's `issue.type` gate (`type_disabled`); there is no separate intake key. New in 0.35.3 (bh-poqy0), see the rotation note below |
+| `write.issue_fields.enabled` | `false` | enable `issue.fields`: read each issue's field values (`TrackerIssue.fields`; unread while off) and set named ones: one `GET /orgs/{org}/issue-fields` resolves the field id and checks the option, then `POST /issues/{n}/issue-field-values` adds only those values (every other field and the labels are kept). Needs the write role; a classic token needs `read:org`, and a fine-grained token or GitHub App needs the organization permission "Issue Fields" (read) for the field listing and the repository permission "Issues" (write) for the POST. Issue-scoped, necessary and never sufficient (each write needs its own grant). It is also the outbox's `issue.fields` gate (`fields_disabled`). New in 0.35.3 (bh-poqy0), see the rotation note below |
 
 The adapter ships the read path and its writers, `comment.create`, `labels.change` (owned
-prefixes only), `labels.define` and `issue.close` (the state and its reason only). Each write flag
+prefixes only), `labels.define`, `issue.close` (the state and its reason only), `issue.type` and
+`issue.fields` (the type, or the named field values, only). Each write flag
 binds its writer and nothing else, and each write still needs its own operator-approved
 single-use grant (no key can supply one). A read or write whose flag is off is refused before any
 request (a disabled writer has no method on the bound object).
@@ -459,6 +462,20 @@ read with one GET before the write), and the close's digest shows `duplicate_of:
 no other key; a canonical with no issue in the same repository closes as a plain duplicate.
 GitHub's issue dependencies and sub-issues have no key: bh does not write them (no bead edge means
 the same thing).
+
+`write.issue_type.enabled` and `write.issue_fields.enabled` are new in 0.35.3 (bh-poqy0), with the
+`issue.type` and `issue.fields` tracker operations and outbox operation kinds, and follow the same
+rotation order: **every host that reads the hive's outbox runs 0.35.3 before either key is set**
+(an older host rejects the keys and fails closed on an `intake.outbox` document holding either
+operation). With a key on, `bh work labels sync` (and the `labels.on_transition` refresh) also
+projects the bead's type onto the issue type and its priority onto the `Priority` field through
+`intake.external.labels.issue_type` / `priority_field` below, from the tracked work and falling
+back to the report. A difference is reported like label drift and drafted on the issue's same
+`labels` record, so `labels review` / `labels approve --batch` approve it with the labels, each
+operation with its own digest and grant; send it with `bh work outbox send <id> --kind type` or
+`--kind fields`. The labels are unchanged: the `bh:type/*` and `bh:priority/*` labels are still
+projected. The probe reports both as `no` below the write role, and `issue.fields` as `no` for a
+classic token without `read:org`.
 
 `read.labels.enabled` and `write.label_definitions.enabled` are new (bh-la587) and were added with
 the `labels.read` and `labels.define` tracker operations. `BeadhiveConfig` forbids unknown keys, so
@@ -528,6 +545,9 @@ and no key can enable or pre-approve a tracker write.
 | `labels.aliases` | `{}` | dimension to display group, replacing the dimension name in a projected label; a key that is not a projected-dimension name is refused |
 | `labels.colors` | `{}` | dimension to label color: exactly six hex digits, no `#`; a bad color or an unknown dimension is refused naming `intake.external.labels.colors` |
 | `labels.overrides` | `{}` | `dimension/value` to `{name, description, color}` (each optional; `color` is six hex digits) overriding one label; a key without a known dimension is refused naming `intake.external.labels.overrides` |
+| `labels.issue_type.map` | `{bug: Bug, feature: Feature, task: Task, chore: Task}` | bead type (case-insensitive) to the issue type name the organization defines, set beside the labels while `plugins.tracker-github.write.issue_type.enabled` is on. Setting it replaces the whole map; a bead type it does not name is skipped with a note, never guessed (drop `chore` to leave chores untyped). Keys and values are non-empty and trimmed. New in 0.35.3 (bh-poqy0) |
+| `labels.priority_field.name` | `Priority` | the single-select issue field the bead priority is written to (while `write.issue_fields.enabled` is on) |
+| `labels.priority_field.map` | `{P0: Urgent, P1: High, P2: Medium, P3: Low, P4: Low}` | bead priority (`P0` to `P4`, any case) to the field's option name; setting it replaces the whole map, an unmapped priority is skipped with a note, and a key that is not a priority is refused naming `intake.external.labels.priority_field.map`. New in 0.35.3 (bh-poqy0) |
 | `labels.on_transition` | `false` | reflect a state change onto the labels when it happens (only acts with `labels.enabled`): every disposition (`accept`, `reject`, `reroute`, `promote`), `needs-info`, `wake`, `link` / `unlink` and the milestone triggers also draft or refresh the report's ONE `labels` outbox record from stored state, with no tracker request. It only drafts (it needs `outbox.enabled` and `outbox.labels_enabled` to draft anything) and never fails the transition |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the

@@ -4,17 +4,19 @@ The GitHub tracker adapter **plugin** (`tracker-github`, capability `tracker.ada
 Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin-adr.md) and
 [tracker-adapter-port-adr.md](../../docs/design/tracker-adapter-port-adr.md).
 
-> **Read path plus `comment.create`, `labels.change`, `labels.define` and `issue.close`.** The
+> **Read path plus `comment.create`, `labels.change`, `labels.define`, `issue.close`, `issue.type`
+> and `issue.fields`.** The
 > adapter lists issues (closed included), comments and repository label definitions (`labels.read`,
 > `LabelReader`), takes full id snapshots for deletion reconciliation, resolves issue URLs
 > (`IssueResolver`), reports the actor and a GET-only tri-state capability probe. Its landed
 > writers are `comment.create` (`CommentWriter.post_comment`, W8 `bh-03s4w`), `labels.change`
 > (`LabelWriter.change_labels`, W9 `bh-t082i`), `labels.define` (`LabelDefiner.define_labels` and
-> `LabelPruner.delete_labels`, `bh-uv09p`) and `issue.close` (`IssueCloser.close_issue`,
-> `bh-pr5ll`). A writer method exists only when its write flag is
-> on, and even then every call needs a fresh, single-use, operator-approved `WriteGrant`. **No live
-> GitHub write has been made yet**: the first real write is an operator-approved step recorded on
-> the writer's bead, outside the tests.
+> `LabelPruner.delete_labels`, `bh-uv09p`), `issue.close` (`IssueCloser.close_issue`,
+> `bh-pr5ll`), `issue.type` (`IssueTypeWriter.set_issue_type`) and `issue.fields`
+> (`IssueFieldWriter.set_issue_fields`, both `bh-poqy0`). A writer method exists only when its
+> write flag is on, and even then every call needs a fresh, single-use, operator-approved
+> `WriteGrant`. **No live GitHub write has been made yet**: the first real write is an
+> operator-approved step recorded on the writer's bead, outside the tests.
 
 ## Shape
 
@@ -27,7 +29,8 @@ Design: [tracker-adapter-plugin-adr.md](../../docs/design/tracker-adapter-plugin
 Inside `adapter/`: `tracker` (the port implementation), `compose` (the writers of the enabled
 write operations), `comments` (the `comment.create` writer), `labels` (the `labels.change`
 writer), `label_definitions` (the `labels.read` reader and the `labels.define` writer), `closing` (the
-`issue.close` writer), `grants` (the one in-process single-use grant ledger every writer spends from),
+`issue.close` writer), `issue_values` (the `issue.type` and `issue.fields` writers), `grants` (the
+one in-process single-use grant ledger every writer spends from),
 `transport` (githubkit: one credential per operation; writes only through `Session.send`, the one
 write seam of an operation opened for one), `retry` (the adapter-owned retry decision on an
 injected sleep and clock),
@@ -82,6 +85,26 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
   or the issue itself, or with another reason, is refused before any request; one that is missing,
   a pull request, moved or unreadable is refused (`NotVisible`) with the grant kept. Issue
   dependencies and sub-issues are not written.
+* **`issue.type`** sets one issue's type with `PATCH .../issues/{n}` carrying exactly
+  `{"type": <name>}` (never `labels`); a type the organization does not define is GitHub's `422`
+  (`PayloadRejected`). **`issue.fields`** sets named field values: ONE `GET
+  /orgs/{owner}/issue-fields` resolves each field's id and checks a select field's option (an
+  unknown field or option is `PayloadRejected` with the grant kept), then `POST
+  .../issues/{n}/issue-field-values` with `{"issue_field_values": [{"field_id", "value"}]}` adds
+  only those values (never `PUT`, which replaces every field). Each is behind its own switch,
+  `write.issue_type.enabled` / `write.issue_fields.enabled` (default off), which also gates the
+  READ: the issue listing maps `type` and `issue_field_values` into `TrackerIssue.issue_type` /
+  `fields` only while the switch is on (`None`, not read, otherwise). Refusal order, grant
+  spending and the never-retried ambiguous outcome are those of `issue.close`; an answer that does
+  not show the value is `WriteOutcomeUnknown`. The probe reports both `no` below the write role
+  (GitHub silently drops a type or field from anyone without push) and `issue.fields` `no` for a
+  classic token without `read:org`. A fine-grained token or a GitHub App needs the organization
+  permission "Issue Fields" (read) for `GET /orgs/{owner}/issue-fields` and the repository
+  permission "Issues" (write) for the `POST .../issue-field-values` and the type's `PATCH`; the
+  probe cannot read those grants, so it reports `unknown` and the first approved write is the
+  probe. Endpoints checked against docs.github.com
+  (`/rest/issues/issue-field-values`, `/rest/orgs/issue-fields`, `/rest/issues/issues`), served on
+  API version 2022-11-28.
 * **`labels.read`** lists every repository label definition, owned or not (`GET .../labels`,
   `per_page=100`, following `Link: rel="next"`); like every read it is refused before any request
   while `read.labels.enabled` is off.
