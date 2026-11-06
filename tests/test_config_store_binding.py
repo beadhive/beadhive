@@ -483,6 +483,7 @@ def test_every_tracker_github_switch_defaults_off():
         "write.labels.enabled": False,
         "read.labels.enabled": False,
         "write.label_definitions.enabled": False,
+        "write.issue_close.enabled": False,
     }
     assert defaults["base_url"] is None and defaults["write.labels.owned_prefixes"] == []
     assert defaults["credential.sources"] == ["env", "gh"]

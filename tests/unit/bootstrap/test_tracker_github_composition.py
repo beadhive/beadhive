@@ -28,7 +28,9 @@ from beadhive.bootstrap.tracker import (
 from beadhive.kernel.plugins import BUILTIN_PLUGIN_IDS
 from beadhive.modules.config.contracts import TrackerGithubConfig
 from beadhive.modules.tracker.contracts import (
+    CloseReason,
     CommentWriter,
+    IssueCloser,
     IssueKey,
     IssueResolver,
     LabelDefiner,
@@ -180,6 +182,7 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
         Operation.LABELS_CHANGE,
         Operation.LABELS_READ,
         Operation.LABELS_DEFINE,
+        Operation.ISSUE_CLOSE,
     }
     assert not isinstance(port, CommentWriter)  # comment.create was not enabled
     assert not isinstance(port, LabelWriter)  # labels.change is not enabled: no writer exposed
@@ -444,3 +447,48 @@ def test_a_requested_but_disabled_label_operation_names_its_flag():
     assert error.rule is TrackerRule.WRITE_NOT_ENABLED
     assert "plugins.tracker-github.read.labels.enabled" in error.message
     assert "plugins.tracker-github.write.label_definitions.enabled" in error.message
+
+
+def test_the_issue_close_flag_binds_the_closer_in_the_root_view_and_sends_nothing(loads):
+    plugins = {"tracker-github": enabled_plugin(write={"issue_close": {"enabled": True}})}
+    adapters, token_calls = counting_root(plugins)
+    bound = adapters.for_store(entry(), requested=READ | {Operation.ISSUE_CLOSE})
+
+    assert Operation.ISSUE_CLOSE in bound.enabled  # enabled is necessary, never sufficient
+    assert isinstance(bound.port, IssueCloser)
+    assert not isinstance(bound.port, CommentWriter) and not isinstance(bound.port, LabelWriter)
+    assert token_calls == []
+
+    off = root({"tracker-github": enabled_plugin()}).for_store(entry(), requested=READ)
+    assert not isinstance(off.port, IssueCloser) and not hasattr(off.port, "close_issue")
+    error = refusal(
+        root({"tracker-github": enabled_plugin()}),
+        entry(),
+        requested=READ | {Operation.ISSUE_CLOSE},
+    )
+    assert "plugins.tracker-github.write.issue_close.enabled" in error.message
+
+
+def test_a_close_through_the_root_view_needs_a_close_grant():
+    class _Closer:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def close_issue(self, issue, *, reason, grant):
+            self.calls.append(reason.value)
+            return grant
+
+    adapter = _Closer()
+    port = tracker_root.narrow(adapter, frozenset({Operation.ISSUE_CLOSE}))
+    issue = IssueKey("#3", "https://github.com/acme/widget/issues/3")
+    with pytest.raises(OperationNotEnabled):
+        port.close_issue(  # type: ignore[attr-defined]
+            issue,
+            reason=CloseReason.COMPLETED,
+            grant=WriteGrant("g", Operation.LABELS_CHANGE, issue),
+        )
+    assert adapter.calls == []
+    grant = WriteGrant("g-1", Operation.ISSUE_CLOSE, issue)
+    assert port.close_issue(issue, reason=CloseReason.DUPLICATE, grant=grant) is grant  # type: ignore[attr-defined]
+    assert adapter.calls == ["duplicate"]
+    assert not isinstance(tracker_root.narrow(adapter, frozenset()), IssueCloser)

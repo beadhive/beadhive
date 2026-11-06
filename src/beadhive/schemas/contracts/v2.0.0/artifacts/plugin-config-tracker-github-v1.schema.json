@@ -134,6 +134,10 @@
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`comment.create` (default off)."
         },
+        "issue_close": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`issue.close`: close an issue with its reason (completed, not_planned or duplicate), never touching its labels (default off; each use needs an operator-approved single-use grant)."
+        },
         "label_definitions": {
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`labels.define`: create or update repository label definitions (default off; each use needs an operator-approved single-use grant)."
