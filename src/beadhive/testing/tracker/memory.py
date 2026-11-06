@@ -5,7 +5,7 @@ no consumer test needs a plugin package, an HTTP client or a network. It is also
 second implementation: it passes the same :data:`~beadhive.testing.tracker.cases.TRACKER_CASES`
 a real adapter must pass. It implements the required :class:`TrackerAdapter` plus every optional
 Protocol (``CommentWriter``, ``LabelWriter``, ``LabelReader``, ``LabelDefiner``,
-``LabelPruner``, ``IssueResolver``, ``MarkerCodec``);
+``LabelPruner``, ``IssueCloser``, ``IssueResolver``, ``MarkerCodec``);
 :func:`without_resolver` hides the resolver to exercise a consumer's fallback.
 
 Deterministic: no clock (every timestamp is supplied by the world), and a rate-limit wait calls
@@ -26,6 +26,7 @@ from beadhive.modules.tracker.contracts import (
     CapabilityState,
     ChangeRequestUrl,
     Checkpoint,
+    CloseReason,
     CommentKey,
     CommentQuery,
     IdPage,
@@ -92,7 +93,7 @@ _DEFAULT_OWNERSHIP = LabelOwnership(prefixes=("bh:",))
 
 class MemoryTracker:
     """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter``, ``LabelReader``,
-    ``LabelDefiner``, ``LabelPruner``, ``IssueResolver`` and ``MarkerCodec``.
+    ``LabelDefiner``, ``LabelPruner``, ``IssueCloser``, ``IssueResolver`` and ``MarkerCodec``.
 
     ``enabled`` is the resolved set of enabled operations, as a composition root would hand it to
     a real adapter. The default enables the three reads and no write. A disabled operation is
@@ -173,6 +174,7 @@ class MemoryTracker:
             created_at=row.created,
             revision=Revision(row.updated),
             closed_at=row.updated if closed else None,
+            closed_reason=row.closed_reason if closed else None,
         )
 
     def _issues(self, since: datetime | None, include_closed: bool) -> list[_Issue]:
@@ -354,6 +356,31 @@ class MemoryTracker:
             raise WriteOutcomeUnknown("the tracker did not confirm the label change")
         return WriteReceipt(grant.grant_id, grant.operation, issue, labels_after=frozenset(labels))
 
+    def close_issue(
+        self, issue: IssueKey, *, reason: CloseReason, grant: WriteGrant
+    ) -> WriteReceipt:
+        """Close ``issue`` with ``reason`` under an ``issue.close`` grant. Only the state changes
+        (never a label); an issue already closed is closed again with the new reason."""
+        if not isinstance(reason, CloseReason):
+            raise ValueError("a close needs a CloseReason")
+        self._authorise(Operation.ISSUE_CLOSE, issue, grant)
+        self._request(write=True)
+        self.world.writes += 1
+        ambiguous, self.world.ambiguous_next_write = self.world.ambiguous_next_write, None
+        if ambiguous is False:  # cut off before the tracker applied anything (K1)
+            raise WriteOutcomeUnknown("the tracker did not confirm the close")
+        row = self.world.issues[issue.identifier]
+        row.state, row.closed_reason, row.updated = IssueState.CLOSED, reason.value, self._when()
+        if ambiguous:  # applied, but the caller cannot know
+            raise WriteOutcomeUnknown("the tracker did not confirm the close")
+        return WriteReceipt(
+            grant.grant_id,
+            grant.operation,
+            issue,
+            state_after=IssueState.CLOSED,
+            closed_reason=reason.value,
+        )
+
     def define_labels(
         self, definitions: tuple[LabelDefinition, ...], *, grant: WriteGrant
     ) -> WriteReceipt:
@@ -463,6 +490,11 @@ class _WithoutResolver:
         return self._inner.change_labels(
             issue, add=add, remove=remove, ownership=ownership, grant=grant
         )
+
+    def close_issue(
+        self, issue: IssueKey, *, reason: CloseReason, grant: WriteGrant
+    ) -> WriteReceipt:
+        return self._inner.close_issue(issue, reason=reason, grant=grant)
 
 
 def without_resolver(tracker: MemoryTracker) -> TrackerAdapter:

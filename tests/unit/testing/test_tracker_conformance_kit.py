@@ -21,6 +21,7 @@ from beadhive.modules.tracker.contracts import (
     CommentWriter,
     IdQuery,
     IdSubject,
+    IssueCloser,
     IssueKey,
     IssueQuery,
     IssueResolver,
@@ -83,7 +84,7 @@ def test_memory_tracker_conforms(impl: str, case: TrackerCase) -> None:
 
 def test_case_set_covers_the_acceptance_scenarios() -> None:
     ids = {case.case_id for case in TRACKER_CASES}
-    assert len(ids) == len(TRACKER_CASES) == 39
+    assert len(ids) == len(TRACKER_CASES) == 43
     assert {
         "issues.closed-included",
         "issues.checkpoint-incremental",
@@ -100,6 +101,10 @@ def test_case_set_covers_the_acceptance_scenarios() -> None:
         "labels.delete-grant-matches-and-single-use",
         "labels.delete-refused-when-not-enabled",
         "labels.delete-already-gone-succeeds",
+        "close.refused-when-not-enabled",
+        "close.grant-matches-and-single-use",
+        "close.round-trip",
+        "close.ambiguous-not-retried",
         "resolver.resolve-is-pure-and-canonical",
         "resolver.refusals",
         "resolver.get-reads-one-issue",
@@ -116,7 +121,7 @@ def test_memory_tracker_implements_every_optional_protocol_and_the_view_hides_th
         assert isinstance(adapter, TrackerAdapter)
         assert isinstance(adapter, CommentWriter) and isinstance(adapter, LabelWriter)
         assert isinstance(adapter, LabelReader) and isinstance(adapter, LabelDefiner)
-        assert isinstance(adapter, LabelPruner)
+        assert isinstance(adapter, LabelPruner) and isinstance(adapter, IssueCloser)
     assert isinstance(tracker, IssueResolver) and not isinstance(view, IssueResolver)
 
 

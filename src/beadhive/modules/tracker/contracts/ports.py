@@ -3,7 +3,7 @@
 Small capability interfaces: :class:`TrackerReader` and :class:`TrackerIdentity` are required
 and together form :class:`TrackerAdapter`, the one Protocol the plugin wiring binds.
 :class:`CommentWriter`, :class:`LabelWriter`, :class:`LabelReader`, :class:`LabelDefiner`,
-:class:`LabelPruner`, :class:`IssueResolver` and :class:`MarkerCodec` are
+:class:`LabelPruner`, :class:`IssueCloser`, :class:`IssueResolver` and :class:`MarkerCodec` are
 optional and are discovered with ``isinstance`` on the bound object. A writer's presence is
 necessary, never sufficient: the operation must also be enabled and each call must carry a fresh
 grant.
@@ -16,6 +16,7 @@ from typing import Protocol, runtime_checkable
 from .records import (
     Actor,
     CapabilityReport,
+    CloseReason,
     CommentQuery,
     IdPage,
     IdQuery,
@@ -107,6 +108,18 @@ class LabelPruner(Protocol):
 
 
 @runtime_checkable
+class IssueCloser(Protocol):
+    """Optional (additive; the API version stays 1): close one issue with a :class:`CloseReason`
+    (``issue.close``). An issue-scoped write, so ``grant.target`` is the :class:`IssueKey`. It
+    changes the issue's state and nothing else: never its labels, title or body. Closing an
+    issue that is already closed is not an error (the receipt reports the state it holds)."""
+
+    def close_issue(
+        self, issue: IssueKey, *, reason: CloseReason, grant: WriteGrant
+    ) -> WriteReceipt: ...
+
+
+@runtime_checkable
 class IssueResolver(Protocol):
     """Optional URL resolution (amendment A1; the API version stays 1).
 
@@ -151,6 +164,7 @@ def join_marker_line(body: str, line: str) -> str:
 
 __all__ = [
     "CommentWriter",
+    "IssueCloser",
     "IssueResolver",
     "LabelDefiner",
     "LabelPruner",
