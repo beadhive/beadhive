@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -194,30 +195,52 @@ def test_an_operator_set_gh_token_wins_and_is_mirrored(monkeypatch, gh_authentic
 
 
 def test_gh_present_but_unauthenticated_degrades_with_a_remedy(monkeypatch, capsys):
-    """No crash, and no empty token producing a confusing 404 downstream."""
+    """No crash, and no empty token producing a confusing 404 downstream. `gh auth token` is
+    tried first (bh-pc9rf); only its failure runs the `gh auth status` probe that names why."""
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.setattr(deps, "present", lambda _dep: True)
-    monkeypatch.setattr(
-        credentials,
-        "probe",
-        lambda dep: credentials.AuthReport(
+    probes: list[str] = []
+
+    def probe(dep):
+        probes.append(dep.name)
+        return credentials.AuthReport(
             name=dep.name,
             installed=True,
             authenticated=False,
             how="—",
             remedy=dep.auth.remedy,
             path="/usr/bin/gh",
-        ),
-    )
-    monkeypatch.setattr(
-        run_mod, "run", lambda *a, **k: pytest.fail("must not run `gh auth token` unauthenticated")
-    )
+        )
+
+    monkeypatch.setattr(credentials, "probe", probe)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        return _Res(1, "", "no oauth token found")
+
+    monkeypatch.setattr(run_mod, "run", fake_run)
 
     env = run_mod.child_env(github_token=True)
 
     assert "GITHUB_TOKEN" not in env  # absent, not empty
+    assert calls == [["gh", "auth", "token"]] and probes == ["gh"]
     assert "gh auth login" in capsys.readouterr().err  # the remedy is NAMED, not swallowed
+
+
+def test_a_derived_token_runs_one_gh_and_never_the_status_probe(monkeypatch, gh_authenticated):
+    """The success path is ONE subprocess: `gh auth status` runs only when the token read fails."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        credentials, "probe", lambda dep: pytest.fail("no status probe on the success path")
+    )
+
+    env = run_mod.child_env(github_token=True)
+
+    assert env["GITHUB_TOKEN"] == PLANTED
+    assert gh_authenticated == [["gh", "auth", "token"]]
 
 
 def test_gh_absent_degrades_without_deriving(monkeypatch):
@@ -235,10 +258,36 @@ def test_gh_absent_degrades_without_deriving(monkeypatch):
             remedy=dep.auth.absent_remedy,
         ),
     )
+    # a missing binary comes back from `run` as exit 127 (bh-7m2h9), never a token
+    monkeypatch.setattr(run_mod, "run", lambda *a, **k: _Res(127, "", "gh: not found"))
 
     env = run_mod.child_env(github_token=True)
 
     assert "GITHUB_TOKEN" not in env
+
+
+def test_a_timed_out_gh_auth_token_degrades_to_the_probe(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setattr(deps, "present", lambda _dep: True)
+    probes: list[str] = []
+
+    def probe(dep):
+        probes.append(dep.name)
+        return credentials.AuthReport(
+            name=dep.name, installed=True, authenticated=True, how="stored login", remedy=""
+        )
+
+    monkeypatch.setattr(credentials, "probe", probe)
+
+    def wedged(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw.get("timeout") or 1)
+
+    monkeypatch.setattr(run_mod, "run", wedged)
+
+    env = run_mod.child_env(github_token=True)
+
+    assert "GITHUB_TOKEN" not in env and probes == ["gh"]
 
 
 def test_a_failing_gh_auth_token_never_yields_an_empty_token(monkeypatch):
