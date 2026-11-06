@@ -2937,6 +2937,36 @@ def review_policy(cfg: Mapping[str, Any], *, comments_read: bool) -> Any:
     return ReviewPolicy(comments_enabled=comments_settings(cfg)[0], comments_read=comments_read)
 
 
+def project_issues(
+    cfg: Mapping[str, Any], entry: Mapping[str, Any], directory=None, *, adapters: Any = None
+) -> Any:
+    """The bound project's issues for the pre-apply mention check (``bh-iamru``): a
+    :class:`~beadhive.modules.intake.application.TrackerProjectIssues` over the hive's tracker
+    binding, requesting ``issues.read`` only. LAZY: nothing is bound or read until a run's
+    ``reporter_text`` mentions a ``#N``, and then ONE listing serves the whole run. A binding that
+    is off or refuses raises ``IntakeRefused`` at that point, which the checks report as an
+    unverified mention (fail closed)."""
+    from .modules.intake.application import TrackerProjectIssues
+    from .modules.tracker.contracts import Operation
+
+    def tracker() -> Any:
+        bound = adapters if adapters is not None else process_adapters(cfg)
+        if bound is None:
+            raise IntakeRefused(
+                RefusalReason.INTAKE_DISABLED,
+                f"no tracker is bound to list the project's issues ({TRACKER_CONFIG_HINT})",
+            )
+        home = directory if directory is not None else registry.hive_dir(entry)
+        requested = frozenset({Operation.ISSUES_READ})
+        try:
+            wired = tracker_wiring(cfg, entry, home, bound, requested=requested, needs_marker=False)
+        except IntakeStoreError as exc:  # the install id's private state
+            raise IntakeRefused(RefusalReason.INTAKE_DISABLED, outbox_message(exc)) from exc
+        return wired["tracker"]
+
+    return TrackerProjectIssues(tracker)
+
+
 def triage_binding(
     cfg: Mapping[str, Any],
     entry: Mapping[str, Any],
@@ -2947,12 +2977,14 @@ def triage_binding(
     landed: Any = None,
     sanitizer: Any = None,
     refile: Callable[..., str] | None = None,
+    issues: Any = None,
 ) -> Any:
     """The ``TriageBinding`` propose, review and apply read: the repository facts over the hive
     checkout (:class:`~beadhive.adapters.intake.GitRepoFacts`, read-only git), the landed commits
     from the ``git.commits`` linkage (:class:`LinkageLandedCommits`), the integration ``branch``,
-    the outbox's leak policy and sanitizer, and the reroute re-filer (``None``: a reroute is
-    blocked)."""
+    the outbox's leak policy and sanitizer, the reroute re-filer (``None``: a reroute is
+    blocked) and the bound project's issues for the mention check (:func:`project_issues`,
+    lazy)."""
     from .adapters.intake import GitRepoFacts, ScrubSanitizer
     from .modules.intake.application import TriageBinding
 
@@ -2963,6 +2995,7 @@ def triage_binding(
         branch=branch,
         landed=landed if landed is not None else LinkageLandedCommits(directory),
         refile=refile,
+        issues=issues if issues is not None else project_issues(cfg, entry, directory),
     )
 
 
@@ -3154,10 +3187,13 @@ def triage_check(
     repo: Any = None,
     landed: Any = None,
     sanitizer: Any = None,
+    issues: Any = None,
 ) -> IntakeCall:
     """``bh work triage check [--pending]``: every deterministic pre-apply check of every open
     proposal (targets, fix claims with the COMPUTED fix version, families, field consistency,
-    reporter text, staleness), as ``apply --reviewed --dry-run`` runs them. Writes nothing.
+    reporter text, the ``#N`` it mentions, staleness), as ``apply --reviewed --dry-run`` runs
+    them. Writes nothing; a ``#N`` costs ONE issue listing for the run (``issues``, else
+    :func:`project_issues`).
     ``pending`` keeps only the reports still awaiting triage. Off unless
     ``intake.external.enabled``."""
     from .modules.intake.domain import ApplyRequest, may_disposition
@@ -3166,7 +3202,14 @@ def triage_check(
         if not external_intake_settings(cfg)[0]:
             _require_intake()
         binding = triage_binding(
-            cfg, entry, directory, branch=branch, repo=repo, landed=landed, sanitizer=sanitizer
+            cfg,
+            entry,
+            directory,
+            branch=branch,
+            repo=repo,
+            landed=landed,
+            sanitizer=sanitizer,
+            issues=issues,
         )
         composed = _compose(
             cfg, entry, directory, hive=hive, verb="work triage check", lock=lock, triage=binding
@@ -3213,6 +3256,7 @@ def triage_apply(
     outbox: Mapping[str, Any] | None = None,
     threads: Mapping[str, Any] | None = None,
     labels_tracker: Any = None,
+    issues: Any = None,
 ) -> IntakeCall:
     """``bh work triage apply --reviewed [--dry-run]``: check every open proposal, then apply the
     reviewed ones canonicals first through the existing triage verbs. A reply or a question is
@@ -3241,6 +3285,7 @@ def triage_apply(
             landed=landed,
             sanitizer=sanitizer,
             refile=refile,
+            issues=issues,
         )
         sender = outbox
         conversation = threads
@@ -3399,6 +3444,7 @@ __all__ = [
     "transition_refresh",
     "triage_apply",
     "triage_binding",
+    "project_issues",
     "triage_check",
     "triage_propose",
     "triage_review",

@@ -78,6 +78,13 @@ TRACKS_EDGE = "tracks"
 #: whose target is a bound report count; nothing reads this type for delivery.
 INVESTIGATES_EDGE = "validates"
 
+#: The native edge type between two REPORTS whose reply names the other's issue (``bh-iamru``): a
+#: bound report's reviewed ``reporter_text`` mentions ``#N`` and ``#N`` is another bound report,
+#: so a later outcome on one can be shown on the other. bd's built-in ``relates-to``: symmetric in
+#: meaning, non-blocking (it gates no readiness), stored once from the mentioning report to the
+#: mentioned one; a store reads it in both directions. It never maps to a tracker relation.
+RELATES_EDGE = "relates-to"
+
 # Canonical `<dim>:<value>` label-cache entries (what `bd set-state` writes).
 INTAKE_UNTRIAGED = "intake:untriaged"
 INTAKE_PROMOTED = "intake:promoted"  # handed to the planner (adopt queue key)

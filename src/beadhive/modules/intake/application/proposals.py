@@ -37,7 +37,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from ..contracts import LandedCommits, RepoFacts, ReportStore, Sanitizer
+from ..contracts import LandedCommits, ProjectIssues, RepoFacts, ReportStore, Sanitizer
 from ..domain import (
     DEFAULT_REPORTER_TEXT_LIMIT,
     INTAKE_UNTRIAGED,
@@ -61,6 +61,7 @@ from ..domain import (
     LeakPolicy,
     LinkOutcome,
     LinkRequest,
+    MentionFact,
     NeedsInfoOutcome,
     NeedsInfoRequest,
     OutboxResult,
@@ -93,6 +94,7 @@ from ..domain import (
     mark_applied,
     may_disposition,
     may_reopen,
+    mentions,
     new_proposal,
     new_round,
     plan_apply,
@@ -117,7 +119,10 @@ class TriageBinding:
     work bead (``None``: none known, so a ``fixed`` claim needs its own ``fix_commit``);
     ``branch`` is the integration branch; ``leak_policy`` and ``sanitizer`` lint the
     reporter-visible text (``None``: no sanitizer, so every reporter text is refused, fail
-    closed); ``refile`` re-files a rerouted report (``None``: a reroute is blocked)."""
+    closed); ``refile`` re-files a rerouted report (``None``: a reroute is blocked);
+    ``issues`` lists the bound tracker project's issues for the mention check (``bh-iamru``;
+    ``None``: no tracker issue read is bound, so a ``reporter_text`` naming a ``#N`` cannot pass
+    the checks)."""
 
     repo: RepoFacts
     leak_policy: LeakPolicy
@@ -126,6 +131,7 @@ class TriageBinding:
     landed: LandedCommits | None = None
     refile: Refile | None = None
     reporter_text_limit: int = DEFAULT_REPORTER_TEXT_LIMIT
+    issues: ProjectIssues | None = None
 
 
 class TriageActions(Protocol):
@@ -330,6 +336,7 @@ class ProposalService:
             thread = self._store.read_thread(report)
             if thread is not None:  # a triage read moves seq, not the comments (bh-yu6sy)
                 seqs[report] = content_seq(thread)
+        issues, gap = self._issues(run, binding)
         return CheckContext(
             branch=binding.branch,
             repo=binding.repo,
@@ -338,7 +345,36 @@ class ProposalService:
             targets=targets,
             thread_seqs=seqs,
             reporter_text_limit=binding.reporter_text_limit,
+            issues=issues,
+            issues_gap=gap,
         )
+
+    def _issues(
+        self, run: Mapping[str, Proposal], binding: TriageBinding
+    ) -> tuple[dict[str, MentionFact] | None, str]:
+        """The bound project's issues, each with the bound report it is (``bh-iamru``), read
+        ONLY when some ``reporter_text`` of ``run`` mentions a ``#N``: one tracker listing and one
+        store listing for the whole run, never a request per mention. ``(None, why)`` when they
+        cannot be read, which the checks report as unverified (fail closed)."""
+        if not any(mentions(p.reporter_text) for p in run.values()):
+            return None, ""
+        if binding.issues is None:
+            return None, "no tracker with issues.read is bound"
+        try:
+            listed = binding.issues.identifiers()
+            bound = {
+                view.binding.url: view.id
+                for view in self._store.bound_reports()
+                if view.binding is not None
+            }
+        except IntakeRefused as exc:
+            return None, exc.detail
+        except IntakeStoreError as exc:
+            return None, f"the bound reports could not be listed ({exc.operation})"
+        return {
+            identifier: MentionFact(identifier, url, bound.get(url, ""))
+            for identifier, url in listed.items()
+        }, ""
 
     def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome:
         """Check every open proposal, then apply the reviewed ones canonicals first (see the
@@ -423,6 +459,7 @@ class ProposalService:
             share_with=proposal.share_with,
             fixed_in=check.computed_fixed_in,
             findings=check.findings,
+            relates=check.relates,
         )
         if proposal.disposition is ProposalDisposition.DECISION:
             return _with(
@@ -508,6 +545,16 @@ class ProposalService:
             assert binding.refile is not None  # _apply_one blocked a reroute without one
             return binding.refile(checked, proposal)
 
+        try:
+            # first, and idempotent: a failure here leaves the report untouched (bh-iamru)
+            for other in base.relates:
+                self._store.relate(report, other, actor=actor)
+        except (IntakeRefused, IntakeStoreError) as exc:
+            return _with(
+                base,
+                status=ApplyStatus.FAILED,
+                detail=f"recording relates-to failed: {_why(exc)}",
+            )
         try:
             for step in plan.steps:
                 if step in (ApplyStep.ACCEPT, ApplyStep.ACCEPT_NEW_WORK, ApplyStep.ACCEPT_WORK):

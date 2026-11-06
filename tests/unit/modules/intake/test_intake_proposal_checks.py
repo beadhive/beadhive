@@ -17,6 +17,7 @@ from beadhive.modules.intake.contracts import (
     CheckContext,
     CheckKind,
     LeakPolicy,
+    MentionFact,
     Proposal,
     ProposalDisposition,
     ProposalStatus,
@@ -29,6 +30,7 @@ from beadhive.modules.intake.contracts import (
     check_proposal,
     check_run,
     cited_paths,
+    mentions,
     new_proposal,
     version_key,
 )
@@ -393,3 +395,53 @@ def test_cited_paths_reads_file_line_forms_and_skips_shas_urls_versions_and_bead
         "src/auth",
         "src/login.py",
     )
+
+
+# -- the #N a reply mentions (bh-iamru) ---------------------------------------------------------
+
+ISSUES = {
+    "#7": MentionFact("#7", "https://github.com/acme/widgets/issues/7"),  # no report here
+    "#21": MentionFact("#21", "https://github.com/acme/widgets/issues/21", report="r-1"),
+    "#105": MentionFact("#105", "https://github.com/acme/widgets/issues/105", report="r-2"),
+}
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        ("See #105 and #21, then #105 again.", ("#21", "#105")),
+        ("owner/repo#5 a#3 &#123; page.html#12 (#7)", ("#7",)),  # never a cross-ref or a fragment
+        ("`#9` and ```\n#10\n``` but #11", ("#11",)),  # code is never autolinked
+        ("https://github.com/a/b/issues/4#issuecomment-5", ()),
+        ("Step #2 of 3; issue #0 is not one", ("#2",)),
+        ("", ()),
+    ],
+)
+def test_mentions_are_the_issue_references_the_tracker_would_autolink(text, named) -> None:
+    assert mentions(text) == named
+
+
+def test_a_mention_of_an_issue_of_the_project_passes_and_relates_its_report() -> None:
+    proposal = tracked(reporter_text="This is the same as #105; see also #7 and #21.")
+    check = check_proposal("r-1", proposal, context(issues=ISSUES))
+    assert check.passed
+    assert check.relates == ("r-2",)  # never the report itself, never an unbound issue
+
+
+def test_a_mention_of_a_missing_issue_is_refused_with_its_fix() -> None:
+    proposal = tracked(reporter_text="Fixed by #7; see #999 and #1000.")
+    check = check_proposal("r-1", proposal, context(issues=ISSUES))
+    assert check.kinds() == {CheckKind.MENTION_MISSING}
+    (finding,) = check.findings
+    assert "#999, #1000" in finding.detail and "#7" not in finding.detail
+    assert "existing issue" in finding.fix
+
+
+def test_a_mention_without_the_projects_issues_is_unverified_and_fails_closed() -> None:
+    proposal = tracked(reporter_text="Same as #105.")
+    gap = context(issues_gap="no tracker with issues.read is bound")
+    check = check_proposal("r-1", proposal, gap)
+    assert check.kinds() == {CheckKind.MENTION_UNVERIFIED}
+    assert "no tracker with issues.read is bound" in check.findings[0].detail
+    # text that mentions nothing needs no listing at all
+    assert check_proposal("r-1", tracked(), context()).passed

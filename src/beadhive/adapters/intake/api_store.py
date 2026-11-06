@@ -43,6 +43,7 @@ from beadhive.modules.intake.contracts import (
     INVESTIGATES_EDGE,
     OUTBOX_KEY,
     PROPOSAL_KEY,
+    RELATES_EDGE,
     BeadView,
     IntakeRefused,
     IntakeStoreError,
@@ -289,6 +290,17 @@ class ApiReportStore(BdReportStore):
             api.link(work, report, INVESTIGATES_EDGE, actor=actor)
         except ReportApiError as exc:
             raise self._failed(exc, "investigate", report) from exc
+
+    def relate(self, report: str, other: str, *, actor: str) -> None:
+        api = self._api()
+        if api is None:
+            return super().relate(report, other, actor=actor)
+        if other in self.related_reports(report):
+            return
+        try:
+            api.link(report, other, RELATES_EDGE, actor=actor)
+        except ReportApiError as exc:
+            raise self._failed(exc, "relate", report) from exc
 
     def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
         api = self._api()

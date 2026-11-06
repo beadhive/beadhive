@@ -24,6 +24,7 @@ from beadhive.modules.intake.application import (
     OutboxService,
     StoreOutboxView,
     ThreadService,
+    TrackerProjectIssues,
     TriageBinding,
 )
 from beadhive.modules.intake.domain import (
@@ -267,6 +268,17 @@ def _repo(commits: Mapping[str, str]) -> FakeRepoFacts:
     )
 
 
+class _CountingIssues:
+    """``ProjectIssues`` that counts its listings (one per run, never one per mention)."""
+
+    def __init__(self, inner) -> None:
+        self.inner, self.calls = inner, 0
+
+    def identifiers(self):
+        self.calls += 1
+        return self.inner.identifiers()
+
+
 class Hive:
     """One hive's intake wired over memory fakes, with propose/review/apply bound."""
 
@@ -280,6 +292,7 @@ class Hive:
         milestones: bool = False,
         outbox: OutboxPolicy = OUTBOX,
         sender: bool = True,
+        issues: bool = True,
     ) -> None:
         self.world = MemoryWorld()
         self.world.set_write_time(at(3))
@@ -354,7 +367,9 @@ class Hive:
             branch="main",
             landed=self.landed,
             refile=refile,
+            issues=_CountingIssues(TrackerProjectIssues(self.tracker)) if issues else None,
         )
+        self.listings = binding.issues
         self.intake = IntakeService(
             self.store,
             _NoLabels(),
@@ -1217,3 +1232,65 @@ def test_the_close_backfill_composes_a_fixed_reply_from_the_computed_version() -
     assert item.reason is CloseReason.COMPLETED and "v1.2.0" in item.reply_text
     record, close = _close_of(hive, report)
     assert record.message.text == item.reply_text and close.close is CloseReason.COMPLETED
+
+
+# -- the #N a reply mentions: resolved at check, related at apply (bh-iamru) ---------------------
+
+
+def _reject(hive: Hive, title: str, text: str) -> str:
+    report = hive.report(title)
+    hive.propose(report, {"disposition": "reject", "reporter_text": text})
+    hive.review(report, {"verdict": "confirmed"})
+    return report
+
+
+def test_a_reply_naming_a_missing_issue_is_refused_at_check_and_writes_nothing() -> None:
+    hive = Hive()
+    report = _reject(hive, "not a bug", "Works as designed; see #999.")
+    before = hive.writes()
+
+    outcome = hive.apply()
+
+    (check,) = outcome.checks
+    assert check.kinds() == {CheckKind.MENTION_MISSING} and "#999" in check.findings[0].detail
+    blocked = item(outcome, report)
+    assert blocked.status is ApplyStatus.BLOCKED and "mention_missing" in blocked.detail
+    assert hive.writes() == before and hive.records(report) == []
+
+
+def test_a_reply_naming_another_bound_report_relates_the_two_once() -> None:
+    hive = Hive()
+    other = hive.report("the original thread")
+    named = hive.issues[other].identifier
+    report = _reject(hive, "asked again", f"Answered in {named}; it works as designed.")
+    plain = _reject(hive, "a third", f"Also see {named}.")
+
+    planned = hive.apply(dry_run=True)
+
+    assert item(planned, report).relates == (other,) and item(planned, plain).relates == (other,)
+    assert hive.store.related_reports(other) == ()  # a dry run records nothing
+    assert hive.listings.calls == 1  # one listing for the whole run, not one per mention
+
+    done = hive.apply()
+
+    assert item(done, report).status is ApplyStatus.APPLIED
+    assert hive.store.related_reports(other) == tuple(sorted((report, plain)))
+    assert hive.store.related_reports(report) == (other,)
+    assert hive.listings.calls == 2  # and one more for the second run
+
+
+def test_a_reply_naming_an_issue_without_a_listing_is_unverified() -> None:
+    hive = Hive(issues=False)
+    report = _reject(hive, "not a bug", "Works as designed; see #1.")
+
+    blocked = item(hive.apply(), report)
+
+    assert blocked.status is ApplyStatus.BLOCKED and "mention_unverified" in blocked.detail
+    assert hive.records(report) == []
+
+
+def test_a_run_that_mentions_nothing_never_lists_the_issues() -> None:
+    hive = Hive()
+    _reject(hive, "not a bug", "Works as designed.")
+    hive.apply()
+    assert hive.listings.calls == 0

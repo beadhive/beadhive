@@ -2060,6 +2060,7 @@ def proposal_check_row(check, item=None) -> dict:
         "stale": check.stale,
         "findings": [_finding_row(f) for f in check.findings],
         "computed_fixed_in": check.computed_fixed_in,
+        "relates": list(check.relates),
     }
     if item is not None:
         row["plan"] = item.status.value
@@ -2106,7 +2107,8 @@ def triage_check(pending: bool = False, as_: str = "", hive: str = "", as_json: 
             if check.passed:
                 item = plans.get(check.report)
                 gap = f"; {item.detail}" if item is not None and item.detail else ""
-                out.append(f"  ✓ {check.report}: passed{fixed}{gap}")
+                related = f"; relates to {', '.join(check.relates)}" if check.relates else ""
+                out.append(f"  ✓ {check.report}: passed{fixed}{related}{gap}")
                 continue
             out.append(f"✗ {check.report}: {len(check.findings)} finding(s){fixed}")
             for finding in check.findings:
@@ -2141,6 +2143,7 @@ def apply_item_row(item, destinations=None) -> dict:
         "drafted": list(item.drafted),
         "findings": [_finding_row(f) for f in item.findings],
         "detail": item.detail,
+        "relates": list(item.relates),
     }
     if "reroute" in row["steps"]:
         row["reroute_to"] = (destinations or {}).get(item.report, "")
