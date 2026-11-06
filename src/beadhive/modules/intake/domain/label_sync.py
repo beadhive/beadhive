@@ -7,7 +7,10 @@ What :class:`~..application.labels.LabelProjection` and the sender's batch appro
 report, carrying the converging diff (owned labels only), the drift (owned labels the projection
 does not produce, removed only with ``prune_unmapped``), the exclusive-group swaps, the labels it
 would add that the repository does not define (refused: ``bh work labels define`` first) and the
-``labels`` record it drafted or found.
+``labels`` record it drafted or found. With the ``issue.type`` / ``issue.fields`` gates on, an item
+also carries the issue type and field values the record sets (:class:`~.issue_values.ValueChange`,
+reported like drift: what the issue holds against what the bead projects) and the notes of a value
+skipped (unmapped, or not read).
 
 **Define** (:class:`LabelDefineRequest` to :class:`LabelDefineOutcome`): :func:`plan_definitions`
 diffs the catalog's definitions against the repository's (:class:`LiveLabel`) into creates,
@@ -16,10 +19,11 @@ candidate an OPEN issue still carries is kept and reported, never deleted. The p
 (:func:`definitions_digest`) is what the operator approves in the command.
 
 **Batch** (:class:`LabelBatch`): the ordered ``(outbox_id, digest)`` list of every drafted
-``labels`` operation, each digest rendered against the base it was DRAFTED on, so the list (and its
-digest, :func:`batch_digest`) does not move when an issue's labels do. An item whose live owned
-labels moved since its draft is :attr:`LabelBatchItem.stale`: approving the batch skips it (it
-mints no grant) and reports it for re-draft by the next sync.
+``labels.change``, ``issue.type`` and ``issue.fields`` operation of a labels record, each digest
+rendered against the base it was DRAFTED on, so the list (and its digest, :func:`batch_digest`)
+does not move when an issue's labels do. An item whose live owned labels (or, for a value
+operation, the values it was drafted on) moved since its draft is :attr:`LabelBatchItem.stale`:
+approving the batch skips it (it mints no grant) and reports it for re-draft by the next sync.
 
 :func:`progress_facts` decides what counts as an operator notice for the derived ``progress``
 label: the newest progress-milestone record of the report (``started``, ``blocked``,
@@ -34,9 +38,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from .issue_values import ValueChange
 from .labels import LabelCatalog, LabelProblem, LabelSpec, ProgressFacts, find_leaks
 from .leaks import LeakFinding, LeakPolicy, Scanner
-from .outbox import OutboxDocument, OutboxEvent, RecordStatus, _hex
+from .outbox import OpKind, OutboxDocument, OutboxEvent, RecordStatus, _hex
 from .sending import OutboxResult
 
 #: The progress-milestone events whose newest live record is the report's operator notice.
@@ -94,7 +99,9 @@ class LabelSyncItem:
     swaps as ``(dimension, removed, added)``; ``undefined`` the labels it would add that the
     repository does not define (nothing is drafted then). ``drafted`` is a new (refreshed) labels
     record, ``pending`` the open one already carrying this diff, ``superseded`` the older open one
-    the new draft retired, ``discarded`` an open one the converged issue no longer needs."""
+    the new draft retired, ``discarded`` an open one the converged issue no longer needs.
+    ``values`` are the issue type and field values the record sets (each the issue's live value
+    against the projected one), ``value_notes`` why a value was skipped."""
 
     report: str
     url: str = ""
@@ -110,10 +117,16 @@ class LabelSyncItem:
     held: bool = False
     note: str = ""
     error: str = ""
+    values: tuple[ValueChange, ...] = ()
+    value_notes: tuple[str, ...] = ()
+
+    @property
+    def labels_changed(self) -> bool:
+        return bool(self.add or self.remove)
 
     @property
     def changed(self) -> bool:
-        return bool(self.add or self.remove)
+        return bool(self.add or self.remove or self.values)
 
 
 @dataclass(frozen=True)
@@ -128,6 +141,11 @@ class LabelSyncOutcome:
     @property
     def drift(self) -> Mapping[str, frozenset[str]]:
         return MappingProxyType({i.report: i.drift for i in self.items if i.drift})
+
+    @property
+    def value_drift(self) -> Mapping[str, tuple[ValueChange, ...]]:
+        """Per report, the issue type and field values that differ from the projection."""
+        return MappingProxyType({i.report: i.values for i in self.items if i.values})
 
     @property
     def errors(self) -> tuple[LabelSyncItem, ...]:
@@ -280,8 +298,10 @@ def plan_definitions(
 
 @dataclass(frozen=True)
 class LabelBatchItem:
-    """One drafted ``labels`` operation in a batch: its digest as drafted, the change it makes,
-    and whether the issue's live owned labels moved since the draft (``stale``)."""
+    """One drafted operation of a labels record in a batch: its ``kind`` (``labels.change``,
+    ``issue.type`` or ``issue.fields``), its digest as drafted, the change it makes (``add`` /
+    ``remove``, or the ``values`` it sets), and whether the issue moved since the draft
+    (``stale``: its owned labels, or the values the operation was drafted on)."""
 
     report: str
     outbox_id: str
@@ -291,6 +311,8 @@ class LabelBatchItem:
     remove: frozenset[str] = frozenset()
     stale: bool = False
     note: str = ""
+    kind: OpKind = OpKind.LABELS
+    values: tuple[tuple[str, str], ...] = ()
 
     @property
     def short_digest(self) -> str:

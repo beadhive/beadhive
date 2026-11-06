@@ -3,14 +3,15 @@
 Small capability interfaces: :class:`TrackerReader` and :class:`TrackerIdentity` are required
 and together form :class:`TrackerAdapter`, the one Protocol the plugin wiring binds.
 :class:`CommentWriter`, :class:`LabelWriter`, :class:`LabelReader`, :class:`LabelDefiner`,
-:class:`LabelPruner`, :class:`IssueCloser`, :class:`IssueResolver` and :class:`MarkerCodec` are
-optional and are discovered with ``isinstance`` on the bound object. A writer's presence is
-necessary, never sufficient: the operation must also be enabled and each call must carry a fresh
-grant.
+:class:`LabelPruner`, :class:`IssueCloser`, :class:`IssueTypeWriter`, :class:`IssueFieldWriter`,
+:class:`IssueResolver` and :class:`MarkerCodec` are optional and are discovered with
+``isinstance`` on the bound object. A writer's presence is necessary, never sufficient: the
+operation must also be enabled and each call must carry a fresh grant.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from .records import (
@@ -131,6 +132,35 @@ class IssueCloser(Protocol):
 
 
 @runtime_checkable
+class IssueTypeWriter(Protocol):
+    """Optional (additive; the API version stays 1): set one issue's type (``issue.type``) to
+    ``issue_type``, a type the tracker defines, by its name. An issue-scoped write, so
+    ``grant.target`` is the :class:`IssueKey`. It changes the type and nothing else: never the
+    labels, the state, the title or the body. A type the tracker does not define is refused
+    (``PayloadRejected``, nothing written). The same operation's switch gates the read: an
+    adapter reports ``TrackerIssue.issue_type`` only with ``issue.type`` enabled."""
+
+    def set_issue_type(
+        self, issue: IssueKey, issue_type: str, *, grant: WriteGrant
+    ) -> WriteReceipt: ...
+
+
+@runtime_checkable
+class IssueFieldWriter(Protocol):
+    """Optional (additive; the API version stays 1): set field values of one issue
+    (``issue.fields``), ``values`` mapping a field's name to its value (a select field's option
+    name). An issue-scoped write, so ``grant.target`` is the :class:`IssueKey`. Only the named
+    fields change: never another field, the labels, the type or the state. A field or option the
+    tracker does not define is refused before any write (``PayloadRejected``). The same
+    operation's switch gates the read: ``TrackerIssue.fields`` only with ``issue.fields``
+    enabled."""
+
+    def set_issue_fields(
+        self, issue: IssueKey, values: Mapping[str, str], *, grant: WriteGrant
+    ) -> WriteReceipt: ...
+
+
+@runtime_checkable
 class IssueResolver(Protocol):
     """Optional URL resolution (amendment A1; the API version stays 1).
 
@@ -193,7 +223,9 @@ def check_close(issue: IssueKey, reason: CloseReason, duplicate_of: IssueKey | N
 __all__ = [
     "CommentWriter",
     "IssueCloser",
+    "IssueFieldWriter",
     "IssueResolver",
+    "IssueTypeWriter",
     "LabelDefiner",
     "LabelPruner",
     "LabelReader",

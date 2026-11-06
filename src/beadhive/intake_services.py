@@ -1168,20 +1168,26 @@ def outbox_service_for(
     threads: ThreadPolicy | None = None,
     close_enabled: bool = False,
     triage: Any = None,
+    type_enabled: bool = False,
+    fields_enabled: bool = False,
 ) -> IntakeService:
     """The intake service for ``entry`` with the supervised sender bound over the INJECTED
     ``tracker`` (and its ``marker_line`` codec). With ``threads`` (the comment-ingestion policy,
     passed only when ``intake.external.comments.enabled``) the same tracker, identity and lock
     also serve the thread operations (:func:`thread_service_for`). ``close_enabled`` is the bound
-    adapter's own ``issue.close`` enable (:func:`tracker_wiring`): the sender's close gate;
-    ``triage`` (:func:`triage_binding`) lets the close backfill compute a missing reply's text.
+    adapter's own ``issue.close`` enable (:func:`tracker_wiring`): the sender's close gate, and
+    ``type_enabled`` / ``fields_enabled`` its ``issue.type`` / ``issue.fields`` enables, the
+    gates of those two operations; ``triage`` (:func:`triage_binding`) lets the close backfill
+    compute a missing reply's text.
 
     Off by default: with ``policy`` absent or disabled no sender is bound at all, so every outbox
     operation refuses with ``OUTBOX_DISABLED`` before the tracker is touched. Enabling it here is
     still never sufficient to post: the adapter's own per-operation enable and an operator
     approval minting a single-use grant are both required. ``sanitizer`` defaults to the shared
     :class:`~beadhive.adapters.intake.ScrubSanitizer`; the store is the OPERATIONAL one only."""
-    policy = with_close(policy or OutboxPolicy(), close_enabled)
+    policy = with_value_gates(
+        with_close(policy or OutboxPolicy(), close_enabled), type_enabled, fields_enabled
+    )
     store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
     labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
     if not policy.enabled:
@@ -1223,7 +1229,16 @@ def outbox_service_for(
         if threads is not None
         else None
     )
-    refresh = transition_refresh(cfg, entry, directory, store, held, ids=source, sanitizer=scrubber)
+    refresh = transition_refresh(
+        cfg,
+        entry,
+        directory,
+        store,
+        held,
+        ids=source,
+        sanitizer=scrubber,
+        gates=(policy.type_enabled, policy.fields_enabled),
+    )
     return IntakeService(
         store,
         labels,
@@ -1240,6 +1255,37 @@ def with_close(policy: OutboxPolicy, close_enabled: Any) -> OutboxPolicy:
     with the outbox on and the tracker plugin's ``write.issue_close.enabled`` resolved true for
     the hive's binding. There is no separate intake key: the adapter switch is the one gate."""
     return replace(policy, close_enabled=policy.enabled and close_enabled is True)
+
+
+def with_value_gates(policy: OutboxPolicy, type_enabled: Any, fields_enabled: Any) -> OutboxPolicy:
+    """``policy`` with the ``issue.type`` and ``issue.fields`` gates set from the bound adapter's
+    own enables (``write.issue_type.enabled`` / ``write.issue_fields.enabled``), each on only with
+    the outbox on. Like the close, there is no separate intake key."""
+    return replace(
+        policy,
+        type_enabled=policy.enabled and type_enabled is True,
+        fields_enabled=policy.enabled and fields_enabled is True,
+    )
+
+
+def value_gates(cfg: Mapping[str, Any], entry: Mapping[str, Any]) -> tuple[bool, bool]:
+    """Whether the tracker plugin bound to ``entry``'s public store switches ``issue.type`` /
+    ``issue.fields`` on, read from config alone (no binding, no request): the tracker-free
+    transition refresh's gates. Off for an unbound store, a disabled or invalid plugin."""
+    from .bootstrap import tracker as tracker_root  # lazy: only an on_transition hive gets here
+    from .modules.tracker.contracts import Operation
+
+    try:
+        adapter_id = tracker_root.bound_adapter_id(entry, "public")
+    except tracker_root.TrackerBindingError:
+        return False, False
+    if adapter_id is None:
+        return False, False
+    settings = tracker_root.plugin_settings(adapter_id, cfg.get("plugins"))
+    if not (settings.own_enabled and settings.valid):
+        return False, False
+    operations = settings.operations()
+    return Operation.ISSUE_TYPE in operations, Operation.ISSUE_FIELDS in operations
 
 
 # -- the merge and release milestones (I10): they draft, they never send ---------------------
@@ -1654,6 +1700,9 @@ def tracker_wiring(
         "owned_label_prefixes": _owned_label_prefixes(cfg, bound),
         # the sender's close gate: the binding's own issue.close enable (no separate intake key)
         "close_enabled": Operation.ISSUE_CLOSE in bound.enabled,
+        # likewise the issue.type / issue.fields gates (no separate intake keys either)
+        "type_enabled": Operation.ISSUE_TYPE in bound.enabled,
+        "fields_enabled": Operation.ISSUE_FIELDS in bound.enabled,
     }
 
 
@@ -1713,6 +1762,8 @@ def _outbox_port(
     refusal: IntakeRefused | None = None,
     close_enabled: bool = False,
     triage: Any = None,
+    type_enabled: bool = False,
+    fields_enabled: bool = False,
 ):
     """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
@@ -1748,6 +1799,8 @@ def _outbox_port(
             threads=thread_policy if comments_on and wired else None,
             close_enabled=close_enabled,
             triage=triage() if callable(triage) else triage,
+            type_enabled=type_enabled,
+            fields_enabled=fields_enabled,
         )
 
     return bind_intake(enabled, build)
@@ -1775,6 +1828,8 @@ def outbox_call(
     wiring: Mapping[str, Any] | None = None,
     close_enabled: bool = False,
     triage: Any = None,
+    type_enabled: bool = False,
+    fields_enabled: bool = False,
 ) -> OutboxCall:
     """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
     failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
@@ -1806,6 +1861,8 @@ def outbox_call(
             refusal=wiring.get("refusal"),
             close_enabled=close_enabled or wiring.get("close_enabled") is True,
             triage=triage,
+            type_enabled=type_enabled or wiring.get("type_enabled") is True,
+            fields_enabled=fields_enabled or wiring.get("fields_enabled") is True,
         )
         value = run(port)
     except IntakeRefused as exc:
@@ -1824,13 +1881,17 @@ _OUTBOX_KINDS = {
     "labels.change": "labels.change",
     "close": "issue.close",
     "issue.close": "issue.close",
+    "type": "issue.type",
+    "issue.type": "issue.type",
+    "fields": "issue.fields",
+    "issue.fields": "issue.fields",
 }
 
 
 def outbox_kind(text: str) -> Any:
-    """The :class:`OpKind` an operator typed (``comment`` | ``labels`` | ``close``, or the full
-    operation name), or ``None`` when it names none. An empty string is the default,
-    ``comment.create``."""
+    """The :class:`OpKind` an operator typed (``comment`` | ``labels`` | ``close`` | ``type`` |
+    ``fields``, or the full operation name), or ``None`` when it names none. An empty string is
+    the default, ``comment.create``."""
     from .modules.intake.domain import OpKind
 
     name = _OUTBOX_KINDS.get((text or "comment").strip().lower())
@@ -1839,7 +1900,9 @@ def outbox_kind(text: str) -> Any:
 
 def _bad_kind(text: str) -> OutboxCall:
     return OutboxCall(
-        2, f"unknown operation {text!r}: use comment, labels or close", "bad_argument"
+        2,
+        f"unknown operation {text!r}: use comment, labels, close, type or fields",
+        "bad_argument",
     )
 
 
@@ -1957,7 +2020,7 @@ def outbox_approve(
 
     if not ops:
         return OutboxCall(
-            2, "pass at least one --op <comment|labels|close>:<digest>", "bad_argument"
+            2, "pass at least one --op <comment|labels|close|type|fields>:<digest>", "bad_argument"
         )
     if publish and len(ops) != 1:
         return OutboxCall(2, "--publish needs exactly one --op", "bad_argument")
@@ -2381,6 +2444,8 @@ class LabelsConfig:
     on_transition: bool = False
     settings: Any = None
     error: str = ""
+    #: the issue type / priority field maps (``ValueSettings``; ``None`` with ``error``)
+    values: Any = None
 
 
 #: The keys of ``intake.external.labels`` that need it on, named in every refusal.
@@ -2392,10 +2457,14 @@ def labels_config(cfg: Mapping[str, Any]) -> LabelsConfig:
     projected dimensions, aliases, colors and per-value overrides). Host-owned and off: only a
     literal ``true`` enables the projection or the transition refresh."""
     from .modules.intake.domain import (
+        DEFAULT_ISSUE_TYPES,
         DEFAULT_PREFIX,
+        DEFAULT_PRIORITIES,
+        DEFAULT_PRIORITY_FIELD,
         DEFAULT_PROJECTED,
         LabelOverride,
         LabelSettings,
+        ValueSettings,
     )
 
     section = (((cfg.get("intake") or {}).get("external")) or {}).get("labels") or {}
@@ -2419,9 +2488,22 @@ def labels_config(cfg: Mapping[str, Any]) -> LabelsConfig:
             colors={str(k): str(v).lower() for k, v in (section.get("colors") or {}).items()},
             overrides=overrides,
         )
+        kinds = section.get("issue_type") or {}
+        priority = section.get("priority_field") or {}
+        values = ValueSettings(
+            issue_types={
+                str(k): str(v)
+                for k, v in (kinds["map"] if "map" in kinds else DEFAULT_ISSUE_TYPES).items()
+            },
+            priority_field=str(priority.get("name") or DEFAULT_PRIORITY_FIELD),
+            priorities={
+                str(k): str(v)
+                for k, v in (priority["map"] if "map" in priority else DEFAULT_PRIORITIES).items()
+            },
+        )
     except (AttributeError, TypeError, ValueError) as exc:
         return LabelsConfig(enabled, on_transition, None, f"intake.external.labels: {exc}")
-    return LabelsConfig(enabled, on_transition, settings)
+    return LabelsConfig(enabled, on_transition, settings, values=values)
 
 
 def registry_dimensions(cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -2553,13 +2635,16 @@ def label_projection_for(
     sanitizer: Any = None,
     audit: Any = None,
     owned_label_prefixes: tuple[str, ...] = (),
+    gates: tuple[bool, bool] | None = None,
 ):
     """The ``LabelProjection`` over ``store`` and ``tracker`` (an ``_UnwiredTracker`` for the
     tracker-free transition refresh), or ``None`` unless :data:`LABELS_ENABLED_KEY` is on. Its
     leak policy owns the projection's prefix (plus ``owned_label_prefixes``, the plugin's), its
     outbox policy is the hive's (drafting needs ``outbox.enabled`` and ``outbox.labels_enabled``)
-    and its audit trail is :class:`FileAuditLog` in the hive's private state. Raises
-    ``IntakeRefused`` for a labels section the module refuses."""
+    and its audit trail is :class:`FileAuditLog` in the hive's private state. ``gates`` are the
+    bound adapter's ``issue.type`` / ``issue.fields`` enables (``None``: read from config,
+    :func:`value_gates`): with one on, the projection also drafts that value from the maps.
+    Raises ``IntakeRefused`` for a labels section the module refuses."""
     from .adapters.intake import ScrubSanitizer
     from .modules.intake.application import LabelProjection
 
@@ -2569,6 +2654,7 @@ def label_projection_for(
     if setting.settings is None:
         raise IntakeRefused(RefusalReason.INVALID_REQUEST, setting.error)
     owned = tuple(dict.fromkeys((*owned_label_prefixes, setting.settings.prefix)))
+    type_on, fields_on = gates if gates is not None else value_gates(cfg, entry)
     return LabelProjection(
         store,
         tracker,
@@ -2579,8 +2665,9 @@ def label_projection_for(
         leak_policy=leak_policy(cfg, owned_label_prefixes=owned),
         sanitizer=sanitizer if sanitizer is not None else ScrubSanitizer(),
         posture=store_posture(entry),
-        outbox=milestone_settings(cfg)[0],
+        outbox=with_value_gates(milestone_settings(cfg)[0], type_on, fields_on),
         audit=audit if audit is not None else FileAuditLog(lambda: audit_path(directory)),
+        values=setting.values,
     )
 
 
@@ -2593,12 +2680,14 @@ def transition_refresh(
     *,
     ids: Any = None,
     sanitizer: Any = None,
+    gates: tuple[bool, bool] | None = None,
 ) -> dict[str, Any]:
     """The ``IntakeService`` keywords of the opt-in transition hook (bh-gjb5w): a TRACKER-FREE
     projection and ``refresh_on_transition``, so a disposition, needs-info, wake, link, unlink or
     milestone drafts or refreshes the report's ONE ``labels`` record from stored state. Empty
     (the hook is off, the default) unless ``intake.external.labels.enabled`` AND
-    ``labels.on_transition``; a refresh never fails the transition."""
+    ``labels.on_transition``; a refresh never fails the transition. ``gates`` are the
+    ``issue.type`` / ``issue.fields`` gates (``None``: read from config, :func:`value_gates`)."""
     setting = labels_config(cfg)
     if entry is None or not setting.on_transition or setting.settings is None:
         return {}
@@ -2611,6 +2700,7 @@ def transition_refresh(
         tracker=_UnwiredTracker(_no_labels_wiring),
         ids=ids,
         sanitizer=sanitizer,
+        gates=gates,
     )
     return {"projection": projection, "refresh_on_transition": True}
 
@@ -2667,6 +2757,7 @@ def _compose(
     owned_label_prefixes: tuple[str, ...] = (),
     triage: Any = None,
     review: Any = None,
+    gates: tuple[bool, bool] | None = None,
 ) -> _Composed:
     """One ``IntakeService`` over the hive's OPERATIONAL store with what a labels or triage verb
     needs bound: the supervised sender (and the milestone service) over ``outbox`` (an outbox
@@ -2704,7 +2795,11 @@ def _compose(
             ids=source,
             identity=outbox["identity"],
             marker_line=outbox["marker_line"],
-            policy=with_close(policy, outbox.get("close_enabled")),
+            policy=with_value_gates(
+                with_close(policy, outbox.get("close_enabled")),
+                outbox.get("type_enabled"),
+                outbox.get("fields_enabled"),
+            ),
             leak_policy=leaks,
             sanitizer=scrubber,
             posture=posture,
@@ -2733,6 +2828,7 @@ def _compose(
             sanitizer=scrubber,
             audit=audit,
             owned_label_prefixes=(*owned, *owned_label_prefixes),
+            gates=gates,
         )
         if projection is not None:
             keywords = {
@@ -2741,7 +2837,18 @@ def _compose(
             }
     else:
         keywords = transition_refresh(
-            cfg, entry, directory, store, held, ids=source, sanitizer=scrubber
+            cfg,
+            entry,
+            directory,
+            store,
+            held,
+            ids=source,
+            sanitizer=scrubber,
+            gates=(
+                None
+                if outbox is None
+                else (outbox.get("type_enabled") is True, outbox.get("fields_enabled") is True)
+            ),
         )
     service = IntakeService(
         store,
@@ -2778,15 +2885,18 @@ def _require_labels(cfg: Mapping[str, Any]) -> None:
 
 def _labels_tracker(
     cfg, entry, directory, requested: frozenset, tracker: Any
-) -> tuple[Any, tuple[str, ...]]:
-    """The projection's tracker (injected, or from :func:`labels_wiring`) and the plugin's owned
-    label prefixes; a binding refusal is raised (it names the key to set)."""
+) -> tuple[Any, tuple[str, ...], tuple[bool, bool] | None]:
+    """The projection's tracker (injected, or from :func:`labels_wiring`), the plugin's owned
+    label prefixes and the binding's ``issue.type`` / ``issue.fields`` gates (``None`` for an
+    injected tracker: read from config); a binding refusal is raised (it names the key to
+    set)."""
     if tracker is not None:
-        return tracker, ()
+        return tracker, (), None
     wiring = labels_wiring(cfg, entry, directory, requested=requested)
     if wiring.get("tracker") is None:
         raise wiring.get("refusal") or _no_labels_wiring()
-    return wiring["tracker"], tuple(wiring.get("owned_label_prefixes", ()))
+    gates = (wiring.get("type_enabled") is True, wiring.get("fields_enabled") is True)
+    return wiring["tracker"], tuple(wiring.get("owned_label_prefixes", ())), gates
 
 
 def labels_sync(
@@ -2816,7 +2926,7 @@ def labels_sync(
 
     def run():
         _require_labels(cfg)
-        port, owned = _labels_tracker(
+        port, owned, gates = _labels_tracker(
             cfg,
             entry,
             directory,
@@ -2834,6 +2944,7 @@ def labels_sync(
             sanitizer=sanitizer,
             labels_tracker=port,
             owned_label_prefixes=owned,
+            gates=gates,
         )
         return composed.service.sync_labels(
             LabelSyncRequest(
@@ -2881,7 +2992,7 @@ def labels_define(
 
     def run():
         _require_labels(cfg)
-        port, owned = _labels_tracker(cfg, entry, directory, frozenset(requested), tracker)
+        port, owned, gates = _labels_tracker(cfg, entry, directory, frozenset(requested), tracker)
         composed = _compose(
             cfg,
             entry,
@@ -2894,6 +3005,7 @@ def labels_define(
             audit=audit,
             labels_tracker=port,
             owned_label_prefixes=owned,
+            gates=gates,
         )
         return composed.service.define_labels(
             LabelDefineRequest(actor, approve=approve, prune=prune, dry_run=dry_run)
@@ -2903,15 +3015,16 @@ def labels_define(
 
 
 def labels_review(cfg, entry, directory, **kwargs) -> OutboxCall:
-    """``bh work labels review``: the rendered batch of every drafted ``labels.change`` operation
-    (one pass over the outbox documents and one issue listing), with the digest an operator
+    """``bh work labels review``: the rendered batch of every drafted ``labels.change`` operation,
+    and every drafted ``issue.type`` / ``issue.fields`` one while its gate is on (one pass over
+    the outbox documents and one issue listing), with the digest an operator
     approves. A read; off unless ``intake.external.enabled`` and ``outbox.enabled``."""
     return outbox_call(cfg, entry, directory, lambda port: port.review_label_batch(), **kwargs)
 
 
 def labels_approve(cfg, entry, directory, digest: str, actor: str, **kwargs) -> OutboxCall:
     """``bh work labels approve --batch <digest>``: approve the reviewed batch (an operator seat
-    only): one single-use grant per issue, a stale item skipped for re-draft. Sends nothing.
+    only): one single-use grant per operation, a stale item skipped for re-draft. Sends nothing.
     Needs ``outbox.enabled`` and ``outbox.labels_enabled``."""
     from .modules.intake.domain import LabelBatchApprove
 

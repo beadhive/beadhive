@@ -330,6 +330,8 @@ from .outbox import (  # noqa: E402
     ISSUES_READ,
     MILESTONE_GROUP,
     OUTBOX_SCHEMA,
+    TYPE_VALUE,
+    VALUE_KINDS,
     Approval,
     ApprovalRequest,
     Attempt,
@@ -365,6 +367,7 @@ from .outbox import (  # noqa: E402
     SendPlan,
     Step,
     UnlinkedFact,
+    ValueIntent,
     close_blocker,
     is_grant_id,
     is_operator_seat,
@@ -373,6 +376,7 @@ from .outbox import (  # noqa: E402
     mint_outbox_id,
     outbox_view,
     reply_revision,
+    values_payload,
 )
 from .outbox_document import (  # noqa: E402
     OUTBOX_KEY,
@@ -390,6 +394,8 @@ __all__ += [
     "NOTIFIED_BY_EVENT",
     "OUTBOX_KEY",
     "OUTBOX_SCHEMA",
+    "TYPE_VALUE",
+    "VALUE_KINDS",
     "Approval",
     "ApprovalRequest",
     "Attempt",
@@ -432,6 +438,7 @@ __all__ += [
     "SendPlan",
     "Step",
     "UnlinkedFact",
+    "ValueIntent",
     "Verdict",
     "close_blocker",
     "completion_event",
@@ -450,6 +457,7 @@ __all__ += [
     "outbox_to_document",
     "outbox_view",
     "reply_revision",
+    "values_payload",
 ]
 
 # -- the supervised sender's port records (I9a) -----------------------------------------------
@@ -807,6 +815,32 @@ __all__ += [
     "definitions_digest",
     "plan_definitions",
     "progress_facts",
+]
+
+# -- the issue type and field-value projection (bh-poqy0), beside the labels -----------------
+
+from .issue_values import (  # noqa: E402
+    DEFAULT_ISSUE_TYPES,
+    DEFAULT_PRIORITIES,
+    DEFAULT_PRIORITY_FIELD,
+    DesiredValues,
+    ValueChange,
+    ValueSettings,
+    desired_values,
+    field_changes,
+    type_change,
+)
+
+__all__ += [
+    "DEFAULT_ISSUE_TYPES",
+    "DEFAULT_PRIORITIES",
+    "DEFAULT_PRIORITY_FIELD",
+    "DesiredValues",
+    "ValueChange",
+    "ValueSettings",
+    "desired_values",
+    "field_changes",
+    "type_change",
 ]
 
 # -- propose, review and apply-reviewed (bh-9aqmv) ---------------------------------------------

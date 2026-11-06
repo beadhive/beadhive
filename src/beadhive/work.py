@@ -612,14 +612,17 @@ def delivery_deprioritised_cmd(
 _OUTBOX_ID = typer.Argument(..., metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_ID_OPT = typer.Argument("", metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_KIND = typer.Option(
-    "", "--kind", help="operation: comment (default), labels or close (each is its own gate)"
+    "",
+    "--kind",
+    help="operation: comment (default), labels, close, type or fields (each is its own gate)",
 )
 _JSON = typer.Option(False, "--json", help="emit one JSON document")
 _OUTBOX_OP = typer.Option(
     ...,
     "--op",
-    help="<comment|labels|close>:<digest> reviewed in `outbox show` (full digest or 12-hex "
-    "prefix); repeat to approve several, each as its own gate with its own single-use grant",
+    help="<comment|labels|close|type|fields>:<digest> reviewed in `outbox show` (full digest or "
+    "12-hex prefix); repeat to approve several, each as its own gate with its own single-use "
+    "grant",
 )
 _OUTBOX_PUBLISH = typer.Option(
     [], "--publish", help="a finding id to publish deliberately (needs exactly one --op)"
@@ -665,7 +668,9 @@ def outbox_discard_cmd(
     accept_unknown: bool = typer.Option(
         False, "--accept-unknown", help="also abandon an operation whose outcome is unknown"
     ),
-    kind: str = typer.Option("", "--kind", help="only this operation: comment, labels or close"),
+    kind: str = typer.Option(
+        "", "--kind", help="only this operation: comment, labels, close, type or fields"
+    ),
     as_: str = _AS,
     hive: str = _HIVE,
     as_json: bool = _JSON,
@@ -800,8 +805,11 @@ def labels_sync_cmd(
     on bead state: intake state, delivery, progress, type, priority and component, derived from
     the dimension registry. Reads the issues fresh (one listing per run) and drafts at most one
     `labels` outbox record per issue; nothing is sent until an operator approves the batch
-    (`labels review`, `labels approve`). Labels outside the prefix are never touched. Off unless
-    `intake.external.labels.enabled`; drafting also needs `outbox.enabled` and
+    (`labels review`, `labels approve`). Labels outside the prefix are never touched. With the
+    tracker's `write.issue_type` / `write.issue_fields` on, the same record also sets the issue
+    type and the Priority field from `intake.external.labels.issue_type.map` /
+    `priority_field.map` (an unmapped value is skipped with a note), reported like drift. Off
+    unless `intake.external.labels.enabled`; drafting also needs `outbox.enabled` and
     `outbox.labels_enabled`."""
     return work_intake.labels_sync(
         report, all_, include_closed, dry_run, prune_unmapped, as_, hive, as_json
@@ -832,8 +840,8 @@ def labels_define_cmd(
 
 
 def labels_review_cmd(hive: str = _HIVE, as_json: bool = _JSON):
-    """Render the batch of every drafted label change, each with what it adds and removes and
-    whether its issue's labels moved since the draft (stale), plus the batch digest to approve.
+    """Render the batch digest to approve and every drafted label, issue type or field change:
+    what each adds and removes (or sets), and whether its issue moved since the draft (stale).
     Reads only. Off unless `intake.external.outbox.enabled`."""
     return work_intake.labels_review(hive, as_json)
 
@@ -849,9 +857,10 @@ def labels_approve_cmd(
     hive: str = _HIVE,
     as_json: bool = _JSON,
 ):
-    """Approve the reviewed batch of label changes: one single-use grant per issue (operator
-    seats only). A stale item is skipped and re-drafted by the next sync. Approving sends nothing:
-    send each with `bh work outbox send <id> --kind labels`. Needs `outbox.labels_enabled`."""
+    """Approve the reviewed batch of label changes: one single-use grant per operation (operator
+    seats only), a type or field change approved as its own operation. A stale item is skipped
+    and re-drafted by the next sync. Approving sends nothing: send each with `bh work outbox send
+    <id> --kind labels` (or `--kind type` / `--kind fields`). Needs `outbox.labels_enabled`."""
     return work_intake.labels_approve(batch, as_, hive, as_json)
 
 

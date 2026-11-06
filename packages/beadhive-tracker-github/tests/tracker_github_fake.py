@@ -32,6 +32,13 @@ behaviour it reproduces (API version 2022-11-28):
   ``labels`` member REPLACES the issue's
   whole label set, as on GitHub (the adapter must never send one); ``403`` on an archived
   repository;
+* ``PATCH /issues/{n}`` with ``type`` (``issue.type``): a type name the organization defines
+  (case-insensitively; ``422 Validation Failed`` otherwise) or ``null``, answering the issue with
+  its ``type`` object; every issue row carries ``type`` and ``issue_field_values``;
+* issue fields (``issue.fields``): ``GET /orgs/{owner}/issue-fields`` (the organization's fields,
+  ``Priority`` a single select by default) and ``POST /issues/{n}/issue-field-values`` (adds the
+  named values, keeping every other field; ``422`` for an unknown field id or option) answering
+  the issue's complete field values;
 * repository label definitions: ``GET /labels`` (paged by ``per_page``/``page`` with a
   ``Link: rel="next"``, ``description`` ``null`` when unset), ``POST /labels`` (``201``; ``422
   Validation Failed`` with ``code: already_exists`` for a name already defined in any case),
@@ -68,6 +75,7 @@ from beadhive.modules.tracker.contracts import (
     ProjectRef,
 )
 from beadhive.testing.tracker import TrackerSubject
+from beadhive.testing.tracker.world import DEFAULT_ISSUE_FIELDS, DEFAULT_ISSUE_TYPES
 from beadhive_plugins.credentials import ResolvedToken
 from beadhive_tracker_github.adapter import new_adapter
 
@@ -158,6 +166,11 @@ class FakeGitHub:
     write_time: datetime | None = None
     #: Repository label definitions by exact name (GitHub matches them case-insensitively).
     label_defs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The organization's issue types and issue fields (GitHub's defaults until seeded).
+    issue_types: list[str] = field(default_factory=lambda: list(DEFAULT_ISSUE_TYPES))
+    issue_field_defs: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: dict(DEFAULT_ISSUE_FIELDS)
+    )
     _ids: int = 0
 
     # -- plumbing ---------------------------------------------------------------------------
@@ -239,6 +252,8 @@ class FakeGitHub:
             "timeline_url": f"{api_issue}/timeline",
             "performed_via_github_app": None,
             "state_reason": "completed" if closed else None,
+            "type": None,
+            "issue_field_values": [],
         }
         self.issues.append(row)
         return self._key(row)
@@ -374,6 +389,51 @@ class FakeGitHub:
             for row in sorted(self.label_defs.values(), key=lambda r: r["name"])
         )
 
+    def seed_issue_type(self, name: str) -> None:
+        if name not in self.issue_types:
+            self.issue_types.append(name)
+
+    def seed_issue_field(self, name: str, options: tuple[str, ...]) -> None:
+        self.issue_field_defs[name] = tuple(options)
+
+    def server_issue_type(self, issue: IssueKey) -> str:
+        kind = self._row(int(issue.identifier[1:]))["type"]
+        return kind["name"] if kind else ""
+
+    def server_issue_fields(self, issue: IssueKey) -> dict[str, str]:
+        rows = self._row(int(issue.identifier[1:]))["issue_field_values"]
+        return {v["issue_field_name"]: v["single_select_option"]["name"] for v in rows}
+
+    def _type_row(self, name: str) -> dict[str, Any]:
+        n = self.issue_types.index(name) + 1
+        return {
+            "id": 300 + n,
+            "node_id": f"IT_{n}",
+            "name": name,
+            "description": None,
+            "color": "gray",
+            "is_enabled": True,
+        }
+
+    def _field_rows(self) -> list[dict[str, Any]]:
+        rows = []
+        for n, (name, options) in enumerate(self.issue_field_defs.items(), start=1):
+            rows.append(
+                {
+                    "id": 44000 + n,
+                    "node_id": f"IFSS_{n}",
+                    "name": name,
+                    "description": None,
+                    "data_type": "single_select",
+                    "visibility": "organization_members_only",
+                    "options": [
+                        {"id": 77000 + 10 * n + i, "name": o, "color": "gray", "priority": i}
+                        for i, o in enumerate(options, start=1)
+                    ],
+                }
+            )
+        return rows
+
     def throttle(self, requests: int, retry_after_seconds: float) -> None:
         self.throttled, self.retry_after = requests, retry_after_seconds
 
@@ -449,6 +509,10 @@ class FakeGitHub:
                 message = "Resource not accessible by integration"
                 return httpx.Response(403, json={"message": message})
             return httpx.Response(200, json=self.me(), headers=headers)
+        if path == f"{self.api_path}/orgs/{self.owner}/issue-fields":
+            if auth is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json=self._field_rows(), headers=headers)
         repo_paths = (self.root, f"{self.api_path}/repositories/{REPOSITORY_ID}")
         base = next((p for p in repo_paths if path == p or path.startswith(p + "/")), None)
         if base is None:
@@ -519,6 +583,10 @@ class FakeGitHub:
             return self._post_comment(request, int(match.group(1)))
         if request.method == "PATCH" and (match := re.fullmatch(issue, path)):
             return self._patch_issue(request, int(match.group(1)))
+        if request.method == "POST" and (
+            match := re.fullmatch(rf"{issue}/issue-field-values", path)
+        ):
+            return self._add_field_values(request, int(match.group(1)))
         if match := re.fullmatch(rf"{issue}/labels(?:/(.+))?", path):
             return self._change_labels(request, int(match.group(1)), match.group(2))
         if match := re.fullmatch(rf"{re.escape(self.root)}/labels(?:/(.+))?", path):
@@ -570,6 +638,14 @@ class FakeGitHub:
             if reason != "duplicate" or target is None or target["number"] in self.deleted:
                 return httpx.Response(422, json={"message": "Validation Failed"})
         when = iso(self.write_time or self.clock.now())
+        if "type" in edit:  # a name the organization defines (any case), or null to clear it
+            wanted = edit["type"]
+            known = {t.casefold(): t for t in self.issue_types}
+            if wanted is not None and (
+                not isinstance(wanted, str) or wanted.casefold() not in known
+            ):
+                return httpx.Response(422, json={"message": "Validation Failed"})
+            row["type"] = None if wanted is None else self._type_row(known[wanted.casefold()])
         if state is not None:
             row["state"] = state
             row["closed_at"] = when if state == "closed" else None
@@ -582,6 +658,41 @@ class FakeGitHub:
             row["labels"] = [self._label(n) for n in edit["labels"]]
         row["updated_at"] = when
         return httpx.Response(200, json=row)
+
+    def _add_field_values(self, request: httpx.Request, number: int) -> httpx.Response:
+        if self.repo_meta.get("archived"):
+            return httpx.Response(403, json={"message": "Repository was archived so is read-only."})
+        if (refused := self._missing(number)) is not None:
+            return refused
+        row = self._row(number)
+        wanted = json.loads(request.content or b"{}").get("issue_field_values")
+        if not isinstance(wanted, list):
+            return httpx.Response(422, json={"message": "Validation Failed"})
+        by_id = {f["id"]: f for f in self._field_rows()}
+        current = {v["issue_field_id"]: v for v in row["issue_field_values"]}
+        for entry in wanted:
+            defined = by_id.get(entry.get("field_id")) if isinstance(entry, dict) else None
+            option = next(
+                (o for o in (defined or {}).get("options", ()) if o["name"] == entry.get("value")),
+                None,
+            )
+            if defined is None or option is None:
+                return httpx.Response(422, json={"message": "Validation Failed"})
+            current[defined["id"]] = {
+                "issue_field_id": defined["id"],
+                "issue_field_name": defined["name"],
+                "node_id": f"IFV_{defined['id']}",
+                "data_type": "single_select",
+                "value": option["name"],
+                "single_select_option": {
+                    "id": option["id"],
+                    "name": option["name"],
+                    "color": option["color"],
+                },
+            }
+        row["issue_field_values"] = list(current.values())
+        row["updated_at"] = iso(self.write_time or self.clock.now())
+        return httpx.Response(200, json=copy.deepcopy(row["issue_field_values"]))
 
     def _change_labels(
         self, request: httpx.Request, number: int, name: str | None

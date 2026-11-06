@@ -10,7 +10,10 @@ locked thread. So each operation gets a :class:`~beadhive.modules.tracker.contra
   (``404``); it is archived or disabled; issues are off; no credential was sent (no
   ``permissions`` object); a classic or OAuth token's scopes lack ``repo`` (or ``public_repo`` on
   a public repository); for ``labels.change`` and ``issue.close``, a role below triage (closing
-  an issue someone else opened needs triage); for ``labels.define``
+  an issue someone else opened needs triage); for ``issue.type`` and ``issue.fields``, a role
+  below write (GitHub silently drops a type or field value from anyone without push), and for
+  ``issue.fields`` a classic token without ``read:org`` (the field ids are the organization's);
+  for ``labels.define``
   (creating, editing and deleting repository labels), a role below write (``push``).
 * ``labels.read`` is a read: ``YES`` whenever the repository is readable, archived or not.
 * ``YES`` means only "not refuted": a classic or OAuth token with a sufficient scope and role.
@@ -102,6 +105,14 @@ def probe_operation(op: Operation, facts: RepositoryFacts) -> tuple[Tri, str]:
     )
     if op is Operation.LABELS_DEFINE and not writer:
         return Tri.NO, "role on the repository is below write (labels.define edits definitions)"
+    if op in (Operation.ISSUE_TYPE, Operation.ISSUE_FIELDS) and not writer:
+        return Tri.NO, f"role on the repository is below write ({op.value} needs push)"
+    if (
+        op is Operation.ISSUE_FIELDS
+        and facts.scopes is not None
+        and not facts.scopes & {"read:org", "write:org", "admin:org"}
+    ):
+        return Tri.NO, "token scopes lack read:org (issue.fields reads the organization's fields)"
     if facts.scopes is None:
         return (
             Tri.UNKNOWN,

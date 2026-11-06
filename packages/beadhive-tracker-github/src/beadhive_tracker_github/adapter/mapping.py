@@ -16,6 +16,10 @@ githubkit transport returns. Pure: no I/O and no clock.
   (``<issue url>#issuecomment-<id>``), so the parent key is derived from it; that works unchanged
   on a GHES host. The own-message marker is decoded out of the body (:mod:`.marker`).
 * ``state_reason`` is passed through verbatim as ``closed_reason``.
+* An issue's ``type`` (``{"name": ...}`` or ``null``) and its ``issue_field_values`` (each value
+  named by ``issue_field_name``; a single-select's value is its option's ``name``) are mapped
+  only when the caller asks (``with_type`` / ``with_fields``: the adapter's ``issue.type`` /
+  ``issue.fields`` switch), and a member GitHub did not send is ``None`` (not read), never "".
 * Pull requests are recognised (``pull_request`` on an issue row, ``/pull/`` in a comment's
   ``html_url``) so the adapter can drop them; they are never work items.
 
@@ -53,8 +57,10 @@ __all__ = [
     "format_time",
     "is_change_request",
     "is_change_request_comment",
+    "field_values",
     "issue",
     "issue_key",
+    "issue_type",
     "parent_issue",
     "parse_time",
     "updated_at",
@@ -133,6 +139,43 @@ def _labels(row: dict[str, Any]) -> frozenset[str]:
     return frozenset(names)
 
 
+def issue_type(row: Any) -> str | None:
+    """The issue's type name: ``""`` for ``null`` (none set), ``None`` when the row has no
+    ``type`` member (a host without issue types)."""
+    if not isinstance(row, dict) or "type" not in row:
+        return None
+    kind = row["type"]
+    if kind is None:
+        return ""
+    if not isinstance(kind, dict) or not isinstance(kind.get("name"), str):
+        raise PayloadUnreadable("GitHub returned an issue type without a name")
+    return kind["name"]
+
+
+def _field_value(entry: dict[str, Any]) -> str:
+    option = entry.get("single_select_option")
+    if isinstance(option, dict) and isinstance(option.get("name"), str):
+        return option["name"]
+    options = entry.get("multi_select_options")
+    if isinstance(options, list):
+        return ", ".join(o["name"] for o in options if isinstance(o, dict) and "name" in o)
+    value = entry.get("value")
+    return "" if value is None or isinstance(value, bool) else str(value)
+
+
+def field_values(rows: Any) -> tuple[tuple[str, str], ...]:
+    """``(field name, value)`` pairs of a list of Issue Field Values, sorted by name; an entry
+    without a ``issue_field_name`` is skipped (it cannot be matched to a configured field)."""
+    if not isinstance(rows, list):
+        raise PayloadUnreadable("GitHub returned issue field values that are not a list")
+    pairs = {
+        entry["issue_field_name"]: _field_value(entry)
+        for entry in rows
+        if isinstance(entry, dict) and isinstance(entry.get("issue_field_name"), str)
+    }
+    return tuple(sorted(pairs.items()))
+
+
 def is_change_request(row: Any) -> bool:
     """An issues-endpoint row that is really a pull request."""
     return isinstance(row, dict) and row.get("pull_request") is not None
@@ -161,7 +204,13 @@ def issue_key(row: Any, canonical: Canonical | None = None) -> IssueKey:
     )
 
 
-def issue(row: Any, canonical: Canonical | None = None) -> TrackerIssue:
+def issue(
+    row: Any,
+    canonical: Canonical | None = None,
+    *,
+    with_type: bool = False,
+    with_fields: bool = False,
+) -> TrackerIssue:
     key = issue_key(row, canonical)
     state = _field(row, "state")
     if state not in ("open", "closed"):
@@ -179,6 +228,12 @@ def issue(row: Any, canonical: Canonical | None = None) -> TrackerIssue:
         revision=Revision(parse_time(row.get("updated_at"), "updated_at")),
         closed_at=parse_time(closed_at, "closed_at") if closed_at is not None else None,
         closed_reason=reason if isinstance(reason, str) else None,
+        issue_type=issue_type(row) if with_type else None,
+        fields=(
+            field_values(row["issue_field_values"])
+            if with_fields and "issue_field_values" in row
+            else None
+        ),
     )
 
 

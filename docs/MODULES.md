@@ -716,6 +716,19 @@ tracked by several reports or none, and it would publish internal planning. So t
 no outbox operation kind and no grant for either; revisit only if bh gains a report-to-report
 blocking or parent edge.
 
+The label projection also carries the issue's **type** and a **field value** (`bh-poqy0`):
+`domain/issue_values.py` holds the pure maps (`ValueSettings`, from
+`intake.external.labels.issue_type` / `priority_field`) and the work-then-report fallback
+(`desired_values`; an unmapped value is a note, never a guess). `LabelProjection(values=)` diffs
+them against the issue's `TrackerIssue.issue_type` / `fields` from the same listing, reports a
+difference like drift (`LabelSyncItem.values`, `LabelSyncOutcome.value_drift`) and drafts it as an
+`issue.type` / `issue.fields` operation (a `ValueIntent`) on the SAME `labels` record, so the batch
+review approves each with its own digest and grant. `OutboxPolicy.type_enabled` /
+`fields_enabled` are the gates (set from the bound adapter's `write.issue_type.enabled` /
+`write.issue_fields.enabled`; `TYPE_DISABLED` / `FIELDS_DISABLED`), and `reconcile` reads the
+value back. The tracker port's optional `IssueTypeWriter` / `IssueFieldWriter` are the writers.
+Tests: `tests/unit/modules/intake/test_intake_issue_values.py`.
+
 The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
 `IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on

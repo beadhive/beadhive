@@ -136,6 +136,18 @@ class TrackerIssue:
     revision: Revision
     closed_at: datetime | None = None
     closed_reason: str | None = None  # tracker vocabulary, passed through verbatim
+    #: The issue's type (``issue.type``): ``None`` when it was not read (the operation is not
+    #: enabled, or the tracker has no types), ``""`` when it was read and none is set.
+    issue_type: str | None = None
+    #: The issue's field values (``issue.fields``) as ``(field name, value)`` pairs sorted by
+    #: name, a select field's value being its option name: ``None`` when they were not read.
+    fields: tuple[tuple[str, str], ...] | None = None
+
+    def field_value(self, name: str) -> str | None:
+        """The value of field ``name`` (``""`` when read and unset; ``None`` when not read)."""
+        if self.fields is None:
+            return None
+        return dict(self.fields).get(name, "")
 
 
 @dataclass(frozen=True)
@@ -250,6 +262,8 @@ class Operation(StrEnum):
     LABELS_READ = "labels.read"
     LABELS_DEFINE = "labels.define"
     ISSUE_CLOSE = "issue.close"
+    ISSUE_TYPE = "issue.type"
+    ISSUE_FIELDS = "issue.fields"
 
 
 READ_OPERATIONS = frozenset({Operation.ISSUES_READ, Operation.COMMENTS_READ, Operation.LABELS_READ})
@@ -259,8 +273,14 @@ WRITE_OPERATIONS = frozenset(
         Operation.LABELS_CHANGE,
         Operation.LABELS_DEFINE,
         Operation.ISSUE_CLOSE,
+        Operation.ISSUE_TYPE,
+        Operation.ISSUE_FIELDS,
     }
 )
+#: The writes whose operation also gates a READ: an adapter reports an issue's type
+#: (``TrackerIssue.issue_type``) only with ``issue.type`` enabled, and its field values
+#: (``TrackerIssue.fields``) only with ``issue.fields`` enabled, so one switch covers both.
+VALUE_OPERATIONS = frozenset({Operation.ISSUE_TYPE, Operation.ISSUE_FIELDS})
 
 
 class CloseReason(StrEnum):
@@ -352,6 +372,10 @@ class WriteReceipt:
     #: An ``issue.close``: the issue's state and reason as the tracker answered the write.
     state_after: IssueState | None = None
     closed_reason: str | None = None  # tracker vocabulary, passed through verbatim
+    #: An ``issue.type``: the issue's type as the tracker answered the write.
+    type_after: str | None = None
+    #: An ``issue.fields``: the issue's field values as the tracker answered the write.
+    fields_after: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -367,6 +391,7 @@ __all__ = [
     "MAX_REQUEST_TIMEOUT_SECONDS",
     "PORT_API_VERSION",
     "READ_OPERATIONS",
+    "VALUE_OPERATIONS",
     "WRITE_OPERATIONS",
     "Actor",
     "ActorKey",

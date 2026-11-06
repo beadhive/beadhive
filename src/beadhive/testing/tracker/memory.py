@@ -5,7 +5,8 @@ no consumer test needs a plugin package, an HTTP client or a network. It is also
 second implementation: it passes the same :data:`~beadhive.testing.tracker.cases.TRACKER_CASES`
 a real adapter must pass. It implements the required :class:`TrackerAdapter` plus every optional
 Protocol (``CommentWriter``, ``LabelWriter``, ``LabelReader``, ``LabelDefiner``,
-``LabelPruner``, ``IssueCloser``, ``IssueResolver``, ``MarkerCodec``);
+``LabelPruner``, ``IssueCloser``, ``IssueTypeWriter``, ``IssueFieldWriter``, ``IssueResolver``,
+``MarkerCodec``);
 :func:`without_resolver` hides the resolver to exercise a consumer's fallback.
 
 Deterministic: no clock (every timestamp is supplied by the world), and a rate-limit wait calls
@@ -15,7 +16,7 @@ the injected ``sleep`` (recorded by default, never blocking).
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 
 from beadhive.modules.tracker.contracts import (
@@ -45,6 +46,7 @@ from beadhive.modules.tracker.contracts import (
     OwnMarker,
     Page,
     PageCursor,
+    PayloadRejected,
     ProjectRef,
     RateLimited,
     RetryBudget,
@@ -94,7 +96,8 @@ _DEFAULT_OWNERSHIP = LabelOwnership(prefixes=("bh:",))
 
 class MemoryTracker:
     """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter``, ``LabelReader``,
-    ``LabelDefiner``, ``LabelPruner``, ``IssueCloser``, ``IssueResolver`` and ``MarkerCodec``.
+    ``LabelDefiner``, ``LabelPruner``, ``IssueCloser``, ``IssueTypeWriter``, ``IssueFieldWriter``,
+    ``IssueResolver`` and ``MarkerCodec``.
 
     ``enabled`` is the resolved set of enabled operations, as a composition root would hand it to
     a real adapter. The default enables the three reads and no write. A disabled operation is
@@ -176,6 +179,9 @@ class MemoryTracker:
             revision=Revision(row.updated),
             closed_at=row.updated if closed else None,
             closed_reason=row.closed_reason if closed else None,
+            # each read rides on its own write's switch, like a real adapter's
+            issue_type=row.issue_type if Operation.ISSUE_TYPE in self._enabled else None,
+            fields=_pairs(row.fields) if Operation.ISSUE_FIELDS in self._enabled else None,
         )
 
     def _issues(self, since: datetime | None, include_closed: bool) -> list[_Issue]:
@@ -399,6 +405,53 @@ class MemoryTracker:
             closed_reason=reason.value,
         )
 
+    def set_issue_type(
+        self, issue: IssueKey, issue_type: str, *, grant: WriteGrant
+    ) -> WriteReceipt:
+        """Set ``issue``'s type under an ``issue.type`` grant. Only the type changes (never a
+        label); a type the tracker does not define is refused after the request, as GitHub's
+        ``422`` is (``PayloadRejected``: nothing written)."""
+        if not isinstance(issue_type, str) or not issue_type.strip():
+            raise ValueError("an issue type needs a name")
+        self._authorise(Operation.ISSUE_TYPE, issue, grant)
+        self._request(write=True)
+        self.world.writes += 1
+        if issue_type not in self.world.issue_types:
+            raise PayloadRejected("the tracker does not define that issue type")
+        ambiguous, self.world.ambiguous_next_write = self.world.ambiguous_next_write, None
+        if ambiguous is False:  # cut off before the tracker applied anything (K1)
+            raise WriteOutcomeUnknown("the tracker did not confirm the type")
+        row = self.world.issues[issue.identifier]
+        row.issue_type, row.updated = issue_type, self._when()
+        if ambiguous:  # applied, but the caller cannot know
+            raise WriteOutcomeUnknown("the tracker did not confirm the type")
+        return WriteReceipt(grant.grant_id, grant.operation, issue, type_after=issue_type)
+
+    def set_issue_fields(
+        self, issue: IssueKey, values: Mapping[str, str], *, grant: WriteGrant
+    ) -> WriteReceipt:
+        """Set the named fields of ``issue`` under an ``issue.fields`` grant. Only those fields
+        change; a field or option the tracker does not define is refused before any request
+        (``PayloadRejected``), with the grant kept."""
+        if not values or not all(isinstance(v, str) and v for v in values.values()):
+            raise ValueError("an issue.fields write needs at least one field and its value")
+        self._require(Operation.ISSUE_FIELDS)
+        for name, value in values.items():
+            if value not in self.world.issue_field_defs.get(name, ()):
+                raise PayloadRejected(f"the tracker does not define {name}={value}")
+        self._authorise(Operation.ISSUE_FIELDS, issue, grant)
+        self._request(write=True)
+        self.world.writes += 1
+        ambiguous, self.world.ambiguous_next_write = self.world.ambiguous_next_write, None
+        if ambiguous is False:  # cut off before the tracker applied anything (K1)
+            raise WriteOutcomeUnknown("the tracker did not confirm the field values")
+        row = self.world.issues[issue.identifier]
+        row.fields.update(values)
+        row.updated = self._when()
+        if ambiguous:  # applied, but the caller cannot know
+            raise WriteOutcomeUnknown("the tracker did not confirm the field values")
+        return WriteReceipt(grant.grant_id, grant.operation, issue, fields_after=_pairs(row.fields))
+
     def define_labels(
         self, definitions: tuple[LabelDefinition, ...], *, grant: WriteGrant
     ) -> WriteReceipt:
@@ -518,6 +571,20 @@ class _WithoutResolver:
         duplicate_of: IssueKey | None = None,
     ) -> WriteReceipt:
         return self._inner.close_issue(issue, reason=reason, grant=grant, duplicate_of=duplicate_of)
+
+    def set_issue_type(
+        self, issue: IssueKey, issue_type: str, *, grant: WriteGrant
+    ) -> WriteReceipt:
+        return self._inner.set_issue_type(issue, issue_type, grant=grant)
+
+    def set_issue_fields(
+        self, issue: IssueKey, values: Mapping[str, str], *, grant: WriteGrant
+    ) -> WriteReceipt:
+        return self._inner.set_issue_fields(issue, values, grant=grant)
+
+
+def _pairs(values: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(values.items()))
 
 
 def without_resolver(tracker: MemoryTracker) -> TrackerAdapter:

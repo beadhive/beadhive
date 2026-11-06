@@ -16,6 +16,9 @@ Module                 Holds
                        (``LabelDefiner.define_labels``): repository label definitions, owned only
 ``closing``            the ``issue.close`` writer (``IssueCloser.close_issue``): the state and
                        its reason only, never the labels
+``issue_values``       the ``issue.type`` (``IssueTypeWriter.set_issue_type``) and
+                       ``issue.fields`` (``IssueFieldWriter.set_issue_fields``) writers: the
+                       type, or the named fields' values, only, never the labels
 ``grants``             the in-process single-use ``WriteGrant`` ledger every writer spends from
 ``transport``          the githubkit seam: one credential per operation, adapter retry, writes
 ``retry``              the pure retry classification and budget decision (injected clock)
@@ -42,6 +45,7 @@ from .comments import CommentCreate
 from .compose import adapter_class, new_adapter
 from .diagnostics import diagnose, refusal_error
 from .grants import GrantLedger
+from .issue_values import IssueFieldWriting, IssueTyping
 from .label_definitions import LabelDefining, LabelDefinitionReading
 from .labels import LabelWriting
 from .marker import decode_marker, encode_marker
@@ -59,6 +63,8 @@ __all__ = [
     "GitHubTrackerAdapter",
     "GrantLedger",
     "IssueClosing",
+    "IssueFieldWriting",
+    "IssueTyping",
     "LabelDefining",
     "LabelDefinitionReading",
     "LabelWriting",

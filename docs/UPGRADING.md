@@ -60,6 +60,49 @@ every host first: an older host rejects the key (`extra=forbid`) and fails close
 With the key unset no close is drafted, approved or sent; the only change is the `duplicate-of`
 reply above, and only while the outbox is on.
 
+### The issue type and the Priority field, beside the labels (switches default off)
+
+Type and priority reached GitHub only as `bh:type/*` and `bh:priority/*` labels. 0.35.3 adds the
+`issue.type` and `issue.fields` tracker operations, each behind its own switch,
+`plugins.tracker-github.write.issue_type.enabled` and `write.issue_fields.enabled` (default
+`false`; each also gates reading the issue's type or field values), and the matching
+`issue.type` / `issue.fields` operation kinds in the outbox. The type is set with
+`PATCH /issues/{n}` carrying only `type`; a field value with
+`POST /issues/{n}/issue-field-values` (field ids from one `GET /orgs/{org}/issue-fields`), which
+keeps every other field. Both endpoints were checked against GitHub's REST reference.
+
+With a switch on, `bh work labels sync` (and the `labels.on_transition` refresh) maps the bead's
+type and priority, from the tracked work and falling back to the report, through
+`intake.external.labels.issue_type.map` (default `bug`→`Bug`, `feature`→`Feature`,
+`task`→`Task`, `chore`→`Task`) and `intake.external.labels.priority_field` (`Priority`; default
+`P0`→`Urgent`, `P1`→`High`, `P2`→`Medium`, `P3`/`P4`→`Low`). An unmapped value, or one the issue
+was not read for, is skipped with a note, never guessed. A difference is reported like label drift
+and drafted on the issue's same `labels` record, so `bh work labels review` and
+`bh work labels approve --batch <digest>` approve it with the labels, each operation with its own
+digest, single-use grant and receipt. Send with `bh work outbox send <id> --kind type` and
+`--kind fields`. Labels are unchanged: the `bh:type/*` and `bh:priority/*` labels are still
+projected. Setting the type or a field needs the write role on the repository. Reading the
+organization's fields needs `read:org` on a classic token; a fine-grained token or a GitHub App
+needs the organization permission "Issue Fields" (read) for `GET /orgs/{org}/issue-fields` and the
+repository permission "Issues" (write) for `POST .../issue-field-values` and the type's `PATCH`.
+
+**Rotation order (the same 0.35.0 pattern).** An older host rejects the new keys (`extra=forbid`)
+and fails closed on an `intake.outbox` document holding an `issue.type` or `issue.fields`
+operation, so:
+
+1. Install 0.35.3 on **every** host that reads the hive's outbox (any host that runs
+   `bh work outbox`, `bh work labels`, `bh work triage apply`, `bh doctor` or a transition, merge
+   or release hook on that hive).
+2. Only then set `write.issue_type.enabled` / `write.issue_fields.enabled` (and any
+   `intake.external.labels.issue_type` / `priority_field` override) in a shared config.
+3. Only then run `bh work labels sync`.
+
+With both keys unset nothing is drafted, read or sent for the type or fields, and a labels record
+is byte-identical to one 0.35.2 wrote.
+
+No new verb or option: `bh work outbox send|discard --kind` and `approve --op` accept `type` and
+`fields`, so the operation catalog (wire 2.23.0) is unchanged.
+
 ## 0.35.0 → 0.35.2 — triage apply fixes and a hishel cap
 
 0.35.1 was tagged but never published: hishel 2.0.0 (released the same day) fails githubkit's
