@@ -39,6 +39,9 @@ OPERATION_FLAG_KEYS: Mapping[Operation, str] = {
     Operation.LABELS_CHANGE: "write.labels.enabled",
     Operation.LABELS_READ: "read.labels.enabled",
     Operation.LABELS_DEFINE: "write.label_definitions.enabled",
+    Operation.ISSUE_CLOSE: "write.issue_close.enabled",
+    Operation.ISSUE_TYPE: "write.issue_type.enabled",
+    Operation.ISSUE_FIELDS: "write.issue_fields.enabled",
 }
 
 _MISSING = object()

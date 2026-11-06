@@ -523,7 +523,9 @@ def _resolve_hive_routing_mode(ctx: typer.Context, all_hives: bool, hive: str) -
 
 
 #: Verbs that run for the life of a service. They must not freeze ``GIT_WORKSPACE`` for the
-#: process lifetime, so they never opt into ``identity.process_config_memo`` (bh-olnhf).
+#: process lifetime, so they never opt into ``identity.process_config_memo`` (bh-olnhf) or
+#: ``config.process_load_memo`` (bh-pc9rf). ``cli_entrypoint`` keeps its own copy (it runs
+#: before this module is imported).
 _LONG_LIVED_VERBS = frozenset({"host", "mcp"})
 
 
@@ -546,6 +548,9 @@ def _root(
         # re-qualifying the SQL fleet snapshot per `bd`/`git` launch (bh-olnhf). The serving
         # verbs stay on the uncached path; see identity._ProcessConfigMemo.
         ctx.with_resource(identity.process_config_memo())
+        # ...and every other config read of the verb resolves it once too (bh-pc9rf): one
+        # `outbox show` used to re-qualify the SQL snapshot 7 times. Same exclusion, same reason.
+        ctx.with_resource(config.process_load_memo())
     if ctx.invoked_subcommand == "bd":
         # A bead read/write needs only hive-local config: in trusted mode a transient HQ
         # config outage may degrade to the bounded-age cached verified snapshot (bh-kjxe9).

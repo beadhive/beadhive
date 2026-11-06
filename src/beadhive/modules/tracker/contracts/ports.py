@@ -3,19 +3,21 @@
 Small capability interfaces: :class:`TrackerReader` and :class:`TrackerIdentity` are required
 and together form :class:`TrackerAdapter`, the one Protocol the plugin wiring binds.
 :class:`CommentWriter`, :class:`LabelWriter`, :class:`LabelReader`, :class:`LabelDefiner`,
-:class:`LabelPruner`, :class:`IssueResolver` and :class:`MarkerCodec` are
-optional and are discovered with ``isinstance`` on the bound object. A writer's presence is
-necessary, never sufficient: the operation must also be enabled and each call must carry a fresh
-grant.
+:class:`LabelPruner`, :class:`IssueCloser`, :class:`IssueTypeWriter`, :class:`IssueFieldWriter`,
+:class:`IssueResolver` and :class:`MarkerCodec` are optional and are discovered with
+``isinstance`` on the bound object. A writer's presence is necessary, never sufficient: the
+operation must also be enabled and each call must carry a fresh grant.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from .records import (
     Actor,
     CapabilityReport,
+    CloseReason,
     CommentQuery,
     IdPage,
     IdQuery,
@@ -107,6 +109,58 @@ class LabelPruner(Protocol):
 
 
 @runtime_checkable
+class IssueCloser(Protocol):
+    """Optional (additive; the API version stays 1): close one issue with a :class:`CloseReason`
+    (``issue.close``). An issue-scoped write, so ``grant.target`` is the :class:`IssueKey`. It
+    changes the issue's state and nothing else: never its labels, title or body. Closing an
+    issue that is already closed is not an error (the receipt reports the state it holds).
+
+    ``duplicate_of`` (``bh-iamru``) names the canonical issue a ``DUPLICATE`` close is a duplicate
+    OF, so the tracker records the link and not just the reason. It must be another issue of the
+    same project and goes only with ``CloseReason.DUPLICATE`` (``ValueError`` otherwise, before
+    any request); a canonical the tracker cannot see is refused before the write, with the grant
+    kept. ``None`` closes as a plain duplicate, naming no original."""
+
+    def close_issue(
+        self,
+        issue: IssueKey,
+        *,
+        reason: CloseReason,
+        grant: WriteGrant,
+        duplicate_of: IssueKey | None = None,
+    ) -> WriteReceipt: ...
+
+
+@runtime_checkable
+class IssueTypeWriter(Protocol):
+    """Optional (additive; the API version stays 1): set one issue's type (``issue.type``) to
+    ``issue_type``, a type the tracker defines, by its name. An issue-scoped write, so
+    ``grant.target`` is the :class:`IssueKey`. It changes the type and nothing else: never the
+    labels, the state, the title or the body. A type the tracker does not define is refused
+    (``PayloadRejected``, nothing written). The same operation's switch gates the read: an
+    adapter reports ``TrackerIssue.issue_type`` only with ``issue.type`` enabled."""
+
+    def set_issue_type(
+        self, issue: IssueKey, issue_type: str, *, grant: WriteGrant
+    ) -> WriteReceipt: ...
+
+
+@runtime_checkable
+class IssueFieldWriter(Protocol):
+    """Optional (additive; the API version stays 1): set field values of one issue
+    (``issue.fields``), ``values`` mapping a field's name to its value (a select field's option
+    name). An issue-scoped write, so ``grant.target`` is the :class:`IssueKey`. Only the named
+    fields change: never another field, the labels, the type or the state. A field or option the
+    tracker does not define is refused before any write (``PayloadRejected``). The same
+    operation's switch gates the read: ``TrackerIssue.fields`` only with ``issue.fields``
+    enabled."""
+
+    def set_issue_fields(
+        self, issue: IssueKey, values: Mapping[str, str], *, grant: WriteGrant
+    ) -> WriteReceipt: ...
+
+
+@runtime_checkable
 class IssueResolver(Protocol):
     """Optional URL resolution (amendment A1; the API version stays 1).
 
@@ -149,9 +203,29 @@ def join_marker_line(body: str, line: str) -> str:
     return f"{text}\n\n{line}" if text else line
 
 
+def check_close(issue: IssueKey, reason: CloseReason, duplicate_of: IssueKey | None) -> None:
+    """The shape every :class:`IssueCloser` refuses with ``ValueError`` before any request: the
+    reason is a :class:`CloseReason`, and ``duplicate_of`` goes only with ``DUPLICATE`` and names
+    another issue than the one closed. Whether it is an issue of the same project and visible is
+    the adapter's to establish. Pure."""
+    if not isinstance(reason, CloseReason):
+        raise ValueError("a close needs a CloseReason")
+    if duplicate_of is None:
+        return
+    if not isinstance(duplicate_of, IssueKey):
+        raise ValueError("duplicate_of names the canonical issue by its IssueKey")
+    if reason is not CloseReason.DUPLICATE:
+        raise ValueError("duplicate_of goes only with CloseReason.DUPLICATE")
+    if duplicate_of == issue:
+        raise ValueError("an issue cannot be a duplicate of itself")
+
+
 __all__ = [
     "CommentWriter",
+    "IssueCloser",
+    "IssueFieldWriter",
     "IssueResolver",
+    "IssueTypeWriter",
     "LabelDefiner",
     "LabelPruner",
     "LabelReader",
@@ -160,5 +234,6 @@ __all__ = [
     "TrackerAdapter",
     "TrackerIdentity",
     "TrackerReader",
+    "check_close",
     "join_marker_line",
 ]

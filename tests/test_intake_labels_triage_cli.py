@@ -396,6 +396,86 @@ def test_sync_drafts_one_record_per_issue_and_the_batch_is_approved_by_an_operat
     assert rig.world.server_labels(issue) >= {"human-bug"}
 
 
+def _with_values(rig: Rig) -> None:
+    """Rebind the rig's tracker with ``write.issue_type`` and ``write.issue_fields`` on."""
+    from tests.unit.bootstrap.test_tracker_composition import roots
+
+    plugins = json.loads(json.dumps(PLUGINS))
+    plugins["tracker-github"]["write"]["issue_type"] = {"enabled": True}
+    plugins["tracker-github"]["write"]["issue_fields"] = {"enabled": True}
+    rig.plugins = plugins
+    rig.adapters, _factory = roots(plugins, factory=rig.factory)
+    rig.process = rig.adapters
+    rig.configure(on())
+
+
+def test_sync_drafts_the_type_and_priority_with_the_labels_and_sends_each_kind(rig) -> None:
+    _with_values(rig)
+    report, issue = rig.report()
+    rig.store.update_fields(report, issue_type="bug", priority="1", actor=OPERATOR)
+    _defined(rig)
+
+    synced = labels("sync", report)
+    assert synced.exit_code == 0, synced.output
+    (item,) = doc(synced)["items"]
+    assert item["values"] == [
+        {"name": "type", "live": "", "desired": "Bug"},
+        {"name": "Priority", "live": "", "desired": "High"},
+    ]
+    assert doc(synced)["value_drift"] == {report: ["type (unset) → Bug", "Priority (unset) → High"]}
+    human = bh("labels", "sync", "--dry-run", "--hive", "widget", "--as", OPERATOR)
+    assert "type (unset) → Bug; Priority (unset) → High" in human.output
+
+    batch = doc(bh("labels", "review", "--hive", "widget", "--json"))["batch"]
+    assert [i["kind"] for i in batch["items"]] == ["labels.change", "issue.type", "issue.fields"]
+    assert batch["items"][1]["values"] == [["type", "Bug"]]
+    shown = bh("labels", "review", "--hive", "widget")
+    assert "issue.type type=Bug" in shown.output and "issue.fields Priority=High" in shown.output
+
+    approved = labels("approve", "--batch", batch["short_digest"])
+    assert approved.exit_code == 0, approved.output
+    assert len(doc(approved)["grant_ids"]) == 3
+    oid = item["drafted"]
+    common = ("--hive", "widget", "--as", OPERATOR, "--json")
+    assert bh("outbox", "send", oid, "--kind", "labels", *common).exit_code == 0
+    labelled = rig.world.server_labels(issue)
+    for kind in ("type", "fields"):
+        sent = bh("outbox", "send", oid, "--kind", kind, *common)
+        assert sent.exit_code == 0 and doc(sent)["results"][0]["state"] == "sent", sent.output
+
+    assert rig.world.server_issue_type(issue) == "Bug"
+    assert rig.world.server_issue_fields(issue) == {"Priority": "High"}
+    assert rig.world.server_labels(issue) == labelled  # labels unchanged by the value writes
+    again = labels("sync", report)
+    assert doc(again)["items"][0]["values"] == [] and doc(again)["drafted"] == []
+
+
+def test_without_the_value_switches_sync_drafts_the_labels_only(rig) -> None:
+    report, issue = rig.report()
+    rig.store.update_fields(report, issue_type="bug", priority="1", actor=OPERATOR)
+    _defined(rig)
+
+    (item,) = doc(labels("sync", report))["items"]
+
+    assert item["values"] == [] and item["value_notes"] == []
+    batch = doc(bh("labels", "review", "--hive", "widget", "--json"))["batch"]
+    assert [i["kind"] for i in batch["items"]] == ["labels.change"]
+    refused = bh(
+        "outbox",
+        "send",
+        item["drafted"],
+        "--kind",
+        "type",
+        "--hive",
+        "widget",
+        "--as",
+        OPERATOR,
+        "--json",
+    )
+    assert refused.exit_code == 1 and doc(refused)["reason"] == "type_disabled"
+    assert rig.world.server_issue_type(issue) == ""
+
+
 def test_sync_human_output_and_an_empty_review(rig) -> None:
     rig.report()
 
@@ -547,6 +627,30 @@ def test_check_reports_findings_and_exits_1(rig) -> None:
     assert rows[bad]["passed"] is False
     assert [f["kind"] for f in rows[bad]["findings"]] == ["owner_missing"]
     assert doc(result)["failed"] == [bad]
+
+
+def test_check_resolves_every_issue_a_reply_mentions_with_one_listing(rig) -> None:
+    """bh-iamru: a #N that is no issue of the bound project fails the check; a #N that is another
+    bound report is reported as a relates-to; the run lists the issues once."""
+    original, original_issue = rig.report("First")
+    missing, _ = rig.report("Second")
+    related, _ = rig.report("Third")
+    named = original_issue.identifier
+    propose(original, REJECT)
+    propose(missing, {"disposition": "reject", "reporter_text": f"See {named} and #999."})
+    propose(related, {"disposition": "reject", "reporter_text": f"Answered in {named}."})
+    reads = rig.world.read_requests()
+
+    result = triage("check")
+
+    assert result.exit_code == 1
+    rows = {row["report"]: row for row in doc(result)["checks"]}
+    assert [f["kind"] for f in rows[missing]["findings"]] == ["mention_missing"]
+    assert "#999" in rows[missing]["findings"][0]["detail"]
+    assert rows[related]["passed"] is True and rows[related]["relates"] == [original]
+    assert rows[original]["relates"] == []
+    assert rig.world.read_requests() - reads == 1  # one listing (one page) for the whole run
+    assert rig.world.write_requests() == 0
 
 
 def test_check_pending_keeps_only_reports_still_awaiting_triage(rig) -> None:

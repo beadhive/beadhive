@@ -148,34 +148,34 @@ def _github_env_order() -> tuple[str, ...]:
 def _derive_gh_auth_token() -> str | None:
     """A fresh ``gh auth token`` when ``gh`` is installed and authenticated, else None.
 
+    ``gh auth token`` runs FIRST: on the success path it is the only subprocess, so every GitHub
+    operation pays one ``gh`` launch, not two (bh-pc9rf: the ``gh auth status`` probe in front of
+    it cost about 0.2 s per operation). Only when it fails is ``gh auth status``
+    (:func:`credentials.probe`) run, to name WHY in the warning: not installed, not logged in, or
+    logged in but the token read failed. Nothing is cached: each call derives anew.
+
     Every failure branch names the STATE, never a value: on the success path stdout IS the
     token, so it is never echoed here."""
     from . import credentials, deps, log  # lazy: both import this module
 
+    try:
+        res = run(["gh", "auth", "token"], check=False, capture=True, timeout=TOKEN_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        res = None
+    token = (res.stdout or "").strip() if res is not None and res.returncode == 0 else ""
+    if token:
+        return token
     gh = deps.by_name("gh")
-    report = credentials.probe(gh)
-    if not deps.satisfied(gh, authenticated=report.authenticated):
-        log.get_logger(__name__).warning(
-            "github_token_underivable",
-            installed=report.installed,
-            authenticated=report.authenticated,
-            remedy=report.remedy or gh.auth.remedy,
-            consequence=gh.auth.consequence,
-        )
-        return None
-
-    res = run(["gh", "auth", "token"], check=False, capture=True, timeout=TOKEN_TIMEOUT)
-    token = (res.stdout or "").strip()
-    if res.returncode != 0 or not token:
-        log.get_logger(__name__).warning(
-            "github_token_underivable",
-            installed=True,
-            authenticated=True,
-            remedy=gh.auth.remedy,
-            consequence=gh.auth.consequence,
-        )
-        return None
-    return token
+    report = credentials.probe(gh)  # the diagnostic, only on the failure path
+    usable = deps.satisfied(gh, authenticated=report.authenticated)
+    log.get_logger(__name__).warning(
+        "github_token_underivable",
+        installed=report.installed,
+        authenticated=report.authenticated,
+        remedy=gh.auth.remedy if usable else (report.remedy or gh.auth.remedy),
+        consequence=gh.auth.consequence,
+    )
+    return None
 
 
 def github_token_source(

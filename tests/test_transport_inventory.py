@@ -62,7 +62,7 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
     for row in projections():
         counts[row.surface] = counts.get(row.surface, 0) + 1
     assert counts == {
-        "cli": 292,  # + investigate (bh-u3a53), the `labels` and `triage` groups (bh-v3fe7)
+        "cli": 294,  # + `outbox backfill-close` (bh-pr5ll), `outbox send-approved` (bh-pc9rf)
         "gateway": 36,
         "mcp-resource": 21,
         "mcp-tool": 10,

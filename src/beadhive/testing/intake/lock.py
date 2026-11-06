@@ -4,7 +4,9 @@ sections 4 and 9).
 
 The lock never waits: a second hold of a held binding is refused at once with
 ``IntakeRefused(INTAKE_BUSY)``, so a test can prove an operation refused without any timing. The
-epoch is a plain settable integer (the root's is ``guard.live_epoch``). No thread, no clock.
+epoch is a plain settable integer (the root's is ``guard.live_epoch``). ``batch()`` is the
+optional :class:`~beadhive.modules.intake.contracts.BatchLock` scope: it only records that a batch
+ran and which holds it covered (the root reuses its host check inside one). No thread, no clock.
 """
 
 from __future__ import annotations
@@ -27,7 +29,19 @@ class InProcessIntakeLock:
     def __init__(self, epoch: int = 1) -> None:
         self.epoch = epoch
         self.holds: list[str] = []  # every binding key ever held, in order
+        self.batches = 0  # every batch scope entered
+        self.batched: list[str] = []  # the binding keys held inside a batch scope, in order
         self._held: set[str] = set()
+        self._depth = 0
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        self.batches += 1
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
 
     @contextmanager
     def hold(self, binding_key: str) -> Iterator[int]:
@@ -37,6 +51,8 @@ class InProcessIntakeLock:
             )
         self._held.add(binding_key)
         self.holds.append(binding_key)
+        if self._depth:
+            self.batched.append(binding_key)
         try:
             yield self.epoch
         finally:

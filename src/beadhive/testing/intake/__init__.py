@@ -9,8 +9,9 @@
 - :class:`InProcessIntakeLock`, :class:`MemoryCheckpointStore` and :class:`MemoryOutboxView`
   (``lock``): a never-waiting in-process ``IntakeLock`` with a settable epoch, a recording
   ``CheckpointStore`` and an outbox read view over plain sets.
-- :class:`SequentialIdSource` and :class:`RecordingSanitizer` (``outbox``): a deterministic
-  ``IdSource`` and a recording ``Sanitizer`` for the outbox.
+- :class:`SequentialIdSource`, :class:`RecordingSanitizer` and :class:`MemoryOutboxIndex`
+  (``outbox``): a deterministic ``IdSource``, a recording ``Sanitizer`` and a counting
+  ``OutboxIndex`` for the outbox.
 - :class:`FakeReleaseVerifier` (``release``): a scripted ``ReleaseVerifier`` (tags and ancestry
   as plain data) for the milestone triggers.
 - :class:`FakeRepoFacts` (``repo_facts``): a scripted ``RepoFacts`` (branch ancestry, releases in
@@ -36,7 +37,7 @@ from .cases import (
 )
 from .lock import InProcessIntakeLock, MemoryCheckpointStore, MemoryOutboxView
 from .memory_store import MemoryReportStore
-from .outbox import RecordingSanitizer, SequentialIdSource
+from .outbox import MemoryOutboxIndex, RecordingSanitizer, SequentialIdSource
 from .release import FakeReleaseVerifier
 from .repo_facts import FakeLandedCommits, FakeRepoFacts
 
@@ -49,6 +50,7 @@ __all__ = [
     "FakeRepoFacts",
     "InProcessIntakeLock",
     "MemoryCheckpointStore",
+    "MemoryOutboxIndex",
     "MemoryOutboxView",
     "MemoryReportStore",
     "RecordingSanitizer",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import typer
@@ -729,6 +730,9 @@ def _rendered_row(rendered) -> dict:
         "payload": rendered.payload,
         "add": sorted(rendered.add),
         "remove": sorted(rendered.remove),
+        "close": rendered.close.value if rendered.close is not None else None,
+        "duplicate_of": rendered.duplicate_of.url if rendered.duplicate_of is not None else None,
+        "values": [list(pair) for pair in rendered.values],
         "findings": [
             {
                 "id": finding.id,
@@ -758,6 +762,12 @@ def _stored_operation_row(op) -> dict:
     row: dict = {"kind": op.kind.value, "state": op.state.value}
     if op.labels is not None:
         row["add"], row["remove"] = sorted(op.labels.add), sorted(op.labels.remove)
+    if op.close is not None:
+        row["close"] = op.close.value
+    if op.duplicate_of is not None:
+        row["duplicate_of"] = op.duplicate_of.url
+    if op.values is not None:
+        row["values"] = [list(pair) for pair in op.values.values]
     return row
 
 
@@ -778,11 +788,49 @@ def _outbox_payload(call, verb: str) -> dict:
         payload["renders"] = [_rendered_row(r) for r in value.renders]
     elif hasattr(value, "entries"):  # an OutboxListing
         payload["records"] = [_record_row(e.report, e.record) for e in value.entries]
+    elif isinstance(value, intake_services.BatchSendOutcome):  # outbox send-approved (bh-pc9rf)
+        payload["ok"] = call.code == 0 and value.ok
+        payload["results"] = [_outbox_result_row(r) for r in value.results]
+        payload["failed"] = [_batch_failure_row(f) for f in value.failed]
+        payload["sent"] = len(value.sent)
+        payload["stopped"] = value.stopped
     elif isinstance(value, tuple):
         payload["results"] = [_outbox_result_row(r) for r in value]
     else:
         payload["results"] = [_outbox_result_row(value)]
     return payload
+
+
+def _batch_failure_row(failure) -> dict:
+    return {
+        "report": failure.report,
+        "outbox_id": failure.outbox_id,
+        "kind": failure.kind.value,
+        "reason": failure.reason,
+        "error": failure.detail,
+    }
+
+
+def _batch_send_lines(outcome) -> list[str]:
+    """``outbox send-approved``: every attempted operation, then every refused one, then a tally."""
+    lines: list[str] = []
+    for result in outcome.results:
+        lines += _outbox_result_lines(result)
+    for failure in outcome.failed:
+        lines.append(
+            f"✗ {failure.outbox_id} {failure.kind.value} on {failure.report} "
+            f"({failure.reason}): {failure.detail}"
+        )
+    if outcome.stopped:
+        lines.append(f"✗ stopped, the rest not tried: {outcome.stopped}")
+    if not outcome.results and not outcome.failed:
+        lines.append("nothing approved to send")
+    else:
+        lines.append(
+            f"sent {len(outcome.sent)}, unsettled {len(outcome.unsettled)}, "
+            f"refused {len(outcome.failed)}"
+        )
+    return lines
 
 
 def _outbox_result_lines(result) -> list[str]:
@@ -819,6 +867,10 @@ def _stored_lines(stored) -> list[str]:
             changes = [f"+{label}" for label in sorted(op.labels.add)]
             changes += [f"-{label}" for label in sorted(op.labels.remove)]
             line += f" ({' '.join(changes)})" if changes else ""
+        if op.close is not None:
+            line += f" (as {op.close.value})"
+        if op.values is not None:
+            line += f" ({_values_text(op.values.values)})"
         lines.append(line)
     lines += [f"  | {line}" for line in stored.text.splitlines() or [""]]
     lines.append(f"  → {stored.note}")
@@ -827,14 +879,18 @@ def _stored_lines(stored) -> list[str]:
 
 def render_outbox(call, verb: str, as_json: bool) -> None:
     """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal."""
+    value = call.value
+    batch_failed = isinstance(value, intake_services.BatchSendOutcome) and not value.ok
     if as_json:
         typer.echo(json.dumps(_outbox_payload(call, verb), sort_keys=True))
-        if call.code:
-            raise typer.Exit(call.code)
+        if call.code or batch_failed:
+            raise typer.Exit(call.code or 1)
         return
-    value = call.value
     done = value if isinstance(value, tuple) else ((value,) if value is not None else ())
-    if isinstance(value, intake_services.StoredOutboxRecord):
+    if isinstance(value, intake_services.BatchSendOutcome):
+        for line in _batch_send_lines(value):
+            typer.echo(line)
+    elif isinstance(value, intake_services.StoredOutboxRecord):
         for line in _stored_lines(value):
             typer.echo(line)
     elif hasattr(value, "renders"):
@@ -862,6 +918,8 @@ def render_outbox(call, verb: str, as_json: bool) -> None:
         code = f" ({call.reason})" if call.reason else ""
         typer.echo(f"✗ outbox {verb} refused{code}: {call.error}", err=True)
         raise typer.Exit(call.code)
+    if batch_failed:  # every item was tried; a refused or unsettled one fails the batch
+        raise typer.Exit(1)
 
 
 def _outbox(verb: str, hive: str, as_json: bool, run) -> None:
@@ -936,6 +994,99 @@ def outbox_send(
             cfg, entry, directory, outbox_id, kind, actor, hive=hive
         ),
     )
+
+
+def outbox_send_approved(
+    kind: str = "",
+    beads: Sequence[str] = (),
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Send every approved operation in one process (``bh-pc9rf``)."""
+    actor = identity.resolve_actor(as_)
+    _outbox(
+        "send-approved",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_send_approved(
+            cfg, entry, directory, kind, beads, actor, hive=hive
+        ),
+    )
+
+
+def _backfill_row(item) -> dict:
+    return {
+        "report": item.report,
+        "outbox_id": item.outbox_id,
+        "reason": item.reason.value if item.reason is not None else "",
+        "drafted": item.drafted,
+        "detail": item.detail,
+        "reply_text": item.reply_text,
+        "duplicate_of": item.duplicate_of,
+    }
+
+
+def render_close_backfill(call, as_json: bool) -> None:
+    """Print ``bh work outbox backfill-close`` (human or ``--json``); non-zero on a refusal."""
+    outcome = call.value
+    if as_json:
+        payload: dict = {
+            "ok": call.code == 0,
+            "verb": "backfill-close",
+            "reason": call.reason,
+            "error": call.error,
+        }
+        if outcome is not None:
+            payload["dry_run"] = outcome.dry_run
+            payload["items"] = [_backfill_row(item) for item in outcome.items]
+        typer.echo(json.dumps(payload, sort_keys=True))
+        if call.code:
+            raise typer.Exit(call.code)
+        return
+    if outcome is not None:
+        if not outcome.items:
+            typer.echo("no closed report has an open issue to close")
+        verb = "would draft" if outcome.dry_run else "drafted"
+        for item in outcome.items:
+            reason = item.reason.value if item.reason is not None else "?"
+            if item.skipped:
+                typer.echo(f"- {item.report} skipped: {item.detail}")
+            elif item.drafted or outcome.dry_run:
+                where = item.outbox_id or "a new reply"
+                typer.echo(f"✓ {item.report} {verb} issue.close as {reason} on {where}")
+                if item.duplicate_of:
+                    typer.echo(f"    as a duplicate of {item.duplicate_of}")
+                if item.reply_text:
+                    typer.echo(f"    with the reply it never got: {item.reply_text}")
+        if outcome.drafted:
+            typer.echo(
+                "  → review each with `outbox show <id>`, approve with `--op close:<digest>`, "
+                "send with `--kind close` after the reply and the labels"
+            )
+    if call.code:
+        code = f" ({call.reason})" if call.reason else ""
+        typer.echo(f"✗ outbox backfill-close refused{code}: {call.error}", err=True)
+        raise typer.Exit(call.code)
+
+
+def outbox_backfill_close(
+    dry_run: bool = False, as_: str = "", hive: str = "", as_json: bool = False
+):
+    """Draft the missing issue closes of reports already closed (drafts only; never sends)."""
+    actor = identity.resolve_actor(as_)
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    call = intake_services.outbox_backfill_close(
+        cfg,
+        entry,
+        Path(registry.hive_dir(entry)),
+        actor,
+        dry_run,
+        branch=str(config.integration_branch(cfg, entry)),
+        hive=hive,
+    )
+    render_close_backfill(call, as_json)
 
 
 def outbox_reconcile(outbox_id: str = "", as_: str = "", hive: str = "", as_json: bool = False):
@@ -1356,8 +1507,18 @@ def _emit(payload: dict, code: int = 0) -> None:
         raise typer.Exit(code)
 
 
+def _values_text(values) -> str:
+    """``type=Bug, Priority=High``: the values a type or field operation sets."""
+    return ", ".join(f"{name}={value}" for name, value in values)
+
+
+def _value_change_text(change) -> str:
+    return f"{change.name} {change.live or '(unset)'} → {change.desired}"
+
+
 def label_sync_item_row(item) -> dict:
-    """One report's sync: the converging diff, drift, swaps and the record drafted or found."""
+    """One report's sync: the converging diff, drift, swaps, the issue type and field values it
+    sets (with their notes) and the record drafted or found."""
     return {
         "report": item.report,
         "url": item.url,
@@ -1366,6 +1527,8 @@ def label_sync_item_row(item) -> dict:
         "drift": _sorted(item.drift),
         "undefined": _sorted(item.undefined),
         "swaps": [{"dimension": dim, "removed": old, "added": new} for dim, old, new in item.swaps],
+        "values": [{"name": c.name, "live": c.live, "desired": c.desired} for c in item.values],
+        "value_notes": list(item.value_notes),
         "changed": item.changed,
         "drafted": item.drafted,
         "pending": item.pending,
@@ -1383,6 +1546,10 @@ def label_sync_row(outcome) -> dict:
         "dry_run": outcome.dry_run,
         "items": [label_sync_item_row(item) for item in items],
         "changed": [item.report for item in items if item.changed],
+        "value_drift": {
+            report: [_value_change_text(c) for c in changes]
+            for report, changes in outcome.value_drift.items()
+        },
         "drafted": list(outcome.drafted),
         "errors": [item.report for item in items if item.error],
     }
@@ -1443,6 +1610,8 @@ def _batch_item_row(item) -> dict:
         "url": item.url,
         "add": _sorted(item.add),
         "remove": _sorted(item.remove),
+        "kind": item.kind.value,
+        "values": [list(pair) for pair in item.values],
         "stale": item.stale,
         "note": item.note,
     }
@@ -1476,13 +1645,16 @@ def _label_change(add, remove) -> str:
 def _label_sync_line(item, dry_run: bool = False) -> str:
     if item.error and not (dry_run and item.undefined):
         return f"⚠ {item.report}: {item.error}"
-    parts = [_label_change(item.add, item.remove)] if item.changed else ["converged"]
+    parts = [_label_change(item.add, item.remove)] if item.labels_changed else []
+    parts += [_value_change_text(change) for change in item.values]
+    parts = parts or ["converged"]
     if item.undefined:  # a dry run: the diff, and what define must create before a sync drafts
         parts.append(
             f"not defined yet: {', '.join(sorted(item.undefined))} (run `bh work labels define`)"
         )
     if item.drift:
         parts.append(f"drift {', '.join(sorted(item.drift))}")
+    parts += list(item.value_notes)
     for what, value in (
         ("drafted", item.drafted),
         ("already drafted as", item.pending),
@@ -1636,10 +1808,12 @@ def labels_review(hive: str = "", as_json: bool = False):
         ]
         for item in batch.items:
             stale = f"  [stale: {item.note or 'the labels moved since the draft'}]"
-            out.append(
-                f"  {item.outbox_id}  {item.report}  {_label_change(item.add, item.remove)}"
-                f"{stale if item.stale else ''}"
+            change = (
+                _label_change(item.add, item.remove)
+                if not item.values
+                else f"{item.kind.value} {_values_text(item.values)}"
             )
+            out.append(f"  {item.outbox_id}  {item.report}  {change}{stale if item.stale else ''}")
         out.append(
             f"  → an operator approves it with `bh work labels approve --batch "
             f"{batch.short_digest}` (a stale item is skipped and re-drafted by the next sync)"
@@ -1666,14 +1840,17 @@ def labels_approve(batch: str, as_: str = "", hive: str = "", as_json: bool = Fa
             f"{outcome.batch.short_digest}"
         ]
         for result in outcome.approved:
-            out.append(f"  {result.outbox_id} {result.report}: grant {result.grant_id}")
+            out.append(
+                f"  {result.outbox_id} {result.report} {result.kind.value}: grant {result.grant_id}"
+            )
         for item in outcome.stale:
             out.append(f"⚠ {item.outbox_id} {item.report}: stale, skipped (re-run labels sync)")
         for outbox_id, why in outcome.failed:
             out.append(f"⚠ {outbox_id}: {why}")
         if outcome.approved:
             out.append(
-                "  → nothing is sent: send each with `bh work outbox send <id> --kind labels`"
+                "  → nothing is sent: send each with `bh work outbox send <id> --kind labels` "
+                "(`--kind type` / `--kind fields` for a type or field change)"
             )
         return out
 
@@ -1978,6 +2155,7 @@ def proposal_check_row(check, item=None) -> dict:
         "stale": check.stale,
         "findings": [_finding_row(f) for f in check.findings],
         "computed_fixed_in": check.computed_fixed_in,
+        "relates": list(check.relates),
     }
     if item is not None:
         row["plan"] = item.status.value
@@ -2024,7 +2202,8 @@ def triage_check(pending: bool = False, as_: str = "", hive: str = "", as_json: 
             if check.passed:
                 item = plans.get(check.report)
                 gap = f"; {item.detail}" if item is not None and item.detail else ""
-                out.append(f"  ✓ {check.report}: passed{fixed}{gap}")
+                related = f"; relates to {', '.join(check.relates)}" if check.relates else ""
+                out.append(f"  ✓ {check.report}: passed{fixed}{related}{gap}")
                 continue
             out.append(f"✗ {check.report}: {len(check.findings)} finding(s){fixed}")
             for finding in check.findings:
@@ -2059,6 +2238,7 @@ def apply_item_row(item, destinations=None) -> dict:
         "drafted": list(item.drafted),
         "findings": [_finding_row(f) for f in item.findings],
         "detail": item.detail,
+        "relates": list(item.relates),
     }
     if "reroute" in row["steps"]:
         row["reroute_to"] = (destinations or {}).get(item.report, "")

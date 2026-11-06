@@ -82,6 +82,7 @@ class MemoryReportStore:
         self._rows: dict[str, _Row] = {}
         self._tracks: dict[str, str] = {}
         self._investigations: set[tuple[str, str]] = set()  # (report, work), bh-u3a53
+        self._relations: set[frozenset[str]] = set()  # relates-to pairs, bh-iamru
         self._gates: dict[str, _Gate] = {}
         self._blockers: dict[str, set[str]] = {}  # bead -> other live blockers (test control)
         self._events: list[tuple[str, str]] = []
@@ -135,6 +136,11 @@ class MemoryReportStore:
     def investigations_of(self, report: str) -> tuple[str, ...]:
         return tuple(sorted(w for r, w in self._investigations if r == report))
 
+    def related_reports(self, report: str) -> tuple[str, ...]:
+        return tuple(
+            sorted(o for pair in self._relations if report in pair for o in pair - {report})
+        )
+
     def read_thread(self, bead: str) -> Thread | None:
         row = self._rows.get(bead)
         if row is None or THREAD_KEY not in row.metadata:
@@ -155,6 +161,14 @@ class MemoryReportStore:
 
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         return tuple(r.view for r in self._rows.values() if OUTBOX_KEY in r.metadata)
+
+    def read_outboxes(self) -> dict[str, OutboxDocument]:
+        docs: dict[str, OutboxDocument] = {}
+        for view in self.reports_with_outbox():
+            doc = self.read_outbox(view.id)
+            if doc is not None:
+                docs[view.id] = doc
+        return docs
 
     def read_proposal(self, bead: str) -> Proposal | None:
         row = self._rows.get(bead)
@@ -322,6 +336,14 @@ class MemoryReportStore:
         self._row(work)
         self.writes += 1
         self._investigations.add((report, work))
+
+    def relate(self, report: str, other: str, *, actor: str) -> None:
+        self._row(report)
+        self._row(other)
+        pair = frozenset((report, other))
+        if pair not in self._relations:
+            self.writes += 1
+            self._relations.add(pair)
 
     def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
         self._row(report)

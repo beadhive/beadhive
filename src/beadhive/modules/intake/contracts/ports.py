@@ -3,7 +3,9 @@
 :class:`IntakePort` is the one consumer-facing port. The outbound ports are intake's own narrow
 ones: :class:`ReportStore` (the bead store holding report beads), :class:`CheckpointStore` (opaque
 resume tokens), :class:`LabelPolicy` (the closed label vocabulary), :class:`IntakeLock` (the one
-per-binding lock), :class:`OutboxView` (what own-message recognition reads of the outbox),
+per-binding lock, and :class:`BatchLock`, its optional batch scope), :class:`OutboxView` (what
+own-message recognition reads of the outbox), :class:`OutboxIndex` (which report holds an outbox
+id),
 :class:`Sanitizer` (the egress secret scan), :class:`IdSource` (the outbox's opaque ids),
 :class:`ReleaseVerifier` (what a tag contains), :class:`RepoFacts` (what the proposal checks
 read of the repository) and :class:`LandedCommits` (the commits that landed a work bead).
@@ -13,15 +15,19 @@ module's domain records.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from ..domain import (
     ApplyOutcome,
     ApplyRequest,
+    BatchSend,
+    BatchSendOutcome,
     BeadView,
     Checkpoint,
+    CloseBackfill,
+    CloseBackfillOutcome,
     ConsiderRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
@@ -133,9 +139,9 @@ class IntakePort(Protocol):
 
     def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep: ...  # bh doctor, hive repair
 
-    # the supervised outbox (bh-6wj9y R6, R11; D2): comment.create and labels.change, each its own
-    # gate. Nothing here runs from a timer: every write needs an operator approval minting a
-    # single-use grant.
+    # the supervised outbox (bh-6wj9y R6, R11; D2): comment.create, labels.change and issue.close,
+    # each its own gate. Nothing here runs from a timer: every write needs an operator approval
+    # minting a single-use grant.
 
     def draft_reply(self, request: ReplyDraft) -> OutboxResult: ...  # O1 for a reply
 
@@ -148,6 +154,8 @@ class IntakePort(Protocol):
     def send(
         self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT
     ) -> OutboxResult: ...  # O9 to O13
+
+    def send_approved(self, request: BatchSend) -> BatchSendOutcome: ...  # O9 to O13, per op
 
     def reconcile(
         self, outbox_id: str | None = None, *, actor: str
@@ -166,6 +174,10 @@ class IntakePort(Protocol):
     def retry(
         self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT
     ) -> OutboxResult: ...  # O17
+
+    def backfill_closes(
+        self, request: CloseBackfill
+    ) -> CloseBackfillOutcome: ...  # O1 for the closes of reports closed before closes existed
 
     # the milestone triggers (bh-6wj9y R9; I10). They DRAFT and never send: no grant, no writer, no
     # tracker request. Free under ``NullIntake``; the work layer wraps both so a failure here is
@@ -340,6 +352,18 @@ class ReportStore(Protocol):
         """Every bead that investigates ``report`` (sorted), of every status."""
         ...
 
+    def relate(self, report: str, other: str, *, actor: str) -> None:
+        """Record that ``report`` and ``other`` are related reports (``bh-iamru``: one's reply
+        mentions the other's issue): one native ``relates-to`` edge, non-blocking, distinct from
+        ``tracks`` and investigations, surviving either bead's closure. Idempotent in BOTH
+        directions: a pair already related either way is left as it is."""
+        ...
+
+    def related_reports(self, report: str) -> tuple[str, ...]:
+        """Every bead related to ``report`` by a ``relates-to`` edge in either direction (sorted),
+        of every status."""
+        ...
+
     def read_thread(self, bead: str) -> Thread | None: ...  # None: no ``intake.thread`` yet
 
     def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
@@ -367,6 +391,14 @@ class ReportStore(Protocol):
 
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         """Every report carrying an ``intake.outbox`` document, of every status."""
+        ...
+
+    def read_outboxes(self) -> Mapping[str, OutboxDocument]:
+        """Every report's ``intake.outbox`` document by report, of every status, in
+        :meth:`reports_with_outbox` order: the one pass a scan, a listing or a batch makes. A
+        store whose listing carries the documents answers it in one read (``bh-pc9rf``); every
+        document decodes as :meth:`read_outbox` would, so a corrupt one is a store error, never
+        an empty outbox."""
         ...
 
     # review-gated triage (bh-hrx2r): the ``intake.proposal`` document, on ANY report (native or
@@ -404,6 +436,19 @@ class IntakeLock(Protocol):
 
 
 @runtime_checkable
+class BatchLock(Protocol):
+    """The optional batch scope of an :class:`IntakeLock` (``bh-pc9rf``).
+
+    Inside ``batch()`` every ``hold`` still takes its own per-binding lock and yields the live
+    epoch, but the lock may reuse ONE host check and epoch read for the holds of the batch (the
+    root's re-checks them once they are older than its bound), so a batch of N sends pays the
+    host check about once rather than N times. Only a one-process batch (``outbox send-approved``,
+    ``labels approve --batch``) enters it; nothing about a single hold changes."""
+
+    def batch(self) -> AbstractContextManager[None]: ...
+
+
+@runtime_checkable
 class OutboxView(Protocol):
     """The read-only view of the outbox own-message recognition needs (``bh-fptob`` R7, with
     ``bh-6wj9y``'s ``issued``). The outbox owns the records; the thread only reads them."""
@@ -415,6 +460,24 @@ class OutboxView(Protocol):
     def issued(self, outbox_id: str) -> bool: ...  # an operation that ever had an attempt
 
     def known_actors(self) -> frozenset[ThreadActor]: ...  # every actor on an outbox receipt
+
+
+@runtime_checkable
+class OutboxIndex(Protocol):
+    """Which report holds an outbox id (``bh-pc9rf``): a cache, so ``show`` / ``approve`` /
+    ``send`` read ONE report instead of scanning every report's outbox.
+
+    Never authoritative: the sender confirms every answer against the report's own document (a
+    record never leaves the report it was drafted on) and on a miss or a wrong answer scans, then
+    rebuilds the index from that scan. So a lost or concurrent update only costs one scan, and
+    deleting the index is always safe. ``add`` merges entries; ``rebuild`` replaces the whole
+    index with a complete scan's."""
+
+    def report_of(self, outbox_id: str) -> str | None: ...
+
+    def add(self, entries: Mapping[str, str]) -> None: ...  # outbox id -> report, merged
+
+    def rebuild(self, entries: Mapping[str, str]) -> None: ...  # a complete scan, replaced
 
 
 @runtime_checkable
@@ -478,6 +541,21 @@ class RepoFacts(Protocol):
 
 
 @runtime_checkable
+class ProjectIssues(Protocol):
+    """The bound tracker project's issues, for the pre-apply mention check (``bh-iamru``),
+    read-only.
+
+    ``identifiers`` answers every issue of the bound project, open AND closed, as identifier
+    (``#12``) to canonical URL, from ONE paged listing, so a run's every ``#N`` costs one listing,
+    never one request per mention. It raises ``IntakeRefused`` when it cannot answer (no tracker
+    is bound with ``issues.read``, or the listing failed part-way): never a partial answer, so a
+    mention is never refused as missing on an incomplete read. The application implements it over
+    the tracker port; tests inject a fake."""
+
+    def identifiers(self) -> Mapping[str, str]: ...
+
+
+@runtime_checkable
 class LandedCommits(Protocol):
     """The commits that landed a work bead (bh-9aqmv), read-only: its ``git.commits`` linkage,
     oldest first (``()``: none recorded). A closed fixing bead's landed commits are what the
@@ -514,13 +592,16 @@ class LabelPolicy(Protocol):
 
 __all__ = [
     "AuditLog",
+    "BatchLock",
     "CheckpointStore",
     "IdSource",
     "IntakeLock",
     "IntakePort",
     "LabelPolicy",
     "LandedCommits",
+    "OutboxIndex",
     "OutboxView",
+    "ProjectIssues",
     "ReleaseVerifier",
     "RepoFacts",
     "ReportStore",

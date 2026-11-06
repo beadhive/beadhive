@@ -428,17 +428,54 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `write.comment.enabled` / `write.labels.enabled` | `false` | enable `comment.create` / `labels.change`: necessary, never sufficient (each write needs its own operator-approved grant) |
 | `write.label_definitions.enabled` | `false` | enable `labels.define`: create or update the repository's label definitions. Repository-scoped, necessary and never sufficient (each use needs an operator-approved single-use grant); new (bh-la587), see the rotation note below |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
+| `write.issue_close.enabled` | `false` | enable `issue.close`: close a bound issue with its reason (`completed`, `not_planned` or `duplicate`) as `PATCH /issues/{n}` with only `state` and `state_reason`, never the labels. Issue-scoped, necessary and never sufficient (each close needs its own operator-approved single-use grant). It is also the outbox's close gate: with it off no close is drafted, approved or sent (`close_disabled`); there is no separate intake key. New in 0.35.3 (bh-pr5ll), see the rotation note below |
+| `write.issue_type.enabled` | `false` | enable `issue.type`: read each issue's type (`TrackerIssue.issue_type`; unread while off) and set it to a type the organization defines as `PATCH /issues/{n}` with only `type`, never the labels. Issue-scoped, necessary and never sufficient (each write needs its own operator-approved single-use grant). It is also the outbox's `issue.type` gate (`type_disabled`); there is no separate intake key. New in 0.35.3 (bh-poqy0), see the rotation note below |
+| `write.issue_fields.enabled` | `false` | enable `issue.fields`: read each issue's field values (`TrackerIssue.fields`; unread while off) and set named ones: one `GET /orgs/{org}/issue-fields` resolves the field id and checks the option, then `POST /issues/{n}/issue-field-values` adds only those values (every other field and the labels are kept). Needs the write role; a classic token needs `read:org`, and a fine-grained token or GitHub App needs the organization permission "Issue Fields" (read) for the field listing and the repository permission "Issues" (write) for the POST. Issue-scoped, necessary and never sufficient (each write needs its own grant). It is also the outbox's `issue.fields` gate (`fields_disabled`). New in 0.35.3 (bh-poqy0), see the rotation note below |
 
-The adapter ships the read path and both writers, `comment.create` and `labels.change` (owned
-prefixes only). Each write flag binds its writer and nothing else, and each write still needs its
-own operator-approved single-use grant (no key can supply one). A read or write whose flag is off
-is refused before any request (a disabled writer has no method on the bound object).
+The adapter ships the read path and its writers, `comment.create`, `labels.change` (owned
+prefixes only), `labels.define`, `issue.close` (the state and its reason only), `issue.type` and
+`issue.fields` (the type, or the named field values, only). Each write flag
+binds its writer and nothing else, and each write still needs its own operator-approved
+single-use grant (no key can supply one). A read or write whose flag is off is refused before any
+request (a disabled writer has no method on the bound object).
 `read.include_closed: false` narrows issue listings but never the full id snapshot used to detect
 deletions (a closed issue still exists). Retries wait on the adapter's own budget
 above, never on githubkit's built-in retry.
 
 As with `adapter`, nothing in a shared config should set these keys until the schema has rotated
 to every host (`bh-uf986`).
+
+`write.issue_close.enabled` is new in 0.35.3 (bh-pr5ll), with the `issue.close` tracker operation
+and the outbox's `issue.close` operation kind. It follows the same 0.35.0 rotation order: an older
+host rejects the key, and a host older than 0.35.3 cannot decode an `intake.outbox` document that
+holds a close (it fails closed on it), so **every host that reads the hive's outbox runs 0.35.3
+before the key is set**. A close rides on a triage reply (`fixed` closes as `completed`, `reject`
+as `not_planned`, `duplicate-of` as `duplicate`; `needs-info` never closes), is approved with
+`bh work outbox approve <id> --op close:<digest>` and sent with `bh work outbox send <id> --kind
+close`, and only after that record's comment and every other comment of the report are settled
+and the report's latest labels record is sent (`close_not_ready` otherwise, before any request).
+`bh work outbox backfill-close [--dry-run]` drafts the close for reports already closed whose
+issue is still open, drafting the missing reply too when the report never got one. The probe reports
+`issue.close` as `no` below the triage role. A `duplicate-of` close also names the canonical
+report's issue (bh-iamru): the PATCH adds `duplicate_issue_id` (the canonical's numeric issue id,
+read with one GET before the write), and the close's digest shows `duplicate_of: <url>`. It needs
+no other key; a canonical with no issue in the same repository closes as a plain duplicate.
+GitHub's issue dependencies and sub-issues have no key: bh does not write them (no bead edge means
+the same thing).
+
+`write.issue_type.enabled` and `write.issue_fields.enabled` are new in 0.35.3 (bh-poqy0), with the
+`issue.type` and `issue.fields` tracker operations and outbox operation kinds, and follow the same
+rotation order: **every host that reads the hive's outbox runs 0.35.3 before either key is set**
+(an older host rejects the keys and fails closed on an `intake.outbox` document holding either
+operation). With a key on, `bh work labels sync` (and the `labels.on_transition` refresh) also
+projects the bead's type onto the issue type and its priority onto the `Priority` field through
+`intake.external.labels.issue_type` / `priority_field` below, from the tracked work and falling
+back to the report. A difference is reported like label drift and drafted on the issue's same
+`labels` record, so `labels review` / `labels approve --batch` approve it with the labels, each
+operation with its own digest and grant; send it with `bh work outbox send <id> --kind type` or
+`--kind fields`. The labels are unchanged: the `bh:type/*` and `bh:priority/*` labels are still
+projected. The probe reports both as `no` below the write role, and `issue.fields` as `no` for a
+classic token without `read:org`.
 
 `read.labels.enabled` and `write.label_definitions.enabled` are new (bh-la587) and were added with
 the `labels.read` and `labels.define` tracker operations. `BeadhiveConfig` forbids unknown keys, so
@@ -496,6 +533,7 @@ and no key can enable or pre-approve a tracker write.
 | `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
 | `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request. Only `approve` and `send` are gated by this flag: `render`, `discard` and `retry --kind labels` are local state moves that make no tracker request, so they are deliberately not blocked. A retried label operation still cannot reach GitHub without a new `approve` and `send`, and both of those are gated |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
+| `outbox.batch_recheck_seconds` | `0` | how long a one-process batch (`bh work outbox send-approved`, `bh work labels approve --batch`) reuses its primary-host check and epoch read before taking them again (bh-pc9rf). `0` (the default) re-checks on every operation, as a single `send` does; a positive value is an opt-in. Every operation still takes its own per-binding lock, spends its own single-use grant and writes its own receipt; only the host check is shared. The factory sets `300` once every host runs 0.35.3 (an older host rejects the key) |
 | `comments.enabled` | `false` | ingest bound reports' issue comments: `bh work thread ingest` (needs `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`), `thread show` and `thread considered`. Reads only; off refuses naming this key |
 | `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |
 | `comments.purge_deleted_bodies` | `true` | drop a tombstoned comment's latest body (its digest is kept; not erasure) |
@@ -508,6 +546,9 @@ and no key can enable or pre-approve a tracker write.
 | `labels.aliases` | `{}` | dimension to display group, replacing the dimension name in a projected label; a key that is not a projected-dimension name is refused |
 | `labels.colors` | `{}` | dimension to label color: exactly six hex digits, no `#`; a bad color or an unknown dimension is refused naming `intake.external.labels.colors` |
 | `labels.overrides` | `{}` | `dimension/value` to `{name, description, color}` (each optional; `color` is six hex digits) overriding one label; a key without a known dimension is refused naming `intake.external.labels.overrides` |
+| `labels.issue_type.map` | `{bug: Bug, feature: Feature, task: Task, chore: Task}` | bead type (case-insensitive) to the issue type name the organization defines, set beside the labels while `plugins.tracker-github.write.issue_type.enabled` is on. Setting it replaces the whole map; a bead type it does not name is skipped with a note, never guessed (drop `chore` to leave chores untyped). Keys and values are non-empty and trimmed. New in 0.35.3 (bh-poqy0) |
+| `labels.priority_field.name` | `Priority` | the single-select issue field the bead priority is written to (while `write.issue_fields.enabled` is on) |
+| `labels.priority_field.map` | `{P0: Urgent, P1: High, P2: Medium, P3: Low, P4: Low}` | bead priority (`P0` to `P4`, any case) to the field's option name; setting it replaces the whole map, an unmapped priority is skipped with a note, and a key that is not a priority is refused naming `intake.external.labels.priority_field.map`. New in 0.35.3 (bh-poqy0) |
 | `labels.on_transition` | `false` | reflect a state change onto the labels when it happens (only acts with `labels.enabled`): every disposition (`accept`, `reject`, `reroute`, `promote`), `needs-info`, `wake`, `link` / `unlink` and the milestone triggers also draft or refresh the report's ONE `labels` outbox record from stored state, with no tracker request. It only drafts (it needs `outbox.enabled` and `outbox.labels_enabled` to draft anything) and never fails the transition |
 
 `bh work import` additionally needs the hive's public store to bind a tracker adapter and the
@@ -587,7 +628,10 @@ question through the outbox (`outbox.enabled`) and asks through `needs-info` (`c
 so with either off the report that needs it fails and nothing is written for it; it refreshes the
 touched reports' labels while `labels.enabled` is on. The pre-apply checks read the hive checkout's
 git (ancestry, tags, changed paths; read-only) against `work.integration_branch`, and the fixing
-commits from each closed work bead's `git.commits` linkage.
+commits from each closed work bead's `git.commits` linkage. Since 0.35.3 (bh-iamru) they also
+resolve every `#N` a `reporter_text` names against the bound repository, with ONE issue listing per
+run and only when a `#N` appears: this needs the tracker plugin with `read.issues.enabled`, and
+without it such a text fails as `mention_unverified` (no new key).
 
 Since 0.35.2 a proposal goes stale only when a comment changed after its `thread_seq` (recording a
 triage read with `thread considered` no longer counts), `apply` records the analysis's read through

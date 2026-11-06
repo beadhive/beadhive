@@ -32,7 +32,7 @@ from tests.unit.bootstrap.test_tracker_composition import plugin, roots
 from typer.testing import CliRunner
 
 from beadhive import cli, intake_services, registry, run, store_target, work_intake
-from beadhive.modules.intake import IntakeStoreError, OwnIdentity
+from beadhive.modules.intake import IntakeRefused, IntakeStoreError, OwnIdentity, RefusalReason
 from beadhive.modules.intake.domain import WorkDraft
 from beadhive.modules.tracker.contracts import CommentWriter, MarkerCodec, OwnMarker
 from beadhive.testing.intake import draft
@@ -115,6 +115,8 @@ def test_with_every_switch_on_the_wiring_comes_from_the_plugin_binding(rig) -> N
         f"<!-- bh:v1 hive=acme/widget install={identity.install} outbox=ob1_x -->"
     )
     assert wiring["owned_label_prefixes"] == ()  # labels.change is not enabled
+    assert wiring["close_enabled"] is False  # issue.close is off by default
+    assert (wiring["type_enabled"], wiring["fields_enabled"]) == (False, False)
     assert rig.world.read_requests() == rig.world.write_requests() == 0  # building reads nothing
 
 
@@ -127,6 +129,101 @@ def test_the_owned_label_prefixes_come_from_the_plugin_config_only_when_labels_a
     wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
 
     assert wiring["owned_label_prefixes"] == ("bh:", "status/")
+
+
+def test_the_close_gate_follows_the_bindings_own_issue_close_enable(tmp_path, monkeypatch) -> None:
+    on = plugin(comments=True, comment=True)
+    on["write"]["issue_close"] = {"enabled": True}
+    rig = Wired(tmp_path, monkeypatch, {"tracker-github": on})
+    monkeypatch.setattr(
+        work_intake,
+        "config",
+        SimpleNamespace(load=lambda: rig.cfg, integration_branch=lambda cfg, entry: "main"),
+    )
+
+    wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
+
+    assert wiring["close_enabled"] is True
+    report, _issue = rig.report()
+    replied = bh("outbox", "draft", report, "--text", "Thanks.", *COMMON)
+    assert replied.exit_code == 0
+    # past the gate: the record has no close (a CLI draft asks for none), so the send refuses
+    # on the missing operation, never on the gate
+    oid = doc(replied)["results"][0]["outbox_id"]
+    missing = bh("outbox", "send", oid, "--kind", "close", *COMMON)
+    assert missing.exit_code == 1 and doc(missing)["reason"] == "unknown_outbox"
+    off = bh("outbox", "backfill-close", "--dry-run", *COMMON)
+    assert off.exit_code == 0 and doc(off)["items"] == []
+
+
+def test_the_mention_checks_issue_listing_comes_from_the_binding_lazily(rig) -> None:
+    """bh-iamru: the pre-apply mention check lists the bound project's issues through the same
+    plugin binding (issues.read only), and building it binds and reads nothing."""
+    rig.process = SimpleNamespace(for_store=lambda *a, **k: pytest.fail("bound too early"))
+    issues = intake_services.project_issues(rig.cfg, rig.entry, rig.hive)
+    rig.process = rig.adapters
+    _report, issue = rig.report()
+    reads = rig.world.read_requests()
+
+    listed = issues.identifiers()
+
+    assert listed[issue.identifier] == issue.url
+    assert rig.world.read_requests() > reads and rig.world.write_requests() == 0
+
+
+def test_the_mention_checks_listing_without_a_tracker_refuses_naming_the_key(rig) -> None:
+    rig.plugin_off()
+
+    with pytest.raises(IntakeRefused) as caught:
+        intake_services.project_issues(rig.cfg, rig.entry, rig.hive).identifiers()
+
+    assert caught.value.reason is RefusalReason.INTAKE_DISABLED
+    assert "plugins.tracker-github.enabled" in caught.value.detail
+
+
+@pytest.mark.parametrize(
+    ("key", "gate"), [("issue_type", "type_enabled"), ("issue_fields", "fields_enabled")]
+)
+def test_each_value_gate_follows_the_bindings_own_enable(tmp_path, monkeypatch, key, gate) -> None:
+    on = plugin(comments=True, comment=True)
+    on["write"][key] = {"enabled": True}
+    rig = Wired(tmp_path, monkeypatch, {"tracker-github": on})
+
+    wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
+
+    other = "fields_enabled" if gate == "type_enabled" else "type_enabled"
+    assert wiring[gate] is True and wiring[other] is False
+    expected = (gate == "type_enabled", gate == "fields_enabled")
+    assert intake_services.value_gates(rig.cfg, rig.entry) == expected  # config alone agrees
+    off = dict(rig.cfg, plugins={"tracker-github": dict(on, enabled=False)})
+    assert intake_services.value_gates(off, rig.entry) == (False, False)
+
+
+def test_the_outbox_kinds_name_type_and_fields() -> None:
+    from beadhive.modules.intake.domain import OpKind
+
+    assert intake_services.outbox_kind("type") is OpKind.TYPE
+    assert intake_services.outbox_kind("issue.fields") is OpKind.FIELDS
+    assert intake_services.outbox_kind("priority") is None
+
+
+def test_the_value_maps_are_read_from_intake_external_labels() -> None:
+    default = intake_services.labels_config({})
+    assert default.values.issue_types["chore"] == "Task"
+    assert default.values.priorities["p4"] == "Low"
+    section = {
+        "issue_type": {"map": {"Bug": "Defect"}},
+        "priority_field": {"name": "Severity", "map": {"P0": "Sev1"}},
+    }
+    custom = intake_services.labels_config({"intake": {"external": {"labels": section}}})
+    assert dict(custom.values.issue_types) == {"bug": "Defect"}
+    assert (custom.values.priority_field, dict(custom.values.priorities)) == (
+        "Severity",
+        {"p0": "Sev1"},
+    )
+    bad = {"priority_field": {"map": {"urgent": "Sev1"}}}
+    broken = intake_services.labels_config({"intake": {"external": {"labels": bad}}})
+    assert broken.settings is None and "P0 to P4" in broken.error
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,11 @@ from beadhive.modules.tracker.contracts import (
     OwnMarker,
 )
 
+#: The issue types and single-select fields a world defines until a test seeds others (GitHub's
+#: organization defaults).
+DEFAULT_ISSUE_TYPES = ("Bug", "Feature", "Task")
+DEFAULT_ISSUE_FIELDS = {"Priority": ("Urgent", "High", "Medium", "Low")}
+
 
 def at(day: int, hour: int = 0) -> datetime:
     """An explicit, timezone-aware timestamp for scenarios (January 2026, UTC)."""
@@ -76,6 +81,11 @@ class TrackerWorld(Protocol):
 
     def comment_count(self, issue: IssueKey) -> int: ...
 
+    def duplicate_of(self, issue: IssueKey) -> str | None:
+        """The URL of the canonical issue ``issue`` was last closed as a duplicate of (``None``:
+        none recorded). Observation only: no request."""
+        ...
+
     def seed_label_definition(self, definition: LabelDefinition) -> None:
         """Create (or replace, by name) a repository label definition, as a human would on the
         tracker: owned or not, with no grant and no request counted."""
@@ -83,6 +93,25 @@ class TrackerWorld(Protocol):
 
     def label_definitions(self) -> tuple[LabelDefinition, ...]:
         """What the tracker holds right now, ordered by name (observation only: no request)."""
+        ...
+
+    def seed_issue_type(self, name: str) -> None:
+        """Define an issue type the tracker accepts (``issue.type``), as an administrator would;
+        no request counted. A world starts with ``Bug``, ``Feature`` and ``Task``."""
+        ...
+
+    def seed_issue_field(self, name: str, options: tuple[str, ...]) -> None:
+        """Define (or replace) a single-select issue field and its option names
+        (``issue.fields``); no request counted. A world starts with ``Priority`` (``Urgent``,
+        ``High``, ``Medium``, ``Low``)."""
+        ...
+
+    def server_issue_type(self, issue: IssueKey) -> str:
+        """The issue's type right now (``""``: none); observation only, no request."""
+        ...
+
+    def server_issue_fields(self, issue: IssueKey) -> dict[str, str]:
+        """The issue's set field values right now, by field name; observation only."""
         ...
 
     def throttle(self, requests: int, retry_after_seconds: float) -> None: ...
@@ -123,6 +152,10 @@ class _Issue:
     created: datetime
     updated: datetime
     change_request: bool = False
+    closed_reason: str | None = None  # the reason of the last close (``issue.close``)
+    duplicate_of: str | None = None  # the canonical's URL the last close named (``bh-iamru``)
+    issue_type: str = ""  # the issue's type (``issue.type``); "" when none is set
+    fields: dict[str, str] = field(default_factory=dict)  # field name -> value (``issue.fields``)
     #: Moved to another project: no longer listed here, but still answers its old key with its new
     #: canonical one (what a tracker's redirect for a transferred issue does).
     transferred: bool = False
@@ -149,6 +182,11 @@ class MemoryWorld:
     comments: dict[str, _Comment] = field(default_factory=dict)
     #: The repository's label definitions, by name.
     label_defs: dict[str, LabelDefinition] = field(default_factory=dict)
+    #: The issue types the tracker defines, and its single-select fields with their options.
+    issue_types: set[str] = field(default_factory=lambda: set(DEFAULT_ISSUE_TYPES))
+    issue_field_defs: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: dict(DEFAULT_ISSUE_FIELDS)
+    )
     sleeps: list[float] = field(default_factory=list)
     writes: int = 0
     reads: int = 0
@@ -250,11 +288,26 @@ class MemoryWorld:
     def comment_count(self, issue: IssueKey) -> int:
         return sum(1 for c in self.comments.values() if c.issue == issue)
 
+    def duplicate_of(self, issue: IssueKey) -> str | None:
+        return self.issues[issue.identifier].duplicate_of
+
     def seed_label_definition(self, definition: LabelDefinition) -> None:
         self.label_defs[definition.name] = definition
 
     def label_definitions(self) -> tuple[LabelDefinition, ...]:
         return tuple(self.label_defs[name] for name in sorted(self.label_defs))
+
+    def seed_issue_type(self, name: str) -> None:
+        self.issue_types.add(name)
+
+    def seed_issue_field(self, name: str, options: tuple[str, ...]) -> None:
+        self.issue_field_defs[name] = tuple(options)
+
+    def server_issue_type(self, issue: IssueKey) -> str:
+        return self.issues[issue.identifier].issue_type
+
+    def server_issue_fields(self, issue: IssueKey) -> dict[str, str]:
+        return dict(self.issues[issue.identifier].fields)
 
     def throttle(self, requests: int, retry_after_seconds: float) -> None:
         self.throttled, self.retry_after = requests, retry_after_seconds
@@ -281,4 +334,4 @@ class MemoryWorld:
         return f"memory://{self.locator}/wiki/home"
 
 
-__all__ = ["MemoryWorld", "TrackerWorld", "at"]
+__all__ = ["DEFAULT_ISSUE_FIELDS", "DEFAULT_ISSUE_TYPES", "MemoryWorld", "TrackerWorld", "at"]

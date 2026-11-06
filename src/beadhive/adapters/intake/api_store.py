@@ -11,7 +11,8 @@ What moves to the API, and what does not (and why):
 
 * reads: one bead (``get``, ``read_thread``, ``read_outbox``, ``read_proposal``, the hold and
   tracking reads, all answered by the ONE row, whose ``dependencies`` carry each neighbour's status
-  and reason), the open-label queue, the bound-report, outbox and proposal listings;
+  and reason), the open-label queue, the bound-report, outbox and proposal listings, and every
+  outbox document at once (``read_outboxes``, decoded from the outbox listing's own rows);
 * writes: type/priority updates, assignment, tracking and investigates edges, the plain and the
   held close, and the four metadata documents (a compare-and-set against the row just read, so a
   document that moved since is refused where ``bd update --metadata`` would overwrite it);
@@ -43,9 +44,11 @@ from beadhive.modules.intake.contracts import (
     INVESTIGATES_EDGE,
     OUTBOX_KEY,
     PROPOSAL_KEY,
+    RELATES_EDGE,
     BeadView,
     IntakeRefused,
     IntakeStoreError,
+    OutboxDocument,
     RefusalReason,
     ReportDraft,
     StoreScope,
@@ -195,6 +198,30 @@ class ApiReportStore(BdReportStore):
         views = self._rows("list", key=OUTBOX_KEY, all_=True)
         return super().reports_with_outbox() if views is None else views
 
+    def read_outboxes(self) -> dict[str, OutboxDocument]:
+        """Every report's ``intake.outbox`` from ONE listing (``bh-pc9rf``): the service's rows
+        carry their metadata, so the documents decode from the rows themselves instead of one
+        read per report. A row whose listing lacks the document (an older service) is read on
+        its own, so nothing is ever missed."""
+        api = self._api()
+        if api is None:
+            return super().read_outboxes()
+        try:
+            rows = api.issues(has_metadata_key=OUTBOX_KEY, all_=True)
+        except ReportApiError as exc:
+            raise self._failed(exc, "list", "") from exc
+        docs: dict[str, OutboxDocument] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            bead = str(row.get("id", ""))
+            metadata = row.get("metadata")
+            carried = isinstance(metadata, Mapping) and OUTBOX_KEY in metadata
+            doc = self._outbox(bead, row) if carried else self.read_outbox(bead)
+            if doc is not None:
+                docs[bead] = doc
+        return docs
+
     def reports_with_proposal(self) -> tuple[BeadView, ...]:
         views = self._rows("list", key=PROPOSAL_KEY, all_=True)
         return super().reports_with_proposal() if views is None else views
@@ -289,6 +316,17 @@ class ApiReportStore(BdReportStore):
             api.link(work, report, INVESTIGATES_EDGE, actor=actor)
         except ReportApiError as exc:
             raise self._failed(exc, "investigate", report) from exc
+
+    def relate(self, report: str, other: str, *, actor: str) -> None:
+        api = self._api()
+        if api is None:
+            return super().relate(report, other, actor=actor)
+        if other in self.related_reports(report):
+            return
+        try:
+            api.link(report, other, RELATES_EDGE, actor=actor)
+        except ReportApiError as exc:
+            raise self._failed(exc, "relate", report) from exc
 
     def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
         api = self._api()

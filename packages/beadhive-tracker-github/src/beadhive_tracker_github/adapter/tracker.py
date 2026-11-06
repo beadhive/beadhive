@@ -8,7 +8,8 @@ no configuration and imports no plugin kernel. Root's lazy factory row builds it
 
 **This class is the read path; writers are mixins.** It has no write method itself. Each write
 operation is its own module (``comment.create``: :mod:`.comments`; ``labels.change``:
-:mod:`.labels`; ``labels.define``: :mod:`.label_definitions`), composed onto this class by
+:mod:`.labels`; ``labels.define``: :mod:`.label_definitions`; ``issue.close``: :mod:`.closing`;
+``issue.type`` and ``issue.fields``: :mod:`.issue_values`), composed onto this class by
 :mod:`.compose` only when that operation is enabled,
 so the built object structurally lacks a disabled write's method. A present writer is necessary,
 never sufficient: it refuses before any request unless its operation is in ``enabled`` and the
@@ -35,8 +36,11 @@ Wire facts honoured (port ADR section 1):
 **Disabled reads are refused before any request**, exactly as ``MemoryTracker`` does: the
 composition root narrows writers structurally but delegates every read, so the adapter is the
 layer that keeps a read the operator did not enable from reaching GitHub (``OperationNotEnabled``,
-raised before the credential is even resolved). Identity (``whoami``, ``probe_capabilities``) is
-not gated by a read flag: it is the read-only evidence ``doctor --probe`` shows.
+raised before the credential is even resolved). An issue's type and field values ride on the
+issue listing, but are mapped only while ``issue.type`` / ``issue.fields`` is enabled (``None``,
+"not read", otherwise), so each write's switch also gates its read. Identity (``whoami``,
+``probe_capabilities``) is not gated by a read flag: it is the read-only evidence ``doctor
+--probe`` shows.
 """
 
 from __future__ import annotations
@@ -106,6 +110,9 @@ SUPPORTED_OPERATIONS = frozenset(
         Operation.LABELS_CHANGE,
         Operation.LABELS_READ,
         Operation.LABELS_DEFINE,
+        Operation.ISSUE_CLOSE,
+        Operation.ISSUE_TYPE,
+        Operation.ISSUE_FIELDS,
     }
 )
 
@@ -232,6 +239,15 @@ class GitHubTrackerAdapter(LabelDefinitionReading):
         stamps = [mapping.updated_at(row) for row in rows]
         return self._stamp(max(stamps)) if stamps else fallback
 
+    def _issue(self, row: Any) -> TrackerIssue:
+        """One issue row as a port record, its type and fields read only while enabled."""
+        return mapping.issue(
+            row,
+            self._location.canonical_url,
+            with_type=Operation.ISSUE_TYPE in self._enabled,
+            with_fields=Operation.ISSUE_FIELDS in self._enabled,
+        )
+
     def _issue_number(self, key: IssueKey) -> int:
         """The number of an issue of THIS repository (refusing another project's key)."""
         resolved = self._location.resolve(key.url)
@@ -266,11 +282,7 @@ class GitHubTrackerAdapter(LabelDefinitionReading):
         rows, reply, nxt = self._issue_page(
             query, state="all" if include_closed else "open", sort="updated"
         )
-        issues = tuple(
-            mapping.issue(row, self._location.canonical_url)
-            for row in rows
-            if not mapping.is_change_request(row)
-        )
+        issues = tuple(self._issue(row) for row in rows if not mapping.is_change_request(row))
         return Page(
             issues,
             self._cursor(nxt) if nxt else None,
@@ -365,7 +377,7 @@ class GitHubTrackerAdapter(LabelDefinitionReading):
         parsed = self._location.parse_html_url(mapping.issue_key(row).url)
         if parsed is None or not self._location.same_repository(parsed[0], parsed[1]):
             raise OtherProject(f"{key.identifier} was transferred to another repository")
-        return mapping.issue(row, self._location.canonical_url)
+        return self._issue(row)
 
     # -- MarkerCodec (pure) ----------------------------------------------------------------------
 

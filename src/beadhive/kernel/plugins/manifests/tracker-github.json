@@ -30,7 +30,7 @@
     "executables": [{"name": "gh", "required": false, "version": {"maximum_exclusive": "999.0.0", "minimum_inclusive": "0.0.0"}}],
     "permissions": [
       {"id": "network.github.read", "purpose": "read issues, comments and label definitions of the configured repository over HTTPS", "required": true},
-      {"id": "network.github.write", "purpose": "post a comment, change Beadhive-owned labels on an issue, or create, update and delete Beadhive-owned label definitions of the repository, only with a single-use operator-approved grant", "required": false}
+      {"id": "network.github.write", "purpose": "post a comment, change Beadhive-owned labels on an issue, close an issue, set an issue's type or field values, or create, update and delete Beadhive-owned label definitions of the repository, only with a single-use operator-approved grant", "required": false}
     ]
   }
 }

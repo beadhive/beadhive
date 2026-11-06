@@ -141,6 +141,7 @@ from .vocabulary import (
     ORIGIN_GITHUB,
     ORIGIN_IMPORT,
     ORIGIN_REPORT,
+    RELATES_EDGE,
     TRACKS_EDGE,
     DeliveryAfterUnlink,
     channel_of,
@@ -193,6 +194,7 @@ __all__ = [
     "DEFAULT_POLICY",
     "THREAD_SCHEMA",
     "INVESTIGATES_EDGE",
+    "RELATES_EDGE",
     "TRACKS_EDGE",
     "TRIAGE_FLAGS",
     "Applied",
@@ -328,10 +330,14 @@ from .outbox import (  # noqa: E402
     ISSUES_READ,
     MILESTONE_GROUP,
     OUTBOX_SCHEMA,
+    TYPE_VALUE,
+    VALUE_KINDS,
     Approval,
     ApprovalRequest,
     Attempt,
+    CanonicalIssue,
     Capabilities,
+    CloseReason,
     DeliveryFacts,
     DraftKey,
     DraftRequest,
@@ -361,6 +367,8 @@ from .outbox import (  # noqa: E402
     SendPlan,
     Step,
     UnlinkedFact,
+    ValueIntent,
+    close_blocker,
     is_grant_id,
     is_operator_seat,
     is_outbox_id,
@@ -368,6 +376,7 @@ from .outbox import (  # noqa: E402
     mint_outbox_id,
     outbox_view,
     reply_revision,
+    values_payload,
 )
 from .outbox_document import (  # noqa: E402
     OUTBOX_KEY,
@@ -385,10 +394,14 @@ __all__ += [
     "NOTIFIED_BY_EVENT",
     "OUTBOX_KEY",
     "OUTBOX_SCHEMA",
+    "TYPE_VALUE",
+    "VALUE_KINDS",
     "Approval",
     "ApprovalRequest",
     "Attempt",
+    "CanonicalIssue",
     "Capabilities",
+    "CloseReason",
     "CompletionPolicy",
     "DeliveryFacts",
     "DraftKey",
@@ -425,7 +438,9 @@ __all__ += [
     "SendPlan",
     "Step",
     "UnlinkedFact",
+    "ValueIntent",
     "Verdict",
+    "close_blocker",
     "completion_event",
     "delivery_after_merge",
     "delivery_after_release",
@@ -442,11 +457,19 @@ __all__ += [
     "outbox_to_document",
     "outbox_view",
     "reply_revision",
+    "values_payload",
 ]
 
 # -- the supervised sender's port records (I9a) -----------------------------------------------
 
 from .sending import (  # noqa: E402
+    SEND_ORDER,
+    BatchSend,
+    BatchSendFailure,
+    BatchSendOutcome,
+    CloseBackfill,
+    CloseBackfillItem,
+    CloseBackfillOutcome,
     OutboxApprove,
     OutboxEntry,
     OutboxListing,
@@ -457,6 +480,13 @@ from .sending import (  # noqa: E402
 )
 
 __all__ += [
+    "SEND_ORDER",
+    "BatchSend",
+    "BatchSendFailure",
+    "BatchSendOutcome",
+    "CloseBackfill",
+    "CloseBackfillItem",
+    "CloseBackfillOutcome",
     "OutboxApprove",
     "OutboxEntry",
     "OutboxListing",
@@ -578,6 +608,7 @@ from .proposal_checks import (  # noqa: E402
     CheckContext,
     CheckFinding,
     CheckKind,
+    MentionFact,
     ProposalCheck,
     RepoQueries,
     TargetFact,
@@ -585,6 +616,7 @@ from .proposal_checks import (  # noqa: E402
     check_proposal,
     check_run,
     cited_paths,
+    mentions,
     version_key,
 )
 from .proposal_document import (  # noqa: E402
@@ -685,6 +717,7 @@ __all__ += [
     "CheckContext",
     "CheckFinding",
     "CheckKind",
+    "MentionFact",
     "ProposalCheck",
     "RepoQueries",
     "TargetFact",
@@ -692,6 +725,7 @@ __all__ += [
     "check_proposal",
     "check_run",
     "cited_paths",
+    "mentions",
     "version_key",
 ]
 
@@ -791,6 +825,32 @@ __all__ += [
     "progress_facts",
 ]
 
+# -- the issue type and field-value projection (bh-poqy0), beside the labels -----------------
+
+from .issue_values import (  # noqa: E402
+    DEFAULT_ISSUE_TYPES,
+    DEFAULT_PRIORITIES,
+    DEFAULT_PRIORITY_FIELD,
+    DesiredValues,
+    ValueChange,
+    ValueSettings,
+    desired_values,
+    field_changes,
+    type_change,
+)
+
+__all__ += [
+    "DEFAULT_ISSUE_TYPES",
+    "DEFAULT_PRIORITIES",
+    "DEFAULT_PRIORITY_FIELD",
+    "DesiredValues",
+    "ValueChange",
+    "ValueSettings",
+    "desired_values",
+    "field_changes",
+    "type_change",
+]
+
 # -- propose, review and apply-reviewed (bh-9aqmv) ---------------------------------------------
 
 from .triage import (  # noqa: E402
@@ -806,6 +866,7 @@ from .triage import (  # noqa: E402
     ProposeOutcome,
     ProposeRequest,
     apply_order,
+    close_reason_for,
     duplicate_text,
     fixed_text,
     owner_of,
@@ -826,6 +887,7 @@ __all__ += [
     "ProposeOutcome",
     "ProposeRequest",
     "apply_order",
+    "close_reason_for",
     "duplicate_text",
     "fixed_text",
     "owner_of",

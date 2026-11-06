@@ -14,7 +14,24 @@ characters, never derived from a bead id) and identified by its stable :class:`D
 trigger never drafts twice. It carries its target binding, semantic event, supersession
 ``group``, the explicit publish intent (:class:`PublicFacts` and :class:`Message`: the only values
 a render reads; a template has no path to the report, the work, notes or the thread), and at most
-one operation of each kind (``comment.create``, ``labels.change``) with its own state.
+one operation of each kind (``comment.create``, ``labels.change``, ``issue.close``) with its own
+state.
+
+**A close rides on a reply** (``bh-pr5ll``): an ``issue.close`` operation carries only its
+:class:`CloseReason`, and O9 refuses it (``close_not_ready``) until the record's own comment is
+``sent``, no other comment of the report is unsent, AND the report's latest labels record (if
+there is one) is ``sent``, so the reporter reads every reply and the final labels before the issue
+closes. Send order per report: comment,
+labels, close. A ``duplicate`` close may name the canonical issue it duplicates
+(:class:`CanonicalIssue`, ``bh-iamru``): the canonical is part of the close's rendered bytes, so
+its digest, and so the operator's approval, covers it.
+
+**The issue's type and field values ride on the labels record** (``bh-poqy0``): the label
+projection drafts an ``issue.type`` and an ``issue.fields`` operation (each a :class:`ValueIntent`:
+the values to set, stamped with the values the issue held) on the same ``labels`` record as the
+``labels.change``, so one batch review approves all three, each with its own digest, grant and
+receipt. A labels record carries at least one of the three and never a comment; an unknown
+outcome is reconciled by reading the issue's type or field values back.
 
 **The machine** is per operation, because each write is its own gate:
 
@@ -138,10 +155,40 @@ class OutboxEvent(StrEnum):
 
 
 class OpKind(StrEnum):
-    """The two tracker writes (the values mirror the port's ``Operation``)."""
+    """The tracker writes (the values mirror the port's ``Operation``). ``issue.close`` is
+    rotation-gated like the ``labels`` event: an older host fails closed on a document holding
+    one, so every outbox-reading host runs a release that decodes it before any hive drafts one."""
 
     COMMENT = "comment.create"
     LABELS = "labels.change"
+    CLOSE = "issue.close"
+    TYPE = "issue.type"
+    FIELDS = "issue.fields"
+
+
+#: The value operations: each sets named values on the issue (``issue.type`` the type, under
+#: :data:`TYPE_VALUE`; ``issue.fields`` each field by its name) and rides on a ``labels`` record.
+VALUE_KINDS = frozenset({OpKind.TYPE, OpKind.FIELDS})
+#: The name an ``issue.type`` operation's one value travels under.
+TYPE_VALUE = "type"
+
+
+class CloseReason(StrEnum):
+    """Why a close closes the issue (the values mirror the port's ``CloseReason``)."""
+
+    COMPLETED = "completed"
+    NOT_PLANNED = "not_planned"
+    DUPLICATE = "duplicate"
+
+
+@dataclass(frozen=True)
+class CanonicalIssue:
+    """The issue a ``duplicate`` close is a duplicate OF (``bh-iamru``): the canonical report's
+    binding, an issue of the same tracker project as the closed one. ``identifier`` routes the
+    write; ``url`` is what the digest covers."""
+
+    identifier: str
+    url: str
 
 
 class OpState(StrEnum):
@@ -240,6 +287,34 @@ class LabelDiff:
 
 
 @dataclass(frozen=True)
+class ValueIntent:
+    """An ``issue.type`` or ``issue.fields`` operation's intent: the ``(name, value)`` pairs to
+    set (sorted by name; a type is the one pair under :data:`TYPE_VALUE`), stamped with the
+    values the issue held when it was drafted (``base``; an unset value is ``""``). Only ever
+    SETS a value: nothing here clears one."""
+
+    values: tuple[tuple[str, str], ...]
+    base: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values", tuple(sorted(self.values)))
+        object.__setattr__(self, "base", tuple(sorted(self.base)))
+
+    def held_by(self, live: Mapping[str, str]) -> bool:
+        """Whether ``live`` (the issue's values now) already holds every value to set (an issue
+        type compares case-insensitively, as the tracker names it; a field option exactly)."""
+        return all(same_value(name, live.get(name, ""), value) for name, value in self.values)
+
+
+def same_value(name: str, live: str, wanted: str) -> bool:
+    """Whether ``live`` is ``wanted`` for value ``name``: the issue type (:data:`TYPE_VALUE`)
+    case-insensitively, as GitHub matches a type's name; a field option exactly."""
+    if name == TYPE_VALUE:
+        return live.casefold() == wanted.casefold()
+    return live == wanted
+
+
+@dataclass(frozen=True)
 class Approval:
     """The recorded gate (D-g): who approved which digest, minting which single-use grant."""
 
@@ -266,7 +341,8 @@ class Attempt:
 
 @dataclass(frozen=True)
 class Receipt:
-    """Proof of a write: the remote comment id or the labels after, and how it was learned."""
+    """Proof of a write: the remote comment id, the labels after or the issue's state after, and
+    how it was learned."""
 
     comment_id: str | None = None
     global_id: str | None = None
@@ -274,6 +350,9 @@ class Receipt:
     actor: ThreadActor | None = None
     reconciled: bool = False  # found by its marker or labels (O14, O19), not returned (O10)
     late: bool = False  # found after the operation was abandoned or failed(absent) (O19)
+    state_after: str | None = None  # an issue.close: the issue's state as the tracker reported it
+    #: an issue.type / issue.fields: the values the tracker reported after the write
+    values_after: tuple[tuple[str, str], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -296,6 +375,9 @@ class OutboxOperation:
     kind: OpKind
     state: OpState = OpState.DRAFTED
     labels: LabelDiff | None = None  # set for a labels.change operation only
+    close: CloseReason | None = None  # set for an issue.close operation only
+    duplicate_of: CanonicalIssue | None = None  # a duplicate close's canonical (bh-iamru)
+    values: ValueIntent | None = None  # set for an issue.type / issue.fields operation only
     findings: tuple[LeakFinding, ...] = ()  # the latest check's findings
     overrides: tuple[Override, ...] = ()  # deliberate publishes awaiting the next approval
     approvals: tuple[Approval, ...] = ()
@@ -411,10 +493,18 @@ class OutboxPolicy:
 
     ``labels_enabled`` is the ``labels.change`` gate, separate from ``enabled`` (which gates the
     outbox and so ``comment.create``): with it off no label operation can be approved or sent,
-    whatever the adapter enables and whatever grant a comment holds (I9b)."""
+    whatever the adapter enables and whatever grant a comment holds (I9b). ``close_enabled`` is
+    the ``issue.close`` gate: the composition root sets it only while the bound adapter enables
+    ``issue.close`` (``plugins.<id>.write.issue_close.enabled``), so with it off no close is
+    drafted, approved or sent. ``type_enabled`` and ``fields_enabled`` are the ``issue.type`` and
+    ``issue.fields`` gates, set the same way from ``write.issue_type.enabled`` and
+    ``write.issue_fields.enabled``."""
 
     enabled: bool = False
     labels_enabled: bool = False
+    close_enabled: bool = False
+    type_enabled: bool = False
+    fields_enabled: bool = False
     absent_confirmations: int = 2  # k in O16
     commit_links: bool = False
     agent_seat_prefixes: tuple[str, ...] = AGENT_SEAT_PREFIXES
@@ -467,6 +557,9 @@ class Rendered:
     findings: tuple[LeakFinding, ...]
     add: frozenset[str] = frozenset()
     remove: frozenset[str] = frozenset()
+    close: CloseReason | None = None
+    duplicate_of: CanonicalIssue | None = None
+    values: tuple[tuple[str, str], ...] = ()  # an issue.type / issue.fields: what it sets
 
     @property
     def short_digest(self) -> str:
@@ -475,7 +568,11 @@ class Rendered:
 
 @dataclass(frozen=True)
 class DraftRequest:
-    """O1. ``binding`` is the report's binding (``None``: born native, nothing to send to)."""
+    """O1. ``binding`` is the report's binding (``None``: born native, nothing to send to).
+    ``close`` adds an ``issue.close`` operation, which needs the comment it is sent after;
+    ``duplicate_of`` names the canonical a ``duplicate`` close is a duplicate of;
+    ``issue_type`` / ``fields`` add an ``issue.type`` / ``issue.fields`` operation to a
+    ``labels`` record."""
 
     binding: IssueBinding | None
     event: OutboxEvent
@@ -485,6 +582,10 @@ class DraftRequest:
     message: Message = Message()
     comment: bool = True
     labels: LabelIntent | None = None
+    close: CloseReason | None = None
+    duplicate_of: CanonicalIssue | None = None
+    issue_type: ValueIntent | None = None
+    fields: ValueIntent | None = None
 
 
 @dataclass(frozen=True)
@@ -508,6 +609,9 @@ class SendPlan:
     body: str = ""
     add: frozenset[str] = frozenset()
     remove: frozenset[str] = frozenset()
+    close: CloseReason | None = None
+    duplicate_of: CanonicalIssue | None = None
+    values: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -527,13 +631,25 @@ class MarkedComment:
 @dataclass(frozen=True)
 class OutboxObservation:
     """One reconcile read. ``start_seq`` is the document ``seq`` read before the listing began;
-    only a ``complete`` listing can count an absence. ``labels`` is the issue's labels when the
-    read included them."""
+    only a ``complete`` listing can count an absence. ``labels`` is the issue's labels,
+    ``state`` its state (``open`` or ``closed``), ``issue_type`` its type and ``fields`` its field
+    values when the read included them (``None``: not read)."""
 
     start_seq: int
     complete: bool
     comments: tuple[MarkedComment, ...] = ()
     labels: frozenset[str] | None = None
+    state: str | None = None
+    issue_type: str | None = None
+    fields: tuple[tuple[str, str], ...] | None = None
+
+    def values_for(self, kind: OpKind) -> dict[str, str] | None:
+        """The issue's values a ``kind`` operation sets, as read (``None``: not read)."""
+        if kind is OpKind.TYPE:
+            return None if self.issue_type is None else {TYPE_VALUE: self.issue_type}
+        if kind is OpKind.FIELDS:
+            return None if self.fields is None else dict(self.fields)
+        return None
 
 
 @dataclass(frozen=True)
@@ -599,6 +715,35 @@ def digest_matches(typed: str, digest: str) -> bool:
     return len(want) >= 12 and have.startswith(want)
 
 
+def close_payload(reason: CloseReason, duplicate_of: CanonicalIssue | None = None) -> str:
+    """The rendered bytes of a close: the state and its reason, and a duplicate's canonical issue
+    when it names one; nothing else (digested, so approving it approves the canonical too)."""
+    payload = f"state: closed\nstate_reason: {reason.value}"
+    return payload if duplicate_of is None else f"{payload}\nduplicate_of: {duplicate_of.url}"
+
+
+def _require_canonical(
+    reason: CloseReason, duplicate_of: CanonicalIssue | None, target_url: str
+) -> None:
+    """A canonical goes only with a ``duplicate`` close and is never the closed issue itself."""
+    if duplicate_of is None:
+        return
+    if reason is not CloseReason.DUPLICATE:
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "only a duplicate close names a canonical issue"
+        )
+    if duplicate_of.url == target_url:
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "an issue cannot be closed as a duplicate of itself"
+        )
+
+
+def values_payload(values: Iterable[tuple[str, str]]) -> str:
+    """The rendered bytes of an ``issue.type`` / ``issue.fields`` operation: one ``name: value``
+    line per value it sets, sorted (digested and leak-checked)."""
+    return "\n".join(f"{name}: {value}" for name, value in sorted(values))
+
+
 def _owned(labels: Iterable[str], policy: LeakPolicy) -> frozenset[str]:
     return frozenset(label for label in labels if policy.owns(label))
 
@@ -642,6 +787,39 @@ def render(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> Rendered:
             digest_of(record.binding.url, kind, payload, None),
             findings,
         )
+    if kind is OpKind.CLOSE:
+        reason = op.close
+        if reason is None:  # pragma: no cover - a close operation always carries its reason
+            raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a close operation has no reason")
+        payload = close_payload(reason, op.duplicate_of)
+        return Rendered(
+            record.outbox_id,
+            kind,
+            record.binding.url,
+            payload,
+            "",
+            None,
+            digest_of(record.binding.url, kind, payload, None),
+            check(payload, ctx.policy, sanitizer=ctx.sanitizer),
+            close=reason,
+            duplicate_of=op.duplicate_of,
+        )
+    if kind in VALUE_KINDS:
+        intent = op.values
+        if intent is None:  # pragma: no cover - a value operation always carries its values
+            raise IntakeRefused(RefusalReason.INVALID_DRAFT, f"{kind.value} has no value")
+        payload = values_payload(intent.values)
+        return Rendered(
+            record.outbox_id,
+            kind,
+            record.binding.url,
+            payload,
+            "",
+            None,
+            digest_of(record.binding.url, kind, payload, None),
+            check(payload, ctx.policy, sanitizer=ctx.sanitizer),
+            values=intent.values,
+        )
     diff = op.labels
     if diff is None:  # pragma: no cover - a labels operation always carries its diff
         raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a label operation has no diff")
@@ -682,6 +860,8 @@ def labels_revision(
     intent: LabelIntent,
     *,
     base_owned: frozenset[str] | None = None,
+    issue_type: ValueIntent | None = None,
+    fields: ValueIntent | None = None,
 ) -> str:
     """The ``source_revision`` of a label-projection record (``OutboxEvent.LABELS``).
 
@@ -691,7 +871,10 @@ def labels_revision(
     equal an earlier one, so an A to B to A flip (sent or superseded in between) drafts a fresh
     record instead of finding a retired one under the same key. With ``base_owned`` (the owned
     labels the issue carries now), the open record is reused only while it was drafted on those
-    same owned labels: one drafted on labels a human has since changed is refreshed, not kept."""
+    same owned labels: one drafted on labels a human has since changed is refreshed, not kept.
+    ``issue_type`` / ``fields`` (the record's value operations) join the key only when set, so a
+    labels-only record keeps the revision it always had; the open record is reused only while it
+    carries the very same values on the same base."""
     mine = sorted(
         (
             r
@@ -703,19 +886,33 @@ def labels_revision(
     if mine:
         newest = mine[-1]
         op = newest.op(OpKind.LABELS)
-        if (
-            newest.status is RecordStatus.OPEN
-            and op is not None
-            and op.labels is not None
-            and (op.labels.add, op.labels.remove) == (intent.add, intent.remove)
-            and (base_owned is None or op.labels.base_owned == base_owned)
-        ):
+        if intent.add or intent.remove:
+            labels_match = (
+                op is not None
+                and op.labels is not None
+                and (op.labels.add, op.labels.remove) == (intent.add, intent.remove)
+                and (base_owned is None or op.labels.base_owned == base_owned)
+            )
+        else:  # a values-only record
+            labels_match = op is None
+        same_values = all(
+            _value_op(newest, kind) == want
+            for kind, want in ((OpKind.TYPE, issue_type), (OpKind.FIELDS, fields))
+        )
+        if newest.status is RecordStatus.OPEN and labels_match and same_values:
             return newest.draft_key.source_revision
-    canonical = json.dumps(
-        {"add": sorted(intent.add), "remove": sorted(intent.remove)}, separators=(",", ":")
-    )
+    shape: dict[str, object] = {"add": sorted(intent.add), "remove": sorted(intent.remove)}
+    for name, value in (("type", issue_type), ("fields", fields)):
+        if value is not None:
+            shape[name] = [list(value.values), list(value.base)]
+    canonical = json.dumps(shape, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     return f"labels:{digest}@{len(mine)}"
+
+
+def _value_op(record: OutboxRecord, kind: OpKind) -> ValueIntent | None:
+    op = record.op(kind)
+    return op.values if op is not None else None
 
 
 def reply_revision(text: str, thread_seq: int) -> str:
@@ -817,12 +1014,62 @@ def _require_operator(actor: str, policy: OutboxPolicy, event: str) -> None:
 
 
 def require_kind_enabled(kind: OpKind, policy: OutboxPolicy) -> None:
-    """The per-operation gate: a label operation needs its own flag (off by default)."""
+    """The per-operation gate: a label or close operation needs its own flag (off by default)."""
     if kind is OpKind.LABELS and not policy.labels_enabled:
         raise IntakeRefused(
             RefusalReason.LABELS_DISABLED,
             "labels.change is off for this hive (its own flag, separate from comment.create)",
         )
+    if kind is OpKind.CLOSE and not policy.close_enabled:
+        raise IntakeRefused(
+            RefusalReason.CLOSE_DISABLED,
+            "issue.close is off for this hive (the tracker plugin's write.issue_close.enabled)",
+        )
+    if kind is OpKind.TYPE and not policy.type_enabled:
+        raise IntakeRefused(
+            RefusalReason.TYPE_DISABLED,
+            "issue.type is off for this hive (the tracker plugin's write.issue_type.enabled)",
+        )
+    if kind is OpKind.FIELDS and not policy.fields_enabled:
+        raise IntakeRefused(
+            RefusalReason.FIELDS_DISABLED,
+            "issue.fields is off for this hive (the tracker plugin's write.issue_fields.enabled)",
+        )
+
+
+def close_blocker(doc: OutboxDocument, record: OutboxRecord) -> str:
+    """Why ``record``'s close may not be sent yet, or ``""`` when it may: the record's comment
+    must be ``sent``; no other comment of the report may still be unsent (a newer reply or
+    milestone goes out first, or is discarded); and the report's latest labels record for the
+    same issue (when it has one) must be ``sent``, so the reporter reads every reply and the final
+    labels before the issue closes."""
+    comment = record.op(OpKind.COMMENT)
+    if comment is None or comment.state is not OpState.SENT:
+        state = comment.state.value if comment is not None else "missing"
+        return f"{record.outbox_id} comment.create is {state}; send the comment first"
+    for other in sorted(doc.records.values(), key=lambda r: r.created_seq):
+        op = other.op(OpKind.COMMENT)
+        if other.outbox_id != record.outbox_id and op is not None and op.state not in SETTLED:
+            return (
+                f"{other.outbox_id} comment.create is {op.state.value}; send or discard it "
+                "first, so the close never goes out ahead of it"
+            )
+    labelled = [
+        r
+        for r in doc.records.values()
+        if r.event is OutboxEvent.LABELS and r.binding.url == record.binding.url
+    ]
+    if labelled:
+        latest = max(labelled, key=lambda r: r.created_seq)
+        op = latest.op(OpKind.LABELS)
+        if op is not None and op.state in (OpState.ABANDONED, OpState.FAILED):
+            return (
+                f"the latest labels record {latest.outbox_id} is {op.state.value}; re-sync the "
+                "labels (`bh work labels sync`) and send the new record first"
+            )
+        if op is not None and op.state is not OpState.SENT:
+            return f"the latest labels record {latest.outbox_id} is {op.state.value}; send it first"
+    return ""
 
 
 def _require_owned(op: OutboxOperation, policy: LeakPolicy) -> None:
@@ -929,10 +1176,17 @@ def draft(
         if not render_text(request.message, request.facts).strip():
             raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a comment needs text")
         operations.append(OutboxOperation(OpKind.COMMENT))
-    if request.event is OutboxEvent.LABELS and (request.comment or request.labels is None):
+    valued = request.issue_type is not None or request.fields is not None
+    if request.event is OutboxEvent.LABELS and (
+        request.comment or (request.labels is None and not valued)
+    ):
         raise IntakeRefused(
             RefusalReason.INVALID_DRAFT,
-            "a labels record carries one label operation and no comment",
+            "a labels record carries a label, type or field operation and no comment",
+        )
+    if valued and request.event is not OutboxEvent.LABELS:
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "a type or field operation rides on a labels record"
         )
     if request.labels is not None:
         intent = request.labels
@@ -952,6 +1206,30 @@ def draft(
             _owned(ctx.labels.labels, ctx.policy),
         )
         operations.append(OutboxOperation(OpKind.LABELS, labels=base))
+    if request.duplicate_of is not None and request.close is None:
+        raise IntakeRefused(
+            RefusalReason.INVALID_DRAFT, "only a duplicate close names a canonical issue"
+        )
+    if request.close is not None:
+        require_kind_enabled(OpKind.CLOSE, policy)
+        if not request.comment:
+            raise IntakeRefused(
+                RefusalReason.INVALID_DRAFT, "a close rides on a record with a comment"
+            )
+        reason = CloseReason(request.close)
+        _require_canonical(reason, request.duplicate_of, binding.url)
+        operations.append(
+            OutboxOperation(OpKind.CLOSE, close=reason, duplicate_of=request.duplicate_of)
+        )
+    for kind, intent in ((OpKind.TYPE, request.issue_type), (OpKind.FIELDS, request.fields)):
+        if intent is None:
+            continue
+        require_kind_enabled(kind, policy)
+        if not intent.values or any(not name or not value for name, value in intent.values):
+            raise IntakeRefused(RefusalReason.INVALID_DRAFT, f"{kind.value} sets nothing")
+        if kind is OpKind.TYPE and [name for name, _ in intent.values] != [TYPE_VALUE]:
+            raise IntakeRefused(RefusalReason.INVALID_DRAFT, "issue.type sets exactly one type")
+        operations.append(OutboxOperation(kind, values=intent))
     if not operations:
         raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a record needs an operation")
 
@@ -1017,6 +1295,42 @@ def recheck(
     tx = _Tx(doc)
     _check(tx, outbox_id, kind, ctx, actor)
     return tx.done(outbox_id)  # no transition: no write (refreshed findings are not kept)
+
+
+def add_close(
+    doc: OutboxDocument,
+    outbox_id: str,
+    reason: CloseReason,
+    *,
+    actor: str,
+    policy: OutboxPolicy,
+    ctx: RenderContext,
+    duplicate_of: CanonicalIssue | None = None,
+) -> OutboxApplied:
+    """O1 for one ``issue.close`` operation on an EXISTING record (the backfill of a report closed
+    before closes were drafted), checked at once (O3). The record must carry a comment; one that
+    already has a close is unchanged (no write), so a re-run never drafts twice. ``duplicate_of``
+    names a ``duplicate`` close's canonical issue."""
+    if not policy.enabled:
+        raise IntakeRefused(
+            RefusalReason.OUTBOX_DISABLED, "intake.external.outbox.enabled is off (the default)"
+        )
+    require_kind_enabled(OpKind.CLOSE, policy)
+    record = _record(doc, outbox_id)
+    if record.op(OpKind.COMMENT) is None:
+        raise IntakeRefused(RefusalReason.INVALID_DRAFT, "a close rides on a record with a comment")
+    if record.op(OpKind.CLOSE) is not None:
+        return OutboxApplied(doc, outbox_id=outbox_id)
+    _require_target(record, ctx)
+    reason = CloseReason(reason)
+    _require_canonical(reason, duplicate_of, record.binding.url)
+    tx = _Tx(doc)
+    step = Step(tx.seq, "O1", "draft", None, OpState.DRAFTED, actor, "backfill")
+    op = OutboxOperation(OpKind.CLOSE, close=reason, duplicate_of=duplicate_of, history=(step,))
+    tx.put(dataclasses.replace(record, operations=(*record.operations, op)))
+    tx.steps.append(step)
+    _check(tx, outbox_id, OpKind.CLOSE, ctx, actor)
+    return tx.done(outbox_id)
 
 
 # -- O4: edit and override -------------------------------------------------------------------
@@ -1132,7 +1446,8 @@ def approve(
     if op.state is not OpState.DRAFTED:
         raise _refuse_state(record, op, "approve")
     _require_operator(request.actor, policy, "approve")
-    reads = (COMMENTS_READ, ISSUES_READ) if request.kind is OpKind.LABELS else (COMMENTS_READ,)
+    # labels and a close carry no marker: an unknown outcome is reconciled by reading the issue
+    reads = (COMMENTS_READ,) if request.kind is OpKind.COMMENT else (COMMENTS_READ, ISSUES_READ)
     missing = [name for name in (request.kind.value, *reads) if name not in capabilities.usable]
     if missing:
         raise IntakeRefused(
@@ -1295,6 +1610,8 @@ def begin_send(
     if op.state is not OpState.APPROVED:
         raise _refuse_state(record, op, "send")
     _require_operator(actor, policy, "send")
+    if kind is OpKind.CLOSE and (blocker := close_blocker(doc, record)):
+        raise IntakeRefused(RefusalReason.CLOSE_NOT_READY, blocker)
     approval = op.approval
     if approval is None or approval.grant is not GrantStatus.MINTED:
         raise IntakeRefused(
@@ -1329,7 +1646,16 @@ def begin_send(
         attempts=(*op.attempts, attempt),
     )
     plan = SendPlan(
-        outbox_id, kind, approval.grant_id, record.binding.url, fresh.body, fresh.add, fresh.remove
+        outbox_id,
+        kind,
+        approval.grant_id,
+        record.binding.url,
+        body=fresh.body,
+        add=fresh.add,
+        remove=fresh.remove,
+        close=fresh.close,
+        duplicate_of=fresh.duplicate_of,
+        values=fresh.values,
     )
     return tx.done(outbox_id, plan)
 
@@ -1475,6 +1801,16 @@ def observe(
                     reconciled=True,
                 )
             )
+        elif op.kind is OpKind.CLOSE:
+            present = observation.state == "closed"  # the desired state holds, whoever closed it
+            mine, found = [], None
+            receipt = Receipt(state_after=observation.state, reconciled=True) if present else None
+        elif op.kind in VALUE_KINDS:
+            live = observation.values_for(op.kind)
+            present = live is not None and op.values is not None and op.values.held_by(live)
+            mine, found = [], None
+            after = tuple(sorted(live.items())) if live is not None else None
+            receipt = Receipt(values_after=after, reconciled=True) if present else None
         else:
             present = (
                 observation.labels is not None
@@ -1510,9 +1846,16 @@ def observe(
             op = tx.op(outbox_id, op.kind)
         elif op.state is OpState.UNKNOWN:
             attempt = op.attempt
+            read = {
+                OpKind.COMMENT: True,
+                OpKind.LABELS: observation.labels is not None,
+                OpKind.CLOSE: observation.state is not None,
+                OpKind.TYPE: observation.issue_type is not None,
+                OpKind.FIELDS: observation.fields is not None,
+            }[op.kind]
             counts = (
                 observation.complete
-                and (op.kind is OpKind.COMMENT or observation.labels is not None)
+                and read
                 and attempt is not None
                 and attempt.end_seq is not None
                 and observation.start_seq > attempt.end_seq
@@ -1667,10 +2010,14 @@ __all__ = [
     "OUTBOX_SCHEMA",
     "SETTLED",
     "TERMINAL",
+    "TYPE_VALUE",
+    "VALUE_KINDS",
     "Approval",
     "ApprovalRequest",
     "Attempt",
+    "CanonicalIssue",
     "Capabilities",
+    "CloseReason",
     "DeliveryFacts",
     "DraftKey",
     "DraftRequest",
@@ -1700,8 +2047,12 @@ __all__ = [
     "SendPlan",
     "Step",
     "UnlinkedFact",
+    "ValueIntent",
+    "add_close",
     "approve",
     "begin_send",
+    "close_blocker",
+    "close_payload",
     "close_rule",
     "digest_matches",
     "digest_of",
@@ -1726,7 +2077,9 @@ __all__ = [
     "recover",
     "render",
     "render_text",
-    "require_kind_enabled",
     "reply_revision",
+    "require_kind_enabled",
     "retry",
+    "same_value",
+    "values_payload",
 ]

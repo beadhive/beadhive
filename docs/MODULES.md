@@ -659,6 +659,94 @@ approve and at send. `IntakePort.send` and `retry` take `kind` (default `comment
 `external-intake-module-adr.md` section 11. Tests:
 `tests/unit/modules/intake/test_intake_outbox_labels_sender.py`.
 
+The sender also carries `issue.close` (`bh-pr5ll`) as a third gate: `OutboxPolicy.close_enabled`
+is set by the composition root from the bound adapter's own `issue.close` enable
+(`plugins.tracker-github.write.issue_close.enabled`; there is no separate intake key), and a close
+is refused with `CLOSE_DISABLED` otherwise. A close rides on a reply record (`ReplyDraft.close`;
+triage apply asks for one on a `fixed`, `reject` or `duplicate-of` reply, never on `needs-info`),
+has its own digest, grant and receipt, and O9 refuses it with `CLOSE_NOT_READY` until the record's
+comment is `sent`, no other comment of the report is unsent, and the report's latest labels record
+is `sent`. `reconcile` reads the issue's state back. Apply drafts a reply before any other verb; a
+`duplicate-of` gets one only while an outbox is bound (`ProposalService(replies=)`).
+`IntakePort.backfill_closes` (`bh work outbox backfill-close`) adds the close to the latest reply of
+every report closed in the store whose issue is still open, and drafts the reply a report never
+got from its applied proposal (`ProposalService.backfill_reply`). Tests:
+`tests/unit/modules/intake/test_intake_outbox_close_sender.py`.
+
+A `duplicate-of` close names its canonical (`bh-iamru`). `ReplyDraft.duplicate_of` is the
+canonical REPORT (apply passes `share_with`, the backfill does the same); the sender resolves it
+to that report's bound issue (`CanonicalIssue`, only within the member's tracker project, else a
+plain duplicate close) and stores it on the `issue.close` operation, whose rendered bytes add
+`duplicate_of: <url>`, so the digest the operator approves covers the canonical. The port's
+`IssueCloser.close_issue(..., duplicate_of=IssueKey)` (shape refused by `check_close` before any
+request) reaches GitHub as `duplicate_issue_id`, the canonical's numeric issue id, on the same
+`PATCH .../issues/{n}` (REST "Update an issue"; GraphQL `closeIssue(input: {duplicateIssueId})`
+is the same link): the adapter reads the canonical once inside the write session BEFORE the grant
+is spent, so a missing, moved or pull-request canonical is a `NotVisible` refusal that keeps the
+grant. The `close.duplicate-of-canonical` conformance case holds every closer to it.
+
+The pre-apply checks resolve every `#N` a `reporter_text` mentions (`bh-iamru`;
+`domain/proposal_checks.mentions`, outside code, never `owner/repo#N`). The check runs in
+`check_run` (`bh work triage check` and `apply --reviewed`), not in `propose`: propose is called
+once per report and stays tracker-free (its lint is local), so checking there would cost one
+listing per report and would still be stale by apply time, while the run-level check costs ONE
+listing for the whole run and re-runs at apply. The issues are plain data (`MentionFact` in
+`CheckContext.issues`) from the contracts' `ProjectIssues` port: `TrackerProjectIssues`
+(`application/mentions.py`) lists the project once, through the id snapshot resolved without a
+request when the adapter is an `IssueResolver` (closed issues included whatever
+`read.include_closed` says) or the issue listing otherwise, and is read only when some proposal
+of the run mentions a `#N`; the root binds it lazily (`intake_services.project_issues`,
+`issues.read` only). A `#N` that is no issue of the project fails `mention_missing`; one that
+cannot be verified (no tracker bound, a failed listing) fails `mention_unverified`. A `#N` that is
+another bound report is returned as `ProposalCheck.relates`, and apply records a bh-side
+`relates-to` (`ReportStore.relate` / `related_reports`, bd's built-in `relates-to` edge from the
+mentioning report, read both ways, idempotent either way; `RELATES_EDGE`) before its verbs, so a
+failure there writes nothing else. Tests: `test_intake_proposal_checks.py`,
+`test_intake_apply_reviewed.py`, `test_intake_project_issues.py`, the
+`store.relates-reports-either-way` contract case and `tests/test_intake_labels_triage_cli.py`.
+
+GitHub's issue dependencies (`blocked by`) and sub-issues are NOT used (`bh-iamru`, decided): no
+bead edge means the same thing. Their two ends are issues, and the only issue-backed beads are
+reports; between two reports bh has `relates-to` (a mention: symmetric and non-blocking) and the
+duplicate family (sent as the duplicate close above). A report's `tracks` and `validates` edges
+end on WORK, which is never a GitHub issue, and epics and their children are work too. A "report
+blocked by another report" would have to be derived through their tracked work (A tracks W1, W1
+blocked by W2, B tracks W2): that is not an edge, it changes whenever planning does, W2 may be
+tracked by several reports or none, and it would publish internal planning. So there is no switch,
+no outbox operation kind and no grant for either; revisit only if bh gains a report-to-report
+blocking or parent edge.
+
+The label projection also carries the issue's **type** and a **field value** (`bh-poqy0`):
+`domain/issue_values.py` holds the pure maps (`ValueSettings`, from
+`intake.external.labels.issue_type` / `priority_field`) and the work-then-report fallback
+(`desired_values`; an unmapped value is a note, never a guess). `LabelProjection(values=)` diffs
+them against the issue's `TrackerIssue.issue_type` / `fields` from the same listing, reports a
+difference like drift (`LabelSyncItem.values`, `LabelSyncOutcome.value_drift`) and drafts it as an
+`issue.type` / `issue.fields` operation (a `ValueIntent`) on the SAME `labels` record, so the batch
+review approves each with its own digest and grant. `OutboxPolicy.type_enabled` /
+`fields_enabled` are the gates (set from the bound adapter's `write.issue_type.enabled` /
+`write.issue_fields.enabled`; `TYPE_DISABLED` / `FIELDS_DISABLED`), and `reconcile` reads the
+value back. The tracker port's optional `IssueTypeWriter` / `IssueFieldWriter` are the writers.
+Tests: `tests/unit/modules/intake/test_intake_issue_values.py`.
+
+Finding a record and sending in bulk (`bh-pc9rf`): the sender takes an optional `OutboxIndex`
+port (outbox id to report; `beadhive.adapters.intake.FileOutboxIndex` over
+`.bh/intake/outbox-index.json` in production, `MemoryOutboxIndex` in the kit), confirms every
+answer against that report's document, and on a miss scans once with the new
+`ReportStore.read_outboxes()` (one listing whose rows carry the documents on `ApiReportStore`) and
+rebuilds the index. `IntakePort.send_approved(BatchSend)` (`bh work outbox send-approved`, wire
+2.24.0) sends every approved operation in one process, per report in `SEND_ORDER` (comment,
+labels, type, fields, close), each through the same O9 to O13 as `send` with its own grant and
+receipt, and reports a refused one in `BatchSendOutcome.failed` while the rest continue (losing the
+primary host stops it with `BatchSendOutcome.stopped`, keeping what was sent). It and
+`approve_label_batch` run inside the lock's optional `BatchLock.batch()` scope, where
+`FlockIntakeLock` reuses one host check and epoch read for at most
+`intake.external.outbox.batch_recheck_seconds` (default `0`: every operation checks; reuse is
+opt-in). Tests:
+`tests/unit/modules/intake/test_intake_outbox_batch_send.py`,
+`tests/test_intake_outbox_batch_root.py` and the perf check
+`tests/test_intake_outbox_batch_perf.py` (`-m perf`).
+
 The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
 `IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on

@@ -19243,6 +19243,84 @@
         "secret_material": false
       },
       "kind": "action",
+      "name": "work.outbox.backfill-close",
+      "parameters": [
+        {
+          "name": "dry_run",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "as_",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "dry_run",
+            "as_",
+            "hive",
+            "as_json"
+          ],
+          "path": "work outbox backfill-close",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
       "name": "work.outbox.discard",
       "parameters": [
         {
@@ -19670,6 +19748,94 @@
             "as_json"
           ],
           "path": "work outbox send",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "work.outbox.send-approved",
+      "parameters": [
+        {
+          "name": "kind",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "bead",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "as_",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "kind",
+            "bead",
+            "as_",
+            "hive",
+            "as_json"
+          ],
+          "path": "work outbox send-approved",
           "progress": {
             "mode": "structured",
             "notification_uris": [],

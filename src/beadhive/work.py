@@ -612,14 +612,17 @@ def delivery_deprioritised_cmd(
 _OUTBOX_ID = typer.Argument(..., metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_ID_OPT = typer.Argument("", metavar="<outbox-id>", help="the record's outbox id (ob1_...)")
 _OUTBOX_KIND = typer.Option(
-    "", "--kind", help="operation: comment (default) or labels (each is its own gate)"
+    "",
+    "--kind",
+    help="operation: comment (default), labels, close, type or fields (each is its own gate)",
 )
 _JSON = typer.Option(False, "--json", help="emit one JSON document")
 _OUTBOX_OP = typer.Option(
     ...,
     "--op",
-    help="<comment|labels>:<digest> reviewed in `outbox show` (full digest or 12-hex prefix); "
-    "repeat to approve several, each as its own gate with its own single-use grant",
+    help="<comment|labels|close|type|fields>:<digest> reviewed in `outbox show` (full digest or "
+    "12-hex prefix); repeat to approve several, each as its own gate with its own single-use "
+    "grant",
 )
 _OUTBOX_PUBLISH = typer.Option(
     [], "--publish", help="a finding id to publish deliberately (needs exactly one --op)"
@@ -639,13 +642,35 @@ def outbox_approve_cmd(
     return work_intake.outbox_approve(outbox_id, op, publish, as_, hive, as_json)
 
 
+def outbox_backfill_close_cmd(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="read and list what would be drafted; write nothing"
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Draft the issue close a report closed before closes existed never got: for every report
+    closed in this hive whose applied triage outcome was fixed, reject or duplicate-of and whose
+    bound issue is still open, add a close (completed, not_planned or duplicate) to its latest
+    reply; a report that never got its reply gets one drafted from the reviewed text (or apply's
+    template), the close attached. One issue listing; nothing is approved or sent (approve with
+    `outbox approve --op close:<digest>`, send with `outbox send <id> --kind close` after the reply
+    and the labels).
+    Off unless `intake.external.outbox.enabled` and the tracker plugin's
+    `write.issue_close.enabled`."""
+    return work_intake.outbox_backfill_close(dry_run, as_, hive, as_json)
+
+
 def outbox_discard_cmd(
     outbox_id: str = _OUTBOX_ID,
     reason: str = typer.Option(..., "--reason", help="why the operation is abandoned"),
     accept_unknown: bool = typer.Option(
         False, "--accept-unknown", help="also abandon an operation whose outcome is unknown"
     ),
-    kind: str = typer.Option("", "--kind", help="only this operation: comment or labels"),
+    kind: str = typer.Option(
+        "", "--kind", help="only this operation: comment, labels, close, type or fields"
+    ),
     as_: str = _AS,
     hive: str = _HIVE,
     as_json: bool = _JSON,
@@ -697,8 +722,35 @@ def outbox_send_cmd(
 ):
     """Send one approved operation (write-ahead, receipt). Needs the adapter's own enable, an
     unspent grant and a clean leak check on the exact bytes; off unless
-    `intake.external.outbox.enabled`."""
+    `intake.external.outbox.enabled`. `outbox send-approved` sends every approved operation in
+    one process."""
     return work_intake.outbox_send(outbox_id, kind, as_, hive, as_json)
+
+
+_SEND_KIND = typer.Option(
+    "",
+    "--kind",
+    help="only this operation: comment, labels, type, fields or close (default: every kind)",
+)
+_SEND_BEAD = typer.Option(
+    [], "--bead", help="only this report's records (repeatable; default: every report)"
+)
+
+
+def outbox_send_approved_cmd(
+    kind: str = _SEND_KIND,
+    bead: list[str] = _SEND_BEAD,
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Send every approved operation in one process: per report the comments (oldest first),
+    then the labels, the type and the fields, then the close. Each still spends its own
+    single-use grant and writes its own receipt, exactly as `outbox send <id>`; a refused or
+    unknown one is reported and the rest still go (a close whose comment did not go out is
+    refused). Exits non-zero unless every operation was sent. Off unless
+    `intake.external.outbox.enabled`."""
+    return work_intake.outbox_send_approved(kind, bead, as_, hive, as_json)
 
 
 def outbox_show_cmd(
@@ -780,8 +832,11 @@ def labels_sync_cmd(
     on bead state: intake state, delivery, progress, type, priority and component, derived from
     the dimension registry. Reads the issues fresh (one listing per run) and drafts at most one
     `labels` outbox record per issue; nothing is sent until an operator approves the batch
-    (`labels review`, `labels approve`). Labels outside the prefix are never touched. Off unless
-    `intake.external.labels.enabled`; drafting also needs `outbox.enabled` and
+    (`labels review`, `labels approve`). Labels outside the prefix are never touched. With the
+    tracker's `write.issue_type` / `write.issue_fields` on, the same record also sets the issue
+    type and the Priority field from `intake.external.labels.issue_type.map` /
+    `priority_field.map` (an unmapped value is skipped with a note), reported like drift. Off
+    unless `intake.external.labels.enabled`; drafting also needs `outbox.enabled` and
     `outbox.labels_enabled`."""
     return work_intake.labels_sync(
         report, all_, include_closed, dry_run, prune_unmapped, as_, hive, as_json
@@ -812,8 +867,8 @@ def labels_define_cmd(
 
 
 def labels_review_cmd(hive: str = _HIVE, as_json: bool = _JSON):
-    """Render the batch of every drafted label change, each with what it adds and removes and
-    whether its issue's labels moved since the draft (stale), plus the batch digest to approve.
+    """Render the batch digest to approve and every drafted label, issue type or field change:
+    what each adds and removes (or sets), and whether its issue moved since the draft (stale).
     Reads only. Off unless `intake.external.outbox.enabled`."""
     return work_intake.labels_review(hive, as_json)
 
@@ -829,9 +884,10 @@ def labels_approve_cmd(
     hive: str = _HIVE,
     as_json: bool = _JSON,
 ):
-    """Approve the reviewed batch of label changes: one single-use grant per issue (operator
-    seats only). A stale item is skipped and re-drafted by the next sync. Approving sends nothing:
-    send each with `bh work outbox send <id> --kind labels`. Needs `outbox.labels_enabled`."""
+    """Approve the reviewed batch of label changes: one single-use grant per operation (operator
+    seats only), a type or field change approved as its own operation. A stale item is skipped
+    and re-drafted by the next sync. Approving sends nothing: send each with `bh work outbox send
+    <id> --kind labels` (or `--kind type` / `--kind fields`). Needs `outbox.labels_enabled`."""
     return work_intake.labels_approve(batch, as_, hive, as_json)
 
 
@@ -2280,11 +2336,13 @@ CLI_HANDLERS = {
     "work.delivery.deprioritised": delivery_deprioritised_cmd,
     "work.delivery.release": delivery_release_cmd,
     "work.outbox.approve": outbox_approve_cmd,
+    "work.outbox.backfill-close": outbox_backfill_close_cmd,
     "work.outbox.discard": outbox_discard_cmd,
     "work.outbox.draft": outbox_draft_cmd,
     "work.outbox.reconcile": outbox_reconcile_cmd,
     "work.outbox.retry": outbox_retry_cmd,
     "work.outbox.send": outbox_send_cmd,
+    "work.outbox.send-approved": outbox_send_approved_cmd,
     "work.outbox.show": outbox_show_cmd,
     "work.thread.considered": thread_considered_cmd,
     "work.thread.ingest": thread_ingest_cmd,
@@ -2356,11 +2414,13 @@ delivery_blocked_cmd = _CLI_CALLBACKS["work.delivery.blocked"]
 delivery_deprioritised_cmd = _CLI_CALLBACKS["work.delivery.deprioritised"]
 delivery_release_cmd = _CLI_CALLBACKS["work.delivery.release"]
 outbox_approve_cmd = _CLI_CALLBACKS["work.outbox.approve"]
+outbox_backfill_close_cmd = _CLI_CALLBACKS["work.outbox.backfill-close"]
 outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]
 outbox_draft_cmd = _CLI_CALLBACKS["work.outbox.draft"]
 outbox_reconcile_cmd = _CLI_CALLBACKS["work.outbox.reconcile"]
 outbox_retry_cmd = _CLI_CALLBACKS["work.outbox.retry"]
 outbox_send_cmd = _CLI_CALLBACKS["work.outbox.send"]
+outbox_send_approved_cmd = _CLI_CALLBACKS["work.outbox.send-approved"]
 outbox_show_cmd = _CLI_CALLBACKS["work.outbox.show"]
 labels_approve_cmd = _CLI_CALLBACKS["work.labels.approve"]
 labels_define_cmd = _CLI_CALLBACKS["work.labels.define"]

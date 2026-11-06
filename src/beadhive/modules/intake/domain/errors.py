@@ -54,6 +54,10 @@ class RefusalReason(StrEnum):
     # outbox refusals (the communication records and their O1 to O19 machine, bh-6wj9y R5)
     OUTBOX_DISABLED = "outbox_disabled"  # intake.external.outbox.enabled is off (the default)
     LABELS_DISABLED = "labels_disabled"  # the labels.change gate is off (its own flag, I9b)
+    CLOSE_DISABLED = "close_disabled"  # the issue.close gate is off (the adapter's own flag)
+    CLOSE_NOT_READY = "close_not_ready"  # a close before its comment and the latest labels sent
+    TYPE_DISABLED = "type_disabled"  # the issue.type gate is off (the adapter's own flag)
+    FIELDS_DISABLED = "fields_disabled"  # the issue.fields gate is off (the adapter's own flag)
     UNKNOWN_OUTBOX = "unknown_outbox"  # no record, or no such operation on it
     INVALID_OUTBOX_ID = "invalid_outbox_id"  # not an opaque ob1_ id (never a bead id)
     INVALID_DRAFT = "invalid_draft"  # a draft with no operation, or a label op with no base

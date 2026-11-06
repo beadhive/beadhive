@@ -28,6 +28,7 @@ from beadhive.modules.intake.contracts import (
     INVESTIGATES_EDGE,
     OUTBOX_KEY,
     PROPOSAL_KEY,
+    RELATES_EDGE,
     THREAD_KEY,
     BeadView,
     DuplicatePair,
@@ -248,6 +249,12 @@ class BdReportStore:
         # the edge runs work -> report, so the investigating beads are the report's dependents
         return self._edge_ids(report, direction="up", type_=INVESTIGATES_EDGE)
 
+    def related_reports(self, report: str) -> tuple[str, ...]:
+        # stored once, from the mentioning report: read both directions
+        down = self._edge_ids(report, direction="down", type_=RELATES_EDGE)
+        up = self._edge_ids(report, direction="up", type_=RELATES_EDGE)
+        return tuple(sorted(set(down) | set(up)))
+
     def read_thread(self, bead: str) -> Thread | None:
         """The bead's ``intake.thread`` (one ``bd show``); None for no bead or no document."""
         row = self._show(bead)
@@ -261,6 +268,16 @@ class BdReportStore:
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
         rows = self._routes.issue_list(has_metadata_key=OUTBOX_KEY, all_=True, limit=0)
         return self._views(rows)
+
+    def read_outboxes(self) -> dict[str, OutboxDocument]:
+        """Every report's ``intake.outbox`` by report: the listing, then one ``bd show`` each
+        (``bd list`` rows carry no metadata)."""
+        docs: dict[str, OutboxDocument] = {}
+        for view in self.reports_with_outbox():
+            doc = self.read_outbox(view.id)
+            if doc is not None:
+                docs[view.id] = doc
+        return docs
 
     def read_proposal(self, bead: str) -> Proposal | None:
         """The bead's ``intake.proposal`` (one ``bd show``); None for no bead or no document."""
@@ -426,6 +443,13 @@ class BdReportStore:
             return  # bd removes a (source, target) pair whatever its type: never another edge
         result = self._routes.dependency_remove(work, report, actor=actor)
         self._check(result, "uninvestigate", report)
+
+    def relate(self, report: str, other: str, *, actor: str) -> None:
+        """``bd dep add <report> <other> -t relates-to``, unless the pair is related either way."""
+        if other in self.related_reports(report):
+            return
+        result = self._routes.dependency_add(report, other, RELATES_EDGE, actor=actor)
+        self._check(result, "relate", report)
 
     def write_thread(self, bead: str, thread: Thread, *, expect_seq: int, actor: str) -> None:
         """Re-read the stored ``seq``, then rewrite ``intake.thread`` whole in one ``bd update``.

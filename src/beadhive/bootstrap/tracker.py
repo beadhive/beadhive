@@ -69,7 +69,10 @@ from ..modules.tracker.contracts import (
     PORT_API_VERSION,
     WRITE_OPERATIONS,
     CommentWriter,
+    IssueCloser,
+    IssueFieldWriter,
     IssueResolver,
+    IssueTypeWriter,
     LabelDefiner,
     LabelPruner,
     LabelReader,
@@ -98,6 +101,9 @@ OPERATION_FLAG_KEYS: Mapping[Operation, str] = MappingProxyType(
         Operation.LABELS_CHANGE: "write.labels.enabled",
         Operation.LABELS_READ: "read.labels.enabled",
         Operation.LABELS_DEFINE: "write.label_definitions.enabled",
+        Operation.ISSUE_CLOSE: "write.issue_close.enabled",
+        Operation.ISSUE_TYPE: "write.issue_type.enabled",
+        Operation.ISSUE_FIELDS: "write.issue_fields.enabled",
     }
 )
 
@@ -598,6 +604,26 @@ class _LabelPruning:
         return self._inner.delete_labels(names, grant=grant)  # type: ignore[attr-defined]
 
 
+class _IssueClosing:
+    def close_issue(self, issue, *, reason, grant, duplicate_of=None):
+        self._check_grant(grant, Operation.ISSUE_CLOSE)  # type: ignore[attr-defined]
+        return self._inner.close_issue(  # type: ignore[attr-defined]
+            issue, reason=reason, grant=grant, duplicate_of=duplicate_of
+        )
+
+
+class _IssueTyping:
+    def set_issue_type(self, issue, issue_type, *, grant):
+        self._check_grant(grant, Operation.ISSUE_TYPE)  # type: ignore[attr-defined]
+        return self._inner.set_issue_type(issue, issue_type, grant=grant)  # type: ignore[attr-defined]
+
+
+class _IssueFieldWriting:
+    def set_issue_fields(self, issue, values, *, grant):
+        self._check_grant(grant, Operation.ISSUE_FIELDS)  # type: ignore[attr-defined]
+        return self._inner.set_issue_fields(issue, values, grant=grant)  # type: ignore[attr-defined]
+
+
 class _Resolving:
     def resolve(self, url):
         return self._inner.resolve(url)  # type: ignore[attr-defined]
@@ -622,8 +648,22 @@ def _view_type(
     label_reader: bool = False,
     label_definer: bool = False,
     label_pruner: bool = False,
+    closer: bool = False,
+    typer: bool = False,
+    fielder: bool = False,
 ) -> type:
-    key = (comment, labels, resolver, marker, label_reader, label_definer, label_pruner)
+    key = (
+        comment,
+        labels,
+        resolver,
+        marker,
+        label_reader,
+        label_definer,
+        label_pruner,
+        closer,
+        typer,
+        fielder,
+    )
     if key not in _VIEW_TYPES:
         mixins = tuple(
             mixin
@@ -635,6 +675,9 @@ def _view_type(
                 (label_reader, _LabelReading),
                 (label_definer, _LabelDefining),
                 (label_pruner, _LabelPruning),
+                (closer, _IssueClosing),
+                (typer, _IssueTyping),
+                (fielder, _IssueFieldWriting),
             )
             if present
         )
@@ -655,6 +698,9 @@ def narrow(adapter: object, enabled: frozenset[Operation]) -> TrackerAdapter:
         Operation.LABELS_READ in enabled and isinstance(adapter, LabelReader),
         Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelDefiner),
         Operation.LABELS_DEFINE in enabled and isinstance(adapter, LabelPruner),
+        Operation.ISSUE_CLOSE in enabled and isinstance(adapter, IssueCloser),
+        Operation.ISSUE_TYPE in enabled and isinstance(adapter, IssueTypeWriter),
+        Operation.ISSUE_FIELDS in enabled and isinstance(adapter, IssueFieldWriter),
     )
     return view(adapter, enabled)
 

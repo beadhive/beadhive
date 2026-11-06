@@ -290,11 +290,13 @@ work merge|bead:string:o,hive:string:o,rm:boolean:o,molecule:boolean:o,group:str
 work needs-info|bead:string:r,ask:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work next|as_:string:o,hive:string:o,as_json:boolean:o,epic:string:o
 work outbox approve|outbox_id:string:r,op:array:r,publish:array:o,as_:string:o,hive:string:o,as_json:boolean:o
+work outbox backfill-close|dry_run:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox discard|outbox_id:string:r,reason:string:r,accept_unknown:boolean:o,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox draft|bead:string:r,text:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox reconcile|outbox_id:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox retry|outbox_id:string:r,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox send|outbox_id:string:r,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
+work outbox send-approved|kind:string:o,bead:array:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox show|outbox_id:string:o,bead:string:o,open_only:boolean:o,hive:string:o,as_json:boolean:o
 work promote|bead:string:r,as_:string:o,hive:string:o
 work readiness|molecule:string:r,hive:string:o,as_json:boolean:o

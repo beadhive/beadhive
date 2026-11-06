@@ -2672,6 +2672,22 @@
       "title": "IntakeExternalConfig",
       "type": "object"
     },
+    "IntakeIssueTypeConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.labels.issue_type`` — the bead type onto the GitHub issue type.\n\nDrafted by `bh work labels sync` and the transition refresh beside the labels, approved in the\nsame batch and sent with `--kind type`; only while the tracker plugin's\n``write.issue_type.enabled`` is on (the one gate). An unmapped bead type is skipped with a\nnote, never guessed.",
+      "properties": {
+        "map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Bead type -> issue type name the organization defines (default bug->Bug, feature->Feature, task->Task, chore->Task). Setting it replaces the whole map; a bead type it does not name is skipped with a note.",
+          "title": "Map",
+          "type": "object"
+        }
+      },
+      "title": "IntakeIssueTypeConfig",
+      "type": "object"
+    },
     "IntakeLabelOverride": {
       "additionalProperties": false,
       "description": "One projected label's display override; every field is optional.",
@@ -2745,6 +2761,9 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "issue_type": {
+          "$ref": "#/$defs/IntakeIssueTypeConfig"
+        },
         "on_transition": {
           "default": false,
           "description": "Reflect a state change onto the label at transition time (default off).",
@@ -2764,6 +2783,9 @@
           "description": "The namespace prefix of every projected label; must be one of `plugins.tracker-github.write.labels.owned_prefixes` when labels are written.",
           "title": "Prefix",
           "type": "string"
+        },
+        "priority_field": {
+          "$ref": "#/$defs/IntakePriorityFieldConfig"
         },
         "project": {
           "description": "The registry dimensions projected as labels, in order (a subset of: intake, delivery, progress, type, priority, component).",
@@ -2849,8 +2871,15 @@
     },
     "IntakeOutboxConfig": {
       "additionalProperties": false,
-      "description": "``intake.external.outbox`` — the per-hive opt-in for communication records.\n\nEnabling it lets milestones draft records and lets an operator approve them; it never sends\nanything by itself, and the adapter's own write flag and a per-record approval minting a\nsingle-use grant are still required to post. ``labels_enabled`` is the separate switch for\nthe ``labels.change`` operation: without it (and ``enabled``) no label operation can be\napproved or sent, whatever the adapter's labels capability allows.",
+      "description": "``intake.external.outbox`` — the per-hive opt-in for communication records.\n\nEnabling it lets milestones draft records and lets an operator approve them; it never sends\nanything by itself, and the adapter's own write flag and a per-record approval minting a\nsingle-use grant are still required to post. ``labels_enabled`` is the separate switch for\nthe ``labels.change`` operation: without it (and ``enabled``) no label operation can be\napproved or sent, whatever the adapter's labels capability allows. ``batch_recheck_seconds``\nbounds how long a one-process batch reuses its host check (``bh-pc9rf``).",
       "properties": {
+        "batch_recheck_seconds": {
+          "default": 0,
+          "description": "How long a one-process batch (`bh work outbox send-approved`, `bh work labels approve --batch`) reuses its primary-host check and epoch read before taking them again; every operation still holds its own per-binding lock, spends its own grant and writes its own receipt. 0 (the default) re-checks on every operation, as a single send does; a positive value is an opt-in (the factory sets 300 once every host runs 0.35.3).",
+          "minimum": 0,
+          "title": "Batch Recheck Seconds",
+          "type": "integer"
+        },
         "enabled": {
           "default": false,
           "description": "Allow outbox records to be drafted and approved (default off).",
@@ -2872,6 +2901,28 @@
         }
       },
       "title": "IntakeOutboxConfig",
+      "type": "object"
+    },
+    "IntakePriorityFieldConfig": {
+      "additionalProperties": false,
+      "description": "``intake.external.labels.priority_field`` — the bead priority onto a single-select issue\nfield (GitHub's ``Priority``).\n\nDrafted beside the labels like the type, sent with `--kind fields`; only while the tracker\nplugin's ``write.issue_fields.enabled`` is on. An unmapped priority is skipped with a note.",
+      "properties": {
+        "map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Bead priority (P0-P4) -> the field's option name (default P0->Urgent, P1->High, P2->Medium, P3->Low, P4->Low). Setting it replaces the whole map; a priority it does not name is skipped with a note.",
+          "title": "Map",
+          "type": "object"
+        },
+        "name": {
+          "default": "Priority",
+          "description": "The issue field the priority is written to.",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "IntakePriorityFieldConfig",
       "type": "object"
     },
     "LegacyBeadsConfig": {
@@ -4063,6 +4114,18 @@
         "comment": {
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`comment.create` (default off)."
+        },
+        "issue_close": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`issue.close`: close an issue with its reason (completed, not_planned or duplicate), never touching its labels (default off; each use needs an operator-approved single-use grant)."
+        },
+        "issue_fields": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`issue.fields`: read an issue's field values and set the named ones (such as Priority) to an option the organization defines, never touching its labels or other fields (default off; each write needs an operator-approved single-use grant)."
+        },
+        "issue_type": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`issue.type`: read an issue's type and set it to one the organization defines, never touching its labels (default off; each write needs an operator-approved single-use grant)."
         },
         "label_definitions": {
           "$ref": "#/$defs/TrackerGithubFlag",
@@ -5290,6 +5353,18 @@
                 "comment": {
                   "$ref": "#/$defs/TrackerGithubFlag",
                   "description": "`comment.create` (default off)."
+                },
+                "issue_close": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`issue.close`: close an issue with its reason (completed, not_planned or duplicate), never touching its labels (default off; each use needs an operator-approved single-use grant)."
+                },
+                "issue_fields": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`issue.fields`: read an issue's field values and set the named ones (such as Priority) to an option the organization defines, never touching its labels or other fields (default off; each write needs an operator-approved single-use grant)."
+                },
+                "issue_type": {
+                  "$ref": "#/$defs/TrackerGithubFlag",
+                  "description": "`issue.type`: read an issue's type and set it to one the organization defines, never touching its labels (default off; each write needs an operator-approved single-use grant)."
                 },
                 "label_definitions": {
                   "$ref": "#/$defs/TrackerGithubFlag",

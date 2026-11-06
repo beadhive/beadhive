@@ -6,7 +6,9 @@
 It returns a :class:`~beadhive_tracker_github.adapter.GitHubTrackerAdapter`, which implements
 ``TrackerAdapter`` and the optional ``IssueResolver``, plus the writer of each ENABLED write
 operation that has landed (``comment.create``: ``CommentWriter``; ``labels.change``:
-``LabelWriter``); a disabled write has no method on the returned object, and an enabled one still
+``LabelWriter``; ``labels.define``: ``LabelDefiner`` and ``LabelPruner``; ``issue.close``:
+``IssueCloser``; ``issue.type``: ``IssueTypeWriter``; ``issue.fields``: ``IssueFieldWriter``); a
+disabled write has no method on the returned object, and an enabled one still
 needs a fresh operator-approved grant per call.
 
 Building sends no request, resolves no credential and imports no githubkit. Root maps any failure

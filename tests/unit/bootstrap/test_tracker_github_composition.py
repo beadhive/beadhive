@@ -28,9 +28,13 @@ from beadhive.bootstrap.tracker import (
 from beadhive.kernel.plugins import BUILTIN_PLUGIN_IDS
 from beadhive.modules.config.contracts import TrackerGithubConfig
 from beadhive.modules.tracker.contracts import (
+    CloseReason,
     CommentWriter,
+    IssueCloser,
+    IssueFieldWriter,
     IssueKey,
     IssueResolver,
+    IssueTypeWriter,
     LabelDefiner,
     LabelDefinition,
     LabelPruner,
@@ -180,6 +184,9 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
         Operation.LABELS_CHANGE,
         Operation.LABELS_READ,
         Operation.LABELS_DEFINE,
+        Operation.ISSUE_CLOSE,
+        Operation.ISSUE_TYPE,
+        Operation.ISSUE_FIELDS,
     }
     assert not isinstance(port, CommentWriter)  # comment.create was not enabled
     assert not isinstance(port, LabelWriter)  # labels.change is not enabled: no writer exposed
@@ -444,3 +451,106 @@ def test_a_requested_but_disabled_label_operation_names_its_flag():
     assert error.rule is TrackerRule.WRITE_NOT_ENABLED
     assert "plugins.tracker-github.read.labels.enabled" in error.message
     assert "plugins.tracker-github.write.label_definitions.enabled" in error.message
+
+
+def test_the_issue_close_flag_binds_the_closer_in_the_root_view_and_sends_nothing(loads):
+    plugins = {"tracker-github": enabled_plugin(write={"issue_close": {"enabled": True}})}
+    adapters, token_calls = counting_root(plugins)
+    bound = adapters.for_store(entry(), requested=READ | {Operation.ISSUE_CLOSE})
+
+    assert Operation.ISSUE_CLOSE in bound.enabled  # enabled is necessary, never sufficient
+    assert isinstance(bound.port, IssueCloser)
+    assert not isinstance(bound.port, CommentWriter) and not isinstance(bound.port, LabelWriter)
+    assert token_calls == []
+
+    off = root({"tracker-github": enabled_plugin()}).for_store(entry(), requested=READ)
+    assert not isinstance(off.port, IssueCloser) and not hasattr(off.port, "close_issue")
+    error = refusal(
+        root({"tracker-github": enabled_plugin()}),
+        entry(),
+        requested=READ | {Operation.ISSUE_CLOSE},
+    )
+    assert "plugins.tracker-github.write.issue_close.enabled" in error.message
+
+
+@pytest.mark.parametrize(
+    ("key", "op", "protocol", "other"),
+    [
+        ("issue_type", Operation.ISSUE_TYPE, IssueTypeWriter, IssueFieldWriter),
+        ("issue_fields", Operation.ISSUE_FIELDS, IssueFieldWriter, IssueTypeWriter),
+    ],
+)
+def test_each_value_flag_binds_only_its_writer_in_the_root_view(loads, key, op, protocol, other):
+    plugins = {"tracker-github": enabled_plugin(write={key: {"enabled": True}})}
+    adapters, token_calls = counting_root(plugins)
+    bound = adapters.for_store(entry(), requested=READ | {op})
+
+    assert op in bound.enabled and isinstance(bound.port, protocol)
+    assert not isinstance(bound.port, other) and not isinstance(bound.port, IssueCloser)
+    assert token_calls == []
+    error = refusal(root({"tracker-github": enabled_plugin()}), entry(), requested=READ | {op})
+    assert f"plugins.tracker-github.write.{key}.enabled" in error.message
+
+
+def test_a_value_write_through_the_root_view_needs_its_own_grant():
+    class _Values:
+        def __init__(self):
+            self.calls: list[object] = []
+
+        def set_issue_type(self, issue, issue_type, *, grant):
+            self.calls.append(issue_type)
+            return grant
+
+        def set_issue_fields(self, issue, values, *, grant):
+            self.calls.append(dict(values))
+            return grant
+
+    adapter = _Values()
+    port = tracker_root.narrow(adapter, frozenset({Operation.ISSUE_TYPE, Operation.ISSUE_FIELDS}))
+    issue = IssueKey("#3", "https://github.com/acme/widget/issues/3")
+    wrong = WriteGrant("g", Operation.ISSUE_FIELDS, issue)
+    with pytest.raises(OperationNotEnabled):
+        port.set_issue_type(issue, "Bug", grant=wrong)  # type: ignore[attr-defined]
+    with pytest.raises(OperationNotEnabled):
+        port.set_issue_fields(  # type: ignore[attr-defined]
+            issue, {"Priority": "High"}, grant=WriteGrant("g", Operation.ISSUE_TYPE, issue)
+        )
+    assert adapter.calls == []
+    port.set_issue_type(issue, "Bug", grant=WriteGrant("g-1", Operation.ISSUE_TYPE, issue))  # type: ignore[attr-defined]
+    port.set_issue_fields(issue, {"Priority": "High"}, grant=wrong)  # type: ignore[attr-defined]
+    assert adapter.calls == ["Bug", {"Priority": "High"}]
+    only_type = tracker_root.narrow(adapter, frozenset({Operation.ISSUE_TYPE}))
+    assert isinstance(only_type, IssueTypeWriter) and not isinstance(only_type, IssueFieldWriter)
+
+
+def test_a_close_through_the_root_view_needs_a_close_grant():
+    class _Closer:
+        def __init__(self):
+            self.calls: list[str] = []
+            self.canonicals: list[IssueKey | None] = []
+
+        def close_issue(self, issue, *, reason, grant, duplicate_of=None):
+            self.calls.append(reason.value)
+            self.canonicals.append(duplicate_of)
+            return grant
+
+    adapter = _Closer()
+    port = tracker_root.narrow(adapter, frozenset({Operation.ISSUE_CLOSE}))
+    issue = IssueKey("#3", "https://github.com/acme/widget/issues/3")
+    with pytest.raises(OperationNotEnabled):
+        port.close_issue(  # type: ignore[attr-defined]
+            issue,
+            reason=CloseReason.COMPLETED,
+            grant=WriteGrant("g", Operation.LABELS_CHANGE, issue),
+        )
+    assert adapter.calls == []
+    grant = WriteGrant("g-1", Operation.ISSUE_CLOSE, issue)
+    assert port.close_issue(issue, reason=CloseReason.DUPLICATE, grant=grant) is grant  # type: ignore[attr-defined]
+    assert adapter.calls == ["duplicate"]
+    canonical = IssueKey("#1", "https://github.com/acme/widget/issues/1")
+    again = WriteGrant("g-2", Operation.ISSUE_CLOSE, issue)
+    port.close_issue(  # type: ignore[attr-defined]
+        issue, reason=CloseReason.DUPLICATE, grant=again, duplicate_of=canonical
+    )
+    assert adapter.canonicals == [None, canonical]  # the canonical passes through the view
+    assert not isinstance(tracker_root.narrow(adapter, frozenset()), IssueCloser)

@@ -106,6 +106,7 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "outbox",
         "labels_enabled",
         "mode",
+        "batch_recheck_seconds",  # how long a one-process batch reuses its host check (bh-pc9rf)
         "comments",
         "deletion_confirmations",
         "purge_deleted_bodies",
@@ -126,6 +127,9 @@ def test_no_intake_key_holds_a_secret_a_grant_or_an_approval() -> None:
         "description",
         "color",
         "on_transition",
+        "issue_type",  # the bead type -> issue type map (bh-poqy0)
+        "priority_field",  # the bead priority -> Priority option map (bh-poqy0)
+        "map",
     }
     assert not {"token", "grant", "approve", "write", "credential", "tracker"} & names
 
@@ -532,4 +536,88 @@ def test_the_label_keys_are_host_owned_so_a_fleet_push_cannot_set_them() -> None
     assert "intake.external.labels.prefix" in paths
     assert "plugins.tracker-github.read.labels.enabled" in paths
     assert "plugins.tracker-github.write.label_definitions.enabled" in paths
+    assert {partition.partition_of(path) for path in paths} == {partition.HOST}
+
+
+# -- intake.external.labels.issue_type / priority_field (bh-poqy0): the value maps -----------
+
+
+def test_the_value_maps_default_to_the_github_organization_defaults() -> None:
+    labels = IntakeConfig().external.labels
+
+    assert labels.issue_type.map == {
+        "bug": "Bug",
+        "feature": "Feature",
+        "task": "Task",
+        "chore": "Task",
+    }
+    assert labels.priority_field.name == "Priority"
+    assert labels.priority_field.map == {
+        "P0": "Urgent",
+        "P1": "High",
+        "P2": "Medium",
+        "P3": "Low",
+        "P4": "Low",
+    }
+
+
+def test_a_value_map_override_replaces_the_whole_map() -> None:
+    config = BeadhiveConfig.model_validate(
+        _labels(
+            {
+                "issue_type": {"map": {"bug": "Defect"}},
+                "priority_field": {"name": "Severity", "map": {"p0": "Sev1"}},
+            }
+        )
+    )
+
+    assert config.intake is not None
+    labels = config.intake.external.labels
+    assert labels.issue_type.map == {"bug": "Defect"}  # chore is now unmapped: skipped
+    assert (labels.priority_field.name, labels.priority_field.map) == ("Severity", {"p0": "Sev1"})
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ({"issue_type": {"map": {"bug": " "}}}, "intake.external.labels.issue_type.map"),
+        ({"issue_type": {"map": {" bug": "Bug"}}}, "intake.external.labels.issue_type.map"),
+        ({"priority_field": {"map": {"P5": "Low"}}}, "priority_field.map"),
+        ({"priority_field": {"map": {"P1": "High", "p1": "Low"}}}, "priority_field.map"),
+        ({"priority_field": {"name": ""}}, "intake.external.labels.priority_field.name"),
+        ({"priority_field": {"options": {}}}, "options"),  # unknown keys fail closed
+    ],
+)
+def test_a_bad_value_map_is_refused_naming_the_key(section, key) -> None:
+    with pytest.raises(ValidationError) as error:
+        BeadhiveConfig.model_validate(_labels(section))
+
+    assert key in str(error.value)
+
+
+def test_the_value_switches_are_strict_off_by_default_and_host_owned() -> None:
+    from beadhive.modules.config.contracts import TrackerGithubConfig
+
+    config = TrackerGithubConfig()
+    assert (config.write.issue_type.enabled, config.write.issue_fields.enabled) == (False, False)
+    for fragment in (
+        {"write": {"issue_type": {"enabled": "true"}}},
+        {"write": {"issue_fields": {"enabled": 1}}},
+    ):
+        with pytest.raises(ValidationError):
+            TrackerGithubConfig.model_validate(fragment)
+    paths = [
+        f.path
+        for f in iter_schema_fields()
+        if f.path.startswith(
+            (
+                "intake.external.labels.issue_type",
+                "intake.external.labels.priority_field",
+                "plugins.tracker-github.write.issue_type",
+                "plugins.tracker-github.write.issue_fields",
+            )
+        )
+    ]
+    assert "intake.external.labels.priority_field.map" in paths
+    assert "plugins.tracker-github.write.issue_fields.enabled" in paths
     assert {partition.partition_of(path) for path in paths} == {partition.HOST}

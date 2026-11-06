@@ -365,6 +365,23 @@ def _investigates_is_not_tracks(factory: ReportStoreFactory) -> None:
     assert store.investigations_of(other) == (repro,)
 
 
+def _relates_reports_either_way(factory: ReportStoreFactory) -> None:
+    """A relates-to pair (bh-iamru) is one edge read from both sides, recorded once whichever
+    side records it, never a ``tracks`` link or an investigation, and it survives closure."""
+    store = factory()
+    a, b, c = store.create(draft("a")), store.create(draft("b")), store.create(draft("c"))
+    assert store.related_reports(a) == ()
+    store.relate(a, b, actor="dev/test")
+    store.relate(a, b, actor="dev/test")  # idempotent
+    store.relate(b, a, actor="dev/test")  # and in the other direction
+    store.relate(c, a, actor="dev/test")
+    assert store.related_reports(a) == tuple(sorted((b, c)))
+    assert store.related_reports(b) == (a,) and store.related_reports(c) == (a,)
+    assert store.tracked_work(a) is None and store.investigations_of(a) == ()
+    store.close(b, reason="dup", actor="dev/test")
+    assert store.related_reports(a) == tuple(sorted((b, c)))
+
+
 def _create_work_is_plain_work(factory: ReportStoreFactory) -> None:
     store = factory()
     work = store.create_work(
@@ -557,6 +574,20 @@ def _outbox_on_every_status_and_bound_only(factory: ReportStoreFactory) -> None:
     _expect_store_error(lambda: store.write_outbox(ghost, outbox(2), expect_seq=0, actor="a"))
     assert sorted(v.id for v in store.reports_with_outbox()) == sorted([open_report, closed])
     assert store.read_outbox(native) is None
+
+
+def _read_outboxes_is_every_document_in_one_pass(factory: ReportStoreFactory) -> None:
+    store = factory()
+    assert dict(store.read_outboxes()) == {}
+    first = store.create(draft(bound=True))
+    closed = store.create(draft("another", bound=True))
+    store.create(draft("no outbox", bound=True))
+    store.write_outbox(first, outbox(2, texts=("one",)), expect_seq=0, actor="dev/test")
+    store.write_outbox(closed, outbox(3, texts=("two",)), expect_seq=0, actor="dev/test")
+    store.close(closed, reason="done", actor="dev/test")
+    docs = dict(store.read_outboxes())
+    assert docs == {first: store.read_outbox(first), closed: store.read_outbox(closed)}
+    assert list(docs) == [v.id for v in store.reports_with_outbox()]  # the listing's order
 
 
 def _expect_refused(reason: RefusalReason, call: Callable[[], object]) -> None:
@@ -768,6 +799,7 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.duplicate-pairs", _duplicate_pairs),
     ReportStoreCase("store.tracks-many-reports-to-one-work", _tracks_many_reports_to_one_work),
     ReportStoreCase("store.investigates-is-not-tracks", _investigates_is_not_tracks),
+    ReportStoreCase("store.relates-reports-either-way", _relates_reports_either_way),
     ReportStoreCase("store.create-work-is-plain-work", _create_work_is_plain_work),
     ReportStoreCase("store.unknown-bead-is-a-store-error", _unknown_bead_is_a_store_error),
     ReportStoreCase("store.thread-absent-reads-none", _thread_absent_reads_none),
@@ -789,6 +821,10 @@ REPORT_STORE_CASES: tuple[ReportStoreCase, ...] = (
     ReportStoreCase("store.outbox-keeps-other-documents", _outbox_keeps_other_documents),
     ReportStoreCase(
         "store.outbox-on-every-status-and-bound-only", _outbox_on_every_status_and_bound_only
+    ),
+    ReportStoreCase(
+        "store.read-outboxes-is-every-document-in-one-pass",
+        _read_outboxes_is_every_document_in_one_pass,
     ),
     ReportStoreCase(
         "store.holds-open-and-resolve-one-at-a-time", _holds_open_and_resolve_one_at_a_time

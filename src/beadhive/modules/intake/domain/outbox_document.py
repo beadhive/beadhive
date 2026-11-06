@@ -5,6 +5,15 @@ schema-versioned and rewritten whole, beside ``intake.source`` and ``intake.thre
 is an opaque id, a local integer, a tracker value or recorded intent; no token, and never a
 secret's text (a secret finding is stored redacted). Pure; no I/O.
 
+An ``issue.close`` operation's ``close`` reason, a duplicate close's ``duplicate_of`` canonical
+(``bh-iamru``) and a receipt's ``state_after`` are written only when set, so a document without a
+close is byte-identical to one an older host wrote. A host older than 0.35.3 cannot decode
+``issue.close`` and fails closed on such a document (the 0.35.0 rotation order: every
+outbox-reading host upgrades before any hive turns closes on).
+Likewise an ``issue.type`` / ``issue.fields`` operation's ``values`` (and a receipt's
+``values_after``) are written only when set, and a labels record may carry them: a host older than
+0.35.3 fails closed on such a document too.
+
 Decoding fails closed (:class:`OutboxDocumentError`) on a malformed document or one written by a
 newer schema: a store must never read such a document as an empty outbox, because the next write
 would replace it and lose the records of messages that may already exist.
@@ -20,8 +29,11 @@ from .models import IssueBinding
 from .outbox import (
     LABELS_GROUP,
     OUTBOX_SCHEMA,
+    VALUE_KINDS,
     Approval,
     Attempt,
+    CanonicalIssue,
+    CloseReason,
     DeliveryFacts,
     DraftKey,
     GrantStatus,
@@ -39,6 +51,7 @@ from .outbox import (
     ReleasedFact,
     Step,
     UnlinkedFact,
+    ValueIntent,
 )
 from .thread import ThreadActor
 
@@ -58,6 +71,35 @@ def _override(o: Override) -> dict[str, Any]:
 
 
 def _operation(op: OutboxOperation) -> dict[str, Any]:
+    row = _operation_row(op)
+    if op.close is not None:  # omitted when unset: a document without a close is unchanged
+        row["close"] = op.close.value
+    if op.duplicate_of is not None:  # likewise: a close naming no canonical is unchanged
+        row["duplicate_of"] = {"identifier": op.duplicate_of.identifier, "url": op.duplicate_of.url}
+    if op.receipt is not None and op.receipt.state_after is not None:
+        row["receipt"]["state_after"] = op.receipt.state_after
+    if op.values is not None:  # omitted when unset, like the close
+        row["values"] = {
+            "set": [list(pair) for pair in op.values.values],
+            "base": [list(pair) for pair in op.values.base],
+        }
+    if op.receipt is not None and op.receipt.values_after is not None:
+        row["receipt"]["values_after"] = [list(pair) for pair in op.receipt.values_after]
+    return row
+
+
+def _pairs(value: Any, what: str) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, list):
+        raise OutboxDocumentError(f"{what} is not a list of pairs")
+    pairs = []
+    for item in value:
+        if not isinstance(item, list) or len(item) != 2:
+            raise OutboxDocumentError(f"{what} is not a list of pairs")
+        pairs.append((str(item[0]), str(item[1])))
+    return tuple(pairs)
+
+
+def _operation_row(op: OutboxOperation) -> dict[str, Any]:
     receipt = op.receipt
     return {
         "kind": op.kind.value,
@@ -232,11 +274,38 @@ def _decode_operation(value: Any) -> OutboxOperation:
             ),
             reconciled=bool(rec.get("reconciled", False)),
             late=bool(rec.get("late", False)),
+            state_after=_opt(rec.get("state_after")),
+            values_after=None
+            if rec.get("values_after") is None
+            else _pairs(rec["values_after"], "receipt.values_after"),
+        )
+    kind = OpKind(raw["kind"])  # an operation this host does not know fails closed
+    close = None if raw.get("close") is None else CloseReason(raw["close"])
+    if (kind is OpKind.CLOSE) != (close is not None):
+        raise OutboxDocumentError("an issue.close operation, and only one, carries a close reason")
+    duplicate_of = None
+    if raw.get("duplicate_of") is not None:
+        canonical = _mapping(raw["duplicate_of"], "duplicate_of")
+        if close is not CloseReason.DUPLICATE:
+            raise OutboxDocumentError("only a duplicate close names a canonical issue")
+        duplicate_of = CanonicalIssue(str(canonical["identifier"]), str(canonical["url"]))
+    values = None
+    if raw.get("values") is not None:
+        held = _mapping(raw["values"], "values")
+        values = ValueIntent(
+            _pairs(held.get("set"), "values.set"), _pairs(held.get("base", []), "values.base")
+        )
+    if (kind in VALUE_KINDS) != (values is not None) or (values and not values.values):
+        raise OutboxDocumentError(
+            "an issue.type / issue.fields operation, and only one, has values"
         )
     return OutboxOperation(
-        kind=OpKind(raw["kind"]),
+        kind=kind,
         state=OpState(raw["state"]),
         labels=diff,
+        close=close,
+        duplicate_of=duplicate_of,
+        values=values,
         findings=tuple(
             LeakFinding(str(f["id"]), LeakKind(f["kind"]), str(f["match"]), int(f["start"]))
             for f in (_mapping(item, "finding") for item in raw.get("findings", ()))
@@ -294,8 +363,14 @@ def _decode_record(outbox_id: str, value: Any) -> OutboxRecord:
         raise OutboxDocumentError(f"record {outbox_id} has no operation")
     event = OutboxEvent(raw["event"])  # an event this host does not know fails closed
     group = str(raw["group"])
+    kinds = [op.kind for op in operations]
+    if OpKind.CLOSE in kinds and OpKind.COMMENT not in kinds:
+        raise OutboxDocumentError(f"record {outbox_id} has a close without the comment it follows")
+    projected = {OpKind.LABELS} | VALUE_KINDS
+    if any(kind in VALUE_KINDS for kind in kinds) and event is not OutboxEvent.LABELS:
+        raise OutboxDocumentError(f"record {outbox_id} sets a type or field off a labels record")
     if event is OutboxEvent.LABELS and (
-        group != LABELS_GROUP or any(op.kind is not OpKind.LABELS for op in operations)
+        group != LABELS_GROUP or any(op.kind not in projected for op in operations)
     ):
         raise OutboxDocumentError(
             f"record {outbox_id} is a labels record outside the {LABELS_GROUP} group or with a "

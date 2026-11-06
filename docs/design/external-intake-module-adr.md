@@ -1575,7 +1575,8 @@ any of the live dependencies land.
 - Held reports read "blocked: 1 open gate" in operator views until the `report` lane lands.
 - `IntakePort` is wide (about 20 operations); the `OutboxPort` split stays available.
 - `reports_with_outbox()` scans every report that ever had a record; an index key is added only
-  if measured slow.
+  if measured slow. Measured slow on the factory (129 store reads, about 10 s per lookup), so
+  `bh-pc9rf` added the local `OutboxIndex` cache and the one-listing `read_outboxes()` scan.
 - The `state.py` facade keeps its 238-module reverse closure; only callers that migrate shed it.
 - Two GitHub readers (port and projection) remain, as the port ADR accepted.
 - A rotation gate (IR) precedes any use.

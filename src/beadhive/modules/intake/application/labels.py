@@ -19,6 +19,15 @@ is refused for that issue (``bh work labels define`` first), from ONE ``labels.r
 sent: an operator approves the batch (:meth:`~.sender.OutboxService.approve_label_batch`) and
 ``send`` changes each issue once.
 
+**The issue type and field values** (``bh-poqy0``): with ``values`` (the maps,
+:class:`~..domain.issue_values.ValueSettings`) and the outbox's ``issue.type`` / ``issue.fields``
+gate on, the same pass computes the type and the priority field value the bead projects (the
+tracked work, falling back to the report) and diffs them against the issue's live ones from the
+same listing; a difference is reported like drift and drafted as an ``issue.type`` /
+``issue.fields`` operation on the SAME ``labels`` record, so one batch review approves them with
+the labels. An unmapped value, or one the issue was not read for, is skipped with a note. Labels
+are unchanged by this: a record may carry any of the three operations.
+
 **refresh** (:meth:`LabelProjection.refresh`, ``bh-gjb5w``): the opt-in transition hook's draft
 (``intake.external.labels.on_transition``). The same desired-state function and the same single
 ``labels`` record per issue, but TRACKER-FREE: it diffs against the labels the store holds (the
@@ -26,7 +35,9 @@ import snapshot, with the owned part replaced by the base of the open ``labels``
 is waiting, so a refresh never regresses a fresher sync draft) and reads no issue listing and no
 label definitions. The sender reads the live labels when it renders, so a stale base only
 costs a no-op change. Same supersede group: a refresh finds (O2) or refreshes (O6) the report's
-open record, never stacking one.
+open record, never stacking one. The issue's type and field values are believed from the outbox
+(the base of the open record's value operation, else the last one sent); unknown ones are drafted
+unconditionally, and the next sync discards what the issue already holds.
 
 **define** (:meth:`LabelProjection.define`): the catalog (closed sets up front, open sets as the
 values appear on the projected beads) against the repository's definitions, rendered with a
@@ -90,22 +101,31 @@ from ..domain import (
     ReportFacts,
     StorePosture,
     ThreadState,
+    ValueChange,
+    ValueIntent,
+    ValueSettings,
     WorkFacts,
     desired_labels,
+    desired_values,
     diff_labels,
+    field_changes,
     labels_revision,
     plan_definitions,
     progress_facts,
     require_private_store,
+    type_change,
 )
 from ..domain import outbox as machine
 from ..domain.labels import COMPONENT_DIM, TAG_DIM
+from ..domain.outbox import TYPE_VALUE
 from .importer import revision_token
 from .paging import iterate_pages
 from .threads import binding_key
 
 #: The states of a label operation whose write may be in flight: no new draft until reconciled.
 _IN_FLIGHT = frozenset({OpState.SENDING, OpState.UNKNOWN})
+#: The states of an operation still waiting for its approval or its send.
+_OPEN = frozenset({OpState.DRAFTED, OpState.HELD, OpState.APPROVED})
 
 
 def label_base(issue: TrackerIssue) -> LabelBase:
@@ -143,7 +163,9 @@ class LabelProjection:
     policy: drafting needs it (and its ``labels_enabled``) on, and its agent-seat prefixes decide
     who is an operator. ``leak_policy`` must own the prefix (``owned_label_prefixes``);
     ``sanitizer=None`` holds every drafted record and blocks every definition (fail closed).
-    ``audit`` receives the local note of an applied ``define``."""
+    ``audit`` receives the local note of an applied ``define``. ``values`` are the issue type
+    and field maps; without them (or with the outbox's ``issue.type`` / ``issue.fields`` gate
+    off) no value is projected."""
 
     def __init__(
         self,
@@ -159,6 +181,7 @@ class LabelProjection:
         posture: StorePosture,
         outbox: OutboxPolicy | None = None,
         audit: AuditLog | None = None,
+        values: ValueSettings | None = None,
     ) -> None:
         self._store = store
         self._tracker = tracker
@@ -173,6 +196,7 @@ class LabelProjection:
         self._posture = posture
         self._outbox = outbox or OutboxPolicy()
         self._audit = audit
+        self._values = values
 
     # -- sync --------------------------------------------------------------------------------
 
@@ -247,9 +271,65 @@ class LabelProjection:
         diff = diff_labels(catalog, desired, base.labels)
         swaps = tuple((dim, old, new) for dim, (old, new) in sorted(diff.swaps(catalog).items()))
         item = LabelSyncItem(view.id, binding.url, diff.add, diff.remove, diff.drift, swaps=swaps)
+        live_type, live_fields = (
+            self._believed(view.id, binding.url) if self._projects_values else (None, {})
+        )
+        item = self._with_values(item, facts, live_type or "", tuple(sorted(live_fields.items())))
         if not item.changed:
             return self._converged(view, binding, item, LabelSyncRequest(actor, reports=(report,)))
-        return self._draft(view, binding, base, item, actor)
+        unknown = {
+            c.name
+            for c in item.values
+            if (live_type is None if c.name == TYPE_VALUE else c.name not in live_fields)
+        }
+        return self._draft(view, binding, base, item, actor, unknown=frozenset(unknown))
+
+    def _with_values(
+        self,
+        item: LabelSyncItem,
+        facts: _Facts,
+        live_type: str | None,
+        live_fields: tuple[tuple[str, str], ...] | None,
+    ) -> LabelSyncItem:
+        """``item`` with the issue type and field values to set and the notes of those skipped,
+        for each value whose outbox gate is on (none without the maps)."""
+        if not self._projects_values:
+            return item
+        wants_type, wants_fields = self._outbox.type_enabled, self._outbox.fields_enabled
+        desired = desired_values(
+            self._values, facts.report, facts.work, issue_type=wants_type, fields=wants_fields
+        )
+        typed, type_note = type_change(desired, live_type)
+        fielded, field_note = field_changes(desired, live_fields)
+        changes = ((typed,) if typed is not None else ()) + fielded
+        notes = tuple(n for n in (*desired.notes, type_note, field_note) if n)
+        return dataclasses.replace(item, values=changes, value_notes=notes)
+
+    @property
+    def _projects_values(self) -> bool:
+        """The maps are bound and the outbox's ``issue.type`` or ``issue.fields`` gate is on."""
+        return self._values is not None and (
+            self._outbox.type_enabled or self._outbox.fields_enabled
+        )
+
+    def _believed(self, report: str, url: str) -> tuple[str | None, dict[str, str]]:
+        """The issue's type and field values as the outbox believes them, for the tracker-free
+        refresh: the base of the open labels record's value operation, else the values the last
+        one sent set. A value nothing tells is absent (the type ``None``): it is drafted, never
+        assumed held, and left out of the draft's base."""
+        doc = self._store.read_outbox(report)
+        known: dict[OpKind, dict[str, str]] = {OpKind.TYPE: {}, OpKind.FIELDS: {}}
+        records = _labels_records(doc, url) if doc is not None else []
+        for record in records:  # oldest first: a later record's knowledge wins
+            for kind, held in known.items():
+                op = record.op(kind)
+                if op is None or op.values is None:
+                    continue
+                if op.state is OpState.SENT:
+                    held.update(dict(op.values.values))
+                elif record.status is RecordStatus.OPEN and op.state in _OPEN:
+                    held.update(dict(op.values.base))
+        return known[OpKind.TYPE].get(TYPE_VALUE), known[OpKind.FIELDS]
 
     def _stored_base(self, view: BeadView, binding: IssueBinding) -> LabelBase:
         """The labels the store believes the issue carries: the import snapshot's, with the owned
@@ -361,7 +441,8 @@ class LabelProjection:
         remove = diff.remove | (diff.drift if request.prune_unmapped else frozenset())
         swaps = tuple((dim, old, new) for dim, (old, new) in sorted(diff.swaps(catalog).items()))
         item = LabelSyncItem(view.id, binding.url, add, remove, diff.drift, swaps=swaps)
-        if not (add or remove):
+        item = self._with_values(item, facts, issue.issue_type, issue.fields)
+        if not item.changed:
             return self._converged(view, binding, item, request)
         undefined = frozenset(a for a in add if defined is None or a not in defined)
         if undefined:
@@ -389,10 +470,14 @@ class LabelProjection:
         base: LabelBase,
         item: LabelSyncItem,
         actor: str,
+        *,
+        unknown: frozenset[str] = frozenset(),
     ) -> LabelSyncItem:
         """O1 of ONE labels record under the binding's lock: O2 when the newest open one already
-        carries this diff on these owned labels, else a new one superseding the older (O6)."""
+        carries this diff on these owned labels, else a new one superseding the older (O6).
+        ``unknown`` names the values whose live value was not known (left out of the base)."""
         owned = frozenset(label for label in base.labels if self._leaks.owns(label))
+        issue_type, fields = _value_intents(item.values, unknown)
         with self._lock.hold(binding_key(binding)):
             doc = self._store.read_outbox(view.id) or OutboxDocument()
             flying = _in_flight(doc, binding.url)
@@ -402,7 +487,14 @@ class LabelProjection:
                     note=f"label change {flying} may be in flight; reconcile it before a new draft",
                 )
             intent = LabelIntent(item.add, item.remove)
-            revision = labels_revision(doc, binding.url, intent, base_owned=owned)
+            revision = labels_revision(
+                doc,
+                binding.url,
+                intent,
+                base_owned=owned,
+                issue_type=issue_type,
+                fields=fields,
+            )
             applied = machine.draft(
                 doc,
                 DraftRequest(
@@ -411,7 +503,9 @@ class LabelProjection:
                     revision,
                     actor,
                     comment=False,
-                    labels=intent,
+                    labels=intent if item.labels_changed else None,
+                    issue_type=issue_type,
+                    fields=fields,
                 ),
                 outbox_id=self._ids.outbox_id(),
                 policy=self._outbox,
@@ -421,12 +515,12 @@ class LabelProjection:
                 return dataclasses.replace(item, pending=applied.outbox_id)
             self._store.write_outbox(view.id, applied.document, expect_seq=doc.seq, actor=actor)
         record = applied.record
-        op = record.op(OpKind.LABELS) if record is not None else None
+        ops = record.operations if record is not None else ()
         return dataclasses.replace(
             item,
             drafted=applied.outbox_id,
             superseded=(record.supersedes or "") if record is not None else "",
-            held=op is not None and op.state is OpState.HELD,
+            held=any(op.state is OpState.HELD for op in ops),
         )
 
     def _converged(
@@ -447,17 +541,19 @@ class LabelProjection:
             moot = _open_labels(doc, binding.url)
             if not moot:
                 return item
-            applied = machine.discard(
-                doc,
-                moot,
-                reason="the issue already carries the projected labels",
-                actor=request.actor,
-                policy=self._outbox,
-                kind=OpKind.LABELS,
-            )
-            self._store.write_outbox(
-                view.id, applied.document, expect_seq=doc.seq, actor=request.actor
-            )
+            current = doc
+            for op in doc.records[moot].operations:  # labels, type and fields: each still open
+                if op.state not in _OPEN:
+                    continue
+                current = machine.discard(
+                    current,
+                    moot,
+                    reason="the issue already carries the projected labels and values",
+                    actor=request.actor,
+                    policy=self._outbox,
+                    kind=op.kind,
+                ).document
+            self._store.write_outbox(view.id, current, expect_seq=doc.seq, actor=request.actor)
         return dataclasses.replace(item, discarded=moot)
 
     def _ctx(self, view: BeadView, binding: IssueBinding, base: LabelBase) -> RenderContext:
@@ -633,24 +729,41 @@ def _labels_records(doc: OutboxDocument, url: str):
 
 
 def _in_flight(doc: OutboxDocument, url: str) -> str:
+    """A labels record any of whose operations (labels, type, fields) may be in flight."""
     for record in _labels_records(doc, url):
-        op = record.op(OpKind.LABELS)
-        if op is not None and op.state in _IN_FLIGHT:
+        if any(op.state in _IN_FLIGHT for op in record.operations):
             return record.outbox_id
     return ""
 
 
 def _open_labels(doc: OutboxDocument, url: str) -> str:
-    """The open labels record still waiting to be approved or sent, if any."""
+    """The open labels record with an operation still waiting to be approved or sent, if any."""
     for record in reversed(_labels_records(doc, url)):
-        op = record.op(OpKind.LABELS)
-        if (
-            record.status is RecordStatus.OPEN
-            and op is not None
-            and op.state in {OpState.DRAFTED, OpState.HELD, OpState.APPROVED}
+        if record.status is RecordStatus.OPEN and any(
+            op.state in _OPEN for op in record.operations
         ):
             return record.outbox_id
     return ""
+
+
+def _value_intents(
+    changes: Iterable[ValueChange], unknown: frozenset[str] = frozenset()
+) -> tuple[ValueIntent | None, ValueIntent | None]:
+    """The ``issue.type`` and ``issue.fields`` intents of a sync item's value changes, each
+    stamped with the live values it was drafted on (an ``unknown`` one is left out of the
+    base, so the batch never calls it stale)."""
+    typed = [c for c in changes if c.name == TYPE_VALUE]
+    fielded = [c for c in changes if c.name != TYPE_VALUE]
+
+    def intent(group: list[ValueChange]) -> ValueIntent | None:
+        if not group:
+            return None
+        return ValueIntent(
+            tuple((c.name, c.desired) for c in group),
+            tuple((c.name, c.live) for c in group if c.name not in unknown),
+        )
+
+    return intent(typed), intent(fielded)
 
 
 def _plan_detail(plan: LabelDefinePlan, *, applied: bool = False) -> str:

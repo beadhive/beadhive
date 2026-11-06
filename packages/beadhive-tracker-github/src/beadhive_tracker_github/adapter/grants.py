@@ -37,10 +37,11 @@ __all__ = ["GrantLedger"]
 class GrantLedger:
     """The grants this adapter instance has seen; spending is atomic.
 
-    ONE ledger serves every writer (``comment.create``, ``labels.change``, ``labels.define``): a
-    grant names its operation, so the spent set is keyed by ``(operation, grant_id)`` and each
-    writer's single-use rule is exactly per operation. Each writer decides WHEN it spends (after
-    all of its own local refusals); a spent grant is never refunded."""
+    ONE ledger serves every writer (``comment.create``, ``labels.change``, ``labels.define``,
+    ``issue.close``): a grant names its operation, so the spent set is keyed by
+    ``(operation, grant_id)`` and each writer's single-use rule is exactly per operation. Each
+    writer decides WHEN it spends (after all of its own local refusals); a spent grant is never
+    refunded."""
 
     def __init__(self) -> None:
         self._spent: set[tuple[Operation, str]] = set()
