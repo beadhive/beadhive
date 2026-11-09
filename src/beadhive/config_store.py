@@ -499,6 +499,29 @@ def _load_sql(api, host) -> str:
     return payload
 
 
+def _layer_key(api) -> tuple | None:
+    """The file signatures of the fleet and HOST layers (the filesystem memo's key)."""
+    if not (hasattr(api, "fleet_path") and hasattr(api, "config_path")):
+        return None
+    try:
+        return (_file_signature(api.fleet_path()), _file_signature(api.config_path()))
+    except OSError:
+        # An unreadable optional local fleet path cannot prevent the HOST
+        # selector from choosing the authenticated SQL service.
+        return None
+
+
+def remembered_effective(api) -> dict | None:
+    """The effective config this invocation already loaded (:func:`process_load_memo`), while it
+    is still the one :func:`load` would reuse; ``None`` outside the scope or with nothing fresh.
+    For diagnostics that would otherwise re-read a layer the load just qualified (bh-25fvb)."""
+    if _fleet_transaction.get() is not None:
+        return None
+    key = _layer_key(api)
+    remembered = _memoized((key, _hive_local_reads.get()) if key is not None else None)
+    return json.loads(remembered) if remembered is not None else None
+
+
 def load(api):
     """Load an isolated effective config; memoize unchanged filesystem layers only.
 
@@ -513,14 +536,7 @@ def load(api):
         return json.loads(_load_sql(api, prepared) if selected else json.dumps(prepared))
     # Filesystem memoization applies only to Git. An authenticated SQL read
     # must requalify its finite validity and committed revision on every call.
-    key = None
-    if hasattr(api, "fleet_path") and hasattr(api, "config_path"):
-        try:
-            key = (_file_signature(api.fleet_path()), _file_signature(api.config_path()))
-        except OSError:
-            # An unreadable optional local fleet path cannot prevent the HOST
-            # selector from choosing the authenticated SQL service.
-            pass
+    key = _layer_key(api)
     # The invocation memo is keyed like the filesystem memo plus the hive-local read mode (a
     # hive-local read may be served a degraded snapshot no other read may reuse).
     invocation_key = (key, _hive_local_reads.get()) if key is not None else None

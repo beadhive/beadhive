@@ -146,8 +146,16 @@ def schema_leaf_paths() -> list[str]:
     """Return the canonical model's settable leaf paths."""
 
     paths = [field.path for field in iter_schema_fields() if "[]" not in field.path]
-    branches = {path for path in paths if any(other.startswith(path + ".") for other in paths)}
-    return [path for path in paths if path not in branches]
+    # A branch is a dotted proper prefix of another path. Collected from each path's own
+    # prefixes, linear in the paths instead of comparing every pair (bh-25fvb: 1.1M string
+    # comparisons, about 0.3 s of every ``bh`` import, four times over).
+    prefixes = {
+        ".".join(parts[:end])
+        for path in paths
+        for parts in [path.split(".")]
+        for end in range(1, len(parts))
+    }
+    return [path for path in paths if path not in prefixes]
 
 
 FLEET_KEYS: frozenset[str] = frozenset(
