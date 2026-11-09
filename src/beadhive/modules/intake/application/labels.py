@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Iterable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 
 from beadhive.modules.tracker.contracts import (
     IssueQuery,
@@ -68,7 +69,7 @@ from beadhive.modules.tracker.contracts import (
     WriteGrant,
 )
 
-from ..contracts import AuditLog, IdSource, IntakeLock, ReportStore, Sanitizer
+from ..contracts import AuditLog, BatchLock, IdSource, IntakeLock, ReportStore, Sanitizer
 from ..domain import (
     DEFINE_VERB,
     BeadView,
@@ -120,7 +121,8 @@ from ..domain.labels import COMPONENT_DIM, TAG_DIM
 from ..domain.outbox import TYPE_VALUE
 from .importer import revision_token
 from .paging import iterate_pages
-from .threads import binding_key
+from .threads import held as held_binding
+from .threads import store_session
 
 #: The states of a label operation whose write may be in flight: no new draft until reconciled.
 _IN_FLIGHT = frozenset({OpState.SENDING, OpState.UNKNOWN})
@@ -153,6 +155,9 @@ class _Facts:
     report: ReportFacts
     work: WorkFacts | None
     progress: ProgressFacts
+    #: The report's outbox as the facts read it (bh-25fvb): the converged check reuses it rather
+    #: than reading it again; a discard still re-reads it under the lock.
+    outbox: OutboxDocument | None = None
 
 
 class LabelProjection:
@@ -198,6 +203,10 @@ class LabelProjection:
         self._audit = audit
         self._values = values
 
+    def _batch(self) -> AbstractContextManager[None]:
+        """The lock's batch scope when it has one (:class:`BatchLock`), else nothing."""
+        return self._lock.batch() if isinstance(self._lock, BatchLock) else nullcontext()
+
     # -- sync --------------------------------------------------------------------------------
 
     def sync(self, request: LabelSyncRequest) -> LabelSyncOutcome:
@@ -218,15 +227,16 @@ class LabelProjection:
         if selected:
             live = self._listing(include_closed=request.include_closed)
             defined = self._defined()
-            for view in selected:
-                items.append(
-                    self._guarded(
-                        view.id,
-                        lambda v=view: self._sync_one(
-                            v, facts[v.id], catalog, live, defined, request
-                        ),
+            with self._batch():  # one process: the lock may reuse its host check (bh-25fvb)
+                for view in selected:
+                    items.append(
+                        self._guarded(
+                            view.id,
+                            lambda v=view: self._sync_one(
+                                v, facts[v.id], catalog, live, defined, request
+                            ),
+                        )
                     )
-                )
         order = {report: n for n, report in enumerate(request.reports)}
         items.sort(key=lambda i: (order.get(i.report, len(order)), i.report))
         return LabelSyncOutcome(tuple(items), request.dry_run)
@@ -389,13 +399,15 @@ class LabelProjection:
     def _facts(self, view: BeadView) -> _Facts:
         report = ReportFacts.from_bead(view.labels, view.issue_type, view.priority or None)
         work: WorkFacts | None = None
-        tracked = self._store.tracked_work(view.id)
-        target = self._store.get(tracked) if tracked else None
+        with store_session(self._store):  # the report's edges and outbox: one read (bh-25fvb)
+            tracked = self._store.tracked_work(view.id)
+            target = self._store.get(tracked) if tracked else None
+            outbox = self._store.read_outbox(view.id)
         if target is not None:
             work = WorkFacts.from_bead(
                 target.status, target.labels, target.issue_type, target.priority or None
             )
-        return _Facts(report, work, progress_facts(self._store.read_outbox(view.id)))
+        return _Facts(report, work, progress_facts(outbox), outbox)
 
     def _listing(self, *, include_closed: bool) -> dict[str, TrackerIssue]:
         try:
@@ -443,7 +455,7 @@ class LabelProjection:
         item = LabelSyncItem(view.id, binding.url, add, remove, diff.drift, swaps=swaps)
         item = self._with_values(item, facts, issue.issue_type, issue.fields)
         if not item.changed:
-            return self._converged(view, binding, item, request)
+            return self._converged(view, binding, item, request, known=facts)
         undefined = frozenset(a for a in add if defined is None or a not in defined)
         if undefined:
             why = (
@@ -478,7 +490,7 @@ class LabelProjection:
         ``unknown`` names the values whose live value was not known (left out of the base)."""
         owned = frozenset(label for label in base.labels if self._leaks.owns(label))
         issue_type, fields = _value_intents(item.values, unknown)
-        with self._lock.hold(binding_key(binding)):
+        with held_binding(self._lock, self._store, binding):
             doc = self._store.read_outbox(view.id) or OutboxDocument()
             flying = _in_flight(doc, binding.url)
             if flying:
@@ -524,11 +536,18 @@ class LabelProjection:
         )
 
     def _converged(
-        self, view: BeadView, binding: IssueBinding, item: LabelSyncItem, request: LabelSyncRequest
+        self,
+        view: BeadView,
+        binding: IssueBinding,
+        item: LabelSyncItem,
+        request: LabelSyncRequest,
+        *,
+        known: _Facts | None = None,
     ) -> LabelSyncItem:
         """Nothing to change. An open labels record left from an earlier diff is no longer
-        needed: an operator's (non-dry) sync discards it (O8), anyone else is told."""
-        doc = self._store.read_outbox(view.id)
+        needed: an operator's (non-dry) sync discards it (O8), anyone else is told. ``known``
+        is this run's facts of the report, whose outbox read is reused for the check."""
+        doc = known.outbox if known is not None else self._store.read_outbox(view.id)
         moot = _open_labels(doc, binding.url) if doc is not None else ""
         if not moot:
             return item
@@ -536,7 +555,7 @@ class LabelProjection:
             return dataclasses.replace(
                 item, note=f"open labels record {moot} is no longer needed; discard it"
             )
-        with self._lock.hold(binding_key(binding)):
+        with held_binding(self._lock, self._store, binding):
             doc = self._store.read_outbox(view.id) or OutboxDocument()
             moot = _open_labels(doc, binding.url)
             if not moot:

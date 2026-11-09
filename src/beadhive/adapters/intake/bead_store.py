@@ -19,7 +19,9 @@ the document's own read and write decode it; the queue and lookup reads never do
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from copy import deepcopy
 from typing import Any, Protocol
 
 from beadhive.modules.intake.contracts import (
@@ -164,6 +166,91 @@ class BdReportStore:
         self._routes = routes
         self._scope = scope
         self._error_line = error_line
+        #: The open session's rows by bead (``None``: no session open; bh-25fvb).
+        self._session_rows: dict[str, dict | None] | None = None
+
+    # -- the unit-of-work session (ReportSession, bh-25fvb) -------------------------------------
+
+    @contextmanager
+    def session(self) -> Iterator[None]:
+        """Inside it, each bead's row is read once and shared by every read of it; a document
+        written here is kept as written, and any other write drops every row held. The ``seq``
+        re-read before a document write is served from it only where the write is a
+        compare-and-set (:meth:`_compare_and_set`); on the ``bd`` CLI route that re-read is the
+        only check, so it always reads the store. Re-entrant: an inner scope is the outer one.
+
+        The session state lives on the store object and is NOT thread-safe: one store, and so
+        one session, belongs to one thread of work (a command, or one hold of the binding's
+        lock). See :class:`~beadhive.modules.intake.contracts.ReportSession`."""
+        if self._session_rows is not None:
+            yield
+            return
+        self._session_rows = {}
+        try:
+            yield
+        finally:
+            self._session_rows = None
+
+    def _row(self, bead: str) -> dict | None:
+        """The bead's row: from the open session when it already read it, else one read (kept
+        by the session). Every caller gets its own copy."""
+        rows = self._session_rows
+        if rows is not None and bead in rows:
+            held = rows[bead]
+            return deepcopy(held) if held is not None else None
+        row = self._show(bead)
+        if rows is not None:
+            rows[bead] = deepcopy(row) if row is not None else None
+        return row
+
+    def _compare_and_set(self) -> bool:
+        """Is a document write here a compare-and-set against the row the caller read? Not on
+        the ``bd`` CLI: ``bd update --metadata`` overwrites whatever is stored, so the ``seq``
+        re-read is the only thing that refuses a document moved since it was read."""
+        return False
+
+    def _seq_row(self, bead: str) -> dict | None:
+        """The row a document write re-checks ``seq`` against. With compare-and-set the store
+        refuses a document that moved, so the open session's row (exactly what the next
+        compare-and-set expects) is enough. Without it the re-read IS the check: it always reads
+        the store, and the open session keeps that fresh row."""
+        if self._compare_and_set():
+            return self._row(bead)
+        row = self._show(bead)
+        if self._session_rows is not None:
+            self._session_rows[bead] = deepcopy(row) if row is not None else None
+        return row
+
+    def _wrote(self) -> None:
+        """A write other than a document: nothing the session read may be served again."""
+        if self._session_rows is not None:
+            self._session_rows.clear()
+
+    def _write_document(
+        self, bead: str, key: str, document: Any, *, row: dict, actor: str, operation: str
+    ) -> None:
+        """:meth:`_set_document`, then the session keeps ``row`` with ``document`` in place (the
+        next compare-and-set expects exactly it); a failed write drops the bead's row."""
+        try:
+            self._set_document(bead, key, document, row=row, actor=actor, operation=operation)
+        except BaseException:
+            if self._session_rows is not None:
+                self._session_rows.pop(bead, None)
+            raise
+        if self._session_rows is not None:
+            written = deepcopy(row)
+            metadata = written.get("metadata")
+            if isinstance(metadata, str):  # a row may carry its metadata as JSON text
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = None
+            if not isinstance(metadata, dict):
+                self._session_rows.pop(bead, None)  # nowhere to keep it: the next read reads it
+                return
+            metadata[key] = deepcopy(document)
+            written["metadata"] = metadata
+            self._session_rows[bead] = written
 
     # -- reads -------------------------------------------------------------------------------
 
@@ -173,7 +260,7 @@ class BdReportStore:
         return self._scope  # type: ignore[return-value]
 
     def get(self, bead: str) -> BeadView | None:
-        data = self._show(bead)
+        data = self._row(bead)
         return bead_view(data) if data is not None else None
 
     def find_by_external_ref(self, url: str) -> tuple[BeadView, ...]:
@@ -261,12 +348,12 @@ class BdReportStore:
 
     def read_thread(self, bead: str) -> Thread | None:
         """The bead's ``intake.thread`` (one ``bd show``); None for no bead or no document."""
-        row = self._show(bead)
+        row = self._row(bead)
         return self._thread(bead, row) if row is not None else None
 
     def read_outbox(self, bead: str) -> OutboxDocument | None:
         """The bead's ``intake.outbox`` (one ``bd show``); None for no bead or no document."""
-        row = self._show(bead)
+        row = self._row(bead)
         return self._outbox(bead, row) if row is not None else None
 
     def reports_with_outbox(self) -> tuple[BeadView, ...]:
@@ -285,7 +372,7 @@ class BdReportStore:
 
     def read_proposal(self, bead: str) -> Proposal | None:
         """The bead's ``intake.proposal`` (one ``bd show``); None for no bead or no document."""
-        row = self._show(bead)
+        row = self._row(bead)
         return self._proposal(bead, row) if row is not None else None
 
     def reports_with_proposal(self) -> tuple[BeadView, ...]:
@@ -299,6 +386,7 @@ class BdReportStore:
         report, the issue URL as ``external_ref`` plus the ``intake.source`` document, so the
         binding exists atomically with the bead. ``origin`` and ``intake`` are stamped by
         :meth:`set_state`, not here."""
+        self._wrote()
         binding = draft.binding
         metadata = None
         if binding is not None:
@@ -335,6 +423,7 @@ class BdReportStore:
         """One ``bd create`` of a plain work bead: the hive triplet labels, the type and the
         description (no ``external_ref``, no metadata, no hold, no ``origin`` or ``intake``
         state), then the priority when one is given. Born internal and dispatchable."""
+        self._wrote()
         result = self._routes.create_report(
             draft.title,
             draft.issue_type,
@@ -361,6 +450,7 @@ class BdReportStore:
         return str(created)
 
     def set_state(self, bead: str, dimension: str, value: str, *, reason: str, actor: str) -> None:
+        self._wrote()
         result = self._routes.issue_set_state(
             bead, f"{dimension}={value}", reason=reason, actor=actor, capture=True
         )
@@ -381,16 +471,17 @@ class BdReportStore:
 
     def record_snapshot(self, bead: str, snapshot: SourceSnapshot, *, actor: str) -> None:
         """Rewrite the whole ``intake.source`` document with ``snapshot``, keeping its binding."""
-        data = self._show(bead)
+        data = self._seq_row(bead)
         if data is None:
             raise IntakeStoreError(f"{bead} not found", bead=bead, operation="record_snapshot")
         document = current_source(data)
         document.update(source_document(None, snapshot))
-        self._set_document(
+        self._write_document(
             bead, SOURCE_KEY, document, row=data, actor=actor, operation="record_snapshot"
         )
 
     def update_fields(self, bead: str, *, issue_type: str, priority: str, actor: str) -> None:
+        self._wrote()
         if not (issue_type or priority):
             return
         result = self._routes.issue_update_fields(
@@ -407,6 +498,7 @@ class BdReportStore:
         refusal) and THEN resolves the hold, so the report is never open and unblocked (resolving
         first re-admits it to ``bd ready``; bh-6wj9y E4). A report with any other live blocker is
         refused, and a failure with no hold in play is the ordinary close failure."""
+        self._wrote()
         result = self._routes.issue_close(bead, reason=reason, actor=actor, capture=True)
         if not result.returncode:
             return
@@ -428,34 +520,41 @@ class BdReportStore:
             self.resolve_hold(gate, actor=actor)
 
     def open_hold(self, report: str, *, actor: str) -> None:
+        self._wrote()
         result = self._routes.gate_create(
             report, INTAKE_HOLD_GATE_TYPE, INTAKE_HOLD_REASON, actor=actor, capture=True
         )
         self._check(result, "open_hold", report, prefix="bd gate create failed: ")
 
     def resolve_hold(self, gate: str, *, actor: str) -> None:
+        self._wrote()
         result = self._routes.gate_resolve(gate, reason="report closed", actor=actor)
         self._check(result, "resolve_hold", gate, prefix="bd gate resolve failed: ")
 
     def assign(self, bead: str, seat: str, *, actor: str) -> None:
+        self._wrote()
         result = self._routes.issue_assign(bead, seat, actor=actor, capture=True)
         self._check(result, "assign", bead)
 
     def track(self, report: str, work: str, *, actor: str) -> None:
+        self._wrote()
         result = self._routes.dependency_add(report, work, "tracks", actor=actor)
         self._check(result, "track", report)
 
     def untrack(self, report: str, work: str, *, actor: str) -> None:
+        self._wrote()
         result = self._routes.dependency_remove(report, work, actor=actor)
         self._check(result, "untrack", report)
 
     def investigate(self, report: str, work: str, *, actor: str) -> None:
         """``bd dep add <work> <report> -t validates``: the opposite direction to ``tracks``, so
         the two never share a (source, target) pair and removing one never removes the other."""
+        self._wrote()
         result = self._routes.dependency_add(work, report, INVESTIGATES_EDGE, actor=actor)
         self._check(result, "investigate", report)
 
     def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
+        self._wrote()
         if work not in self.investigations_of(report):
             return  # bd removes a (source, target) pair whatever its type: never another edge
         result = self._routes.dependency_remove(work, report, actor=actor)
@@ -463,6 +562,7 @@ class BdReportStore:
 
     def relate(self, report: str, other: str, *, actor: str) -> None:
         """``bd dep add <report> <other> -t relates-to``, unless the pair is related either way."""
+        self._wrote()
         if other in self.related_reports(report):
             return
         result = self._routes.dependency_add(report, other, RELATES_EDGE, actor=actor)
@@ -473,7 +573,7 @@ class BdReportStore:
 
         The re-read is the record half of the ``IntakeLock`` (one host and one process are the
         lock's): a document that moved since the caller read it is refused, writing nothing."""
-        row = self._show(bead)
+        row = self._seq_row(bead)
         if row is None:
             raise IntakeStoreError(f"{bead} not found", bead=bead, operation="write_thread")
         stored = self._thread(bead, row)
@@ -493,7 +593,7 @@ class BdReportStore:
             raise IntakeStoreError(
                 f"{bead} is not bound to {thread.issue.url}", bead=bead, operation="write_thread"
             )
-        self._set_document(
+        self._write_document(
             bead,
             THREAD_KEY,
             thread_to_document(thread),
@@ -507,7 +607,7 @@ class BdReportStore:
     ) -> None:
         """Re-read the stored ``seq``, then rewrite ``intake.outbox`` whole in one ``bd update``
         (the record half of the ``IntakeLock``, exactly as :meth:`write_thread`)."""
-        row = self._show(bead)
+        row = self._seq_row(bead)
         if row is None:
             raise IntakeStoreError(f"{bead} not found", bead=bead, operation="write_outbox")
         stored = self._outbox(bead, row)
@@ -527,7 +627,7 @@ class BdReportStore:
             raise IntakeStoreError(
                 f"{bead} is not bound to an external issue", bead=bead, operation="write_outbox"
             )
-        self._set_document(
+        self._write_document(
             bead,
             OUTBOX_KEY,
             outbox_to_document(document),
@@ -540,7 +640,7 @@ class BdReportStore:
         """Re-read the stored ``seq``, then rewrite ``intake.proposal`` whole in one ``bd update``
         (exactly as :meth:`write_outbox`, on any report: native or bound). An applied proposal
         is immutable, so nothing is ever written over one."""
-        row = self._show(bead)
+        row = self._seq_row(bead)
         if row is None:
             raise IntakeStoreError(f"{bead} not found", bead=bead, operation="write_proposal")
         stored = self._proposal(bead, row)
@@ -560,7 +660,7 @@ class BdReportStore:
                 bead=bead,
                 operation="write_proposal",
             )
-        self._set_document(
+        self._write_document(
             bead,
             PROPOSAL_KEY,
             proposal_to_document(proposal),

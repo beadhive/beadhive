@@ -473,6 +473,27 @@ class BatchLock(Protocol):
 
 
 @runtime_checkable
+class ReportSession(Protocol):
+    """The optional unit-of-work scope of a :class:`ReportStore` (``bh-25fvb``).
+
+    Inside ``session()`` each report is read from the backing store at most once: the reads of
+    one unit of work that name the same report (its outbox, thread and view) share that one
+    read, and a document this store writes is kept as written. The ``seq`` re-read before a
+    document write shares it too, but ONLY where that write is a compare-and-set the store
+    itself enforces; where it is not (the ``bd`` CLI's overwrite), the re-read is the only check
+    and always reads the store. Any other write drops what the scope holds. Leaving the scope
+    drops it all, so nothing read in one unit of work is ever served to the next. Every write is
+    still its own write: the outbox and label services enter it once per hold of the binding's
+    lock, where the lock already makes them the report's only writer, so a send's write-ahead
+    and receipt and an approval's grant are each still written (and checked) on their own.
+
+    A session is state on the store object and is NOT thread-safe: one store, and so one open
+    session, belongs to one thread of work."""
+
+    def session(self) -> AbstractContextManager[None]: ...
+
+
+@runtime_checkable
 class OutboxView(Protocol):
     """The read-only view of the outbox own-message recognition needs (``bh-fptob`` R7, with
     ``bh-6wj9y``'s ``issued``). The outbox owns the records; the thread only reads them."""
