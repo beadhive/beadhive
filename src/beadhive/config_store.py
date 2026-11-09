@@ -70,13 +70,16 @@ PROCESS_LOAD_TTL_SECONDS = 30.0
 _clock: Callable[[], float] = time.monotonic
 _process_depth = 0
 _process_entry: tuple[tuple, float, str] | None = None  # (key, loaded at, effective JSON)
+#: The validated HOST document of the same scope, keyed by the file's signature (bh-25fvb): an
+#: intake host check read and re-validated it about 10 times (0.6 s). Handed out as a copy.
+_process_host: tuple[tuple, object] | None = None
 
 
 @contextmanager
 def process_load_memo() -> Iterator[None]:
     """Opt this invocation into one effective-config load (see :data:`PROCESS_LOAD_TTL_SECONDS`).
     Re-entrant; the memo is dropped when the outermost scope ends."""
-    global _process_depth, _process_entry
+    global _process_depth, _process_entry, _process_host
     with _load_cache_lock:
         _process_depth += 1
     try:
@@ -85,7 +88,7 @@ def process_load_memo() -> Iterator[None]:
         with _load_cache_lock:
             _process_depth -= 1
             if _process_depth <= 0:
-                _process_depth, _process_entry = 0, None
+                _process_depth, _process_entry, _process_host = 0, None, None
 
 
 def _memoized(key: tuple | None) -> str | None:
@@ -194,12 +197,35 @@ def load_raw_for_diagnostics(api):
 
 
 def load_host(api):
+    """The validated HOST document. Inside :func:`process_load_memo` a document already read and
+    validated is reused (a copy) while the file's signature still matches; outside it, and for
+    any other file, it is read afresh."""
+    signature = None
+    if hasattr(api, "config_path"):
+        try:
+            signature = _file_signature(api.config_path())
+        except OSError:
+            signature = None
+    with _load_cache_lock:
+        entry = _process_host if _process_depth > 0 else None
+    if signature is not None and entry is not None and entry[0] == signature:
+        return deepcopy(entry[1])
     try:
         document = load_host_raw_for_repair(api)
     except YAMLError:
         raise api.ConfigError("host configuration YAML syntax invalid") from None
     _validate_settings(api, document, scope="host")
+    _remember_host(signature, document)
     return document
+
+
+def _remember_host(signature: tuple | None, document) -> None:
+    global _process_host
+    if signature is None or signature[1:] == (None,):
+        return
+    with _load_cache_lock:
+        if _process_depth > 0:
+            _process_host = (signature, deepcopy(document))
 
 
 def load_fleet_raw_for_repair(api):
@@ -372,10 +398,10 @@ def _file_signature(path: Path) -> tuple:
 
 def clear_load_cache() -> None:
     """Invalidate the process-local effective-config memo after an in-process write."""
-    global _process_entry
+    global _process_entry, _process_host
     with _load_cache_lock:
         _load_cache.clear()
-        _process_entry = None
+        _process_entry = _process_host = None
     with _sql_effective_lock:
         _sql_effective.clear()
 

@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import tomllib
 import uuid
@@ -222,8 +223,42 @@ def _kind(path):
     raise SqlConfigError("unsupported configuration document path")
 
 
+#: The carriers already proven valid, by (storage version, ordered document digest): the checks are
+#: a pure function of those, and one intake host check re-qualified the same committed revision
+#: 14 times, about 2 s of YAML parsing (bh-25fvb). Only a success is kept (the precedent is
+#: ``validate_documents_memoized``, bh-931we); the reads, the digest, witness and floor checks
+#: around it still run on every call. Bounded, oldest first out.
+_VALID_CARRIERS: dict[tuple[object, str], None] = {}
+_VALID_CARRIERS_MAX = 16
+_valid_carriers_lock = threading.Lock()
+
+
 def _validate_carrier(documents, *, version=None):
     """Mandatory SQL carrier, partition and secret checks, including for repair."""
+    key = None
+    if (
+        isinstance(documents, tuple)
+        and documents
+        and all(
+            isinstance(d, FleetConfigDocument)
+            and isinstance(d.path, str)
+            and isinstance(d.content, str)
+            for d in documents
+        )
+    ):
+        key = (version, ordered_documents_digest(documents))
+        with _valid_carriers_lock:
+            if key in _VALID_CARRIERS:
+                return
+    _check_carrier(documents, version=version)
+    if key is not None:
+        with _valid_carriers_lock:
+            _VALID_CARRIERS[key] = None
+            while len(_VALID_CARRIERS) > _VALID_CARRIERS_MAX:
+                del _VALID_CARRIERS[next(iter(_VALID_CARRIERS))]
+
+
+def _check_carrier(documents, *, version=None):
     if not isinstance(documents, tuple) or not documents:
         raise SqlConfigError("ordered configuration documents required")
     seen = set()

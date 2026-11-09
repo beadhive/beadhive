@@ -251,3 +251,74 @@ def test_a_git_store_publish_is_seen_by_the_next_load(sql_loads, monkeypatch) ->
         assert store.publish_snapshot((), expected_revision="rev-1").commit_revision == "rev-2"
         config.load()
     assert len(sql_loads) == 2
+
+
+# -- the validated HOST document (bh-25fvb) ------------------------------------------------------
+
+
+@pytest.fixture
+def host_reads(home, monkeypatch):
+    """Count every read of the HOST file that ``config.load_host`` makes."""
+    calls: list[int] = []
+    real = config_store.load_host_raw_for_repair
+
+    def counted(api):
+        calls.append(1)
+        return real(api)
+
+    monkeypatch.setattr(config_store, "load_host_raw_for_repair", counted)
+    return calls
+
+
+def test_outside_the_scope_every_host_load_reads_the_file(host_reads) -> None:
+    for _ in range(3):
+        config.load_host()
+    assert len(host_reads) == 3
+
+
+def test_inside_the_scope_the_host_document_is_read_once_and_copied(host_reads) -> None:
+    with config.process_load_memo():
+        first = config.load_host()
+        first["providers"].append("mutated by a caller")
+        again = config.load_host()
+    assert len(host_reads) == 1
+    assert again["providers"] == ["github"]  # each caller gets its own copy
+
+
+def test_a_changed_host_file_is_read_again(host_reads, home) -> None:
+    with config.process_load_memo():
+        assert config.load_host()["providers"] == ["github"]
+        config.config_path().write_text("providers: [github, gitlab]\nmanaged_repos: []\n")
+        assert config.load_host()["providers"] == ["github", "gitlab"]
+        assert len(host_reads) == 2
+        config.load_host()
+        assert len(host_reads) == 2  # the new signature is the one remembered
+
+
+def test_a_replaced_host_file_is_read_again(host_reads, home, tmp_path) -> None:
+    with config.process_load_memo():
+        config.load_host()
+        replacement = tmp_path / "host.yaml"
+        replacement.write_text("providers: [github]\nmanaged_repos: []\n")  # same size, new inode
+        replacement.replace(config.config_path())
+        config.load_host()
+    assert len(host_reads) == 2
+
+
+def test_an_invalid_host_file_is_never_remembered(host_reads, home) -> None:
+    config.config_path().write_text("providers: [github\n")
+    with config.process_load_memo():
+        for _ in range(2):
+            with pytest.raises(config.ConfigError):
+                config.load_host()
+    assert len(host_reads) == 2
+
+
+def test_clear_load_cache_and_leaving_the_scope_drop_the_host_document(host_reads) -> None:
+    with config.process_load_memo():
+        config.load_host()
+        config_store.clear_load_cache()  # an in-process config write
+        config.load_host()
+    with config.process_load_memo():
+        config.load_host()
+    assert len(host_reads) == 3

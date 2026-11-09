@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -518,3 +519,73 @@ def test_trusted_mode_expiry_is_not_enforced(monkeypatch, capsys):
     assert doc["mode"] == "trusted"
     monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
     assert expiry.authority_status(plane)["mode"] == "signed"
+
+
+# -- the ambient warning's read (bh-25fvb): trusted skips it, otherwise once per 300 s -----------
+
+
+class _Monotonic:
+    def __init__(self) -> None:
+        self.now = 5000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def ambient(monkeypatch):
+    """A mocked monotonic clock and a counted ambient plane read (the frame's own plane)."""
+    clock = _Monotonic()
+    monkeypatch.setattr(expiry, "time", clock)
+    reads: list[int] = []
+
+    def frame_plane():
+        reads.append(1)
+        return FakeSql(NOW + 2 * 3600)  # inside the lead time: it would warn
+
+    monkeypatch.setattr(expiry, "_frame_plane", frame_plane)
+    return SimpleNamespace(clock=clock, reads=reads)
+
+
+def test_a_trusted_frame_never_reads_the_authority_to_warn(monkeypatch, ambient, capsys):
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "trusted")
+
+    def unread(*_a, **_k):
+        raise AssertionError("a trusted frame never warns, so it must not read the authority")
+
+    monkeypatch.setattr(expiry, "authority_status", unread)
+    assert expiry.warn_if_expiring() is None
+    assert expiry.warn_if_expiring(FakeSql(NOW + 3600)) is None  # an explicit plane too
+    assert ambient.reads == [] and capsys.readouterr().err == ""
+
+
+def test_the_ambient_warning_reads_at_most_once_per_recheck_window(monkeypatch, ambient, capsys):
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+    assert expiry.warn_if_expiring() is not None  # read, and warned once
+    assert expiry.warn_if_expiring() is None
+    ambient.clock.now += expiry.AMBIENT_RECHECK_SECONDS - 1
+    assert expiry.warn_if_expiring() is None
+    assert len(ambient.reads) == 1
+
+    ambient.clock.now += 1  # the window is over: read again (already warned: no second line)
+    assert expiry.warn_if_expiring() is None
+    assert len(ambient.reads) == 2
+    assert capsys.readouterr().err.count("WARN") == 1
+
+
+def test_an_explicit_plane_or_clock_is_never_throttled(monkeypatch, ambient):
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+    statuses: list[int] = []
+    real = expiry.authority_status
+
+    def counted(plane, **kwargs):
+        statuses.append(1)
+        return real(plane, **kwargs)
+
+    monkeypatch.setattr(expiry, "authority_status", counted)
+    expiry.warn_if_expiring()  # the ambient read starts its window
+    plane = FakeSql(NOW + 3 * 86400)
+    expiry.warn_if_expiring(plane)
+    expiry.warn_if_expiring(plane)
+    expiry.warn_if_expiring(now=NOW)
+    assert len(statuses) == 4 and len(ambient.reads) == 2  # `now=` alone still finds the plane
