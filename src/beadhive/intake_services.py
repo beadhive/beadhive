@@ -68,6 +68,8 @@ from .modules.intake import (
     ORIGIN_REPORT,
     REPORT_TYPES,
     ConsiderRequest,
+    DeliverySweep,
+    DeliverySweepRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     Disposition,
@@ -294,6 +296,21 @@ def sweep_holds(
     store; a hive that never imported a report has none and sweeps clean."""
     return service_for_directory(directory, entry=entry, cli_only=cli_only).sweep_holds(
         HoldSweepRequest(actor, repair)
+    )
+
+
+# -- the delivery a rejected report must not hold (bh-5kpwc) -----------------------------------
+
+
+def sweep_delivery(
+    directory, *, repair: bool = False, actor: str = "", entry=None, cli_only: bool = False
+) -> DeliverySweep:
+    """List the rejected (or duplicate-closed) reports of the store at ``directory`` that still
+    carry a ``delivery`` value and, with ``repair``, clear it. The listing is the dry run. Writes
+    only the bead store: ``bh work labels sync --include-closed`` then drafts the label removal on
+    the issue, and nothing is sent."""
+    return service_for_directory(directory, entry=entry, cli_only=cli_only).sweep_delivery(
+        DeliverySweepRequest(actor, repair)
     )
 
 
@@ -3718,6 +3735,7 @@ __all__ = [
     "queue_rows",
     "report_store",
     "reroute_to_hive",
+    "sweep_delivery",
     "sweep_holds",
     "service_for",
     "service_for_directory",

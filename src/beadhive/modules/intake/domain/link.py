@@ -174,15 +174,26 @@ def check_investigable(*, scope: StoreScope, report_id: str, report: BeadView | 
 
 
 def delivery_at_link(
-    labels: Iterable[str] | None, *, edge_written: bool, unlinked_work: str, work: str
+    labels: Iterable[str] | None,
+    *,
+    edge_written: bool,
+    unlinked_work: str,
+    work: str,
+    duplicate: bool = False,
 ) -> str | None:
     """The ``delivery`` value to write when linking to ``work``, or ``None`` to write nothing.
+
+    A ``duplicate`` link (a ``duplicate-of`` outcome, bh-5kpwc) writes nothing, ever: the report
+    shares its canonical's work but its delivery is the canonical report's. The caller clears a
+    value the report already carries.
 
     A new edge means the report now waits on ``work``: no value becomes ``pending``, ``pending``
     stays, and a milestone value (``merged``, ``released``, ``reverted``) belonged to the work the
     report tracked before, so it goes back to ``pending`` unless the report is being re-linked to
     that very work (``unlinked_work``, the fact an unlink left), which it still describes. An edge
     that already existed only repairs a missing value."""
+    if duplicate:
+        return None
     current = delivery_of(labels)
     if current is None:
         return "pending"

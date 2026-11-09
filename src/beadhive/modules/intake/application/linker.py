@@ -4,8 +4,10 @@ The operations behind ``bh work link`` and ``accept --work`` / ``--new-work``. A
 ``tracks`` a work bead through one ``tracks`` edge inside the operational store (never the public
 one, never another hive's), several reports to one work. Linking changes no readiness: the edge
 is non-blocking in bd, the report keeps its ``intake-hold:`` gate for life so it is never ready
-work, and the work bead is ordinary dispatchable work. A link writes ``delivery:pending``; an
-unlink cannot clear it (``bd set-state`` has no unset), so it keeps the value and records an
+work, and the work bead is ordinary dispatchable work. A link writes ``delivery:pending`` (a
+``duplicate`` link writes none: the report shares its canonical's work, and the delivery is the
+canonical report's, so an existing value is cleared); an unlink cannot clear it (``bd set-state``
+has no unset), so it keeps the value and records an
 ``unlinked`` fact in the report's ``intake.outbox`` document, where the other delivery facts live.
 
 A reproduction bead may also INVESTIGATE a report (bh-u3a53): its own edge, never ``tracks``, so
@@ -28,6 +30,8 @@ from ..domain import (
     DELIVERY_DIM,
     BeadView,
     DeliveryFacts,
+    DeliverySweep,
+    DeliverySweepRequest,
     IntakeRefused,
     IntakeStoreError,
     InvestigateOutcome,
@@ -46,6 +50,7 @@ from ..domain import (
     delivery_at_link,
     delivery_of,
     in_operational_store,
+    stray_deliveries,
     work_progress_of,
 )
 from .threads import binding_key
@@ -95,7 +100,8 @@ class LinkService:
 
     def link(self, request: LinkRequest) -> LinkOutcome:
         """Make ``request.report`` track ``request.work``; idempotent (an existing edge only
-        repairs a missing ``delivery`` value or a stale ``unlinked`` fact)."""
+        repairs a missing ``delivery`` value or a stale ``unlinked`` fact; a ``duplicate`` link
+        leaves no ``delivery`` value at all)."""
         report, kind, tracked = self.check(request)
         with self._held(report):
             doc = self._read_outbox(request.report)
@@ -111,6 +117,7 @@ class LinkService:
                 edge_written=kind is not LinkKind.ALREADY_LINKED,
                 unlinked_work=stale.work if stale is not None else "",
                 work=request.work,
+                duplicate=request.duplicate,
             )
             if value is not None:
                 try:
@@ -123,12 +130,22 @@ class LinkService:
                     )
                 except IntakeStoreError as exc:
                     raise _retag(exc, f"stamp:{DELIVERY_DIM}", request.report) from exc
+            elif request.duplicate and delivery_of(report.labels) is not None:
+                try:
+                    self._store.clear_state(
+                        request.report,
+                        DELIVERY_DIM,
+                        reason=f"duplicate: the report that tracks {request.work} owns it",
+                        actor=request.actor,
+                    )
+                except IntakeStoreError as exc:
+                    raise _retag(exc, f"clear:{DELIVERY_DIM}", request.report) from exc
         return LinkOutcome(
             kind,
             request.report,
             request.work,
             previous=tracked if kind is LinkKind.RELINKED else "",
-            delivery=value or delivery_of(report.labels) or "",
+            delivery="" if request.duplicate else value or delivery_of(report.labels) or "",
         )
 
     @staticmethod
@@ -167,6 +184,36 @@ class LinkService:
             except IntakeStoreError as exc:
                 raise _retag(exc, "untrack", report_id) from exc
         return LinkOutcome(LinkKind.UNLINKED, report_id, work, delivery=kept)
+
+    # -- the delivery a rejected report must not hold (bh-5kpwc) --------------------------------
+
+    def sweep_delivery(self, request: DeliverySweepRequest) -> DeliverySweep:
+        """List the rejected reports that still carry a ``delivery`` value (a ``duplicate-of``
+        linked before the fix wrote ``pending``); with ``request.repair`` also clear each one. The
+        listing is the dry run. Idempotent, and a clear that fails is reported, not raised, so one
+        bad report never hides the rest. The label projection is not run here: ``labels sync
+        --include-closed`` drafts the removal on the issue afterwards."""
+        findings = stray_deliveries(self._store.bound_reports())
+        if not request.repair:
+            return DeliverySweep(findings)
+        cleared, failed = [], []
+        for finding in findings:
+            report = self._store.get(finding.report)
+            try:
+                if report is None:
+                    continue
+                with self._held(report):
+                    self._store.clear_state(
+                        finding.report,
+                        DELIVERY_DIM,
+                        reason=f"rejected: delivery:{finding.delivery} is not its own",
+                        actor=request.actor,
+                    )
+            except IntakeStoreError as exc:
+                failed.append((finding, exc.detail))
+            else:
+                cleared.append(finding)
+        return DeliverySweep(findings, tuple(cleared), tuple(failed))
 
     # -- the unlinked fact ---------------------------------------------------------------------
 

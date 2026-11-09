@@ -9,9 +9,11 @@ re-run trigger never writes a second ``set-state`` (X2).
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import StrEnum
 
-from .vocabulary import INTAKE_DIMENSIONS, NOTIFIED_DIM, delivery_of
+from .models import BeadView
+from .vocabulary import INTAKE_DIMENSIONS, NOTIFIED_DIM, delivery_of, is_rejected
 
 
 class Verdict(StrEnum):
@@ -63,6 +65,56 @@ def notified_of(labels: Iterable[str] | None) -> str | None:
     return None
 
 
+def delivery_unowned(labels: Iterable[str] | None) -> bool:
+    """True when a report's delivery is not its own (bh-5kpwc): a ``reject`` (a ``duplicate-of``
+    ends in one too) fielded it, so no work is waited on, no milestone is drafted for it and no
+    ``delivery`` or ``progress`` label is projected. A duplicate's delivery is its canonical
+    report's, which already tracks the work."""
+    return is_rejected(labels)
+
+
+@dataclass(frozen=True)
+class StrayDelivery:
+    """One rejected report still carrying a ``delivery`` value (``delivery`` is that value)."""
+
+    report: str
+    delivery: str
+
+
+@dataclass(frozen=True)
+class DeliverySweepRequest:
+    """Sweep for stray deliveries. ``repair`` also clears each one (as ``actor``)."""
+
+    actor: str = ""
+    repair: bool = False
+
+
+@dataclass(frozen=True)
+class DeliverySweep:
+    """The reports a sweep found, the ones it cleared, and the clears that failed."""
+
+    findings: tuple[StrayDelivery, ...] = ()
+    cleared: tuple[StrayDelivery, ...] = ()
+    failed: tuple[tuple[StrayDelivery, str], ...] = ()
+
+    @property
+    def clean(self) -> bool:
+        return not self.findings
+
+
+def stray_deliveries(reports: Iterable[BeadView]) -> tuple[StrayDelivery, ...]:
+    """The bound reports (of any status) that were rejected, or closed as a duplicate, yet carry a
+    ``delivery`` value, in id order: what a ``duplicate-of`` link wrote before bh-5kpwc."""
+    found = (
+        StrayDelivery(view.id, value)
+        for view in reports
+        if view.binding is not None
+        and delivery_unowned(view.labels)
+        and (value := delivery_of(view.labels)) is not None
+    )
+    return tuple(sorted(found, key=lambda item: item.report))
+
+
 def delivery_after_merge(labels: Iterable[str] | None) -> str | None:
     """``pending`` or ``reverted`` move to ``merged`` when the tracked work merges; anything else
     (already ``merged``, ``released``, or never linked) writes nothing."""
@@ -99,11 +151,16 @@ def delivery_complete(policy: CompletionPolicy, delivery: str | None) -> bool:
 __all__ = [
     "NOTIFIED_BY_EVENT",
     "CompletionPolicy",
+    "DeliverySweep",
+    "DeliverySweepRequest",
+    "StrayDelivery",
     "Verdict",
     "completion_event",
     "delivery_after_merge",
     "delivery_after_release",
     "delivery_complete",
+    "delivery_unowned",
     "notification_behind",
     "notified_of",
+    "stray_deliveries",
 ]

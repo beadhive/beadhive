@@ -29,6 +29,8 @@ from ..domain import (
     CloseBackfill,
     CloseBackfillOutcome,
     ConsiderRequest,
+    DeliverySweep,
+    DeliverySweepRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     DispositionOutcome,
@@ -252,6 +254,13 @@ class IntakePort(Protocol):
 
     def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome: ...  # triage apply --reviewed
 
+    # the delivery a rejected report must not hold (bh-5kpwc): a duplicate-of linked before the fix
+    # carries ``delivery:pending``; the sweep lists those reports and, with ``repair``, clears it
+
+    def sweep_delivery(
+        self, request: DeliverySweepRequest
+    ) -> DeliverySweep: ...  # scripts/repair_duplicate_delivery.py
+
 
 @runtime_checkable
 class ReportStore(Protocol):
@@ -274,6 +283,15 @@ class ReportStore(Protocol):
     def set_state(
         self, bead: str, dimension: str, value: str, *, reason: str, actor: str
     ) -> None: ...
+
+    def clear_state(self, bead: str, dimension: str, *, reason: str, actor: str) -> None:
+        """Drop ``dimension``'s value from ``bead`` (a no-op when it has none).
+
+        ``bd set-state`` cannot clear a dimension, so this removes the ``<dimension>:<value>``
+        label cache entry directly: the bead's event history keeps the last value it set. Only for
+        a value that was never the bead's to hold (a duplicate's ``delivery``, bh-5kpwc); a
+        value that merely ended belongs to a replacing ``set_state`` or an ``unlinked`` fact."""
+        ...
 
     def record_snapshot(self, bead: str, snapshot: SourceSnapshot, *, actor: str) -> None: ...
 
