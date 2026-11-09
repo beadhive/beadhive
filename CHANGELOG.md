@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.4 (2026-11-09)
+
+### Fix
+
+- **beads-client**: accept any bd >=1.3.0,<2 instead of exactly 1.3.0
+
 ## v0.35.3 (2026-11-06)
 
 ### Fix
