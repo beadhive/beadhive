@@ -30,6 +30,42 @@ bh work labels sync --include-closed
 entry with `bd label remove`; the bead's event history keeps the old value. Nothing is sent to
 GitHub and no outbox record is written until an operator approves the label batch.
 
+## 0.35.4 → the next patch — reopen a GitHub issue whose close triage corrects (switch default off)
+
+0.35.3 closes the GitHub issue of a fixed, rejected or duplicate report, and a close that triage
+later corrects (the reporter answers on the closed issue, or an outcome that keeps the report
+tracked is applied to it) had no way back. This release adds the `issue.reopen` tracker operation
+behind `plugins.tracker-github.write.issue_reopen.enabled` (default `false`) and an `issue.reopen`
+operation kind in the outbox, each with its own digest, single-use grant and receipt. The PATCH
+carries only `state: open` and never the labels.
+
+With the switch on, only while the issue is closed on the tracker, and never sent without an
+operator: `bh work triage apply --reviewed` drafts a reopen (with a short reply that explains it)
+for an outcome that keeps the report tracked (`new`, `partially-fixed`, a `fixed` owned by work,
+`needs-info`), and `bh work wake` drafts one for a report whose reporter answered on a closed issue
+(its output names the record). Approve with `bh work outbox approve <id> --op reopen:<digest>` and
+send with `bh work outbox send <id> --kind reopen`. **A reopen goes before its reply**: the reply's
+comment is refused (`reopen_not_ready`, before any request) until the reopen is sent or discarded,
+and the reopen is refused while another record of the same issue still holds an unsent close.
+Per report the order, and the `send-approved` batch order, is reopen, comment, labels, close; if a
+batch refuses a reopen because an earlier close of that issue is unsent, run it again after that
+close went out.
+
+No CLI verb or option shape changes (the `--kind` help text lists `reopen`), so the wire release
+stays 2.24.0 and the intake outbox document keeps schema 1.
+
+**Rotation order (the 0.35.0 pattern).** The new key and the new operation kind both need every
+host first: an older host rejects the key (`extra=forbid`) and fails closed on an `intake.outbox`
+document holding an `issue.reopen` operation. So:
+
+1. Install the release on **every** host that reads the hive's outbox (any host that runs
+   `bh work outbox`, `bh work triage apply`, `bh work wake`, `bh doctor` or a merge / release hook
+   on that hive).
+2. Only then set `plugins.tracker-github.write.issue_reopen.enabled: true` in a shared config.
+
+With the key unset nothing is read, drafted, approved or sent for a reopen, and `wake` and `apply`
+behave exactly as before.
+
 ## 0.35.2 → 0.35.3 — close the GitHub issue after the reply and labels (switch default off)
 
 `bh work triage apply --reviewed` closed fixed, rejected and duplicate reports in beads but left

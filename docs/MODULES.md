@@ -679,6 +679,20 @@ every report closed in the store whose issue is still open, and drafts the reply
 got from its applied proposal (`ProposalService.backfill_reply`). Tests:
 `tests/unit/modules/intake/test_intake_outbox_close_sender.py`.
 
+The sender carries `issue.reopen` (`bh-ih484`) as a fourth gate, the inverse of a close that triage
+later corrects: `OutboxPolicy.reopen_enabled` is set from the bound adapter's own `issue.reopen`
+enable (`plugins.tracker-github.write.issue_reopen.enabled`; no separate intake key), and a reopen
+is refused with `REOPEN_DISABLED` otherwise. A reopen rides on a reply record (`ReplyDraft.reopen`,
+payload `state: open`), has its own digest, grant and receipt, and goes BEFORE the reply:
+`comment_blocker` refuses the record's comment (`REOPEN_NOT_READY`) until its reopen is settled,
+`reopen_blocker` refuses the reopen while another record of the same issue holds an unsent close,
+and `SEND_ORDER` is reopen, comment, labels, type, fields, close. `reconcile` reads the issue's
+state back (`open`). It is DRAFTED, never sent, by `OutboxService.draft_reopen` (a reply with a
+template text, only for an issue read as closed; `IntakeService.draft_reopen`) from two triggers:
+`ProposalService` for an apply plan that keeps the report tracked (`keeps_open`: accept or
+needs-info; a reject or reroute ends the thread) and `IntakeService.wake` for a woken report
+(`WakeOutcome.reopen`). Tests: `tests/unit/modules/intake/test_intake_outbox_reopen_sender.py`.
+
 A `duplicate-of` close names its canonical (`bh-iamru`). `ReplyDraft.duplicate_of` is the
 canonical REPORT (apply passes `share_with`, the backfill does the same); the sender resolves it
 to that report's bound issue (`CanonicalIssue`, only within the member's tracker project, else a
