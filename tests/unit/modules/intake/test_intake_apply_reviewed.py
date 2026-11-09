@@ -1157,6 +1157,33 @@ def test_with_the_outbox_off_a_duplicate_is_linked_and_rejected_as_before() -> N
     assert hive.proposal(member).status is ProposalStatus.APPLIED
 
 
+def _deliveries(hive: Hive, report: str) -> list[str]:
+    return [label for label in hive.store.get(report).labels if label.startswith("delivery:")]
+
+
+@pytest.mark.parametrize("outbox_on", [True, False])
+def test_a_duplicate_of_leaves_no_delivery_while_its_canonical_keeps_pending(outbox_on) -> None:
+    """bh-5kpwc: a duplicate shares its canonical's work but never its delivery."""
+    hive = Hive(outbox=CLOSING) if outbox_on else Hive(sender=False)
+    canonical, member = _family(hive)
+
+    assert item(hive.apply(), member).status is ApplyStatus.APPLIED
+
+    assert hive.store.tracked_work(member) == hive.store.tracked_work(canonical)
+    assert _deliveries(hive, member) == []  # no delivery:* on the duplicate
+    assert _deliveries(hive, canonical) == ["delivery:pending"]  # a tracks link is as before
+
+
+def test_a_duplicate_of_clears_a_delivery_the_report_already_carries() -> None:
+    hive = Hive(sender=False)
+    canonical, member = _family(hive)
+    hive.store.set_state(member, "delivery", "pending", reason="linked earlier", actor=TRIAGE)
+
+    assert item(hive.apply(), member).status is ApplyStatus.APPLIED
+
+    assert _deliveries(hive, member) == [] and _deliveries(hive, canonical) == ["delivery:pending"]
+
+
 def test_with_the_outbox_off_a_reject_fails_cleanly_with_nothing_written() -> None:
     hive = Hive(sender=False)
     report = hive.report("not a bug")

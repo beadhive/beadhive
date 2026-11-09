@@ -193,6 +193,13 @@ class FakeBd:
         )
         return ""
 
+    def _label(self, rest, stdin):
+        action, bead, label = rest[0], rest[1], rest[2]
+        assert action == "remove"
+        row = self._row(bead)
+        row["labels"] = [x for x in row["labels"] if x != label]
+        return ""
+
     def _update(self, rest, stdin):
         row, flags = self._row(rest[0]), self._flags(rest[1:])
         if "--type" in flags:
@@ -351,6 +358,48 @@ def test_a_bound_report_is_created_with_its_url_and_source_document_atomically()
     assert view is not None and view.binding == IssueBinding(
         bead, "memory", "acme/widgets", URL, "#7"
     )
+
+
+def test_clear_state_removes_the_dimensions_label_cache_and_only_that() -> None:
+    """bh-5kpwc: ``bd set-state`` cannot clear, so the store drops the ``<dimension>:<value>``
+    label with ``bd label remove``; a bead with no such value costs no write."""
+    store, bd = _store()
+    bead = store.create(draft(bound=True))
+    store.set_state(bead, "intake", "rejected", reason="r", actor="a")
+    store.set_state(bead, "delivery", "pending", reason="r", actor="a")
+    bd.calls.clear()
+
+    store.clear_state(bead, "delivery", reason="duplicate", actor="a/1")
+    store.clear_state(bead, "delivery", reason="again", actor="a/1")
+
+    assert [c["args"] for c in bd.calls if c["args"][0] == "label"] == [
+        ["label", "remove", bead, "delivery:pending"]
+    ]
+    assert [c["actor"] for c in bd.calls if c["args"][0] == "label"] == ["a/1"]
+    labels = store.get(bead).labels
+    assert "intake:rejected" in labels and not [x for x in labels if x.startswith("delivery:")]
+
+
+def test_clear_state_on_a_missing_bead_or_a_refused_removal_is_a_store_error() -> None:
+    store, bd = _store()
+    with pytest.raises(IntakeStoreError) as missing:
+        store.clear_state("acme-ghost", "delivery", reason="r", actor="a")
+    assert missing.value.operation == "clear_state"
+
+    bead = store.create(draft(bound=True))
+    store.set_state(bead, "delivery", "pending", reason="r", actor="a")
+    real = bd.run
+
+    def refuse_labels(args, cwd, actor="", capture=False, text_input=None, **kw):
+        if args[0] == "label":
+            return subprocess.CompletedProcess(args, 1, "", "Error: label store is down")
+        return real(args, cwd, actor, capture, text_input, **kw)
+
+    bd.run = refuse_labels
+    with pytest.raises(IntakeStoreError) as refused:
+        store.clear_state(bead, "delivery", reason="r", actor="a")
+    assert refused.value.operation == "clear_state"
+    assert "label store is down" in refused.value.detail
 
 
 def test_set_state_update_close_assign_and_tracks_run_the_legacy_argv() -> None:

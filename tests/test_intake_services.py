@@ -423,6 +423,15 @@ def test_the_root_sweeps_one_operational_store_with_two_reads_and_writes_nothing
     ]
 
 
+def test_the_root_sweeps_stray_deliveries_with_one_read_and_writes_nothing(wired) -> None:
+    fake = wired(FakeBd())
+
+    sweep = intake_services.sweep_delivery(CWD)
+
+    assert sweep.clean
+    assert fake.verbs() == ["list --all --limit 0 --has-metadata-key intake.source"]
+
+
 def test_a_hold_that_could_not_be_opened_names_the_report_and_where_to_look() -> None:
     from beadhive.modules.intake import IntakeStoreError
 
