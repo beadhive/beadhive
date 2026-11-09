@@ -573,7 +573,13 @@ Link (`bh-v2rr6`, I5) is `application/linker.py` (`LinkService`, behind `IntakeS
 `unlink`, `work_progress` and `dispose(accept)` with `work` / `new_work`): a bound report `tracks`
 a work bead of the same operational store (several reports to one work), decided by the pure rules
 in `domain/link.py` before any write; a bound report is never a target (D-a) and no edge crosses
-stores. A link writes `delivery:pending`; an unlink keeps the value (`bd set-state` cannot clear
+stores. A link writes `delivery:pending`, except a `duplicate-of` link (`LinkRequest.duplicate`,
+bh-5kpwc): the duplicate shares its canonical's work but its delivery is the canonical report's, so
+that link writes no value, clears one already there (`ReportStore.clear_state`, a raw label
+removal) and catches nothing up; no milestone trigger drafts for a rejected report, and the label
+projection emits no `bh:delivery/*` or `bh:progress/*` for one. `IntakeService.sweep_delivery`
+lists (and, with `repair`, clears) the rejected reports that still carry a value
+(`scripts/repair_duplicate_delivery.py`). An unlink keeps the value (`bd set-state` cannot clear
 one) and records an `unlinked` fact in the report's `intake.outbox` document. Work progress is
 derived on read from the tracked bead. `intake_services.link_report` / `accept_to_work` compose it
 under the root lock, off unless `intake.external.enabled` and without a tracker; `bh work link` and
