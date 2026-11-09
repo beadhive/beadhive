@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import host_daemon, intake_discovery, intake_services, registry
+from beadhive import host_daemon, intake_discovery, intake_services, registry, run
 from beadhive.intake_discovery import DiscoveryRefused, DiscoveryTimer, HiveRun, build_loop
 
 ON = {
@@ -101,6 +101,50 @@ def test_an_enabled_timer_is_built_from_the_chosen_settings() -> None:
     assert isinstance(built, DiscoveryTimer)
     assert (built.interval, built.full_reconcile_every) == (600.0, 3)
     assert built.ticks == 0  # building it runs nothing
+
+
+# -- the daemon never keeps a token (bh-25fvb) --
+
+CACHE_ON = {
+    **ON,
+    "plugins": {
+        "tracker-github": {
+            "enabled": True,
+            "read": {"issues": {"enabled": True}},
+            "credential": {"per_invocation_cache": True},
+        }
+    },
+}
+
+
+def test_the_daemon_timer_never_asks_for_the_token_cache_even_when_the_key_is_on(
+    monkeypatch,
+) -> None:
+    built_with: list[bool] = []
+
+    def recorder(environ=None, *, names=("env", "gh"), gh_auth_token=None, cache=False):
+        built_with.append(cache)
+        return lambda: pytest.fail("building the timer must not resolve a token")
+
+    monkeypatch.setattr(run, "github_token_source", recorder)
+
+    assert intake_services.process_adapters(CACHE_ON) is not None  # a one-shot command caches
+    assert isinstance(build_loop(CACHE_ON), DiscoveryTimer)
+    assert host_daemon._intake_discovery_loop(CACHE_ON) is not None
+
+    assert built_with == [True, False, False]
+
+
+def test_a_token_rotated_while_the_daemon_runs_is_seen_by_its_next_operation(monkeypatch) -> None:
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    answers = iter(["tok-1", "tok-2"])
+    monkeypatch.setattr(run, "_derive_gh_auth_token", lambda: next(answers))
+
+    adapters = intake_services.process_adapters(CACHE_ON, resident=True)
+    source = adapters._token_source
+
+    assert [source().value, source().value] == ["tok-1", "tok-2"]  # derived per operation
 
 
 # -- the schedule, on a mocked clock --

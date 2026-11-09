@@ -2887,6 +2887,17 @@ class TrackerGithubCredential(_QuietSection):
         "`gh`: the gh CLI). Empty means anonymous reads only.",
     )
 
+    per_invocation_cache: StrictBool = Field(
+        False,
+        description=(
+            "Keep the first token resolved in memory for the rest of ONE command, instead of "
+            "deriving it again for every GitHub operation (one `gh auth token` each). Opt-in, "
+            "default off: it is the one exception to the never-cached credential, never written "
+            "or logged, and a token rotated or revoked mid-command is not picked up until the "
+            "next command."
+        ),
+    )
+
     @field_validator("sources")
     @classmethod
     def _unique_sources(cls, value):

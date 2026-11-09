@@ -50,18 +50,22 @@ def _load_config() -> Mapping[str, Any]:
 
 
 def _build_adapters(cfg: Mapping[str, Any]):
-    """The ``TrackerAdapters`` a probe uses: the configured credential chain, nothing cached.
+    """The ``TrackerAdapters`` a probe uses: the configured credential chain (cached for the
+    command only with the opt-in ``credential.per_invocation_cache``).
 
     The one seam tests replace, so no test reads a real token or spawns ``gh auth token``."""
     from . import run
     from .bootstrap.tracker import TrackerAdapters, plugin_settings
 
     values = plugin_settings(PLUGIN_ID, cfg.get("plugins")).values
-    names = tuple(((values.get("credential") or {}).get("sources")) or ())
+    credential = values.get("credential") or {}
+    names = tuple(credential.get("sources") or ())
     return TrackerAdapters(
         plugins=cfg.get("plugins"),
         plugin_kernel=cfg.get("plugin_kernel"),
-        token_source=run.github_token_source(names=names),
+        token_source=run.github_token_source(
+            names=names, cache=credential.get("per_invocation_cache") is True
+        ),
     )
 
 

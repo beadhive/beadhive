@@ -4,6 +4,12 @@
       "additionalProperties": false,
       "description": "Where the ambient credential is looked up; names and precedence only, never a value.",
       "properties": {
+        "per_invocation_cache": {
+          "default": false,
+          "description": "Keep the first token resolved in memory for the rest of ONE command, instead of deriving it again for every GitHub operation (one `gh auth token` each). Opt-in, default off: it is the one exception to the never-cached credential, never written or logged, and a token rotated or revoked mid-command is not picked up until the next command.",
+          "title": "Per Invocation Cache",
+          "type": "boolean"
+        },
         "sources": {
           "description": "Credential source names in precedence order (`env`: GH_TOKEN/GITHUB_TOKEN; `gh`: the gh CLI). Empty means anonymous reads only.",
           "items": {

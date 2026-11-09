@@ -18,7 +18,7 @@ takes seconds:
   ratio (77 / 41 ms). It replaces the 150 ms the bh-pc9rf model ASSUMED; the factory's own
   service was not written to (its writes would be real bead history);
 * a GitHub request 0.35 s with a fresh client (the adapter opens one per operation), plus 0.07 s
-  of ``gh auth token`` per operation unless the opt-in per-command token cache keeps the first;
+  of ``gh auth token`` per operation unless the opt-in per-invocation token cache keeps the first;
   an ``issue.fields`` write is TWO requests (the org's field definitions, then the write);
 * the intake lock's host check and epoch read, now ONE evaluation (``guard.primary_epoch``),
   1.85 s per hold on the factory (13 s before): once per batch with the factory's opt-in
@@ -81,7 +81,7 @@ SCRATCH_READ, SCRATCH_WRITE = 0.041, 0.066  # measured on the disposable scratch
 STORE_WRITE = SCRATCH_WRITE * STORE_READ / SCRATCH_READ  # about 124 ms on the factory
 CLI_WRITE = 0.4  # a `bd set-state` subprocess (a CLI-only write)
 GITHUB_REQUEST = 0.35
-GITHUB_TOKEN = 0.07  # one `gh auth token`, per operation unless the per-command cache keeps it
+GITHUB_TOKEN = 0.07  # one `gh auth token`, per operation unless the per-invocation cache keeps it
 HOST_CHECK = 1.85
 PROCESS = 4.4
 REPORTS = 135

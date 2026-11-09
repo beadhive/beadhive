@@ -171,11 +171,14 @@ def bound_reader(cfg: Mapping[str, Any], entry: Mapping[str, Any]) -> Any:
     from .modules.tracker.contracts import Operation
 
     values = plugin_settings("tracker-github", cfg.get("plugins")).values
-    names = tuple(((values.get("credential") or {}).get("sources")) or ())
+    credential = values.get("credential") or {}
+    names = tuple(credential.get("sources") or ())
     adapters = TrackerAdapters(
         plugins=cfg.get("plugins"),
         plugin_kernel=cfg.get("plugin_kernel"),
-        token_source=run.github_token_source(names=names),
+        token_source=run.github_token_source(
+            names=names, cache=credential.get("per_invocation_cache") is True
+        ),
     )
     try:
         return adapters.for_store(entry, requested=frozenset({Operation.ISSUES_READ})).port

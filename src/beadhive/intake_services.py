@@ -374,7 +374,16 @@ def _credential_source_names(cfg: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(((values.get("credential") or {}).get("sources")) or ())
 
 
-def process_adapters(cfg: Mapping[str, Any]) -> Any:
+def _credential_cache(cfg: Mapping[str, Any]) -> bool:
+    """``plugins.tracker-github.credential.per_invocation_cache`` (opt-in, default off,
+    ``bh-25fvb``): keep the first token in memory for the rest of the command."""
+    from .bootstrap import tracker as tracker_root
+
+    values = tracker_root.plugin_settings(TRACKER_PLUGIN_ID, cfg.get("plugins")).values
+    return ((values.get("credential") or {}).get("per_invocation_cache")) is True
+
+
+def process_adapters(cfg: Mapping[str, Any], *, resident: bool = False) -> Any:
     """The process's ``TrackerAdapters`` for ``cfg``, or ``None`` unless the tracker is switched on.
 
     Two host-owned switches, both off by default, must both be ``true``: ``intake.external.enabled``
@@ -384,10 +393,15 @@ def process_adapters(cfg: Mapping[str, Any]) -> Any:
 
     Composition reads no credential: the token source is ``run.github_token_source()`` over the
     configured ``credential.sources`` (default env, then ``gh auth token``), called by the adapter
-    once per operation and never cached, logged or stored here. The result is built fresh per call
-    (nothing is cached at module level), so a command, or the daemon's timer, owns exactly one for
-    its configuration snapshot. This is the one place the production wiring lands; tests inject
-    ``adapters=`` or ``tracker=`` instead."""
+    once per operation and never cached, logged or stored here, unless the operator opted into
+    ``credential.per_invocation_cache`` (bh-25fvb), which keeps the first token in that source's
+    memory for the one command that built it. The result is built fresh per call (nothing is
+    cached at module level), so a command, or the daemon's timer, owns exactly one for its
+    configuration snapshot. *resident* is for a process that keeps the adapters for its whole
+    life (the host daemon's discovery timer): it never caches the token, whatever the key says,
+    so a token rotated or revoked while the daemon runs is picked up by its next operation. This
+    is the one place the production wiring lands; tests inject ``adapters=`` or ``tracker=``
+    instead."""
     if not external_intake_settings(cfg)[0] or not tracker_plugin_enabled(cfg):
         return None
     from . import run
@@ -396,7 +410,9 @@ def process_adapters(cfg: Mapping[str, Any]) -> Any:
     return TrackerAdapters(
         plugins=cfg.get("plugins"),
         plugin_kernel=cfg.get("plugin_kernel"),
-        token_source=run.github_token_source(names=_credential_source_names(cfg)),
+        token_source=run.github_token_source(
+            names=_credential_source_names(cfg), cache=not resident and _credential_cache(cfg)
+        ),
     )
 
 

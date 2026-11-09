@@ -180,7 +180,9 @@ def build_loop(
     if not settings.enabled:
         return None
     if adapters is None:
-        adapters = intake_services.process_adapters(cfg)
+        # The timer keeps these adapters for the daemon's whole life: never the per-command
+        # token cache, so a rotated or revoked token is seen by the next pass (bh-25fvb).
+        adapters = intake_services.process_adapters(cfg, resident=True)
     if adapters is None:
         raise DiscoveryRefused(
             "intake.external.discovery.enabled needs a wired tracker adapter: "

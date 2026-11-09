@@ -211,12 +211,20 @@ def test_the_probe_credential_chain_follows_the_configured_source_names(monkeypa
     seen: list[tuple[str, ...]] = []
     from beadhive import run
 
-    monkeypatch.setattr(run, "github_token_source", lambda names: seen.append(tuple(names)) or None)
+    cached: list[bool] = []
+
+    def source(names, cache=False):
+        seen.append(tuple(names))
+        cached.append(cache)
+
+    monkeypatch.setattr(run, "github_token_source", source)
     cfg = {"plugins": {"tracker-github": plugin(credential={"sources": ["env"]})}}
     assert isinstance(cli._build_adapters(cfg), TrackerAdapters)
-    cfg = {"plugins": {"tracker-github": plugin(credential={"sources": []})}}
+    credential = {"sources": [], "per_invocation_cache": True}
+    cfg = {"plugins": {"tracker-github": plugin(credential=credential)}}
     cli._build_adapters(cfg)
     assert seen == [("env",), ()]
+    assert cached == [False, True]  # the per-invocation cache is opt-in (bh-25fvb)
 
 
 def test_no_output_form_contains_a_planted_token(monkeypatch):

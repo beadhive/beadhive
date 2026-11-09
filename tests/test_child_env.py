@@ -575,6 +575,32 @@ def test_the_source_reads_its_environment_fresh_and_caches_nothing():
     assert source().value == "rotated"
 
 
+def test_the_opt_in_per_invocation_cache_derives_the_token_once_per_source():
+    derived: list[int] = []
+
+    def gh() -> str:
+        derived.append(1)
+        return f"tok-{len(derived)}"
+
+    source = run_mod.github_token_source({}, gh_auth_token=gh, cache=True)
+    first, second = source(), source()
+
+    assert (first.value, second.value, len(derived)) == ("tok-1", "tok-1", 1)
+    assert first.source == "gh-auth-token"
+    # a fresh source (the next command) derives afresh; the default caches nothing
+    assert run_mod.github_token_source({}, gh_auth_token=gh, cache=True)().value == "tok-2"
+    plain = run_mod.github_token_source({}, gh_auth_token=gh)
+    assert (plain().value, plain().value) == ("tok-3", "tok-4")
+
+
+def test_the_per_invocation_cache_keeps_no_failed_resolution():
+    answers = iter([None, "late"])
+    source = run_mod.github_token_source({}, gh_auth_token=lambda: next(answers), cache=True)
+
+    assert source() is None
+    assert source().value == "late"
+
+
 def test_a_resolved_token_discloses_provenance_but_never_the_value(monkeypatch, capsys, caplog):
     import logging
 
