@@ -22,8 +22,9 @@ What is composed here:
   :func:`accept_to_work`, over the same operational store and the root lock, off unless
   ``intake.external.enabled`` and with no tracker (a link reads and writes no tracker);
 * the supervised outbox sender (I9a): the root :class:`FlockIntakeLock` (``guard_primary`` for
-  one host, an ``fcntl.flock`` on a per-binding file in the hive's private ``.bh/`` state for one
-  process, ``guard.live_epoch`` as the epoch; the store's ``seq`` re-check is the record half; a
+  one host and ``guard.live_epoch`` as the epoch, both from ONE evaluation,
+  ``guard.primary_epoch``; an ``fcntl.flock`` on a per-binding file in the hive's private
+  ``.bh/`` state for one process; the store's ``seq`` re-check is the record half; a
   one-process batch reuses one host check and epoch read for at most
   ``intake.external.outbox.batch_recheck_seconds``, opt-in, default 0), a random
   :class:`RandomIdSource`, the outbox id index (:func:`outbox_index`, ``bh-pc9rf``), the
@@ -1002,20 +1003,29 @@ class FlockIntakeLock:
     13 s together, every hold) are taken on the first hold and reused by the holds that follow
     until they are ``recheck_seconds`` old, then taken again; every hold still takes its own
     flock. ``0`` re-checks on every hold, as outside a batch. ``clock`` is injectable (monotonic
-    seconds) so the bound is tested without waiting."""
+    seconds) so the bound is tested without waiting.
+
+    ``admit`` (production, ``bh-25fvb``) is the host check and the epoch read in ONE evaluation
+    (``guard.primary_epoch``): taken before the flock, as ``primary`` is, and its epoch yielded,
+    instead of evaluating the frame-eligibility reads twice. Without it ``primary()`` runs before
+    the flock and ``epoch()`` under it."""
 
     def __init__(
         self,
         lock_dir: Path | Callable[[], Path],
         *,
-        primary: Callable[[], None],
-        epoch: Callable[[], int],
+        primary: Callable[[], None] | None = None,
+        epoch: Callable[[], int] | None = None,
+        admit: Callable[[], int] | None = None,
         recheck_seconds: float = 0.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if admit is None and (primary is None or epoch is None):
+            raise TypeError("FlockIntakeLock needs admit, or both primary and epoch")
         self._lock_dir = lock_dir
         self._primary = primary
         self._epoch = epoch
+        self._admit = admit
         self._recheck = max(0.0, float(recheck_seconds))
         self._clock = clock
         self._batch_depth = 0
@@ -1049,7 +1059,12 @@ class FlockIntakeLock:
         reused = self._reused()
         taken = self._clock()
         if reused is None:
-            self._primary()
+            if self._admit is not None:
+                reused = self._admit()
+                if self._batch_depth:
+                    self._checked = (taken, reused)
+            else:
+                self._primary()  # type: ignore[misc]
         with self._path(binding_key).open("a+") as handle:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1060,7 +1075,7 @@ class FlockIntakeLock:
                 ) from None
             try:
                 if reused is None:
-                    reused = self._epoch()
+                    reused = self._epoch()  # type: ignore[misc]
                     if self._batch_depth:
                         self._checked = (taken, reused)
                 yield reused
@@ -1081,32 +1096,26 @@ class RandomIdSource:
         return mint_grant_id(self._entropy(16))
 
 
-def _primary_guard(
+def _admitted_epoch(
     cfg: Mapping[str, Any], hive: str, verb: str = "work outbox"
-) -> Callable[[], None]:
-    def check() -> None:
+) -> Callable[[], int]:
+    """The host check and the epoch read in one evaluation (``guard.primary_epoch``,
+    ``bh-25fvb``); a refusal (``guard_primary``'s ``typer.Exit``) is ``NOT_PRIMARY``."""
+
+    def admit() -> int:
         import typer
 
         from . import guard
 
         try:
-            guard.guard_primary(hive, cfg=cfg, verb=verb)
+            return int(guard.primary_epoch(hive, cfg=cfg, verb=verb))
         except typer.Exit as exc:
             raise IntakeRefused(
                 RefusalReason.NOT_PRIMARY,
                 f"this host is not the hive's primary writer; run `bh {verb}` on the primary",
             ) from exc
 
-    return check
-
-
-def _live_epoch(cfg: Mapping[str, Any], hive: str) -> Callable[[], int]:
-    def epoch() -> int:
-        from . import guard
-
-        return int(guard.live_epoch(hive, cfg=cfg))
-
-    return epoch
+    return admit
 
 
 def _intake_state_dir(directory, what: str, operation: str) -> Path:
@@ -1196,8 +1205,7 @@ def intake_lock(
     names the write verb in a primary-host refusal)."""
     return FlockIntakeLock(
         lambda: lock_dir(directory),
-        primary=_primary_guard(cfg, hive, verb),
-        epoch=_live_epoch(cfg, hive),
+        admit=_admitted_epoch(cfg, hive, verb),
         recheck_seconds=batch_recheck_seconds(cfg),
     )
 
