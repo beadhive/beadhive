@@ -476,3 +476,24 @@ def test_service_spec_separates_probe_and_write_deadlines() -> None:
     assert fields["write_seconds"].default >= 60.0
     assert fields["write_seconds"].default > fields["request_seconds"].default
     assert RemoteEndpoint("http://127.0.0.1:1").write_timeout_seconds >= 60.0
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ("1.3.0", True),
+        ("1.3.1", True),
+        ("1.9.4", True),
+        ("1.4.0-rc1", True),
+        ("1.2.9", False),
+        ("0.9.0", False),
+        ("2.0.0", False),
+        ("junk", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_bd_version_range_is_min_1_3_0_below_2(version: str | None, supported: bool) -> None:
+    from beadhive_beads_client.session import _bd_version_supported
+
+    assert _bd_version_supported(version) is supported

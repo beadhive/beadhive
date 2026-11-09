@@ -7,6 +7,7 @@ compatibility explicitly for operations whose HTTP semantics are not approved.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -91,6 +92,22 @@ def cli_compatibility_operations() -> frozenset[str]:
         for row in load_operation_matrix()["operations"]
         if row["classification"] in {"cli-compatibility", "administrative"}
     )
+
+
+#: Supported bd releases: at least this version, any later 1.x.y (major version is the cap).
+MIN_BD_VERSION = (1, 3, 0)
+MAX_BD_MAJOR = 1
+_BD_VERSION_CORE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
+
+
+def _bd_version_supported(version: str | None) -> bool:
+    """Whether ``version`` is ``>=1.3.0,<2``. Only the numeric ``major.minor.patch`` core is
+    compared (a ``-rc1``/``-dev`` suffix is ignored); an unparseable version is unsupported."""
+    match = _BD_VERSION_CORE.match(version or "")
+    if not match:
+        return False
+    core = tuple(int(g) for g in match.groups())
+    return core >= MIN_BD_VERSION and core[0] <= MAX_BD_MAJOR
 
 
 class IncompatibleService(RuntimeError):
@@ -282,8 +299,11 @@ class BeadsSession:
                 time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
     def _verify_context(self, context: ContextResponse) -> None:
-        if context.api_version != "v0" or context.bd_version != "1.3.0":
-            raise IncompatibleService("Beads API or release version differs from pinned v1.3.0")
+        if context.api_version != "v0" or not _bd_version_supported(context.bd_version):
+            raise IncompatibleService(
+                f"Beads API or release version unsupported (need API v0 and bd >=1.3.0,<2; "
+                f"got API {context.api_version!r}, bd {context.bd_version!r})"
+            )
         if (
             context.project_id != self.expected.project_id
             or context.database != self.expected.database

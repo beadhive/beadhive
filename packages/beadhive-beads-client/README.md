@@ -33,7 +33,7 @@ a bearer token unless it is explicitly loopback. A local endpoint starts
 The service has a bounded startup and request deadline.
 
 Startup probes `/healthz`, authenticates `/v0/beads/context`, compares the
-exact `v0` / `1.3.0` version and project/database identity, requires the
+`v0` API and a bd release in `>=1.3.0,<2` and project/database identity, requires the
 declared capabilities, stamps `Bd-Project-Id`, then queries ready work to
 prove database readiness. A wrong context fails before any work read.
 
