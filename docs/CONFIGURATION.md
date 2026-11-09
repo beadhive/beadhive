@@ -429,7 +429,7 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `write.label_definitions.enabled` | `false` | enable `labels.define`: create or update the repository's label definitions. Repository-scoped, necessary and never sufficient (each use needs an operator-approved single-use grant); new (bh-la587), see the rotation note below |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
 | `write.issue_close.enabled` | `false` | enable `issue.close`: close a bound issue with its reason (`completed`, `not_planned` or `duplicate`) as `PATCH /issues/{n}` with only `state` and `state_reason`, never the labels. Issue-scoped, necessary and never sufficient (each close needs its own operator-approved single-use grant). It is also the outbox's close gate: with it off no close is drafted, approved or sent (`close_disabled`); there is no separate intake key. New in 0.35.3 (bh-pr5ll), see the rotation note below |
-| `write.issue_reopen.enabled` | `false` | enable `issue.reopen`: reopen a closed bound issue, the inverse of `issue.close` for a close that triage later corrects, as `PATCH /issues/{n}` with only `state: open`, never the labels. Issue-scoped, necessary and never sufficient (each reopen needs its own operator-approved single-use grant; the close's grant never reopens). It is also the outbox's reopen gate: with it off no reopen is drafted, approved or sent (`reopen_disabled`); there is no separate intake key. New in the first patch after 0.35.4 (bh-ih484), see the rotation note below |
+| `write.issue_reopen.enabled` | `false` | enable `issue.reopen`: reopen a closed bound issue on the operator's say (`bh work outbox reopen`), the inverse of `issue.close`, as `PATCH /issues/{n}` with only `state: open`, never the labels. Issue-scoped, necessary and never sufficient (each reopen needs its own operator-approved single-use grant; the close's grant never reopens). It is also the outbox's reopen gate: with it off no reopen is drafted, approved or sent (`reopen_disabled`); there is no separate intake key. New in 0.35.5 (bh-ih484), see the rotation note below |
 | `write.issue_type.enabled` | `false` | enable `issue.type`: read each issue's type (`TrackerIssue.issue_type`; unread while off) and set it to a type the organization defines as `PATCH /issues/{n}` with only `type`, never the labels. Issue-scoped, necessary and never sufficient (each write needs its own operator-approved single-use grant). It is also the outbox's `issue.type` gate (`type_disabled`); there is no separate intake key. New in 0.35.3 (bh-poqy0), see the rotation note below |
 | `write.issue_fields.enabled` | `false` | enable `issue.fields`: read each issue's field values (`TrackerIssue.fields`; unread while off) and set named ones: one `GET /orgs/{org}/issue-fields` resolves the field id and checks the option, then `POST /issues/{n}/issue-field-values` adds only those values (every other field and the labels are kept). Needs the write role; a classic token needs `read:org`, and a fine-grained token or GitHub App needs the organization permission "Issue Fields" (read) for the field listing and the repository permission "Issues" (write) for the POST. Issue-scoped, necessary and never sufficient (each write needs its own grant). It is also the outbox's `issue.fields` gate (`fields_disabled`). New in 0.35.3 (bh-poqy0), see the rotation note below |
 
@@ -464,20 +464,28 @@ no other key; a canonical with no issue in the same repository closes as a plain
 GitHub's issue dependencies and sub-issues have no key: bh does not write them (no bead edge means
 the same thing).
 
-`write.issue_reopen.enabled` is new in the first patch release after 0.35.4 (bh-ih484), with the
-`issue.reopen` tracker operation and the outbox's `issue.reopen` operation kind, and follows the
+`write.issue_reopen.enabled` is new in 0.35.5 (bh-ih484), with the `issue.reopen` tracker operation,
+the outbox's `issue.reopen` operation kind and the `bh work outbox reopen` verb, and follows the
 same rotation order: an older host rejects the key and fails closed on an `intake.outbox` document
 holding a reopen, so **every host that reads the hive's outbox runs that release before the key is
-set**. A reopen rides on a reply that explains the correction and is sent **before** it: the
-reply's comment is refused (`reopen_not_ready`, before any request) until its reopen is sent or
-discarded, and the reopen itself is refused while another record of the same issue still holds an
-unsent close (send or discard that close first, or it would close the issue again). Per report the
-send order, and the `send-approved` batch order, is reopen, comment, labels, close. It is drafted
-(never sent) in two places, each only with the key on and only for an issue that is closed on the
-tracker: `bh work triage apply --reviewed` for an outcome that keeps the report tracked (accept,
-needs-info), and `bh work wake` for a report whose reporter answered on a closed issue (the wake's
-output names the drafted record). Approve it with `bh work outbox approve <id> --op reopen:<digest>`
-and send it with `bh work outbox send <id> --kind reopen`; the probe reports `issue.reopen` as `no`
+set**. A reopen is **only ever the operator's explicit act**: `bh work outbox reopen <report>
+[--text T | --reply-file F] [--dry-run] [--json]` drafts, for ONE report whose bound issue reads
+closed (closed by anyone), a reply carrying the reopen; `bh work triage apply` and `bh work wake`
+never draft one. With the key off it refuses (`reopen_disabled`); it also refuses an issue that is
+not closed (`reopen_not_needed`) and a second reopen while one is pending for the issue
+(`reopen_pending`: send it, or discard it, first). `--dry-run` makes every check and prints the
+planned reopen and reply, writing nothing. The reopen is sent **before** its reply: the reply's
+comment is refused (`reopen_not_ready`, before any request) until its reopen is sent or retired,
+and the reopen itself is refused while another record of the same issue still holds an unsent close
+(send or discard that close first, or it would close the issue again). Per report the send order,
+and the `send-approved` batch order, is reopen, comment, labels, close; **only `send-approved`
+guarantees that order across separate records** (a question drafted on its own for the still-closed
+issue is a separate record and is not held back by a pending reopen, so send the reopen first or
+use the batch). Discarding the reopen retires its reply with it, and so does closing the report
+afterwards (`reject`, `reroute`): a pending reopen of a closed report is superseded. Nothing is
+approved or sent by the verb: approve it with `bh work outbox approve <id> --op reopen:<digest>`
+(and `--op comment:<digest>`), send it with `bh work outbox send-approved` (or `bh work outbox send
+<id> --kind reopen`); the probe reports `issue.reopen` as `no`
 below the triage role. With the key unset nothing is read, drafted, approved or sent.
 
 `write.issue_type.enabled` and `write.issue_fields.enabled` are new in 0.35.3 (bh-poqy0), with the
