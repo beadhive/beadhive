@@ -6,7 +6,8 @@ pins the bead's acceptance: a reopen rides on the reply that explains a correcte
 gate (off by default), digest, single-use grant and receipt; it is sent BEFORE that reply (the reply
 is refused until it is sent or retired) and per report the batch order is reopen, comment, labels,
 close; an unsent close of the same issue holds the reopen back; an ambiguous reopen reconciles by
-reading the issue's state back; and ``draft_reopen`` drafts only for an issue that is closed.
+reading the issue's state back; and the operator's ``reopen`` verb drafts only for an issue that
+is closed, never twice for one issue, with a dry run, and a reopen is retired with its reply.
 
 Ordering is asserted on states, ``write_requests()`` and the world's issue state only. No clock, no
 sleep, no socket, and no real tracker: every write lands in the in-memory world.
@@ -20,6 +21,8 @@ from beadhive.modules.intake.application import IntakeService, OutboxService
 from beadhive.modules.intake.domain import (
     BatchSend,
     CloseReason,
+    Disposition,
+    DispositionRequest,
     GrantStatus,
     IntakeRefused,
     IssueBinding,
@@ -31,10 +34,12 @@ from beadhive.modules.intake.domain import (
     OutboxPolicy,
     OwnIdentity,
     RefusalReason,
+    ReopenRequest,
     ReplyDraft,
     ReportDraft,
     SourceSnapshot,
     StorePosture,
+    reopen_reply_text,
 )
 from beadhive.modules.intake.domain import outbox as machine
 from beadhive.modules.tracker.contracts import (
@@ -152,7 +157,7 @@ def test_the_reopen_gate_is_off_by_default_and_a_reply_is_then_drafted_without_a
     refused(RefusalReason.REOPEN_DISABLED, s.intake.send, oid, actor="alice", kind=R)
     approval = OutboxApprove(oid, "0" * 12, "alice", kind=R)
     refused(RefusalReason.REOPEN_DISABLED, s.intake.approve, approval)
-    assert s.service.draft_reopen(s.report, TEXT, "alice") is None  # nothing drafted, nothing read
+    refused(RefusalReason.REOPEN_DISABLED, s.intake.reopen, ReopenRequest(s.report, "alice"))
     assert s.world.write_requests() == 0 and s.state() is IssueState.CLOSED
 
 
@@ -233,14 +238,27 @@ def test_reopen_then_comment_each_with_its_receipt() -> None:
     assert s.op(oid, R).approval.grant is GrantStatus.CONSUMED
 
 
-def test_a_discarded_reopen_lets_the_reply_go_out_alone() -> None:
+def test_discarding_the_reopen_retires_the_reply_that_says_it_is_reopening() -> None:
     s = Scene()
     oid = s.reply()
     s.approve(oid, C)
-    refused(RefusalReason.REOPEN_NOT_READY, s.send, oid, C)
+    s.approve(oid, R)
+
     s.intake.discard(oid, reason="not wanted", actor="alice", kind=R)
-    assert s.send(oid, C).state is OpState.SENT
-    assert s.state() is IssueState.CLOSED and s.world.write_requests() == 1
+
+    assert s.op(oid, R).state is OpState.ABANDONED and s.op(oid, C).state is OpState.ABANDONED
+    assert s.op(oid, C).approval.grant is GrantStatus.VOIDED  # the reply's grant is not left usable
+    refused(RefusalReason.OUTBOX_TRANSITION, s.send, oid, C)
+    assert s.world.write_requests() == 0 and s.state() is IssueState.CLOSED
+
+
+def test_discarding_only_the_reply_leaves_the_reopen_pending() -> None:
+    s = Scene()
+    oid = s.reply()
+
+    s.intake.discard(oid, reason="wrong words", actor="alice", kind=C)
+
+    assert s.op(oid, C).state is OpState.ABANDONED and s.op(oid, R).state is OpState.DRAFTED
 
 
 def test_the_batch_sends_the_reopen_before_the_reply_that_explains_it() -> None:
@@ -325,26 +343,212 @@ def test_an_absent_reopen_counts_absences_from_complete_issue_reads() -> None:
     assert s.state() is IssueState.CLOSED and s.world.write_requests() == 1
 
 
-# -- draft_reopen --------------------------------------------------------------------------------
+# -- the operator's reopen verb -------------------------------------------------------------------
 
 
-def test_draft_reopen_drafts_only_for_a_closed_issue_and_only_once() -> None:
+def reopen(s: Scene, text: str = "", **kwargs):
+    return s.intake.reopen(ReopenRequest(kwargs.pop("report", s.report), "alice", text, **kwargs))
+
+
+def records_with_reopen(s: Scene, report: str | None = None):
+    doc = s.store.read_outbox(report or s.report)
+    return [] if doc is None else [r for r in doc.records.values() if r.op(R) is not None]
+
+
+def test_the_verb_drafts_the_reopen_and_its_reply_for_a_closed_issue_and_sends_nothing() -> None:
+    s = Scene()
+
+    outcome = reopen(s, TEXT)
+
+    assert not outcome.dry_run and outcome.text == TEXT and outcome.target_url == s.issue.url
+    assert outcome.payload == "state: open" and outcome.findings == ()
+    oid = outcome.result.outbox_id
+    assert s.op(oid, R).state is OpState.DRAFTED and s.op(oid, C).state is OpState.DRAFTED
+    assert s.intake.render(oid).of(C).payload.startswith(TEXT)
+    assert s.world.write_requests() == 0 and s.state() is IssueState.CLOSED  # nothing sent
+    assert s.op(oid, R).approval is None  # nothing approved
+
+
+def test_the_verb_uses_the_template_reply_when_given_no_text() -> None:
+    s = Scene()
+    outcome = reopen(s, "  ")
+    assert outcome.text == reopen_reply_text()
+    stored = s.store.read_outbox(s.report).records[outcome.result.outbox_id]
+    assert stored.message.text == outcome.text
+
+
+def test_the_verb_reopens_an_issue_closed_by_anyone_and_refuses_an_open_one() -> None:
+    s = Scene()  # the issue was closed in the world, not by this hive: the operator chose to
+    assert reopen(s, TEXT).result is not None
+    opened, _ = s.new_report("already open")
+    error = refused(RefusalReason.REOPEN_NOT_NEEDED, reopen, s, TEXT, report=opened)
+    assert "open" in error.detail and records_with_reopen(s, opened) == []
+
+
+def test_the_verb_needs_the_gate_the_outbox_and_a_bound_report() -> None:
+    off = Scene(policy=NO_REOPEN)
+    refused(RefusalReason.REOPEN_DISABLED, reopen, off, TEXT)
+    assert off.store.read_outbox(off.report) is None
+    disabled = Scene(policy=OutboxPolicy(reopen_enabled=True))
+    refused(RefusalReason.OUTBOX_DISABLED, reopen, disabled, TEXT)
+
+
+def test_a_pending_reopen_blocks_a_second_one_for_the_same_issue() -> None:
+    s = Scene()
+    first = reopen(s, TEXT).result.outbox_id
+
+    error = refused(RefusalReason.REOPEN_PENDING, reopen, s, TEXT + " More.")
+
+    assert first in error.detail
+    assert [r.outbox_id for r in records_with_reopen(s)] == [first]  # never two
+    refused(RefusalReason.REOPEN_PENDING, reopen, s, TEXT)  # nor the same text again
+    refused(RefusalReason.REOPEN_PENDING, reopen, s, TEXT, dry_run=True)  # the dry run says so too
+    assert len(records_with_reopen(s)) == 1
+
+
+def test_an_approved_or_unknown_reopen_is_still_pending() -> None:
+    s = Scene()
+    oid = reopen(s, TEXT).result.outbox_id
+    s.approve(oid, R)
+    refused(RefusalReason.REOPEN_PENDING, reopen, s, "other")
+    s.world.fail_next_write_ambiguously(applied=False)
+    assert s.send(oid, R).state is OpState.UNKNOWN
+    refused(RefusalReason.REOPEN_PENDING, reopen, s, "other")
+
+
+@pytest.mark.parametrize("how", ["sent", "discarded"])
+def test_a_settled_reopen_no_longer_blocks_a_new_one(how: str) -> None:
+    s = Scene()
+    oid = reopen(s, TEXT).result.outbox_id
+    if how == "sent":
+        s.approve(oid, R)
+        s.send(oid, R)
+        s.world.update_issue(s.issue, at=at(3), state=IssueState.CLOSED)  # closed again
+    else:
+        s.intake.discard(oid, reason="no", actor="alice", kind=R)
+
+    second = reopen(s, "A different reply.").result
+
+    assert second is not None and second.outbox_id != oid
+    assert len(records_with_reopen(s)) == 2
+    refused(RefusalReason.REOPEN_PENDING, reopen, s, "A third.")
+
+
+def test_the_same_text_as_a_sent_reopen_is_refused_rather_than_silently_reusing_it() -> None:
+    s = Scene()
+    oid = reopen(s, TEXT).result.outbox_id
+    s.approve(oid, R)
+    s.send(oid, R)
+    s.world.update_issue(s.issue, at=at(3), state=IssueState.CLOSED)
+
+    error = refused(RefusalReason.INVALID_DRAFT, reopen, s, TEXT)
+
+    assert oid in error.detail and len(records_with_reopen(s)) == 1
+
+
+def test_the_dry_run_plans_the_reopen_and_the_reply_and_writes_nothing() -> None:
+    s = Scene()
+
+    outcome = reopen(s, TEXT, dry_run=True)
+
+    assert outcome.dry_run and outcome.result is None
+    assert outcome.text == TEXT and outcome.payload == "state: open"
+    assert outcome.target_url == s.issue.url
+    assert s.store.read_outbox(s.report) is None  # no record, so no id was spent
+    assert s.world.write_requests() == 0 and s.state() is IssueState.CLOSED
+    assert reopen(s, TEXT).result is not None  # and the real run is not blocked by the dry one
+
+
+def test_the_dry_run_makes_the_same_refusals_and_names_a_leak() -> None:
     s = Scene()
     opened, _ = s.new_report("already open")
-    assert s.service.draft_reopen(opened, TEXT, "alice") is None  # open: nothing to reopen
-
-    drafted = s.service.draft_reopen(s.report, TEXT, "alice")
-    assert drafted is not None
-    assert s.op(drafted.outbox_id, R).state is OpState.DRAFTED
-    assert s.op(drafted.outbox_id, C).state is OpState.DRAFTED
-    again = s.service.draft_reopen(s.report, TEXT, "alice")  # O2: the same key, no second record
-    assert again is not None and again.outbox_id == drafted.outbox_id
-    assert s.world.write_requests() == 0  # drafted, never sent
+    refused(RefusalReason.REOPEN_NOT_NEEDED, reopen, s, TEXT, report=opened, dry_run=True)
+    refused(RefusalReason.REOPEN_DISABLED, reopen, Scene(policy=NO_REOPEN), TEXT, dry_run=True)
+    leaky = reopen(s, "see acme-1234 for the details", dry_run=True)
+    assert leaky.findings and s.store.read_outbox(s.report) is None
 
 
-def test_draft_reopen_leaves_a_leaky_reply_held_for_the_operator() -> None:
+def test_the_verb_leaves_a_leaky_reply_held_for_the_operator() -> None:
     s = Scene()
-    drafted = s.service.draft_reopen(s.report, "see acme-1234 for the details", "alice")
-    assert drafted is not None
-    assert s.op(drafted.outbox_id, C).state is OpState.HELD
-    assert s.op(drafted.outbox_id, R).state is OpState.DRAFTED
+    drafted = reopen(s, "see acme-1234 for the details")
+    assert drafted.findings
+    oid = drafted.result.outbox_id
+    assert s.op(oid, C).state is OpState.HELD
+    assert s.op(oid, R).state is OpState.DRAFTED
+
+
+def test_an_issue_that_cannot_be_read_is_not_reopened(monkeypatch) -> None:
+    s = Scene()
+    monkeypatch.setattr(s.service, "_read_issue", lambda binding: None)
+    refused(RefusalReason.REOPEN_NOT_NEEDED, reopen, s, TEXT)
+    assert s.store.read_outbox(s.report) is None
+
+
+# -- a report closed afterwards retires its pending reopen ----------------------------------------
+
+
+def test_a_report_closed_afterwards_retires_its_pending_reopen_and_reply() -> None:
+    s = Scene()
+    oid = reopen(s, TEXT).result.outbox_id
+    s.approve(oid, R)
+    s.approve(oid, C)
+
+    retired = s.service.retire_reopens(s.report, "report closed: rejected", "disp/claude")
+
+    assert retired == (oid,)
+    for kind in (R, C):
+        assert s.op(oid, kind).state is OpState.SUPERSEDED
+        assert s.op(oid, kind).approval.grant is GrantStatus.VOIDED
+    refused(RefusalReason.OUTBOX_TRANSITION, s.send, oid, R)
+    assert s.service.retire_reopens(s.report, "again", "disp/claude") == ()  # nothing pending
+    assert s.world.write_requests() == 0
+    assert reopen(s, "A new one is possible once it is retired.").result is not None
+
+
+def test_retiring_leaves_a_sent_reopen_and_other_records_alone() -> None:
+    s = Scene()
+    sent = reopen(s, TEXT).result.outbox_id
+    s.approve(sent, R)
+    s.send(sent, R)
+    plain = s.service.draft_reply(ReplyDraft(s.report, "an unrelated note", "alice")).outbox_id
+
+    assert s.service.retire_reopens(s.report, "closed", "disp/claude") == ()
+
+    assert s.op(sent, R).state is OpState.SENT and s.op(sent, C).state is OpState.DRAFTED
+    assert s.op(plain, C).state is OpState.DRAFTED
+
+
+def test_retiring_is_a_no_op_with_the_reopen_gate_off() -> None:
+    off = Scene(policy=NO_REOPEN)
+    assert off.service.retire_reopens(off.report, "closed", "disp/claude") == ()
+
+
+def test_rejecting_the_report_retires_its_pending_reopen() -> None:
+    s = Scene()
+    oid = reopen(s, TEXT).result.outbox_id
+    s.store.set_state(s.report, "intake", "untriaged", reason="imported", actor="dev/import")
+
+    s.intake.dispose(DispositionRequest(s.report, Disposition.REJECT, "disp/claude", reason="no"))
+
+    assert s.op(oid, R).state is OpState.SUPERSEDED and s.op(oid, C).state is OpState.SUPERSEDED
+
+
+# -- ordering across records ----------------------------------------------------------------------
+
+
+def test_only_send_approved_orders_separate_records_a_lone_question_is_not_held() -> None:
+    """A question drafted on its own for a still-closed issue is a separate record, so the
+    reopen's own-record blocker does not hold it: the operator orders separate records (or runs
+    ``send-approved``, which sends every reopen before every comment)."""
+    s = Scene()
+    reopening = reopen(s, TEXT).result.outbox_id
+    question = s.service.draft_reply(ReplyDraft(s.report, "Which version?", "alice")).outbox_id
+    s.approve(question, C)
+    s.approve(reopening, R)
+    s.approve(reopening, C)
+
+    assert s.send(question, C).state is OpState.SENT  # not refused: nothing ties it to the reopen
+    assert s.state() is IssueState.CLOSED
+
+    batch = s.intake.send_approved(BatchSend("alice"))
+    assert [r.kind for r in batch.results] == [R, C] and s.state() is IssueState.OPEN

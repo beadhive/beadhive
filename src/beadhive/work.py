@@ -662,6 +662,32 @@ def outbox_backfill_close_cmd(
     return work_intake.outbox_backfill_close(dry_run, as_, hive, as_json)
 
 
+def outbox_reopen_cmd(
+    bead: str = _BEAD,
+    text: str = typer.Option(
+        "", "--text", help="the reply that explains the reopen (default: a short template)"
+    ),
+    reply_file: str = typer.Option(
+        "", "--reply-file", help="read the reply text from this file (instead of --text)"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="make every check and show the planned reopen and reply; write nothing",
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = _JSON,
+):
+    """Draft the reopen of ONE report whose bound issue reads closed (closed by anyone), with the
+    reply that explains it. Nothing is approved or sent: review with `outbox show`, approve with
+    `outbox approve --op reopen:<digest> --op comment:<digest>`, then `outbox send-approved` (the
+    reopen goes before its reply; only that batch guarantees the order across records). Refused
+    when a reopen for the issue is already pending. Off unless `intake.external.outbox.enabled`
+    and the tracker plugin's `write.issue_reopen.enabled`."""
+    return work_intake.outbox_reopen(bead, text, reply_file, dry_run, as_, hive, as_json)
+
+
 def outbox_discard_cmd(
     outbox_id: str = _OUTBOX_ID,
     reason: str = typer.Option(..., "--reason", help="why the operation is abandoned"),
@@ -2340,6 +2366,7 @@ CLI_HANDLERS = {
     "work.outbox.discard": outbox_discard_cmd,
     "work.outbox.draft": outbox_draft_cmd,
     "work.outbox.reconcile": outbox_reconcile_cmd,
+    "work.outbox.reopen": outbox_reopen_cmd,
     "work.outbox.retry": outbox_retry_cmd,
     "work.outbox.send": outbox_send_cmd,
     "work.outbox.send-approved": outbox_send_approved_cmd,
@@ -2418,6 +2445,7 @@ outbox_backfill_close_cmd = _CLI_CALLBACKS["work.outbox.backfill-close"]
 outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]
 outbox_draft_cmd = _CLI_CALLBACKS["work.outbox.draft"]
 outbox_reconcile_cmd = _CLI_CALLBACKS["work.outbox.reconcile"]
+outbox_reopen_cmd = _CLI_CALLBACKS["work.outbox.reopen"]
 outbox_retry_cmd = _CLI_CALLBACKS["work.outbox.retry"]
 outbox_send_cmd = _CLI_CALLBACKS["work.outbox.send"]
 outbox_send_approved_cmd = _CLI_CALLBACKS["work.outbox.send-approved"]

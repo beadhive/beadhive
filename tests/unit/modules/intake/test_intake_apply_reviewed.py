@@ -74,7 +74,6 @@ from beadhive.modules.intake.domain import (
     WakeRequest,
     WorkDraft,
     mark_applied,
-    reopen_text,
     version_key,
 )
 from beadhive.modules.tracker.contracts import (
@@ -1329,109 +1328,18 @@ def test_a_run_that_mentions_nothing_never_lists_the_issues() -> None:
     assert hive.listings.calls == 0
 
 
-# -- a reversed outcome drafts the reopen (bh-ih484) ---------------------------------------------
-
-REOPENING = OutboxPolicy(enabled=True, labels_enabled=True, close_enabled=True, reopen_enabled=True)
+# -- no automatic reopen (bh-ih484): only the operator's `outbox reopen` drafts one ---------------
 
 
-def _closed_report(hive: Hive, title: str = "a hang") -> str:
-    """A bound report whose GitHub issue was closed (by a human, or an earlier close)."""
-    report = hive.report(title)
+def test_apply_never_drafts_a_reopen_even_for_a_closed_issue_with_the_gate_on() -> None:
+    hive = Hive(outbox=OutboxPolicy(enabled=True, close_enabled=True, reopen_enabled=True))
+    report = hive.report("a hang")
     hive.world.update_issue(hive.issues[report], at=at(2), state=IssueState.CLOSED)
-    return report
-
-
-def _reopens(hive: Hive, report: str):
-    return [r for r in hive.records(report) if r.op(OpKind.REOPEN) is not None]
-
-
-def test_an_outcome_that_keeps_a_closed_issue_tracked_drafts_the_reopen_first() -> None:
-    hive = Hive(outbox=REOPENING)
-    report = _closed_report(hive)
-    hive.propose(report, {"disposition": "new", "type": "bug", "priority": "2"})
-    hive.review(report, {"verdict": "confirmed"})
-
-    done = item(hive.apply(), report)
-
-    assert done.status is ApplyStatus.APPLIED and done.steps == (ApplyStep.ACCEPT_NEW_WORK,)
-    (record,) = _reopens(hive, report)
-    assert done.drafted == (record.outbox_id,)
-    assert record.event is OutboxEvent.REPLY and record.message.text == reopen_text()
-    assert [op.kind for op in record.operations] == [OpKind.COMMENT, OpKind.REOPEN]
-    assert all(op.state is OpState.DRAFTED for op in record.operations)  # drafted, never sent
-    assert hive.world.write_requests() == 0
-    assert hive.store.get(report).status != "closed"  # the report is accepted into the backlog
-
-
-def test_a_needs_info_question_on_a_closed_issue_reopens_it_first() -> None:
-    hive = Hive(outbox=REOPENING)
-    report = _closed_report(hive)
-    hive.reply(report, "It hangs on the second run.")
-    seq = hive.store.read_thread(report).seq
-    hive.propose(
-        report,
-        {"disposition": "needs-info", "reporter_text": "Which version is it?", "thread_seq": seq},
-    )
-    hive.review(report, {"verdict": "confirmed"})
-
-    done = item(hive.apply(), report)
-
-    assert done.status is ApplyStatus.APPLIED and done.steps == (ApplyStep.NEEDS_INFO,)
-    (reopen,) = _reopens(hive, report)
-    assert len(done.drafted) == 2 and done.drafted[0] == reopen.outbox_id  # reopen, then the ask
-    assert hive.world.write_requests() == 0
-
-
-def test_a_thread_ending_outcome_never_reopens_and_nor_does_an_open_issue() -> None:
-    hive = Hive(outbox=REOPENING)
-    rejected = _closed_report(hive, "not a bug")
-    hive.propose(rejected, {"disposition": "reject", "reporter_text": "Works as designed."})
-    hive.review(rejected, {"verdict": "confirmed"})
-    tracked = hive.report("an open one")  # its issue is open: nothing contradicts the outcome
-    hive.propose(tracked, {"disposition": "new", "type": "bug", "priority": "2"})
-    hive.review(tracked, {"verdict": "confirmed"})
-
-    outcome = hive.apply()
-
-    assert item(outcome, rejected).status is ApplyStatus.APPLIED
-    assert item(outcome, tracked).status is ApplyStatus.APPLIED
-    assert _reopens(hive, rejected) == [] and _reopens(hive, tracked) == []
-
-
-def test_with_the_reopen_gate_off_apply_drafts_no_reopen() -> None:
-    hive = Hive(outbox=CLOSING)  # close on, reopen off (the default)
-    report = _closed_report(hive)
     hive.propose(report, {"disposition": "new", "type": "bug", "priority": "2"})
     hive.review(report, {"verdict": "confirmed"})
 
     done = item(hive.apply(), report)
 
     assert done.status is ApplyStatus.APPLIED and done.drafted == ()
-    assert hive.records(report) == []
-
-
-def test_a_refused_reopen_draft_fails_the_item_before_any_verb_runs(monkeypatch) -> None:
-    hive = Hive(outbox=REOPENING)
-    report = _closed_report(hive)
-    hive.propose(report, {"disposition": "new", "type": "bug", "priority": "2"})
-    hive.review(report, {"verdict": "confirmed"})
-
-    def refuse(*_args):
-        raise IntakeRefused(RefusalReason.UNRESOLVED_FINDING, "the reply would leak")
-
-    monkeypatch.setattr(hive.sender, "draft_reopen", refuse)
-    failed = item(hive.apply(), report)
-
-    assert failed.status is ApplyStatus.FAILED and failed.steps == ()
-    assert "drafting the reopen failed" in failed.detail
-    assert INTAKE_UNTRIAGED in hive.store.get(report).labels  # nothing else ran
-    assert hive.proposal(report).status is not ProposalStatus.APPLIED
-
-
-def test_a_rerun_after_a_later_failure_drafts_the_reopen_once() -> None:
-    hive = Hive(outbox=REOPENING)
-    report = _closed_report(hive)
-    first = hive.sender.draft_reopen(report, reopen_text(), TRIAGE)
-    second = hive.sender.draft_reopen(report, reopen_text(), TRIAGE)  # O2: the same key
-    assert first is not None and second is not None and first.outbox_id == second.outbox_id
-    assert len(_reopens(hive, report)) == 1
+    assert not [r for r in hive.records(report) if r.op(OpKind.REOPEN) is not None]
+    assert hive.world.write_requests() == 0

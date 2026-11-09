@@ -61,7 +61,7 @@
       "id": "urn:beadhive:wire-catalog:cli-projections:1",
       "kind": "catalog",
       "path": "artifacts/cli-projections-v1.json",
-      "sha256": "sha256:2c2e36ec9fca4999ff42e73ffa2514ea166fc2f78a7ea4f4be3d1a91b5b77405",
+      "sha256": "sha256:32d252b4bffc81dae5c2ad6cccc1badb268b0c4326e0039eb621e82a2d4829fa",
       "source_owner": "beadhive.transport_inventory.document",
       "version": 2
     },
@@ -74,7 +74,7 @@
       "id": "urn:beadhive:wire-schema:config:1",
       "kind": "json-schema",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:f1a5d98a9227e63e4d2c15befe5fce798b575bf4967cb436aa48d41525f0b39c",
+      "sha256": "sha256:fd2bd74965b9ccce500720bc94fdda7f076dc9c20a8b2f001ef38549e1f8dbfe",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema",
       "version": 2
     },
@@ -152,7 +152,7 @@
       "id": "urn:beadhive:wire-catalog:operations:1",
       "kind": "catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:29aab9dac249055dad65108a5d331d02cdb45531ee3859ba0a6dc403af02cdd7",
+      "sha256": "sha256:ec1352e07d7c52bac3fe7e712a1a19360880cb4370eb6116738379618d76662a",
       "source_owner": "beadhive.kernel.operations.document",
       "version": 2
     },
@@ -243,7 +243,7 @@
       "id": "urn:beadhive:wire-schema:plugin-config:tracker-github:1",
       "kind": "json-schema",
       "path": "artifacts/plugin-config-tracker-github-v1.schema.json",
-      "sha256": "sha256:3be40dda362d25a379379f855a7dad9068fee6e9690363e3b4dd58fefe33bec2",
+      "sha256": "sha256:33d2bf3c13d345070e445685007badb69082e7c2fb8e03f4204896157a594c65",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
       "version": 2
     },

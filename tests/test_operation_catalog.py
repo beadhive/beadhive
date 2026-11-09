@@ -271,8 +271,8 @@ def test_every_projection_declares_granularity_progress_and_interactivity() -> N
     cli = _projected_cli()
     # + delivery blocked / deprioritised (bh-dev42), investigate (bh-u3a53), then the `labels`
     # and `triage` groups (bh-v3fe7), then `work outbox backfill-close` (bh-pr5ll) and
-    # `work outbox send-approved` (bh-pc9rf)
-    assert len(cli) == 294
+    # `work outbox send-approved` (bh-pc9rf), then `work outbox reopen` (bh-ih484)
+    assert len(cli) == 295
     assert {
         "hq beadyard",
         "hq beadyard-adopt",
@@ -624,7 +624,7 @@ def test_convention_8_scans_every_live_description_probe_and_test_filename() -> 
     scanned = {**cli_texts, **mcp_texts, **filename_texts}
 
     # Core catalog and package manifests are the two explicit CLI authorities.
-    assert len(cli_texts) == (294 - len(GROUP_DEFAULT_COMMANDS) + len(MANIFEST_CLI_COMMANDS)) * 2
+    assert len(cli_texts) == (295 - len(GROUP_DEFAULT_COMMANDS) + len(MANIFEST_CLI_COMMANDS)) * 2
     assert {"cli:host eligible:help", "cli:host eligible:docstring"} <= cli_texts.keys()
     assert mcp_counts == {"tools": 10, "resources": 21, "probes": 1}
     assert len(filename_texts) == len(test_files) > 0

@@ -15,7 +15,7 @@ Likewise an ``issue.type`` / ``issue.fields`` operation's ``values`` (and a rece
 0.35.3 fails closed on such a document too.
 
 An ``issue.reopen`` operation (``bh-ih484``) carries nothing but its kind and state, so only the
-kind tells it apart: a host older than 0.35.4 cannot decode it and fails closed on such a document
+kind tells it apart: a host older than 0.35.5 cannot decode it and fails closed on such a document
 (the same rotation order: every outbox-reading host upgrades before any hive turns reopens on).
 
 Decoding fails closed (:class:`OutboxDocumentError`) on a malformed document or one written by a

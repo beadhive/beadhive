@@ -253,22 +253,6 @@ def fixed_text(fixed_in: str | None) -> str:
     )
 
 
-def reopen_text() -> str:
-    """The reporter-visible reply a reopen rides on when triage reverses an outcome that left the
-    issue closed (``bh-ih484``): a template, never the report's own words."""
-    return (
-        "On a second look this needs more attention than closing it suggested, so we are "
-        "reopening this issue."
-    )
-
-
-def keeps_open(plan: ApplyPlan) -> bool:
-    """Whether ``plan`` leaves the report open and tracked (it accepts it, or asks its reporter),
-    so an issue still CLOSED on the tracker contradicts the outcome and gets a reopen. A reject or
-    a reroute ends the thread: the close is right."""
-    return ApplyStep.REJECT not in plan.steps and ApplyStep.REROUTE not in plan.steps
-
-
 def duplicate_text(canonical_ref: str) -> str:
     """The reporter-visible reason of a ``duplicate-of`` with no reporter text of its own."""
     where = canonical_ref or "an earlier report"
@@ -350,9 +334,7 @@ __all__ = [
     "close_reason_for",
     "duplicate_text",
     "fixed_text",
-    "keeps_open",
     "owner_of",
-    "reopen_text",
     "plan_apply",
     "verification_gap",
 ]

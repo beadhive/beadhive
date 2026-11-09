@@ -26,7 +26,7 @@ from typer.testing import CliRunner
 
 from beadhive import cli, intake_services, registry, work_intake
 from beadhive.modules.intake import OwnIdentity
-from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS
+from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS, IssueState
 from beadhive.testing.intake import FakeReleaseVerifier
 from beadhive.testing.tracker import MemoryTracker, at
 
@@ -74,7 +74,7 @@ def test_every_intake_verb_is_listed_and_has_help() -> None:
         assert verb in top.stdout
     assert "release" in bh("delivery", "--help").stdout
     outbox = bh("outbox", "--help").stdout
-    for verb in ("approve", "discard", "draft", "reconcile", "retry", "send", "show"):
+    for verb in ("approve", "discard", "draft", "reconcile", "reopen", "retry", "send", "show"):
         assert verb in outbox
         assert bh("outbox", verb, "--help").exit_code == 0
     for argv in (
@@ -445,7 +445,9 @@ def test_an_agent_seat_cannot_approve_or_send(rig, monkeypatch) -> None:
 # -- issue.close (bh-pr5ll): --op close, --kind close and backfill-close ---------------------------
 
 
-def _close_rig(rig, monkeypatch, *, close_enabled: bool) -> MemoryTracker:
+def _close_rig(
+    rig, monkeypatch, *, close_enabled: bool, reopen_enabled: bool = False
+) -> MemoryTracker:
     """The outbox on with a wired tracker whose binding does (or does not) enable issue.close."""
     switch(rig, OUTBOX_ON)
     tracker = MemoryTracker(rig.world, enabled=READ_OPERATIONS | WRITE_OPERATIONS)
@@ -463,6 +465,7 @@ def _close_rig(rig, monkeypatch, *, close_enabled: bool) -> MemoryTracker:
             "identity": ME,
             "marker_line": marker_line,
             "close_enabled": close_enabled,
+            "reopen_enabled": reopen_enabled,
         },
     )
     return tracker
@@ -621,3 +624,105 @@ def test_send_approved_names_a_bad_kind(rig, monkeypatch) -> None:
     result = bh("outbox", "send-approved", "--kind", "nope", "--hive", "widget", "--json")
 
     assert result.exit_code == 2 and doc(result)["reason"] == "bad_argument"
+
+
+# -- the operator's reopen (bh-ih484): outbox reopen ----------------------------------------------
+
+
+def _closed_report(rig) -> tuple[str, object]:
+    issue = rig.issue("A bug")
+    report = doc(bh("import", issue.url, "--hive", "widget", "--json"))["report"]
+    rig.world.update_issue(issue, at=at(2), state=IssueState.CLOSED)
+    return report, issue
+
+
+def test_the_reopen_verb_is_listed_with_help() -> None:
+    assert "reopen" in bh("outbox", "--help").stdout
+    usage = " ".join(bh("outbox", "reopen", "--help").stdout.split())
+    for text in ("--text", "--reply-file", "--dry-run", "write.issue_reopen.enabled"):
+        assert text in usage
+
+
+def test_the_reopen_verb_refuses_while_the_adapter_does_not_enable_issue_reopen(
+    rig, monkeypatch
+) -> None:
+    _close_rig(rig, monkeypatch, close_enabled=False)
+    report, _ = _closed_report(rig)
+
+    result = bh("outbox", "reopen", report, "--hive", "widget", "--as", OPERATOR, "--json")
+
+    assert result.exit_code == 1
+    assert (doc(result)["ok"], doc(result)["reason"]) == (False, "reopen_disabled")
+    assert "write.issue_reopen.enabled" in doc(result)["error"]
+    assert rig.world.write_requests() == 0
+
+
+def test_the_reopen_verb_dry_runs_drafts_and_the_reopen_then_goes_before_its_reply(
+    rig, monkeypatch, tmp_path
+) -> None:
+    _close_rig(rig, monkeypatch, close_enabled=False, reopen_enabled=True)
+    report, issue = _closed_report(rig)
+    common = ("--hive", "widget", "--as", OPERATOR)
+    reply = tmp_path / "reply.txt"
+    reply.write_text("We were wrong to close this, reopening.\n", encoding="utf-8")
+
+    planned = bh("outbox", "reopen", report, "--reply-file", str(reply), "--dry-run", *common)
+    assert planned.exit_code == 0 and "would draft issue.reopen" in planned.stdout
+    assert "reopen | state: open" in planned.stdout
+    assert "reply  | We were wrong to close this, reopening." in planned.stdout
+    assert "dry run: nothing was written" in planned.stdout
+    assert doc(bh("outbox", "show", "--hive", "widget", "--json"))["records"] == []  # no draft
+
+    drafted = bh("outbox", "reopen", report, "--reply-file", str(reply), *common, "--json")
+    payload = doc(drafted)
+    assert drafted.exit_code == 0 and payload["ok"] and payload["dry_run"] is False
+    assert payload["reopen"] == "state: open" and payload["target_url"] == issue.url
+    assert payload["reply_text"].strip() == "We were wrong to close this, reopening."
+    oid = payload["outbox_id"]
+    assert rig.world.write_requests() == 0  # drafted: nothing approved, nothing sent
+
+    again = bh("outbox", "reopen", report, "--text", "More.", *common, "--json")
+    assert again.exit_code == 1 and doc(again)["reason"] == "reopen_pending"  # never two
+    assert oid in doc(again)["error"]
+
+    renders = {
+        r["kind"]: r
+        for r in doc(bh("outbox", "show", oid, "--hive", "widget", "--json"))["renders"]
+    }
+    for kind, key in (("issue.reopen", "reopen"), ("comment.create", "comment")):
+        approved = bh(
+            "outbox", "approve", oid, "--op", f"{key}:{renders[kind]['short_digest']}", *common
+        )
+        assert approved.exit_code == 0
+    batch = doc(bh("outbox", "send-approved", *common, "--json"))
+    assert batch["ok"] and [r["kind"] for r in batch["results"]] == [
+        "issue.reopen",
+        "comment.create",
+    ]
+    assert rig.world.issues[issue.identifier].state.value == "open"
+    assert rig.world.write_requests() == 2  # the reopen, then its reply
+
+
+def test_the_reopen_verb_refuses_an_open_issue_and_both_text_sources(
+    rig, monkeypatch, tmp_path
+) -> None:
+    _close_rig(rig, monkeypatch, close_enabled=False, reopen_enabled=True)
+    opened = doc(bh("import", rig.issue("Open one").url, "--hive", "widget", "--json"))["report"]
+    common = ("--hive", "widget", "--as", OPERATOR, "--json")
+
+    open_issue = bh("outbox", "reopen", opened, *common)
+    assert open_issue.exit_code == 1 and doc(open_issue)["reason"] == "reopen_not_needed"
+
+    reply = tmp_path / "reply.txt"
+    reply.write_text("x", encoding="utf-8")
+    both = bh("outbox", "reopen", opened, "--text", "a", "--reply-file", str(reply), *common)
+    assert both.exit_code == 1 and doc(both)["reason"] == "invalid_request"
+    missing = bh("outbox", "reopen", opened, "--reply-file", str(tmp_path / "nope"), *common)
+    assert missing.exit_code == 1 and doc(missing)["reason"] == "invalid_request"
+    blank_text = bh("outbox", "reopen", opened, "--text", "  \n\t ", *common)
+    assert blank_text.exit_code == 1 and doc(blank_text)["reason"] == "invalid_request"
+    blank = tmp_path / "blank.txt"
+    blank.write_text(" \n\n", encoding="utf-8")
+    blank_file = bh("outbox", "reopen", opened, "--reply-file", str(blank), *common)
+    assert blank_file.exit_code == 1 and doc(blank_file)["reason"] == "invalid_request"
+    assert rig.world.write_requests() == 0

@@ -2987,9 +2987,9 @@ class TrackerGithubWrite(_QuietSection):
     )
     issue_reopen: TrackerGithubFlag = Field(
         default_factory=TrackerGithubFlag,
-        description="`issue.reopen`: reopen a closed issue that triage later corrects, never "
-        "touching its labels (default off; each use needs an operator-approved single-use "
-        "grant).",
+        description="`issue.reopen`: reopen a closed issue on the operator's say "
+        "(`bh work outbox reopen`), never touching its labels (default off; each use needs an "
+        "operator-approved single-use grant).",
     )
     issue_type: TrackerGithubFlag = Field(
         default_factory=TrackerGithubFlag,

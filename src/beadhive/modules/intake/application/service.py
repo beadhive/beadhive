@@ -96,6 +96,8 @@ from ..domain import (
     RefusalReason,
     ReleaseFact,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
     ReportDraft,
     ReportRelations,
@@ -122,7 +124,6 @@ from ..domain import (
     hold_findings,
     is_needs_info,
     may_disposition,
-    wake_reopen_text,
     wakes,
 )
 from .discovery import IssueDiscoverer
@@ -469,6 +470,19 @@ class IntakeService:
         """Close a fielded report. The reason is cut to what Beads stores: the full text is in
         the ``intake`` state change just written (and, for a reply, in the outbox)."""
         self._store.close(report, reason=close_reason(reason), actor=actor)
+        self._retire_reopens(report, reason, actor)
+
+    def _retire_reopens(self, report: str, reason: str, actor: str) -> None:
+        """A pending reopen (and the reply explaining it) of a report just closed is retired
+        (``bh-ih484``): the report ended, so nothing is to be reopened. Best effort and silent: the
+        close already stands, a store that cannot be written leaves the records for the operator
+        to discard, and with no outbox or the reopen gate off nothing is read."""
+        if self._outbox is None:
+            return
+        try:
+            self._outbox.retire_reopens(report, f"report closed: {reason}"[:200], actor)
+        except (IntakeRefused, IntakeStoreError):
+            pass
 
     def _reject(self, request: DispositionRequest) -> DispositionOutcome:
         state = self._clear_intake(request, f"rejected: {request.reason}")
@@ -685,33 +699,7 @@ class IntakeService:
             )
         except IntakeStoreError as exc:
             raise _retag(exc, "stamp:intake", view.id) from exc
-        reopen, detail = self._reopen_on_wake(view.id, actor)
-        return WakeOutcome(
-            view.id, woken=True, evidence=tuple(evidence), detail=detail, reopen=reopen
-        )
-
-    def _reopen_on_wake(self, report: str, actor: str) -> tuple[str, str]:
-        """``(outbox id, detail)`` of the reopen drafted when the reporter answered on a CLOSED
-        issue (``bh-ih484``); never sent, so it needs an operator's approval. Nothing is drafted
-        (``("", "")``) with the outbox or the reopen gate off, or an open or unreadable issue; a
-        refusal to draft is a detail and never fails the wake (the state write already stood)."""
-        if self._outbox is None:
-            return "", ""
-        try:
-            drafted = self._outbox.draft_reopen(report, wake_reopen_text(), actor)
-        except (IntakeRefused, IntakeStoreError) as exc:
-            why = (
-                exc.detail if isinstance(exc, IntakeStoreError) else exc.detail or exc.reason.value
-            )
-            return "", f"the reopen was not drafted: {why}"
-        return (drafted.outbox_id, "") if drafted is not None else ("", "")
-
-    def draft_reopen(self, report: str, text: str, actor: str) -> OutboxResult | None:
-        """The reopen draft of a close triage corrects (:meth:`OutboxService.draft_reopen`);
-        ``None`` when nothing is drafted, and always with no outbox bound."""
-        if self._outbox is None:
-            return None
-        return self._outbox.draft_reopen(report, text, actor)
+        return WakeOutcome(view.id, woken=True, evidence=tuple(evidence))
 
     # -- the lifetime intake-hold ------------------------------------------------------------
 
@@ -795,6 +783,9 @@ class IntakeService:
         return self._outbox_service().backfill_closes(
             request, reply_text=self._proposals.backfill_reply
         )
+
+    def reopen(self, request: ReopenRequest) -> ReopenOutcome:
+        return self._outbox_service().reopen(request)
 
     # -- the merge and release milestones (I10): they draft, they never send -----------------
 
@@ -1031,6 +1022,9 @@ class NullIntake:
         raise _disabled()
 
     def backfill_closes(self, request: CloseBackfill) -> CloseBackfillOutcome:
+        raise _disabled()
+
+    def reopen(self, request: ReopenRequest) -> ReopenOutcome:
         raise _disabled()
 
     def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome:

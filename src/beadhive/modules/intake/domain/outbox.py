@@ -26,13 +26,18 @@ labels, close. A ``duplicate`` close may name the canonical issue it duplicates
 (:class:`CanonicalIssue`, ``bh-iamru``): the canonical is part of the close's rendered bytes, so
 its digest, and so the operator's approval, covers it.
 
-**A reopen goes before its reply** (``bh-ih484``): an ``issue.reopen`` operation, the inverse of a
-close that triage later corrects (the reporter answered on a closed issue, or the outcome was
-reversed), rides on the reply that explains the correction. It has no payload beyond the state it
-sets, and the record's own comment is refused (``reopen_not_ready``) until it is ``sent`` or
-retired, so the reporter reads the reply on an open issue. The reopen itself is refused until no
-other record of the issue still holds an unsent close that would undo it. Send order per report:
-reopen, comment, labels, close.
+**A reopen goes before its reply** (``bh-ih484``): an ``issue.reopen`` operation, an operator's
+explicit correction of a close (``bh work outbox reopen``, never a trigger), rides on the reply
+that explains it. It has no payload beyond the state it sets, and the record's own comment is
+refused (``reopen_not_ready``) until it is ``sent`` or retired, so the reporter reads the reply on
+an open issue. Retiring the reopen (``discard``, or the report closing afterwards,
+:func:`retire_reopens`) retires that reply too, since its text says the issue is being reopened.
+The reopen itself is refused until no other record of the issue still holds an unsent close that
+would undo it, and at most ONE reopen is pending per issue (:func:`pending_reopen`). Send order
+per report: reopen, comment, labels, close. That order is guaranteed only by ``send-approved``
+(and, within one record, by the blockers): separate records of the issue are ordered by the
+operator sending them one by one, so a question drafted on its own for a still-closed issue is not
+held back by a pending reopen.
 
 **The issue's type and field values ride on the labels record** (``bh-poqy0``): the label
 projection drafts an ``issue.type`` and an ``issue.fields`` operation (each a :class:`ValueIntent`:
@@ -1125,6 +1130,16 @@ def reopen_blocker(doc: OutboxDocument, record: OutboxRecord) -> str:
     return ""
 
 
+def pending_reopen(doc: OutboxDocument, binding_url: str) -> OutboxRecord | None:
+    """The oldest record of ``binding_url``'s issue whose reopen is not settled (neither ``sent``
+    nor retired), or ``None``: a second reopen is never drafted beside it."""
+    for record in sorted(doc.records.values(), key=lambda r: r.created_seq):
+        op = record.op(OpKind.REOPEN)
+        if record.binding.url == binding_url and op is not None and op.state not in SETTLED:
+            return record
+    return None
+
+
 def comment_blocker(record: OutboxRecord) -> str:
     """Why ``record``'s comment may not be sent yet, or ``""`` when it may: a record that reopens
     the issue sends the reopen first (it is ``sent``, discarded or superseded), so the reporter
@@ -1132,8 +1147,8 @@ def comment_blocker(record: OutboxRecord) -> str:
     reopen = record.op(OpKind.REOPEN)
     if reopen is not None and reopen.state not in SETTLED:
         return (
-            f"{record.outbox_id} issue.reopen is {reopen.state.value}; send the reopen first, "
-            "or discard it to send the comment alone"
+            f"{record.outbox_id} issue.reopen is {reopen.state.value}; send the reopen first "
+            "(`outbox send --kind reopen`)"
         )
     return ""
 
@@ -1226,6 +1241,19 @@ def draft(
         raise IntakeRefused(RefusalReason.NOT_BOUND, "a born-native report has no target")
     key = DraftKey(binding.url, request.event, request.source_revision)
     existing = doc.by_key(key)
+    if request.reopen:
+        require_kind_enabled(OpKind.REOPEN, policy)
+        if (pending := pending_reopen(doc, binding.url)) is not None:  # never two (bh-ih484)
+            raise IntakeRefused(
+                RefusalReason.REOPEN_PENDING,
+                f"{pending.outbox_id} already holds an unsent issue.reopen for this issue; send "
+                "it, or discard it (`outbox discard`), before drafting another",
+            )
+        if existing is not None:  # the same reply is already drafted, with no reopen to reuse
+            raise IntakeRefused(
+                RefusalReason.INVALID_DRAFT,
+                f"{existing.outbox_id} already carries this reply text; reopen with other text",
+            )
     if existing is not None:  # O2: no write
         return OutboxApplied(doc, outbox_id=existing.outbox_id)
     if not is_outbox_id(outbox_id) or outbox_id in doc.records:
@@ -1288,7 +1316,6 @@ def draft(
             OutboxOperation(OpKind.CLOSE, close=reason, duplicate_of=request.duplicate_of)
         )
     if request.reopen:
-        require_kind_enabled(OpKind.REOPEN, policy)
         if not request.comment:
             raise IntakeRefused(
                 RefusalReason.INVALID_DRAFT, "a reopen rides on a record with a comment"
@@ -1605,6 +1632,21 @@ def invalidate(
 # -- O8, O18: discard ------------------------------------------------------------------------
 
 
+def _with_paired_comment(record: OutboxRecord, ops: list[OutboxOperation]) -> list[OutboxOperation]:
+    """``ops`` plus the record's own unsent comment when ``ops`` retires its reopen: the reply's
+    text says the issue is being reopened, so it must not go out alone. A comment already sent (or
+    retired) is left as it is."""
+    comment = record.op(OpKind.COMMENT)
+    if (
+        any(op.kind is OpKind.REOPEN for op in ops)
+        and comment is not None
+        and not comment.terminal
+        and all(op.kind is not OpKind.COMMENT for op in ops)
+    ):
+        return [*ops, comment]
+    return ops
+
+
 def discard(
     doc: OutboxDocument,
     outbox_id: str,
@@ -1628,6 +1670,7 @@ def discard(
     )
     if not ops:
         raise IntakeRefused(RefusalReason.OUTBOX_TRANSITION, f"{outbox_id} has nothing to discard")
+    ops = _with_paired_comment(record, ops)
     for op in ops:
         if op.state is OpState.UNKNOWN and not accept_unknown:
             raise IntakeRefused(
@@ -1658,6 +1701,42 @@ def discard(
             outcome_unknown=unknown,
         )
     return tx.done(outbox_id)
+
+
+def retire_reopens(doc: OutboxDocument, *, reason: str, actor: str) -> OutboxApplied:
+    """Retire every pending reopen of the document, and the unsent reply that explains it, when
+    its report is closed afterwards (``bh-ih484``: a report rejected or rerouted needs no reopen).
+    An unsent operation (``drafted``, ``held``, ``approved``) is ``superseded`` and a ``failed``
+    one ``abandoned``, any unused grant voided; one that is ``sending`` or ``unknown`` may already
+    have reached the issue and is left to reconcile. No operator seat is needed: it is the
+    report's own close that retires them, not an approval or a send. A document with no pending
+    reopen is unchanged (``changed`` is False)."""
+    tx = _Tx(doc)
+    for record in sorted(doc.records.values(), key=lambda r: r.created_seq):
+        reopen = record.op(OpKind.REOPEN)
+        if reopen is None or reopen.state in SETTLED:
+            continue
+        for kind in (OpKind.REOPEN, OpKind.COMMENT):
+            op = tx.records[record.outbox_id].op(kind)
+            if op is None:
+                continue
+            if op.state in _SUPERSEDABLE:
+                to, rule, event = OpState.SUPERSEDED, "O6", "supersede"
+            elif op.state is OpState.FAILED:
+                to, rule, event = OpState.ABANDONED, "O8", "discard"
+            else:
+                break  # sent, sending or unknown: never retire the reply ahead of its reopen
+            tx.move(
+                record.outbox_id,
+                kind,
+                to,
+                rule=rule,
+                event=event,
+                actor=actor,
+                detail=reason,
+                approvals=_void(op),
+            )
+    return tx.done()
 
 
 # -- O9 to O13: send -------------------------------------------------------------------------

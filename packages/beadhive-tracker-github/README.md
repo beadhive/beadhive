@@ -86,8 +86,8 @@ the `IssueResolver` grammar) and `settings` (the folded `plugins.tracker-github`
   or the issue itself, or with another reason, is refused before any request; one that is missing,
   a pull request, moved or unreadable is refused (`NotVisible`) with the grant kept. Issue
   dependencies and sub-issues are not written.
-* **`issue.reopen`** (`bh-ih484`), the inverse of `issue.close` for a close triage later corrects,
-  reopens one issue with `PATCH .../issues/{n}` carrying exactly `{"state": "open"}`; the payload
+* **`issue.reopen`** (`bh-ih484`), the inverse of `issue.close`, used on the operator's say
+  (`bh work outbox reopen`), reopens one issue with `PATCH .../issues/{n}` carrying exactly `{"state": "open"}`; the payload
   never carries `labels`. Refusal order, the single-use grant (a close's grant never reopens), the
   credential check, the never-retried ambiguous outcome and the probe (`no` below triage) are those
   of `issue.close`; it is behind its own switch, `write.issue_reopen.enabled` (default off).

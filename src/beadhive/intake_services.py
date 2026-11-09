@@ -120,6 +120,7 @@ from .modules.intake.domain import (  # the composition root may (gap G7)
     OutboxEvent,
     OutboxPolicy,
     ReleaseFact,
+    ReopenOutcome,
     StartFact,
     dupes_touching,
     mint_grant_id,
@@ -2230,6 +2231,31 @@ def outbox_backfill_close(
     )
 
 
+def outbox_reopen(
+    cfg,
+    entry,
+    directory,
+    report: str,
+    actor: str,
+    text: str = "",
+    dry_run: bool = False,
+    **kwargs,
+) -> OutboxCall:
+    """``bh work outbox reopen <report> [--text T] [--dry-run]``: draft the reopen of ONE report
+    whose bound issue reads closed, on the reply that explains it (``text``, or the template), and
+    never approve or send it (``bh-ih484``). ``dry_run`` makes every check and writes nothing. Off
+    unless the outbox is on and the tracker plugin's ``write.issue_reopen.enabled``."""
+    from .modules.intake.contracts import ReopenRequest
+
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.reopen(ReopenRequest(report, actor, text, dry_run=dry_run)),
+        **kwargs,
+    )
+
+
 def outbox_reconcile(cfg, entry, directory, outbox_id: str, actor: str, **kwargs) -> OutboxCall:
     """``bh work outbox reconcile [<id>]``: read the comment listing (or labels) back and settle
     an unknown outcome by its marker; never sends."""
@@ -3677,6 +3703,7 @@ __all__ = [
     "IntakeCall",
     "LabelsConfig",
     "LinkageLandedCommits",
+    "ReopenOutcome",
     "TriageChecks",
     "audit_path",
     "intake_message",

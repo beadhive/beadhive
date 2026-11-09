@@ -107,20 +107,22 @@ def test_a_composed_reopener_still_refuses_when_its_switch_is_off():
     assert world.requests == [] and resolved == []
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        None,
-        "g-1",
-        WriteGrant("g-c", Operation.ISSUE_CLOSE, IssueKey("#1", "x")),
-        WriteGrant("g-p", REOPEN, ProjectRef("github", "acme/widgets")),
-    ],
-    ids=["missing", "string", "the-closes-grant", "repository-scoped"],
-)
-def test_a_missing_or_mismatched_grant_refuses_before_any_request(bad):
+def _bad_grants(issue):
+    """Each grant a reopen must refuse. The close's grant is minted for THIS issue, so only its
+    operation is wrong: refusing it proves a close grant cannot reopen."""
+    return {
+        "missing": None,
+        "string": "g-1",
+        "the-closes-grant": WriteGrant("g-c", Operation.ISSUE_CLOSE, issue),
+        "repository-scoped": WriteGrant("g-p", REOPEN, ProjectRef("github", "acme/widgets")),
+    }
+
+
+@pytest.mark.parametrize("which", ["missing", "string", "the-closes-grant", "repository-scoped"])
+def test_a_missing_or_mismatched_grant_refuses_before_any_request(which):
     world, issue, adapter = setup()
     with pytest.raises(OperationNotEnabled):
-        adapter.reopen_issue(issue, grant=bad)
+        adapter.reopen_issue(issue, grant=_bad_grants(issue)[which])
     assert world.requests == []
 
 

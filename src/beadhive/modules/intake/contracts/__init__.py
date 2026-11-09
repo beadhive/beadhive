@@ -236,6 +236,8 @@ from ..domain import (  # noqa: E402
     OutboxQuery,
     OutboxResult,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
 )
 
@@ -253,6 +255,8 @@ __all__ += [
     "OutboxQuery",
     "OutboxResult",
     "RenderedRecord",
+    "ReopenOutcome",
+    "ReopenRequest",
     "ReplyDraft",
 ]
 

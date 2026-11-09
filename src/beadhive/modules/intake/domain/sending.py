@@ -10,6 +10,7 @@ library only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .outbox import CloseReason, OpKind, OpState, OutboxRecord, Rendered
 
@@ -171,6 +172,44 @@ class BatchSendOutcome:
         return not self.failed and not self.unsettled and not self.stopped
 
 
+def reopen_reply_text() -> str:
+    """The reply a reopen rides on when the operator gives no text of their own: a template that
+    says only what is being done, never the report's own words (``bh-ih484``)."""
+    return (
+        "On a second look this needs more attention than closing it suggested, so we are "
+        "reopening this issue."
+    )
+
+
+@dataclass(frozen=True)
+class ReopenRequest:
+    """``bh work outbox reopen`` (``bh-ih484``): the operator's explicit correction of a close, for
+    ONE report whose bound issue reads closed. ``text`` is the reply that explains it (empty: the
+    template :func:`reopen_reply_text`). ``dry_run`` plans and writes nothing."""
+
+    report: str
+    actor: str
+    text: str = ""
+    dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class ReopenOutcome:
+    """The reopen and reply planned (``dry_run``) or drafted: ``text`` is the reply as it will be
+    posted (before the marker line), ``target_url`` the issue and ``payload`` the exact write
+    (``state: open``). ``findings`` are the leak scan's over ``text`` (a blocking one holds the
+    reply for the operator, as for any reply); ``result`` is the drafted record, ``None`` on a
+    dry run. Nothing is approved or sent either way."""
+
+    report: str
+    text: str
+    target_url: str
+    payload: str
+    dry_run: bool = False
+    findings: tuple[Any, ...] = ()
+    result: OutboxResult | None = None
+
+
 @dataclass(frozen=True)
 class CloseBackfill:
     """Draft the missing closes (``bh-pr5ll``): for every report already closed in the store
@@ -229,5 +268,8 @@ __all__ = [
     "OutboxQuery",
     "OutboxResult",
     "RenderedRecord",
+    "ReopenOutcome",
+    "ReopenRequest",
     "ReplyDraft",
+    "reopen_reply_text",
 ]

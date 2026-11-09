@@ -58,6 +58,8 @@ class RefusalReason(StrEnum):
     CLOSE_NOT_READY = "close_not_ready"  # a close before its comment and the latest labels sent
     REOPEN_DISABLED = "reopen_disabled"  # the issue.reopen gate is off (the adapter's own flag)
     REOPEN_NOT_READY = "reopen_not_ready"  # a comment before its reopen, or a reopen before a close
+    REOPEN_PENDING = "reopen_pending"  # an unsent, unretired reopen already holds the issue
+    REOPEN_NOT_NEEDED = "reopen_not_needed"  # the issue is not closed (or cannot be read)
     TYPE_DISABLED = "type_disabled"  # the issue.type gate is off (the adapter's own flag)
     FIELDS_DISABLED = "fields_disabled"  # the issue.fields gate is off (the adapter's own flag)
     UNKNOWN_OUTBOX = "unknown_outbox"  # no record, or no such operation on it

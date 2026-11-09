@@ -383,8 +383,10 @@ from .outbox import (  # noqa: E402
     mint_grant_id,
     mint_outbox_id,
     outbox_view,
+    pending_reopen,
     reopen_blocker,
     reply_revision,
+    retire_reopens,
     values_payload,
 )
 from .outbox_document import (  # noqa: E402
@@ -470,8 +472,10 @@ __all__ += [
     "outbox_from_document",
     "outbox_to_document",
     "outbox_view",
+    "pending_reopen",
     "reopen_blocker",
     "reply_revision",
+    "retire_reopens",
     "stray_deliveries",
     "values_payload",
 ]
@@ -492,7 +496,10 @@ from .sending import (  # noqa: E402
     OutboxQuery,
     OutboxResult,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
+    reopen_reply_text,
 )
 
 __all__ += [
@@ -509,7 +516,10 @@ __all__ += [
     "OutboxQuery",
     "OutboxResult",
     "RenderedRecord",
+    "ReopenOutcome",
+    "ReopenRequest",
     "ReplyDraft",
+    "reopen_reply_text",
 ]
 
 # -- the merge and release milestones (I10): facts, policy and fixed public wording -----------
@@ -580,7 +590,6 @@ from .waiting import (  # noqa: E402
     WakeSweep,
     check_ask,
     check_wake,
-    wake_reopen_text,
     wakes,
 )
 
@@ -594,7 +603,6 @@ __all__ += [
     "WakeSweep",
     "check_ask",
     "check_wake",
-    "wake_reopen_text",
     "wakes",
 ]
 
@@ -887,10 +895,8 @@ from .triage import (  # noqa: E402
     close_reason_for,
     duplicate_text,
     fixed_text,
-    keeps_open,
     owner_of,
     plan_apply,
-    reopen_text,
     verification_gap,
 )
 
@@ -910,9 +916,7 @@ __all__ += [
     "close_reason_for",
     "duplicate_text",
     "fixed_text",
-    "keeps_open",
     "owner_of",
     "plan_apply",
-    "reopen_text",
     "verification_gap",
 ]
