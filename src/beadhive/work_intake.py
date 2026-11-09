@@ -1399,6 +1399,7 @@ def _wake_row(item) -> dict:
         "evidence": list(item.evidence),
         "detail": item.detail,
         "error": item.error,
+        "reopen": item.reopen,
     }
 
 
@@ -1406,10 +1407,18 @@ def _wake_line(item) -> str:
     if item.error:
         return f"⚠ {item.report}: FAILED: {item.error}"
     if item.woken:
-        return (
+        line = (
             f"✓ woke {item.report}: the reporter replied ({', '.join(item.evidence)}) → "
             "intake:untriaged (still held, never work; read it with `bh work thread show`)"
         )
+        if item.reopen:
+            line += (
+                f"\n  → its issue is closed: reopen drafted as {item.reopen}; nothing is sent "
+                f"(`bh work outbox show {item.reopen}`, then approve both kinds)"
+            )
+        elif item.detail:
+            line += f"\n  → {item.detail}"
+        return line
     return f"  {item.report} stays on intake:needs-info: {item.detail}"
 
 

@@ -284,6 +284,63 @@ def test_an_older_host_fails_closed_on_a_close_it_cannot_decode() -> None:
         outbox_from_document({**encoded, "records": {oid: unknown}})
 
 
+# -- issue.reopen (bh-ih484): a kind and a state, decoded strictly --------------------------------
+
+
+def _with_reopen() -> OutboxDocument:
+    oid = SequentialIdSource().outbox_id()
+    policy = OutboxPolicy(enabled=True, reopen_enabled=True)
+    request = DraftRequest(
+        B,
+        OutboxEvent.REPLY,
+        "rev",
+        "alice",
+        message=Message("reply", "We are reopening this."),
+        reopen=True,
+    )
+    return ob.draft(OutboxDocument(), request, outbox_id=oid, policy=policy, ctx=CTX).document
+
+
+def test_a_reopen_round_trips_beside_its_comment_and_adds_no_field() -> None:
+    doc = _with_reopen()
+    encoded = outbox_to_document(doc)
+    (record,) = encoded["records"].values()
+    comment, reopen = record["operations"]
+    assert comment["kind"] == "comment.create" and reopen["kind"] == "issue.reopen"
+    assert "close" not in reopen and "values" not in reopen and "duplicate_of" not in reopen
+    assert outbox_from_document(json.loads(json.dumps(encoded))) == doc
+    assert ob.render(next(iter(doc.records.values())), OpKind.REOPEN, CTX).payload == "state: open"
+
+
+def test_a_reopen_without_its_comment_is_refused() -> None:
+    encoded = outbox_to_document(_with_reopen())
+    ((oid, record),) = encoded["records"].items()
+    _comment, reopen = record["operations"]
+    with pytest.raises(OutboxDocumentError, match="reopen"):
+        outbox_from_document({**encoded, "records": {oid: {**record, "operations": [reopen]}}})
+
+
+def test_the_reopen_has_its_own_digest_and_the_gate_refuses_a_draft_while_off() -> None:
+    doc = _with_reopen()
+    record = next(iter(doc.records.values()))
+    assert (
+        ob.render(record, OpKind.REOPEN, CTX).digest
+        != ob.render(record, OpKind.COMMENT, CTX).digest
+    )
+    request = DraftRequest(
+        B, OutboxEvent.REPLY, "rev2", "alice", message=Message("reply", "x"), reopen=True
+    )
+    with pytest.raises(IntakeRefused) as caught:
+        ob.draft(
+            OutboxDocument(),
+            request,
+            outbox_id=SequentialIdSource().outbox_id(),
+            policy=ON,  # the reopen gate is off by default
+            ctx=CTX,
+        )
+    assert caught.value.reason is RefusalReason.REOPEN_DISABLED
+
+
 # -- a duplicate's canonical (bh-iamru): written only when present, digested, decoded strictly ---
 
 CANONICAL = CanonicalIssue("#1", "https://github.com/acme/widgets/issues/1")

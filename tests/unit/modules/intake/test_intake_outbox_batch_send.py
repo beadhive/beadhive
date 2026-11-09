@@ -228,9 +228,10 @@ def refused(expected: RefusalReason, call, /, *args, **kwargs) -> IntakeRefused:
 
 
 def test_every_operation_kind_has_its_place_in_the_send_order() -> None:
-    """A kind missing from SEND_ORDER would never be sent by a batch: place it, close last."""
+    """A kind missing from SEND_ORDER would never be sent by a batch: the reopen goes first (it
+    precedes the reply that explains it), the comments next, the close last."""
     assert sorted(SEND_ORDER) == sorted(OpKind) and len(set(SEND_ORDER)) == len(SEND_ORDER)
-    assert SEND_ORDER[0] is C and SEND_ORDER[-1] is X
+    assert SEND_ORDER[:2] == (OpKind.REOPEN, C) and SEND_ORDER[-1] is X
 
 
 def test_every_approved_op_goes_in_one_batch_comment_then_labels_then_close() -> None:

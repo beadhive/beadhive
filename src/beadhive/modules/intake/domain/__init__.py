@@ -376,12 +376,14 @@ from .outbox import (  # noqa: E402
     UnlinkedFact,
     ValueIntent,
     close_blocker,
+    comment_blocker,
     is_grant_id,
     is_operator_seat,
     is_outbox_id,
     mint_grant_id,
     mint_outbox_id,
     outbox_view,
+    reopen_blocker,
     reply_revision,
     values_payload,
 )
@@ -451,6 +453,7 @@ __all__ += [
     "ValueIntent",
     "Verdict",
     "close_blocker",
+    "comment_blocker",
     "completion_event",
     "delivery_after_merge",
     "delivery_after_release",
@@ -467,6 +470,7 @@ __all__ += [
     "outbox_from_document",
     "outbox_to_document",
     "outbox_view",
+    "reopen_blocker",
     "reply_revision",
     "stray_deliveries",
     "values_payload",
@@ -576,6 +580,7 @@ from .waiting import (  # noqa: E402
     WakeSweep,
     check_ask,
     check_wake,
+    wake_reopen_text,
     wakes,
 )
 
@@ -589,6 +594,7 @@ __all__ += [
     "WakeSweep",
     "check_ask",
     "check_wake",
+    "wake_reopen_text",
     "wakes",
 ]
 
@@ -881,8 +887,10 @@ from .triage import (  # noqa: E402
     close_reason_for,
     duplicate_text,
     fixed_text,
+    keeps_open,
     owner_of,
     plan_apply,
+    reopen_text,
     verification_gap,
 )
 
@@ -902,7 +910,9 @@ __all__ += [
     "close_reason_for",
     "duplicate_text",
     "fixed_text",
+    "keeps_open",
     "owner_of",
     "plan_apply",
+    "reopen_text",
     "verification_gap",
 ]

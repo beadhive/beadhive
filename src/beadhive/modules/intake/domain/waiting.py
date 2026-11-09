@@ -73,17 +73,29 @@ class WakeRequest:
     actor: str
 
 
+def wake_reopen_text() -> str:
+    """The reporter-visible reply a reopen rides on when a reporter answers on a closed issue
+    (``bh-ih484``): a template, never the reporter's words."""
+    return (
+        "Thanks for the follow-up. This issue was closed, so we are reopening it to take another "
+        "look at what you added."
+    )
+
+
 @dataclass(frozen=True)
 class WakeOutcome:
     """What one wake did. ``woken`` is True when the report moved back to ``intake:untriaged``;
     ``evidence`` names the comments that woke it (or would have); ``detail`` says why it was left
-    waiting; ``error`` is a sweep's per-report failure (the sweep moved on)."""
+    waiting; ``error`` is a sweep's per-report failure (the sweep moved on); ``reopen`` is the
+    outbox record drafted (never sent) to reopen the report's issue, when the reporter answered on
+    one that is closed (``bh-ih484``)."""
 
     report: str
     woken: bool = False
     evidence: tuple[str, ...] = ()
     detail: str = ""
     error: str = ""
+    reopen: str = ""
 
 
 @dataclass(frozen=True)
@@ -172,5 +184,6 @@ __all__ = [
     "WakeSweep",
     "check_ask",
     "check_wake",
+    "wake_reopen_text",
     "wakes",
 ]

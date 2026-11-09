@@ -14,8 +14,8 @@ characters, never derived from a bead id) and identified by its stable :class:`D
 trigger never drafts twice. It carries its target binding, semantic event, supersession
 ``group``, the explicit publish intent (:class:`PublicFacts` and :class:`Message`: the only values
 a render reads; a template has no path to the report, the work, notes or the thread), and at most
-one operation of each kind (``comment.create``, ``labels.change``, ``issue.close``) with its own
-state.
+one operation of each kind (``comment.create``, ``labels.change``, ``issue.close``,
+``issue.reopen``) with its own state.
 
 **A close rides on a reply** (``bh-pr5ll``): an ``issue.close`` operation carries only its
 :class:`CloseReason`, and O9 refuses it (``close_not_ready``) until the record's own comment is
@@ -25,6 +25,14 @@ closes. Send order per report: comment,
 labels, close. A ``duplicate`` close may name the canonical issue it duplicates
 (:class:`CanonicalIssue`, ``bh-iamru``): the canonical is part of the close's rendered bytes, so
 its digest, and so the operator's approval, covers it.
+
+**A reopen goes before its reply** (``bh-ih484``): an ``issue.reopen`` operation, the inverse of a
+close that triage later corrects (the reporter answered on a closed issue, or the outcome was
+reversed), rides on the reply that explains the correction. It has no payload beyond the state it
+sets, and the record's own comment is refused (``reopen_not_ready``) until it is ``sent`` or
+retired, so the reporter reads the reply on an open issue. The reopen itself is refused until no
+other record of the issue still holds an unsent close that would undo it. Send order per report:
+reopen, comment, labels, close.
 
 **The issue's type and field values ride on the labels record** (``bh-poqy0``): the label
 projection drafts an ``issue.type`` and an ``issue.fields`` operation (each a :class:`ValueIntent`:
@@ -162,6 +170,7 @@ class OpKind(StrEnum):
     COMMENT = "comment.create"
     LABELS = "labels.change"
     CLOSE = "issue.close"
+    REOPEN = "issue.reopen"
     TYPE = "issue.type"
     FIELDS = "issue.fields"
 
@@ -498,13 +507,15 @@ class OutboxPolicy:
     ``issue.close`` (``plugins.<id>.write.issue_close.enabled``), so with it off no close is
     drafted, approved or sent. ``type_enabled`` and ``fields_enabled`` are the ``issue.type`` and
     ``issue.fields`` gates, set the same way from ``write.issue_type.enabled`` and
-    ``write.issue_fields.enabled``."""
+    ``write.issue_fields.enabled``; ``reopen_enabled`` is the ``issue.reopen`` gate, set from
+    ``write.issue_reopen.enabled``."""
 
     enabled: bool = False
     labels_enabled: bool = False
     close_enabled: bool = False
     type_enabled: bool = False
     fields_enabled: bool = False
+    reopen_enabled: bool = False
     absent_confirmations: int = 2  # k in O16
     commit_links: bool = False
     agent_seat_prefixes: tuple[str, ...] = AGENT_SEAT_PREFIXES
@@ -570,6 +581,7 @@ class Rendered:
 class DraftRequest:
     """O1. ``binding`` is the report's binding (``None``: born native, nothing to send to).
     ``close`` adds an ``issue.close`` operation, which needs the comment it is sent after;
+    ``reopen`` adds an ``issue.reopen`` operation, which needs the comment it is sent before;
     ``duplicate_of`` names the canonical a ``duplicate`` close is a duplicate of;
     ``issue_type`` / ``fields`` add an ``issue.type`` / ``issue.fields`` operation to a
     ``labels`` record."""
@@ -586,6 +598,7 @@ class DraftRequest:
     duplicate_of: CanonicalIssue | None = None
     issue_type: ValueIntent | None = None
     fields: ValueIntent | None = None
+    reopen: bool = False
 
 
 @dataclass(frozen=True)
@@ -722,6 +735,11 @@ def close_payload(reason: CloseReason, duplicate_of: CanonicalIssue | None = Non
     return payload if duplicate_of is None else f"{payload}\nduplicate_of: {duplicate_of.url}"
 
 
+#: The rendered bytes of a reopen: the state it sets and nothing else (digested, so approving it
+#: approves exactly this write).
+REOPEN_PAYLOAD = "state: open"
+
+
 def _require_canonical(
     reason: CloseReason, duplicate_of: CanonicalIssue | None, target_url: str
 ) -> None:
@@ -803,6 +821,17 @@ def render(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> Rendered:
             check(payload, ctx.policy, sanitizer=ctx.sanitizer),
             close=reason,
             duplicate_of=op.duplicate_of,
+        )
+    if kind is OpKind.REOPEN:
+        return Rendered(
+            record.outbox_id,
+            kind,
+            record.binding.url,
+            REOPEN_PAYLOAD,
+            "",
+            None,
+            digest_of(record.binding.url, kind, REOPEN_PAYLOAD, None),
+            check(REOPEN_PAYLOAD, ctx.policy, sanitizer=ctx.sanitizer),
         )
     if kind in VALUE_KINDS:
         intent = op.values
@@ -1025,6 +1054,11 @@ def require_kind_enabled(kind: OpKind, policy: OutboxPolicy) -> None:
             RefusalReason.CLOSE_DISABLED,
             "issue.close is off for this hive (the tracker plugin's write.issue_close.enabled)",
         )
+    if kind is OpKind.REOPEN and not policy.reopen_enabled:
+        raise IntakeRefused(
+            RefusalReason.REOPEN_DISABLED,
+            "issue.reopen is off for this hive (the tracker plugin's write.issue_reopen.enabled)",
+        )
     if kind is OpKind.TYPE and not policy.type_enabled:
         raise IntakeRefused(
             RefusalReason.TYPE_DISABLED,
@@ -1069,6 +1103,38 @@ def close_blocker(doc: OutboxDocument, record: OutboxRecord) -> str:
             )
         if op is not None and op.state is not OpState.SENT:
             return f"the latest labels record {latest.outbox_id} is {op.state.value}; send it first"
+    return ""
+
+
+def reopen_blocker(doc: OutboxDocument, record: OutboxRecord) -> str:
+    """Why ``record``'s reopen may not be sent yet, or ``""`` when it may: no OTHER record of the
+    same issue may still hold a close that is not settled, since sending it after the reopen would
+    close the issue again. Send or discard that close first."""
+    for other in sorted(doc.records.values(), key=lambda r: r.created_seq):
+        op = other.op(OpKind.CLOSE)
+        if (
+            other.outbox_id != record.outbox_id
+            and other.binding.url == record.binding.url
+            and op is not None
+            and op.state not in SETTLED
+        ):
+            return (
+                f"{other.outbox_id} issue.close is {op.state.value}; send or discard it first, "
+                "so it never closes the issue again after this reopen"
+            )
+    return ""
+
+
+def comment_blocker(record: OutboxRecord) -> str:
+    """Why ``record``'s comment may not be sent yet, or ``""`` when it may: a record that reopens
+    the issue sends the reopen first (it is ``sent``, discarded or superseded), so the reporter
+    reads the reply that explains the correction on an open issue."""
+    reopen = record.op(OpKind.REOPEN)
+    if reopen is not None and reopen.state not in SETTLED:
+        return (
+            f"{record.outbox_id} issue.reopen is {reopen.state.value}; send the reopen first, "
+            "or discard it to send the comment alone"
+        )
     return ""
 
 
@@ -1221,6 +1287,13 @@ def draft(
         operations.append(
             OutboxOperation(OpKind.CLOSE, close=reason, duplicate_of=request.duplicate_of)
         )
+    if request.reopen:
+        require_kind_enabled(OpKind.REOPEN, policy)
+        if not request.comment:
+            raise IntakeRefused(
+                RefusalReason.INVALID_DRAFT, "a reopen rides on a record with a comment"
+            )
+        operations.append(OutboxOperation(OpKind.REOPEN))
     for kind, intent in ((OpKind.TYPE, request.issue_type), (OpKind.FIELDS, request.fields)):
         if intent is None:
             continue
@@ -1612,6 +1685,10 @@ def begin_send(
     _require_operator(actor, policy, "send")
     if kind is OpKind.CLOSE and (blocker := close_blocker(doc, record)):
         raise IntakeRefused(RefusalReason.CLOSE_NOT_READY, blocker)
+    if kind is OpKind.REOPEN and (blocker := reopen_blocker(doc, record)):
+        raise IntakeRefused(RefusalReason.REOPEN_NOT_READY, blocker)
+    if kind is OpKind.COMMENT and (blocker := comment_blocker(record)):
+        raise IntakeRefused(RefusalReason.REOPEN_NOT_READY, blocker)
     approval = op.approval
     if approval is None or approval.grant is not GrantStatus.MINTED:
         raise IntakeRefused(
@@ -1805,6 +1882,10 @@ def observe(
             present = observation.state == "closed"  # the desired state holds, whoever closed it
             mine, found = [], None
             receipt = Receipt(state_after=observation.state, reconciled=True) if present else None
+        elif op.kind is OpKind.REOPEN:
+            present = observation.state == "open"  # the desired state holds, whoever reopened it
+            mine, found = [], None
+            receipt = Receipt(state_after=observation.state, reconciled=True) if present else None
         elif op.kind in VALUE_KINDS:
             live = observation.values_for(op.kind)
             present = live is not None and op.values is not None and op.values.held_by(live)
@@ -1850,6 +1931,7 @@ def observe(
                 OpKind.COMMENT: True,
                 OpKind.LABELS: observation.labels is not None,
                 OpKind.CLOSE: observation.state is not None,
+                OpKind.REOPEN: observation.state is not None,
                 OpKind.TYPE: observation.issue_type is not None,
                 OpKind.FIELDS: observation.fields is not None,
             }[op.kind]
@@ -2008,6 +2090,7 @@ __all__ = [
     "MILESTONE_GROUP",
     "OUTBOX_ID_PREFIX",
     "OUTBOX_SCHEMA",
+    "REOPEN_PAYLOAD",
     "SETTLED",
     "TERMINAL",
     "TYPE_VALUE",

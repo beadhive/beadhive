@@ -614,15 +614,15 @@ _OUTBOX_ID_OPT = typer.Argument("", metavar="<outbox-id>", help="the record's ou
 _OUTBOX_KIND = typer.Option(
     "",
     "--kind",
-    help="operation: comment (default), labels, close, type or fields (each is its own gate)",
+    help="operation: comment (default), labels, close, reopen, type or fields (each its own gate)",
 )
 _JSON = typer.Option(False, "--json", help="emit one JSON document")
 _OUTBOX_OP = typer.Option(
     ...,
     "--op",
-    help="<comment|labels|close|type|fields>:<digest> reviewed in `outbox show` (full digest or "
-    "12-hex prefix); repeat to approve several, each as its own gate with its own single-use "
-    "grant",
+    help="<comment|labels|close|reopen|type|fields>:<digest> reviewed in `outbox show` (full "
+    "digest or 12-hex prefix); repeat to approve several, each as its own gate with its own "
+    "single-use grant",
 )
 _OUTBOX_PUBLISH = typer.Option(
     [], "--publish", help="a finding id to publish deliberately (needs exactly one --op)"
@@ -669,7 +669,7 @@ def outbox_discard_cmd(
         False, "--accept-unknown", help="also abandon an operation whose outcome is unknown"
     ),
     kind: str = typer.Option(
-        "", "--kind", help="only this operation: comment, labels, close, type or fields"
+        "", "--kind", help="only this operation: comment, labels, close, reopen, type or fields"
     ),
     as_: str = _AS,
     hive: str = _HIVE,
@@ -730,7 +730,7 @@ def outbox_send_cmd(
 _SEND_KIND = typer.Option(
     "",
     "--kind",
-    help="only this operation: comment, labels, type, fields or close (default: every kind)",
+    help="only this operation: reopen, comment, labels, type, fields or close (default: all)",
 )
 _SEND_BEAD = typer.Option(
     [], "--bead", help="only this report's records (repeatable; default: every report)"
@@ -744,8 +744,8 @@ def outbox_send_approved_cmd(
     hive: str = _HIVE,
     as_json: bool = _JSON,
 ):
-    """Send every approved operation in one process: per report the comments (oldest first),
-    then the labels, the type and the fields, then the close. Each still spends its own
+    """Send every approved operation in one process: per report the reopen, the comments (oldest
+    first), then the labels, the type and the fields, then the close. Each still spends its own
     single-use grant and writes its own receipt, exactly as `outbox send <id>`; a refused or
     unknown one is reported and the rest still go (a close whose comment did not go out is
     refused). Exits non-zero unless every operation was sent. Off unless

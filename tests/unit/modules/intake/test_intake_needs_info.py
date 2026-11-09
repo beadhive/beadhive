@@ -50,8 +50,14 @@ from beadhive.modules.intake.domain import (
     is_awaiting_triage,
     is_needs_info,
     may_disposition,
+    wake_reopen_text,
 )
-from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS, OwnMarker
+from beadhive.modules.tracker.contracts import (
+    READ_OPERATIONS,
+    WRITE_OPERATIONS,
+    IssueState,
+    OwnMarker,
+)
 from beadhive.testing.intake import (
     SCOPE,
     InProcessIntakeLock,
@@ -66,7 +72,8 @@ ME = OwnIdentity("acme/widgets", "inst-1")
 LEAKS = LeakPolicy(bead_prefixes=frozenset({"acme", "pub"}))
 ON = OutboxPolicy(enabled=True)
 PRIVATE = StorePosture(published=False)
-C = OpKind.COMMENT
+REOPENING = OutboxPolicy(enabled=True, reopen_enabled=True)
+C, R = OpKind.COMMENT, OpKind.REOPEN
 QUESTION = "Which version are you running, and does it happen with a fresh config?"
 
 
@@ -83,7 +90,9 @@ class _NoLabels:
 class Scene:
     """Bound reports on memory issues with comment ingestion and the sender wired."""
 
-    def __init__(self, *, outbox: bool = True, threads: bool = True) -> None:
+    def __init__(
+        self, *, outbox: bool = True, threads: bool = True, policy: OutboxPolicy = ON
+    ) -> None:
         self.world = MemoryWorld()
         self.world.set_write_time(at(3))
         self.tracker = MemoryTracker(
@@ -107,7 +116,7 @@ class Scene:
             ids=self.ids,
             identity=ME,
             marker_line=marker_line,
-            policy=ON,
+            policy=policy,
             leak_policy=LEAKS,
             sanitizer=RecordingSanitizer.of(["s3cr3t"]),
             posture=PRIVATE,
@@ -454,3 +463,78 @@ def test_null_intake_refuses_waiting_for_the_reporter() -> None:
         lambda: null.wake_all(actor="x"),
     ):
         refused(RefusalReason.INTAKE_DISABLED, call)
+
+
+# -- a wake on a closed issue drafts the reopen (bh-ih484) --------------------------------------
+
+
+def _answered_on(s: Scene, *, closed: bool) -> str:
+    """A report that asked its reporter, whose issue is (or is not) closed, and who then replied."""
+    report = s.report()
+    s.comment(report, "It crashes when I start it.", hour=1)
+    s.ingest(report)
+    s.read_and_consider(report)
+    s.ask(report)
+    if closed:
+        s.world.update_issue(s.issues[report], at=at(3), state=IssueState.CLOSED)
+    s.comment(report, "v2.3.1, and yes, with a fresh config too.", day=4, hour=2)
+    s.ingest(report)
+    return report
+
+
+def test_a_wake_on_a_closed_issue_drafts_the_reopen_and_sends_nothing() -> None:
+    s = Scene(policy=REOPENING)
+    report = _answered_on(s, closed=True)
+
+    woken = s.wake(report)
+
+    assert woken.woken and woken.reopen and woken.detail == ""
+    record = s.store.read_outbox(report).records[woken.reopen]
+    assert record.message.text == wake_reopen_text()
+    assert record.op(C).state is OpState.DRAFTED and record.op(R).state is OpState.DRAFTED
+    assert INTAKE_UNTRIAGED in s.labels(report)  # the wake itself is unchanged
+    assert s.world.write_requests() == 0  # nothing is sent without an operator's approval
+
+
+def test_a_wake_on_an_open_issue_drafts_no_reopen() -> None:
+    s = Scene(policy=REOPENING)
+    report = _answered_on(s, closed=False)
+
+    woken = s.wake(report)
+
+    assert woken.woken and woken.reopen == ""
+    assert [r for r in s.store.read_outbox(report).records.values() if r.op(R)] == []
+
+
+def test_with_the_reopen_gate_off_a_wake_on_a_closed_issue_drafts_nothing() -> None:
+    s = Scene()  # reopen_enabled is off by default
+    report = _answered_on(s, closed=True)
+
+    woken = s.wake(report)
+
+    assert woken.woken and woken.reopen == "" and woken.detail == ""
+    assert [r for r in s.store.read_outbox(report).records.values() if r.op(R)] == []
+
+
+def test_a_refused_reopen_draft_is_a_detail_and_never_undoes_the_wake(monkeypatch) -> None:
+    s = Scene(policy=REOPENING)
+    report = _answered_on(s, closed=True)
+
+    def refuse(*_args):
+        raise IntakeRefused(RefusalReason.UNRESOLVED_FINDING, "the reply would leak")
+
+    monkeypatch.setattr(s.sender, "draft_reopen", refuse)
+    woken = s.wake(report)
+
+    assert woken.woken and woken.reopen == "" and "the reopen was not drafted" in woken.detail
+    assert INTAKE_UNTRIAGED in s.labels(report)
+
+
+def test_the_sweep_drafts_the_reopen_of_each_woken_report_on_a_closed_issue() -> None:
+    s = Scene(policy=REOPENING)
+    closed = _answered_on(s, closed=True)
+
+    sweep = s.intake.wake_all(actor="dev/triage")
+
+    (item,) = sweep.items
+    assert item.report == closed and item.woken and item.reopen

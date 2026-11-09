@@ -1,6 +1,6 @@
 """``OutboxService``: the supervised sender for ``comment.create``, ``labels.change``,
-``issue.close``, ``issue.type`` and ``issue.fields`` (``bh-6wj9y`` R6, R7; D2; ``bh-pr5ll``;
-``bh-poqy0``).
+``issue.close``, ``issue.reopen``, ``issue.type`` and ``issue.fields`` (``bh-6wj9y`` R6, R7; D2;
+``bh-pr5ll``; ``bh-poqy0``; ``bh-ih484``).
 
 The pure O1 to O19 machine lives in :mod:`..domain.outbox` and the translation to and from the
 tracker port in :mod:`.outbox`; this layer runs the machine against a :class:`ReportStore` and a
@@ -12,7 +12,9 @@ tracker in R6's order, and is the only code that ever calls a writer:
   separate from the comment's), and an ``issue.close`` with ``CLOSE_DISABLED`` unless
   ``OutboxPolicy.close_enabled`` (set from the bound adapter's own ``issue.close`` enable), and
   an ``issue.type`` / ``issue.fields`` with ``TYPE_DISABLED`` / ``FIELDS_DISABLED`` unless
-  ``OutboxPolicy.type_enabled`` / ``fields_enabled`` (likewise the adapter's own enables). Even
+  ``OutboxPolicy.type_enabled`` / ``fields_enabled`` and an ``issue.reopen`` with
+  ``REOPEN_DISABLED`` unless ``OutboxPolicy.reopen_enabled`` (likewise the adapter's own
+  enables). Even
   then nothing is written without the adapter's own
   per-operation enable (``probe_capabilities`` reports the operation usable, else O5 refuses; a
   disabled writer refuses before any request, which is O11) AND an operator approval of THAT
@@ -30,6 +32,13 @@ tracker in R6's order, and is the only code that ever calls a writer:
   record is ``sent``: per report, comment, labels, close. :meth:`OutboxService.backfill_closes`
   drafts the close a report closed before this existed never got, on its latest reply (or on the
   reply it drafts when the report never got one).
+* **A reopen goes first.** An ``issue.reopen`` is the inverse of a close that triage later
+  corrects (the reporter answered on a closed issue, or the outcome was reversed). It rides on the
+  reply that explains the correction (``ReplyDraft.reopen``, or :meth:`OutboxService.draft_reopen`
+  when the bound issue is closed), and O9 refuses that reply's comment (``reopen_not_ready``,
+  before any request) until the reopen is sent or retired; the reopen itself is refused while
+  another record of the issue still holds an unsent close. Per report: reopen, comment, labels,
+  close. It reconciles by reading the issue's state back.
 * **Only owned labels.** A label operation is refused unless every label it adds or removes lies
   under the root's owned prefixes (``LeakPolicy.owned_label_prefixes``, the adapter's
   ``write.labels.owned_prefixes``): at draft, at the leak check (``label_not_owned``, never
@@ -59,7 +68,7 @@ holds it comes from the injected :class:`OutboxIndex`, confirmed against that re
 document; only a miss scans (one :meth:`ReportStore.read_outboxes` pass) and rebuilds the index.
 :meth:`OutboxService.send_approved` sends every approved operation in ONE process: one pass over
 the outbox documents, one issue listing for the labels, and the lock's batch scope
-(:class:`BatchLock`), ordered per report comment, labels, close; each operation is the same
+(:class:`BatchLock`), ordered per report reopen, comment, labels, close; each operation is the same
 write-ahead, single request and receipt as ``send``, with its own grant.
 
 The render is the dry run: no store write, and no tracker request beyond that one label read. The
@@ -83,7 +92,9 @@ from beadhive.modules.tracker.contracts import (
     IssueFieldWriter,
     IssueKey,
     IssueQuery,
+    IssueReopener,
     IssueResolver,
+    IssueState,
     IssueTypeWriter,
     LabelOwnership,
     LabelWriter,
@@ -259,11 +270,14 @@ class OutboxService:
         """O1 for an operator reply (O2 when the same text already answers the same thread seq),
         checked at once (O3 holds a leak). With ``request.close`` and the close gate on, the record
         also carries an ``issue.close`` operation, naming ``request.duplicate_of``'s bound issue as
-        a duplicate's canonical (:meth:`_canonical`). Drafting never sends and needs no grant."""
+        a duplicate's canonical (:meth:`_canonical`); with ``request.reopen`` and the reopen gate
+        on, an ``issue.reopen`` that is sent before the comment. Drafting never sends and needs no
+        grant."""
         self._require_enabled()
         require_private_store(self._posture)
         binding = self._binding(request.report)
         close = request.close if self._policy.close_enabled else None
+        reopen = request.reopen and self._policy.reopen_enabled
         canonical = None
         if close is CloseReason.DUPLICATE and request.duplicate_of:
             canonical = self._canonical(request.duplicate_of, binding)
@@ -280,6 +294,7 @@ class OutboxService:
                 # the close rides on the reply only while the hive's close gate is on
                 close=close,
                 duplicate_of=canonical,
+                reopen=reopen,
             )
             applied = machine.draft(
                 doc,
@@ -292,6 +307,24 @@ class OutboxService:
         if applied.changed:
             self._indexed({applied.outbox_id: request.report})
         return self._result(request.report, applied, rules, OpKind.COMMENT)
+
+    def draft_reopen(self, report: str, text: str, actor: str) -> OutboxResult | None:
+        """O1 for the reopen of a close that triage corrects (``bh-ih484``): when ``report``'s
+        bound issue is CLOSED in the tracker, a reply carrying ``text`` and an ``issue.reopen``
+        (:meth:`draft_reply` with ``reopen``), and its result; ``None`` when nothing is drafted:
+        the outbox or the reopen gate is off, the report is not bound to the bound tracker
+        project, the issue cannot be read, or it is already open. Reads one issue; never sends,
+        and needs no grant."""
+        if not (self._policy.enabled and self._policy.reopen_enabled):
+            return None
+        try:
+            binding = self._bound_here(report)
+        except IntakeRefused:
+            return None
+        found = self._read_issue(binding)
+        if found is None or found.state is not IssueState.CLOSED:
+            return None
+        return self.draft_reply(ReplyDraft(report, text, actor, reopen=True))
 
     # -- O5: the gate ------------------------------------------------------------------------
 
@@ -345,10 +378,11 @@ class OutboxService:
     # -- O9 to O13: send ---------------------------------------------------------------------
 
     def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
-        """O9 persisted, then exactly one ``post_comment`` / ``change_labels`` / ``close_issue``,
-        then O10, O11 or O12, all under one hold of the binding's lock. An approval whose render
-        moved is invalidated instead (O7) and nothing is sent; a close whose comment or the
-        report's latest labels are not sent yet is refused (``close_not_ready``) before any
+        """O9 persisted, then exactly one ``post_comment`` / ``change_labels`` / ``close_issue`` /
+        ``reopen_issue``, then O10, O11 or O12, all under one hold of the binding's lock. An
+        approval whose render moved is invalidated instead (O7) and nothing is sent; a close whose
+        comment or the report's latest labels are not sent yet is refused (``close_not_ready``),
+        and so is a comment whose own reopen is not sent (``reopen_not_ready``), before any
         request."""
         self._require_enabled()
         machine.require_kind_enabled(kind, self._policy)  # before any tracker request
@@ -427,11 +461,11 @@ class OutboxService:
         """Send every APPROVED operation (of ``request.kinds``, on ``request.reports``) in one
         process (``bh-pc9rf``): ONE pass over the outbox documents, ONE issue listing when a
         labels operation is due, and the lock's batch scope, so a batch of N pays the per-process
-        costs once instead of N times. Per report the order is :data:`SEND_ORDER` (every comment,
-        oldest first, then the labels, then the close), and every operation is exactly ``send``'s
-        O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a store
-        failure on one operation is reported in ``failed`` and the rest continue (a close whose
-        comment did not go out is refused by ``close_not_ready``); only a host-level refusal
+        costs once instead of N times. Per report the order is :data:`SEND_ORDER` (the reopen, every
+        comment oldest first, then the labels, then the close), and every operation is exactly
+        ``send``'s O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a
+        store failure on one operation is reported in ``failed`` and the rest continue (a close
+        whose comment did not go out is refused by ``close_not_ready``); only a host-level refusal
         (``not_primary``) stops the batch, since nothing else could be sent either: the outcome
         so far is returned with ``stopped`` set, so what WAS sent is still reported."""
         self._require_enabled()
@@ -513,6 +547,13 @@ class OutboxService:
                     RefusalReason.CAPABILITY_UNUSABLE,
                     "the bound tracker adapter cannot close an issue (issue.close is not enabled)",
                 )
+        elif kind is OpKind.REOPEN:
+            if not isinstance(self._tracker, IssueReopener):
+                raise IntakeRefused(
+                    RefusalReason.CAPABILITY_UNUSABLE,
+                    "the bound tracker adapter cannot reopen an issue (issue.reopen is not "
+                    "enabled)",
+                )
         elif kind is OpKind.TYPE:
             if not isinstance(self._tracker, IssueTypeWriter):
                 raise IntakeRefused(
@@ -558,6 +599,9 @@ class OutboxService:
                     None if canonical is None else IssueKey(canonical.identifier, canonical.url)
                 ),
             )
+        if kind is OpKind.REOPEN:
+            assert isinstance(writer, IssueReopener)
+            return writer.reopen_issue(issue, grant=grant)
         if kind is OpKind.TYPE:
             assert isinstance(writer, IssueTypeWriter) and plan.values
             return writer.set_issue_type(issue, dict(plan.values)[TYPE_VALUE], grant=grant)
@@ -612,10 +656,14 @@ class OutboxService:
         wanted = {kind for kinds in pending.values() for kind in kinds}
         # a read nobody needs is not made, and is vacuously complete
         comments, complete = self._listing(binding) if OpKind.COMMENT in wanted else ((), True)
-        reads_issue = wanted & {OpKind.LABELS, OpKind.CLOSE, *VALUE_KINDS}
+        reads_issue = wanted & {OpKind.LABELS, OpKind.CLOSE, OpKind.REOPEN, *VALUE_KINDS}
         issue = self._read_issue(binding) if reads_issue else None
         labels = frozenset(issue.labels) if issue is not None and OpKind.LABELS in wanted else None
-        state = issue.state.value if issue is not None and OpKind.CLOSE in wanted else None
+        state = (
+            issue.state.value
+            if issue is not None and wanted & {OpKind.CLOSE, OpKind.REOPEN}
+            else None
+        )
         issue_type = issue.issue_type if issue is not None and OpKind.TYPE in wanted else None
         fields = issue.fields if issue is not None and OpKind.FIELDS in wanted else None
         results: list[OutboxResult] = []
@@ -646,6 +694,7 @@ class OutboxService:
                     read_ok = {
                         OpKind.LABELS: labels is not None,
                         OpKind.CLOSE: state is not None,
+                        OpKind.REOPEN: state is not None,
                         OpKind.TYPE: issue_type is not None,
                         OpKind.FIELDS: fields is not None,
                     }.get(kind, complete)  # type: ignore[arg-type]
@@ -1251,6 +1300,7 @@ class OutboxService:
         noun = {
             OpKind.LABELS: "label read",
             OpKind.CLOSE: "issue read",
+            OpKind.REOPEN: "issue read",
             OpKind.TYPE: "issue read",
             OpKind.FIELDS: "issue read",
         }.get(

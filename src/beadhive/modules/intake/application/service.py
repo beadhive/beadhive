@@ -122,6 +122,7 @@ from ..domain import (
     hold_findings,
     is_needs_info,
     may_disposition,
+    wake_reopen_text,
     wakes,
 )
 from .discovery import IssueDiscoverer
@@ -684,7 +685,33 @@ class IntakeService:
             )
         except IntakeStoreError as exc:
             raise _retag(exc, "stamp:intake", view.id) from exc
-        return WakeOutcome(view.id, woken=True, evidence=tuple(evidence))
+        reopen, detail = self._reopen_on_wake(view.id, actor)
+        return WakeOutcome(
+            view.id, woken=True, evidence=tuple(evidence), detail=detail, reopen=reopen
+        )
+
+    def _reopen_on_wake(self, report: str, actor: str) -> tuple[str, str]:
+        """``(outbox id, detail)`` of the reopen drafted when the reporter answered on a CLOSED
+        issue (``bh-ih484``); never sent, so it needs an operator's approval. Nothing is drafted
+        (``("", "")``) with the outbox or the reopen gate off, or an open or unreadable issue; a
+        refusal to draft is a detail and never fails the wake (the state write already stood)."""
+        if self._outbox is None:
+            return "", ""
+        try:
+            drafted = self._outbox.draft_reopen(report, wake_reopen_text(), actor)
+        except (IntakeRefused, IntakeStoreError) as exc:
+            why = (
+                exc.detail if isinstance(exc, IntakeStoreError) else exc.detail or exc.reason.value
+            )
+            return "", f"the reopen was not drafted: {why}"
+        return (drafted.outbox_id, "") if drafted is not None else ("", "")
+
+    def draft_reopen(self, report: str, text: str, actor: str) -> OutboxResult | None:
+        """The reopen draft of a close triage corrects (:meth:`OutboxService.draft_reopen`);
+        ``None`` when nothing is drafted, and always with no outbox bound."""
+        if self._outbox is None:
+            return None
+        return self._outbox.draft_reopen(report, text, actor)
 
     # -- the lifetime intake-hold ------------------------------------------------------------
 

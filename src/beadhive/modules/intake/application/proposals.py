@@ -90,6 +90,7 @@ from ..domain import (
     evidence_after,
     fixed_text,
     half_rejected,
+    keeps_open,
     leak_check,
     mark_applied,
     may_disposition,
@@ -98,6 +99,7 @@ from ..domain import (
     new_proposal,
     new_round,
     plan_apply,
+    reopen_text,
     verdict_from_document,
     verification_gap,
 )
@@ -146,6 +148,8 @@ class TriageActions(Protocol):
     def mark_considered(self, request: ConsiderRequest) -> ThreadOutcome: ...
 
     def draft_reply(self, request: ReplyDraft) -> OutboxResult: ...
+
+    def draft_reopen(self, report: str, text: str, actor: str) -> OutboxResult | None: ...
 
     def reroute_elsewhere(
         self, request: DispositionRequest, refile: Callable[[BeadView], str]
@@ -555,6 +559,19 @@ class ProposalService:
                 status=ApplyStatus.FAILED,
                 detail=f"recording relates-to failed: {_why(exc)}",
             )
+        if self._replies and view.binding is not None and keeps_open(plan):
+            # a reversed outcome (bh-ih484): the report stays tracked but its issue is closed, so
+            # the reopen is drafted first (never sent), ahead of any reply that explains it
+            try:
+                reopened = self._actions.draft_reopen(report, reopen_text(), actor)
+            except (IntakeRefused, IntakeStoreError) as exc:
+                return _with(
+                    base,
+                    status=ApplyStatus.FAILED,
+                    detail=f"drafting the reopen failed: {_why(exc)}",
+                )
+            if reopened is not None:
+                drafted.append(reopened.outbox_id)
         try:
             for step in plan.steps:
                 if step in (ApplyStep.ACCEPT, ApplyStep.ACCEPT_NEW_WORK, ApplyStep.ACCEPT_WORK):

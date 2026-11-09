@@ -21,13 +21,17 @@ class ReplyDraft:
     it is drafted only while the hive's close gate is on (``OutboxPolicy.close_enabled``).
     ``duplicate_of`` is the CANONICAL REPORT a ``duplicate`` close is a duplicate of
     (``bh-iamru``): the sender resolves it to that report's bound issue, and closes as a plain
-    duplicate when it has none in the same tracker project."""
+    duplicate when it has none in the same tracker project. ``reopen`` asks for an
+    ``issue.reopen`` operation on the same record, sent BEFORE the comment (``bh-ih484``): the
+    reply that explains a corrected close; drafted only while the reopen gate is on
+    (``OutboxPolicy.reopen_enabled``)."""
 
     report: str
     text: str
     actor: str
     close: CloseReason | None = None
     duplicate_of: str = ""
+    reopen: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,8 +70,8 @@ class RenderedRecord:
 class OutboxApprove:
     """O5 (with O4 for each ``publish``): the operator approves the digest they reviewed, the full
     value or at least its 12-hex prefix. ``kind`` selects the operation: ``comment.create`` (the
-    default), ``labels.change`` or ``issue.close``; each is its own approval and mints its own
-    grant."""
+    default), ``labels.change``, ``issue.close`` or ``issue.reopen``; each is its own approval and
+    mints its own grant."""
 
     outbox_id: str
     digest: str
@@ -99,13 +103,16 @@ class OutboxResult:
     detail: str = ""
 
 
-#: The order a batch sends a report's approved operations in (``bh-pc9rf``): every comment
-#: (oldest draft first), then the labels, the type and the field values (``bh-poqy0``, on the same
-#: labels record), then the close, so the reporter reads every reply and the final labels before
-#: the issue closes (the order :func:`~.outbox.close_blocker` enforces).
+#: The order a batch sends a report's approved operations in (``bh-pc9rf``): the reopen first
+#: (``bh-ih484``: it rides on a reply and must reach the issue before that reply, the order
+#: :func:`~.outbox.comment_blocker` enforces), then every comment (oldest draft first), then the
+#: labels, the type and the field values (``bh-poqy0``, on the same labels record), then the close,
+#: so the reporter reads every reply and the final labels before the issue closes (the order
+#: :func:`~.outbox.close_blocker` enforces).
 #: EVERY :class:`OpKind` must appear here exactly once (a test pins it), so a new operation kind
 #: is placed in the order, before the close, rather than silently skipped by the batch.
 SEND_ORDER: tuple[OpKind, ...] = (
+    OpKind.REOPEN,
     OpKind.COMMENT,
     OpKind.LABELS,
     OpKind.TYPE,
