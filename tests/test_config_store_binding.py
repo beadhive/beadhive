@@ -484,6 +484,7 @@ def test_every_tracker_github_switch_defaults_off():
         "read.labels.enabled": False,
         "write.label_definitions.enabled": False,
         "write.issue_close.enabled": False,
+        "write.issue_reopen.enabled": False,
         "write.issue_type.enabled": False,
         "write.issue_fields.enabled": False,
     }

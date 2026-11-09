@@ -33,6 +33,7 @@ from beadhive.modules.tracker.contracts import (
     IssueCloser,
     IssueFieldWriter,
     IssueKey,
+    IssueReopener,
     IssueResolver,
     IssueTypeWriter,
     LabelDefiner,
@@ -185,6 +186,7 @@ def test_enabled_and_bound_builds_the_read_path_adapter_offline(loads):
         Operation.LABELS_READ,
         Operation.LABELS_DEFINE,
         Operation.ISSUE_CLOSE,
+        Operation.ISSUE_REOPEN,
         Operation.ISSUE_TYPE,
         Operation.ISSUE_FIELDS,
     }
@@ -471,6 +473,46 @@ def test_the_issue_close_flag_binds_the_closer_in_the_root_view_and_sends_nothin
         requested=READ | {Operation.ISSUE_CLOSE},
     )
     assert "plugins.tracker-github.write.issue_close.enabled" in error.message
+
+
+def test_the_issue_reopen_flag_binds_the_reopener_in_the_root_view_and_sends_nothing(loads):
+    plugins = {"tracker-github": enabled_plugin(write={"issue_reopen": {"enabled": True}})}
+    adapters, token_calls = counting_root(plugins)
+    bound = adapters.for_store(entry(), requested=READ | {Operation.ISSUE_REOPEN})
+
+    assert Operation.ISSUE_REOPEN in bound.enabled  # enabled is necessary, never sufficient
+    assert isinstance(bound.port, IssueReopener) and not isinstance(bound.port, IssueCloser)
+    assert token_calls == []
+
+    close_only = {"tracker-github": enabled_plugin(write={"issue_close": {"enabled": True}})}
+    closer = root(close_only).for_store(entry(), requested=READ | {Operation.ISSUE_CLOSE})
+    assert isinstance(closer.port, IssueCloser) and not isinstance(closer.port, IssueReopener)
+    error = refusal(
+        root({"tracker-github": enabled_plugin()}),
+        entry(),
+        requested=READ | {Operation.ISSUE_REOPEN},
+    )
+    assert "plugins.tracker-github.write.issue_reopen.enabled" in error.message
+
+
+def test_a_reopen_through_the_root_view_needs_a_reopen_grant():
+    class _Reopener:
+        def __init__(self):
+            self.calls = 0
+
+        def reopen_issue(self, issue, *, grant):
+            self.calls += 1
+            return grant
+
+    adapter = _Reopener()
+    port = tracker_root.narrow(adapter, frozenset({Operation.ISSUE_REOPEN}))
+    issue = IssueKey("#3", "https://github.com/acme/widget/issues/3")
+    with pytest.raises(OperationNotEnabled):  # the close's grant does not reopen
+        port.reopen_issue(issue, grant=WriteGrant("g", Operation.ISSUE_CLOSE, issue))  # type: ignore[attr-defined]
+    assert adapter.calls == 0
+    grant = WriteGrant("g-1", Operation.ISSUE_REOPEN, issue)
+    assert port.reopen_issue(issue, grant=grant) is grant  # type: ignore[attr-defined]
+    assert not isinstance(tracker_root.narrow(adapter, frozenset()), IssueReopener)
 
 
 @pytest.mark.parametrize(

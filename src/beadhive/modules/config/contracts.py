@@ -2985,6 +2985,12 @@ class TrackerGithubWrite(_QuietSection):
         "duplicate), never touching its labels (default off; each use needs an "
         "operator-approved single-use grant).",
     )
+    issue_reopen: TrackerGithubFlag = Field(
+        default_factory=TrackerGithubFlag,
+        description="`issue.reopen`: reopen a closed issue that triage later corrects, never "
+        "touching its labels (default off; each use needs an operator-approved single-use "
+        "grant).",
+    )
     issue_type: TrackerGithubFlag = Field(
         default_factory=TrackerGithubFlag,
         description="`issue.type`: read an issue's type and set it to one the organization "
