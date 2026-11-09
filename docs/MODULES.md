@@ -765,11 +765,27 @@ receipt, and reports a refused one in `BatchSendOutcome.failed` while the rest c
 primary host stops it with `BatchSendOutcome.stopped`, keeping what was sent). It and
 `approve_label_batch` run inside the lock's optional `BatchLock.batch()` scope, where
 `FlockIntakeLock` reuses one host check and epoch read for at most
-`intake.external.outbox.batch_recheck_seconds` (default `0`: every operation checks; reuse is
-opt-in). Tests:
+`intake.external.outbox.batch_recheck_seconds` (default `0`: every hold of the lock checks, one
+hold per report since bh-25fvb; reuse is opt-in). Tests:
 `tests/unit/modules/intake/test_intake_outbox_batch_send.py`,
 `tests/test_intake_outbox_batch_root.py` and the perf check
 `tests/test_intake_outbox_batch_perf.py` (`-m perf`).
+
+`bh-25fvb` made the per-record cost cheap. The optional `ReportSession` port (`session()` on a
+`ReportStore`; `BdReportStore` implements it for both routes) reads each report once per unit of
+work and keeps the documents it writes, so the next compare-and-set expects exactly them; any other
+write drops what it holds. The `seq` re-read before a document write is served from the session
+only where the write is a compare-and-set (the API route); on the `bd` CLI route
+(`work.beads.route=cli`, or the API route's CLI fallback) it always reads the store, because that
+re-read is the only check. The session is state on the store object and is not thread-safe: one
+store and its session belong to one thread of work. The sender and the labels projection open one
+session per hold of the binding's lock (`application/threads.held`), so every read under the lock
+is still that hold's own fresh read. `send_approved` sends a report's operations under ONE hold, `approve_label_batch`
+approves a report's items under ONE hold and writes them as ONE document write (each item still
+its own approval and grant), and `LabelProjection.sync` drafts inside `BatchLock.batch()`. The
+root's lock takes the host check and the epoch in one evaluation (`guard.primary_epoch`). Tests:
+the session cases in `tests/test_intake_api_store.py` and the per-report and type/fields cases in
+`tests/unit/modules/intake/test_intake_outbox_batch_send.py`.
 
 The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
