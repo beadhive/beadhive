@@ -571,7 +571,11 @@ class ProposalService:
                     )
                     work, milestones = outcome.work, outcome.milestones
                 elif step is ApplyStep.LINK:
-                    linked = self._actions.link(LinkRequest(report, plan.work, actor))
+                    # a duplicate shares its canonical's work, never its delivery (bh-5kpwc)
+                    duplicate = proposal.disposition is ProposalDisposition.DUPLICATE_OF
+                    linked = self._actions.link(
+                        LinkRequest(report, plan.work, actor, duplicate=duplicate)
+                    )
                     milestones = linked.milestones
                 elif step is ApplyStep.DRAFT_REPLY:
                     # a duplicate's close names its canonical report; the sender resolves its

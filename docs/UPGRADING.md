@@ -5,6 +5,31 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## Unreleased — a `duplicate-of` no longer carries `delivery` (bh-5kpwc)
+
+`bh work triage apply --reviewed` linked a `duplicate-of` report to its canonical report's work
+through the ordinary link, which wrote `delivery:pending` on the duplicate. The label projection
+then published `bh:delivery/pending` on the closed duplicate's issue, and a later merge, release,
+claim or notice could draft a milestone note for it, repeating the one the canonical report gets.
+Now a `duplicate-of` link writes no `delivery` value (and clears one already there) and catches
+nothing up; no milestone trigger drafts for a rejected report; and the label projection emits no
+`bh:delivery/*` or `bh:progress/*` for one, so a `labels sync` drafts the removal of those labels.
+A `tracks` link (`accept --work`, `--new-work`, `bh work link`) still writes `delivery:pending`. No
+config key or wire contract changes.
+
+**Repair reports already in this state.** List them first (the default writes nothing), then clear
+the value, then draft the label removal on GitHub and review it as any label batch:
+
+```sh
+uv run python scripts/repair_duplicate_delivery.py --repo <hive checkout>
+uv run python scripts/repair_duplicate_delivery.py --repo <hive checkout> --apply
+bh work labels sync --include-closed
+```
+
+`bd set-state` cannot clear a dimension, so `--apply` removes the `delivery:<value>` label cache
+entry with `bd label remove`; the bead's event history keeps the old value. Nothing is sent to
+GitHub and no outbox record is written until an operator approves the label batch.
+
 ## 0.35.2 → 0.35.3 — close the GitHub issue after the reply and labels (switch default off)
 
 `bh work triage apply --reviewed` closed fixed, rejected and duplicate reports in beads but left

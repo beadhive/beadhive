@@ -45,6 +45,8 @@ from ..domain import (
     CloseBackfill,
     CloseBackfillOutcome,
     ConsiderRequest,
+    DeliverySweep,
+    DeliverySweepRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     Disposition,
@@ -504,7 +506,12 @@ class IntakeService:
         """A bound report ``tracks`` a work bead of this store (:class:`~.linker.LinkService`);
         with ``catch_up_on_link``, work that already merged then catches the report up."""
         outcome = self._linker.link(request)
-        caught_up = self._caught_up(request.report, request.work, request.actor)
+        # a duplicate has no delivery of its own to catch up (bh-5kpwc)
+        caught_up = (
+            ()
+            if request.duplicate
+            else self._caught_up(request.report, request.work, request.actor)
+        )
         self._refresh_labels((request.report,), request.actor)
         if not caught_up:
             return outcome
@@ -707,6 +714,11 @@ class IntakeService:
             else:
                 repaired.append(finding)
         return HoldSweep(findings, tuple(repaired), tuple(failed))
+
+    # -- the delivery a rejected report must not hold (bh-5kpwc) ----------------------------
+
+    def sweep_delivery(self, request: DeliverySweepRequest) -> DeliverySweep:
+        return self._linker.sweep_delivery(request)
 
     # -- the supervised outbox ---------------------------------------------------------------
 
@@ -952,6 +964,9 @@ class NullIntake:
 
     def sweep_holds(self, request: HoldSweepRequest) -> HoldSweep:
         return HoldSweep()
+
+    def sweep_delivery(self, request: DeliverySweepRequest) -> DeliverySweep:
+        return DeliverySweep()
 
     def draft_reply(self, request: ReplyDraft) -> OutboxResult:
         raise _disabled()

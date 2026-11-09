@@ -172,10 +172,16 @@ class ImportOutcome:
 
 @dataclass(frozen=True)
 class LinkRequest:
+    """Make ``report`` track ``work``. ``duplicate`` marks the link a ``duplicate-of`` outcome
+    makes (bh-5kpwc): the report shares its canonical's work but its delivery is the canonical
+    report's, so the link writes no ``delivery`` value, clears an existing one and catches
+    nothing up."""
+
     report: str
     work: str
     actor: str
     replace: bool = False
+    duplicate: bool = False
 
 
 @dataclass(frozen=True)

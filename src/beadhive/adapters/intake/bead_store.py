@@ -91,6 +91,10 @@ class ReportRoutes(Protocol):
         self, bead: str, state: str, *, reason: str, actor: str = ..., capture: bool = ...
     ) -> Any: ...
 
+    def issue_remove_label(
+        self, bead: str, label: str, *, actor: str = ..., capture: bool = ...
+    ) -> Any: ...
+
     def issue_update_fields(
         self,
         bead: str,
@@ -361,6 +365,19 @@ class BdReportStore:
             bead, f"{dimension}={value}", reason=reason, actor=actor, capture=True
         )
         self._check(result, "set_state", bead)
+
+    def clear_state(self, bead: str, dimension: str, *, reason: str, actor: str) -> None:
+        """Drop the ``<dimension>:<value>`` label cache entry (``bd set-state`` has no unset, so
+        this is a raw ``bd label remove``); bd keeps the event beads ``set-state`` wrote."""
+        data = self._show(bead)
+        if data is None:
+            raise IntakeStoreError(f"{bead} not found", bead=bead, operation="clear_state")
+        stale = [
+            label for label in data.get("labels") or () if str(label).startswith(f"{dimension}:")
+        ]
+        for label in stale:
+            result = self._routes.issue_remove_label(bead, str(label), actor=actor, capture=True)
+            self._check(result, "clear_state", bead)
 
     def record_snapshot(self, bead: str, snapshot: SourceSnapshot, *, actor: str) -> None:
         """Rewrite the whole ``intake.source`` document with ``snapshot``, keeping its binding."""

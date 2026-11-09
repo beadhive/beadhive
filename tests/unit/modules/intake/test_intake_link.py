@@ -154,6 +154,70 @@ def test_a_repeat_link_repairs_a_missing_delivery_value(rig) -> None:
     assert outcome.kind is LinkKind.ALREADY_LINKED and rig.delivery(report) == "delivery:pending"
 
 
+# -- a duplicate-of link writes no delivery (bh-5kpwc) -------------------------------------------
+
+
+def test_a_duplicate_link_tracks_the_work_and_writes_no_delivery(rig) -> None:
+    report, work = rig.report(), rig.work()
+    writes = rig.store.writes
+
+    outcome = rig.link(report, work, duplicate=True)
+
+    assert outcome.kind is LinkKind.LINKED and rig.store.tracked_work(report) == work
+    assert rig.delivery(report) == "" and outcome.delivery == ""
+    assert rig.store.writes == writes + 1  # the one edge, no state
+    assert all(dimension != "delivery" for dimension, _value, _why in rig.store.history(report))
+
+
+def test_a_duplicate_link_clears_a_delivery_the_report_already_carries(rig) -> None:
+    report, work = rig.report(), rig.work()
+    rig.link(report, work)
+    assert rig.delivery(report) == "delivery:pending"
+
+    outcome = rig.link(report, work, duplicate=True)  # the edge exists: it only tidies the value
+
+    assert outcome.kind is LinkKind.ALREADY_LINKED and outcome.delivery == ""
+    assert rig.delivery(report) == "" and rig.store.tracked_work(report) == work
+    assert rig.store.history(report)[-1][:2] == ("delivery", "")
+
+
+def test_a_duplicate_link_clears_a_milestone_value_too(rig) -> None:
+    report, work = rig.report(), rig.work()
+    rig.store.track(report, work, actor=ACTOR)
+    rig.store.set_state(report, "delivery", "merged", reason="merged", actor=ACTOR)
+
+    rig.link(report, work, duplicate=True)
+
+    assert rig.delivery(report) == ""
+
+
+def test_a_failed_clear_names_the_step_and_the_repeat_finishes_it(rig, monkeypatch) -> None:
+    report, work = rig.report(), rig.work()
+    rig.link(report, work)
+
+    def refuse(*_args, **_kwargs):
+        raise IntakeStoreError("bd label remove failed", bead=report, operation="clear_state")
+
+    monkeypatch.setattr(rig.store, "clear_state", refuse)
+    with pytest.raises(IntakeStoreError) as failed:
+        rig.link(report, work, duplicate=True)
+    assert failed.value.operation == "clear:delivery" and rig.delivery(report) != ""
+
+    monkeypatch.undo()
+    rig.link(report, work, duplicate=True)
+    assert rig.delivery(report) == ""
+
+
+def test_a_tracks_link_still_writes_pending_beside_a_duplicate_of_the_same_work(rig) -> None:
+    canonical, duplicate, work = rig.report(), rig.report("it crashes too"), rig.work()
+
+    rig.link(canonical, work)
+    rig.link(duplicate, work, duplicate=True)
+
+    assert rig.delivery(canonical) == "delivery:pending" and rig.delivery(duplicate) == ""
+    assert set(rig.store.trackers_of(work)) == {canonical, duplicate}
+
+
 # -- replace -----------------------------------------------------------------------------------
 
 
@@ -567,6 +631,13 @@ def test_work_progress_of_status_and_review_label(status, labels, expected) -> N
 )
 def test_delivery_at_link(labels, edge, unlinked, expected) -> None:
     assert delivery_at_link(labels, edge_written=edge, unlinked_work=unlinked, work="w") == expected
+
+
+@pytest.mark.parametrize("labels", [(), ("delivery:pending",), ("delivery:merged",)])
+@pytest.mark.parametrize("edge", [True, False])
+def test_a_duplicate_link_never_writes_a_delivery_value(labels, edge) -> None:
+    value = delivery_at_link(labels, edge_written=edge, unlinked_work="", work="w", duplicate=True)
+    assert value is None
 
 
 # -- the unlinked fact in the document ---------------------------------------------------------

@@ -714,3 +714,55 @@ def test_a_store_failure_reading_the_document_is_reported_per_report() -> None:
 
     assert outcome.items[0].error
     assert "delivery:pending" in s.labels(report)
+
+
+# -- a rejected report (a duplicate-of ends in one) never gets a milestone (bh-5kpwc) -----------
+
+
+def _rejected(s: Scene) -> str:
+    """A report still carrying the ``delivery:pending`` a duplicate-of link wrote before the fix,
+    closed as rejected."""
+    report = s.report(status="closed")
+    s.store.set_state(report, "intake", "rejected", reason="duplicate", actor="dev/t")
+    return report
+
+
+def test_a_merge_leaves_a_rejected_report_untouched_and_still_moves_the_others() -> None:
+    s = Scene()
+    canonical, duplicate = s.report(), _rejected(s)
+    writes = s.store.writes
+
+    outcome = s.merge()
+
+    assert outcome.reports == (canonical, duplicate) and not outcome.errors
+    assert "delivery:merged" in s.labels(canonical) and s.records(canonical, OutboxEvent.MERGED)
+    assert "delivery:pending" in s.labels(duplicate) and s.records(duplicate) == []
+    assert s.store.read_outbox(duplicate) is None and "rejected or closed" in outcome.items[1].note
+    assert s.store.writes > writes  # the canonical's writes only
+    assert s.requests() == (0, 0)
+
+
+def test_a_release_leaves_a_rejected_report_at_merged_untouched() -> None:
+    s = Scene(verifier=verifier(MERGE_SHA))
+    canonical = s.report()
+    duplicate = _rejected(s)
+    s.merge()
+    s.store.set_state(duplicate, "delivery", "merged", reason="old merge", actor="dev/t")
+
+    outcome = s.release()
+
+    assert {i.report: i.delivery for i in outcome.items}[canonical] == "released"
+    assert "delivery:merged" in s.labels(duplicate) and s.records(duplicate) == []
+
+
+def test_linking_late_never_catches_a_rejected_report_up() -> None:
+    s = Scene()
+    s.report()
+    s.merge()
+    s.store.mark(s.work, status="closed")
+    duplicate = _rejected(s)
+
+    outcome = s.service.on_linked(duplicate, s.work, ACTOR)
+
+    assert all(item.drafted == "" and item.delivery == "" for item in outcome.items)
+    assert s.records(duplicate) == []

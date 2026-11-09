@@ -412,6 +412,35 @@ def test_a_converged_issue_diffs_to_nothing() -> None:
     assert not diff.changed and not diff.drift
 
 
+def test_a_rejected_report_projects_no_delivery_or_progress_and_the_live_ones_are_removed() -> None:
+    """A duplicate-of ends in a reject: its delivery and progress are its canonical report's
+    (bh-5kpwc), so a stale ``bh:delivery/pending`` on the issue is a removal, never kept."""
+    cat = catalog()
+    work = WorkFacts("in_progress", type="bug", priority=2)
+    rejected = ReportFacts.from_bead(("intake:rejected", "delivery:pending"), "bug", 2)
+
+    desired = desired_labels(cat, rejected, work, ProgressFacts(blocked_notice=True))
+
+    assert rejected.rejected
+    assert not {n for n in desired.labels if n.startswith(("bh:delivery/", "bh:progress/"))}
+    assert "bh:intake/rejected" in desired.labels  # the triage state is still shown
+    live = {"bh:intake/rejected", "bh:delivery/pending", "bh:progress/started"}
+    live |= {"bh:type/bug", "bh:priority/p2"}
+    diff = diff_labels(cat, desired, live)
+    assert diff.remove == {"bh:delivery/pending", "bh:progress/started"} and not diff.add
+
+
+def test_an_accepted_report_still_projects_delivery_and_progress() -> None:
+    accepted = ReportFacts.from_bead(("intake:accepted", "delivery:pending"), "bug", 2)
+
+    desired = desired_labels(
+        catalog(), accepted, WorkFacts("in_progress", type="bug", priority=2), ProgressFacts()
+    )
+
+    assert not accepted.rejected
+    assert {"bh:delivery/pending", "bh:progress/started"} <= desired.labels
+
+
 def test_a_desired_label_outside_the_prefix_is_refused() -> None:
     with pytest.raises(ValueError, match="outside the owned prefix"):
         diff_labels(catalog(), {"bug"}, set())

@@ -169,6 +169,13 @@ def is_awaiting_triage(labels) -> bool:
     return is_untriaged_intake(labels) or is_needs_info(labels)
 
 
+def is_rejected(labels) -> bool:
+    """True once a report was fielded by ``reject`` (`intake:rejected`). A ``duplicate-of`` outcome
+    ends in a reject too, so this is also the mark of a duplicate: its delivery belongs to the
+    canonical report, never to it."""
+    return INTAKE_REJECTED in (labels or [])
+
+
 def is_promoted(labels) -> bool:
     """True once a report has been promoted to the planner (`intake:promoted`). Drives the
     planner's adopt queue, which builds on the triage `promote` verb."""
@@ -264,6 +271,7 @@ __all__ = [
     "is_escalation_origin",
     "is_needs_info",
     "is_promoted",
+    "is_rejected",
     "is_report_origin",
     "is_untriaged_intake",
     "origin_from_source_system",

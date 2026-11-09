@@ -49,7 +49,7 @@ from types import MappingProxyType
 from .leaks import LeakFinding, LeakPolicy, Scanner, check, unresolved
 from .link import work_progress_of
 from .models import WorkProgress
-from .vocabulary import DELIVERY_DIM, INTAKE_DIM, INTAKE_DIMENSIONS
+from .vocabulary import DELIVERY_DIM, DISPOSITION_STATE, INTAKE_DIM, INTAKE_DIMENSIONS
 
 #: The owned prefix every projected label carries by default.
 DEFAULT_PREFIX = "bh:"
@@ -207,6 +207,12 @@ class ReportFacts:
     priority: int | str | None = None
     components: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
+
+    @property
+    def rejected(self) -> bool:
+        """Fielded by ``reject`` (a ``duplicate-of`` ends in one): its delivery and progress are
+        not its own, so none is projected (bh-5kpwc)."""
+        return self.intake == DISPOSITION_STATE["reject"]
 
     @classmethod
     def from_bead(
@@ -588,10 +594,13 @@ def desired_labels(
     progress = progress if progress is not None else ProgressFacts()
     w = work or WorkFacts("")
     # per dimension, the alternatives in order: the first that projects anything wins
+    # a rejected report (a duplicate-of included) shares no delivery or progress with the work it
+    # tracks: the canonical report carries both (bh-5kpwc)
+    own = not report.rejected
     candidates: dict[str, tuple[tuple[str, ...], ...]] = {
         INTAKE_DIM: (_opt(report.intake),),
-        DELIVERY_DIM: (_opt(report.delivery),),
-        PROGRESS_DIM: (_opt(derive_progress(work, progress, report.delivery)),),
+        DELIVERY_DIM: (_opt(report.delivery if own else None),),
+        PROGRESS_DIM: (_opt(derive_progress(work, progress, report.delivery) if own else None),),
         TYPE_DIM: (_opt(w.type), _opt(report.type)),
         PRIORITY_DIM: (
             _opt(normalize_priority(w.priority)),
