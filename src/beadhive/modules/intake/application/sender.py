@@ -584,6 +584,7 @@ class OutboxService:
         if not due:
             return BatchSendOutcome()
         live = self._listing_or_none() if any(k is OpKind.LABELS for _, _, k in due) else None
+        bindings = self._listed_bindings({report for report, _, _ in due})
         results: list[OutboxResult] = []
         failed: list[BatchSendFailure] = []
         stopped = ""
@@ -591,7 +592,9 @@ class OutboxService:
             for report, group in groupby(due, key=lambda item: item[0]):
                 ops = [(outbox_id, kind) for _, outbox_id, kind in group]
                 try:
-                    stopped = self._send_report(report, ops, live, request, results, failed)
+                    stopped = self._send_report(
+                        report, ops, live, bindings, request, results, failed
+                    )
                 except (IntakeRefused, IntakeStoreError) as exc:  # its binding or its hold
                     reason = exc.reason.value if isinstance(exc, IntakeRefused) else "store_error"
                     failed.extend(
@@ -610,6 +613,7 @@ class OutboxService:
         report: str,
         ops: list[tuple[str, OpKind]],
         live: dict[str, TrackerIssue] | None,
+        bindings: dict[str, IssueBinding],
         request: BatchSend,
         results: list[OutboxResult],
         failed: list[BatchSendFailure],
@@ -618,8 +622,9 @@ class OutboxService:
         one store session (``bh-25fvb``): one host check and one read of the report for all of
         them, while each is still :meth:`_send_held`'s own write-ahead, request and receipt with
         its own grant. A refusal or store failure is that operation's and the rest go on; the
-        completion policy runs after the hold. Returns a host-level stop (``not_primary``)."""
-        binding = self._bound_here(report)
+        completion policy runs after the hold. ``bindings`` are the outbox listing's, each used in
+        place of the report's own read. Returns a host-level stop (``not_primary``)."""
+        binding = self._bound_here(report, bindings.get(report))
         sent: list[tuple[OutboxResult, OutboxApplied | None]] = []
         stopped = ""
         with held(self._lock, self._store, binding) as epoch:
@@ -649,6 +654,20 @@ class OutboxService:
                     )
         results.extend(self._completed(report, r, o, request.actor) for r, o in sent)
         return stopped
+
+    def _listed_bindings(self, reports: set[str]) -> dict[str, IssueBinding]:
+        """The bindings of ``reports`` the outbox listing carries whole (one listing, no read per
+        report). A row whose listing lacks the binding's project (a store whose list rows carry no
+        metadata) is left out: its binding is read on its own, as ``send`` does."""
+        try:
+            views = self._store.reports_with_outbox()
+        except IntakeStoreError:
+            return {}
+        return {
+            v.id: v.binding
+            for v in views
+            if v.id in reports and v.binding is not None and v.binding.tracker and v.binding.project
+        }
 
     def _listing_or_none(self) -> dict[str, TrackerIssue] | None:
         """The issues by URL from ONE listing, or ``None`` when it cannot be made (each labels
@@ -1311,9 +1330,10 @@ class OutboxService:
             return None
         return CanonicalIssue(canonical.identifier, canonical.url)
 
-    def _bound_here(self, report: str) -> IssueBinding:
-        """The binding, refused unless it names the bound tracker project (no request)."""
-        binding = self._binding(report)
+    def _bound_here(self, report: str, listed: IssueBinding | None = None) -> IssueBinding:
+        """The binding, refused unless it names the bound tracker project (no request). ``listed``
+        is a binding already read whole (a listing's): it spares the report's own read."""
+        binding = listed or self._binding(report)
         project = self._tracker.describe().project
         if (binding.tracker, binding.project) != (project.tracker, project.locator):
             raise IntakeRefused(
