@@ -266,7 +266,7 @@ def test_the_outbox_verbs_draft_review_approve_send_discard_and_reconcile(rig, m
     monkeypatch.setattr(
         intake_services,
         "outbox_wiring",
-        lambda cfg, entry, directory=None: {
+        lambda cfg, entry, directory=None, **_: {
             "tracker": tracker,
             "identity": ME,
             "marker_line": marker_line,
@@ -347,7 +347,7 @@ def _labels_rig(rig, monkeypatch, outbox: dict) -> tuple[str, str]:
     monkeypatch.setattr(
         intake_services,
         "outbox_wiring",
-        lambda cfg, entry, directory=None: {
+        lambda cfg, entry, directory=None, **_: {
             "tracker": tracker,
             "identity": ME,
             "marker_line": marker_line,
@@ -402,7 +402,7 @@ def test_an_agent_seat_cannot_approve_or_send(rig, monkeypatch) -> None:
     monkeypatch.setattr(
         intake_services,
         "outbox_wiring",
-        lambda cfg, entry, directory=None: {
+        lambda cfg, entry, directory=None, **_: {
             "tracker": tracker,
             "identity": ME,
             "marker_line": marker_line,
@@ -461,7 +461,7 @@ def _close_rig(
     monkeypatch.setattr(
         intake_services,
         "outbox_wiring",
-        lambda cfg, entry, directory=None: {
+        lambda cfg, entry, directory=None, **_: {
             "tracker": tracker,
             "identity": ME,
             "marker_line": marker_line,

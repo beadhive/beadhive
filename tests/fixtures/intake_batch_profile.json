@@ -77,8 +77,8 @@
   "budget_s": {
     "draft": 90.0,
     "approve": 60.0,
-    "send": 200.0,
+    "send": 240.0,
     "single send": 8.0,
-    "source": "the modeled totals with headroom at batch_recheck_seconds=300 (about 56 s draft, 46 s approve, 175 s send with the per-command client and field definitions of 0.35.8, 6.8 s single send with the import-lazy intake verbs of bh-lwz8a, 7.9 s before): the bar the -m perf run holds; the single send is over its 3 s target and followed up on bh-wmmfo"
+    "source": "the modeled totals with headroom at batch_recheck_seconds=300 (about 56 s draft, 46 s approve, about 210 s send paced at 80 write requests a minute (bh-eqtxv; 175 s unpaced with the per-command client and field definitions of 0.35.8), 6.8 s single send with the import-lazy intake verbs of bh-lwz8a, 7.9 s before): the bar the -m perf run holds; the single send is over its 3 s target and followed up on bh-wmmfo"
   }
 }

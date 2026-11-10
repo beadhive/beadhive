@@ -30,7 +30,12 @@ from pathlib import Path
 import pytest
 
 from beadhive import intake_services
-from beadhive.modules.intake.application import IntakeService, LabelProjection, OutboxService
+from beadhive.modules.intake.application import (
+    IntakeService,
+    LabelProjection,
+    OutboxService,
+    WritePacer,
+)
 from beadhive.modules.intake.domain import (
     BatchSend,
     IssueBinding,
@@ -52,7 +57,13 @@ from beadhive.modules.intake.domain import (
     WorkDraft,
 )
 from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS
-from beadhive.testing.intake import SCOPE, MemoryReportStore, RecordingSanitizer, SequentialIdSource
+from beadhive.testing.intake import (
+    SCOPE,
+    MemoryReportStore,
+    MemoryWriteLedger,
+    RecordingSanitizer,
+    SequentialIdSource,
+)
 from beadhive.testing.tracker import MemoryTracker, MemoryWorld, at
 
 PROFILE = json.loads(
@@ -62,12 +73,34 @@ FIGURES = {name: figure["value"] for name, figure in PROFILE["figures"].items()}
 
 SCALE = 0.05
 _slept: list[float] = []  # every scaled latency slept, so the in-process time is not scaled up
+_started = [0.0]  # perf_counter at the start of the command being timed
+
+
+_factor = [1.0]  # every modeled latency times this (1.5: the "50% worse" reference run)
 
 
 @pytest.mark.perf  # a perf-only helper: the wall-clock check exempts it like the test
-def _sleep(seconds: float) -> None:
-    _slept.append(seconds * SCALE)
-    time.sleep(seconds * SCALE)
+def _sleep(seconds: float, *, latency: bool = True) -> None:
+    scaled = seconds * SCALE * (_factor[0] if latency else 1.0)
+    _slept.append(scaled)
+    time.sleep(scaled)
+
+
+@pytest.mark.perf
+def _model_now() -> float:
+    """The command's clock in MODEL seconds: the scaled sleeps unscaled, plus the in-process time
+    at real speed (the same arithmetic as :meth:`Factory.timed`). The pacer's spacing and the
+    ledger run on it, so a 0.75 s spacing sleeps 37.5 ms and stays comparable with the model."""
+    slept = sum(_slept)
+    return slept / SCALE + (time.perf_counter() - _started[0] - slept)
+
+
+@pytest.mark.perf
+def _pace_wait(seconds: float, stop) -> None:
+    """The pacer's wait at the suite's scale (``bh-eqtxv``)."""
+    if stop is not None and stop.is_set():
+        return
+    _sleep(max(0.0, seconds), latency=False)  # the pace is not a latency: never scaled by it
 
 
 STORE_READ = FIGURES["store_read_s"]
@@ -90,10 +123,10 @@ BEFORE = {
 TARGET = PROFILE["target_s"]
 #: The modeled totals with headroom (the opt-in recheck 300): the bar this check holds. Draft
 #: (about 56 s), approve (about 46 s) and, with the per-command client and field definitions of
-#: 0.35.8, the send (about 175 s: 270 GitHub requests plus one definitions read, and 540
-#: compare-and-set writes, 67 s) are under their targets. The single send (about 6.8 s) is not under
-#: 3 s: about 3.3 s of it is the process (4.4 s before the import-lazy intake verbs of bh-lwz8a),
-#: 1.85 s the host check. The 3 s target is followed up on bh-wmmfo.
+#: 0.35.8, the send are under their targets; the send is paced at 80 write requests a minute
+#: (bh-eqtxv), so about 210 s, held under the 240 s target. The single send (about 6.8 s) is not
+#: under 3 s: about 3.3 s of it is the process (4.4 s before the import-lazy intake verbs of
+#: bh-lwz8a), 1.85 s the host check. The 3 s target is followed up on bh-wmmfo.
 BUDGET = {k: v for k, v in PROFILE["budget_s"].items() if k != "source"}
 OBSERVED = PROFILE["factory"]["observed_0_35_5"]
 
@@ -193,6 +226,8 @@ class SlowTracker(MemoryTracker):
     token_cache = False
     defs_read = False  # this command already read the org's field definitions
     calls: Counter[str]
+    writes: list[float]  # the model time each write request started (bh-eqtxv)
+    gate = None  # the pacer's write gate, as the GitHub transport calls it
 
     def _wait(self, name: str, requests: int = 1) -> None:
         if not self.slow:
@@ -218,15 +253,29 @@ class SlowTracker(MemoryTracker):
         self._wait("probe_capabilities")
         return super().probe_capabilities()
 
+    def _write(self, name: str, *, first_fields: bool = False) -> None:
+        """One write: the token (and, for the command's first fields write, the definitions read)
+        before it, then the pacer's gate, then the request itself, whose start is recorded."""
+        if self.slow:
+            self.calls[name] += 1
+            token = 0.0 if self.token_cache and self.calls["token"] else GITHUB_TOKEN
+            self.calls["token"] += 1
+            _sleep(token + (GITHUB_REQUEST if first_fields else 0.0))
+        if self.gate is not None:
+            self.gate("POST")  # bh-eqtxv: the transport's write gate records the start
+        if self.slow:
+            self.writes.append(_model_now())
+            _sleep(GITHUB_REQUEST)
+
     def set_issue_type(self, issue, issue_type, **kwargs):
-        self._wait("set_issue_type")
+        self._write("set_issue_type")
         return super().set_issue_type(issue, issue_type, **kwargs)
 
     def set_issue_fields(self, issue, values, **kwargs):
         # the org's field definitions are read once per command (bh-n0h15), then one write each
         first = not self.defs_read
         self.defs_read = True
-        self._wait("set_issue_fields", requests=2 if first else 1)
+        self._write("set_issue_fields", first_fields=first)
         return super().set_issue_fields(issue, values, **kwargs)
 
 
@@ -245,6 +294,7 @@ class Factory:
         world.set_write_time(at(2))
         self.tracker = SlowTracker(world, enabled=READ_OPERATIONS | WRITE_OPERATIONS, page_size=100)
         self.tracker.calls = Counter()
+        self.tracker.writes = []
         self.tracker.token_cache = token_cache
         self.store = SlowStore(SCOPE)
         self.store.calls = Counter()
@@ -261,6 +311,14 @@ class Factory:
         ids = SequentialIdSource()
         sanitizer = RecordingSanitizer.of([])
         private = StorePosture(published=False)
+        pacer = WritePacer(  # bh-eqtxv: 80 a minute on the model clock, the ledger in memory
+            MemoryWriteLedger(),
+            per_minute=80,
+            per_hour=500,
+            monotonic=_model_now,
+            wall=_model_now,
+            wait=_pace_wait,
+        )
         sender = OutboxService(
             self.store,
             self.tracker,
@@ -272,7 +330,9 @@ class Factory:
             leak_policy=LEAKS,
             sanitizer=sanitizer,
             posture=private,
+            pacer=pacer,
         )
+        self.tracker.gate = pacer.gate
         projection = LabelProjection(
             self.store,
             self.tracker,
@@ -314,8 +374,9 @@ class Factory:
         self.tracker.defs_read = False  # a command remembers them for itself only
         self.store.slow = self.tracker.slow = True
         _slept.clear()
+        self.tracker.writes.clear()
         checks, holds = self.checks, len(self.holds)
-        started = time.perf_counter()
+        started = _started[0] = time.perf_counter()
         try:
             result = call()
         finally:
@@ -379,11 +440,36 @@ def test_135_issues_draft_approve_and_send_fit_their_budgets(tmp_path, holds, to
     assert f.store.calls["read"] == REPORTS and f.store.calls["write"] == 2 * OPS
     assert f.tracker.calls["set_issue_type"] == f.tracker.calls["set_issue_fields"] == REPORTS
     lines.append(_line("send", send, held, checks))
+    # bh-eqtxv: paced at 80 write requests a minute, never more than 80 starts in any 60 s
+    starts = sorted(f.tracker.writes)
+    assert len(starts) == OPS
+    busiest = max(sum(1 for t in starts if s <= t < s + 60.0) for s in starts)
+    assert busiest <= 80, busiest
+    lines.append(f"send     {OPS} write requests, at most {busiest} in any 60 s (cap 80)")
 
     print("\n" + "\n".join(lines))
     assert draft < BUDGET["draft"] <= TARGET["draft"]
     assert approve < BUDGET["approve"] <= TARGET["approve"]
     assert send < BUDGET["send"] <= TARGET["send"]
+
+
+@pytest.mark.perf
+def test_the_paced_send_with_every_latency_half_as_slow_again(tmp_path, holds) -> None:
+    """The reference run (``bh-eqtxv``): every latency 1.5 times the profile. Printed, not held
+    to the target (the design models about 243 s: latency-bound past about 1.29 times)."""
+    f = Factory(tmp_path, holds, token_cache=True)
+    f.intake.sync_labels(LabelSyncRequest(OPERATOR))
+    batch = f.intake.review_label_batch()
+    f.intake.approve_label_batch(LabelBatchApprove(batch.short_digest, OPERATOR))
+    _factor[0] = 1.5
+    try:
+        sent, send, _held, _checks = f.timed(
+            lambda: f.intake.send_approved(BatchSend(OPERATOR, kinds=(OpKind.TYPE, OpKind.FIELDS)))
+        )
+    finally:
+        _factor[0] = 1.0
+    assert sent.ok and len(sent.sent) == OPS
+    print(f"\nsend at 1.5x latency modeled {send:6.1f}s (reference; target {TARGET['send']:.0f}s)")
 
 
 @pytest.mark.perf
