@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.7 (2026-11-10)
+
+### Fix
+
+- **deps**: allow typer 0.29 (typer>=0.12,<0.30)
+- **cli**: parse duration flags with typer's public parser=
+
 ## v0.35.6 (2026-11-10)
 
 ### Fix
