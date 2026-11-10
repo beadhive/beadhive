@@ -32,6 +32,7 @@ from beadhive.modules.intake.domain import (
     DraftRequest,
     GrantStatus,
     IntakeRefused,
+    IntakeStoreError,
     IssueBinding,
     IssueStatus,
     LabelBase,
@@ -354,6 +355,32 @@ def test_a_listing_without_the_binding_falls_back_to_one_read_per_report() -> No
 
     assert outcome.ok and not outcome.failed and len(outcome.results) == 9
     assert s.store.calls["get_unheld"] == 3  # one binding read per report
+    assert all(s.op(r, reply, X).receipt is not None for r, _, reply, _ in reports)
+
+
+def test_a_failing_listing_falls_back_to_one_read_per_report() -> None:
+    """The bindings listing failing (``IntakeStoreError``) is no failure of the batch: every
+    report's binding is read on its own, as before (``bh-gjo05``)."""
+    s = Scene(lock=ActiveLock())
+    s.store.lock = s.lock
+    reports = [s.closing_report(f"r{n}") for n in range(2)]
+
+    listed = s.store.reports_with_outbox
+    asked = []
+
+    def broken():  # the documents' own pass lists too (the memory store); the bindings' fails
+        asked.append(1)
+        if len(asked) > 1:
+            raise IntakeStoreError("listing unavailable")
+        return listed()
+
+    s.store.reports_with_outbox = broken
+    s.store.calls.clear()
+
+    outcome = s.intake.send_approved(BatchSend("alice"))
+
+    assert outcome.ok and not outcome.failed and len(outcome.results) == 6
+    assert s.store.calls["get_unheld"] == 2
     assert all(s.op(r, reply, X).receipt is not None for r, _, reply, _ in reports)
 
 
