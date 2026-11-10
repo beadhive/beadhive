@@ -394,3 +394,70 @@ def test_file_report_origin_defaults_to_report(tmp_path, monkeypatch):
 
     assert "origin=report" in sv
     assert "origin=escalation" not in sv
+
+
+# ---- long messages: short title, full description, intact bd error (bh-3egoy) -------------
+
+BD_TITLE_LIMIT = 500
+
+
+def _create_args(rec):
+    (cmd,) = [c for c in rec.calls if "create" in c]
+    title = cmd[cmd.index("create") + 1]
+    desc = cmd[cmd.index("-d") + 1] if "-d" in cmd else ""
+    return title, desc
+
+
+_MULTI = (
+    'First line says "quoted" things and it\'s fine.\n\n'
+    "Second paragraph: repro `bh x` with $HOME and 'single' quotes.\n"
+    'Third line with "double" quotes.\n' + "tail " * 150
+)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["a" * 200, "b" * 500, "c" * 2000, "word " * 400, _MULTI],
+    ids=["200", "500", "2000", "2000-words", "multi-paragraph"],
+)
+def test_escalate_long_message_short_title_full_description(tmp_path, monkeypatch, message):
+    rec = _Recorder(new_id="hq-esc-9")
+    _wire(monkeypatch, rec, tmp_path)
+
+    code, error, new_id = escalate.file_escalation(message, cfg=_cfg_with_hq())
+
+    assert (code, error, new_id) == (0, "", "hq-esc-9")
+    title, desc = _create_args(rec)
+    assert 0 < len(title) <= escalate.TITLE_MAX <= BD_TITLE_LIMIT
+    assert "\n" not in title
+    assert desc == message
+
+
+def test_derive_title_prefers_first_line_and_sentence():
+    assert escalate.derive_title(_MULTI) == 'First line says "quoted" things and it\'s fine.'
+    long_sentence = "Something broke badly in the gate. " + "x" * 300
+    assert escalate.derive_title(long_sentence) == "Something broke badly in the gate."
+    assert escalate.derive_title("\n\n  hello  \nworld") == "hello"
+
+
+def test_escalate_short_message_has_no_redundant_description(tmp_path, monkeypatch):
+    rec = _Recorder()
+    _wire(monkeypatch, rec, tmp_path)
+    escalate.file_escalation("bd create is broken", cfg=_cfg_with_hq())
+    assert _create_args(rec) == ("bd create is broken", "")
+
+
+def test_escalate_surfaces_bd_error_intact(tmp_path, monkeypatch):
+    payload = json.dumps(
+        {"error": "validation failed: title must be 500 characters or less (got 600)"}, indent=2
+    )
+
+    def failing(cmd, **kwargs):
+        return Completed(1, payload, "") if "create" in cmd else Completed(0, "", "")
+
+    _wire(monkeypatch, failing, tmp_path)
+    code, error, new_id = escalate.file_escalation("x" * 600, cfg=_cfg_with_hq())
+
+    assert code != 0 and new_id == ""
+    assert "title must be 500 characters or less (got 600)" in error
+    assert error.strip() != "bd create failed: {"

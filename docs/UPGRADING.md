@@ -5,6 +5,14 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.8 → 0.35.9 — long `bh escalate` messages (bh-3egoy)
+
+No action required. `bh escalate '<message>'` now accepts a message of any length: the bead title
+is the message's first line (cut at a sentence or word boundary, at most 120 characters) and the
+full message is the bead description, so a long or multi-paragraph report is no longer rejected by
+bd's 500-character title limit and no longer truncated in `bh hq intake` / `bh work list`. A failed
+`bd create` is reported with bd's own error message instead of a bare `{`.
+
 ## 0.35.7 → 0.35.8 — outbox speed (bh-womf3)
 
 One new HOST-only key, `hq.authority_expiry_recheck_s` (default `300`, `0` re-reads on every

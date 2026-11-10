@@ -185,14 +185,14 @@ def report_store(
     service it may be diagnosing."""
     if cli_only:
         routes = phase_timings.timed_routes(bd_cli.routes(directory))
-        return BdReportStore(routes, scope, error_line=bd.err_line)
+        return BdReportStore(routes, scope, error_line=bd.err_detail)
     select = intake_beads.ApiSelector(
         directory,
         entry if entry is not None else (lambda: intake_beads.entry_of_directory(directory)),
     )
     routes = phase_timings.timed_routes(bd_cli.routes(directory))  # bh-17g6b: timed if measuring
     api = phase_timings.timed_selector(select)
-    return ApiReportStore(routes, scope, api=api, error_line=bd.err_line)
+    return ApiReportStore(routes, scope, api=api, error_line=bd.err_detail)
 
 
 def service_for(
