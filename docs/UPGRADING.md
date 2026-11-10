@@ -9,7 +9,7 @@ exists for the releases where "read the changelog" isn't enough to act on.
 
 One new HOST-only key, `hq.authority_expiry_recheck_s` (default `300`, `0` re-reads on every
 command), sets how often a command re-reads the authority status for the expiry warning; there is
-no state change. Three changes make a long outbox batch cheaper or measurable.
+no state change. The changes below make an outbox batch, or a single send, cheaper or measurable.
 
 ### One GitHub client and one field-definitions read per command
 
@@ -40,6 +40,18 @@ receipt shapes are unchanged, so the wire stays at 2.25.0. The shape is document
 [CONFIGURATION.md](CONFIGURATION.md#where-a-batch-spends-its-time-the-timings-block-bh-17g6b). The
 `-m perf` model now reads a recorded profile (`tests/fixtures/intake_batch_profile.json`) instead of
 constants in the test.
+
+### The outbox, thread and labels verbs start faster (bh-lwz8a)
+
+`bh work outbox <verb>`, `bh work thread <verb>` and `bh work labels <verb>` no longer import the
+whole command tree: the entry point composes just those groups from the operation catalog, with
+the same root callback (config and identity memos, migrations, warnings, telemetry, setup gate)
+and the same handlers, so flags, output, exit codes and `--help` are unchanged. On the factory
+this cut the per-process floor of one of these commands (wall clock less the verb) from about
+4.9 s to about 3.3 s; `timings.startup` in `--json` shows it per run. Shell completion,
+`bh --help`, `bh work --help`, a group's own `--help` (`bh work outbox --help`) and every other
+verb still go through the full tree. Commands run outside a managed worktree also skip importing
+the worktree module for the telemetry overlay. Nothing to do on upgrade.
 
 ## 0.35.5 → 0.35.6 — a typer cap (fresh installs of 0.35.5 and earlier are broken)
 

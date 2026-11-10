@@ -175,7 +175,7 @@ class _Recorder:
 
 @pytest.mark.parametrize(
     ("argv", "memoized"),
-    [(["work", "outbox", "show"], True), (["host", "daemon"], False), (["mcp"], False)],
+    [(["work", "claim", "x"], True), (["host", "daemon"], False), (["mcp"], False)],
 )
 def test_the_entrypoint_opts_one_shot_verbs_in_before_the_tree_loads(
     monkeypatch, argv, memoized
@@ -189,6 +189,22 @@ def test_the_entrypoint_opts_one_shot_verbs_in_before_the_tree_loads(
     cli_entrypoint.main()
 
     assert ran == [memoized]  # entered BEFORE the command tree ran, or not at all
+
+
+def test_the_entrypoint_opts_the_intake_fast_path_in_before_it_runs(monkeypatch) -> None:
+    """``work outbox <verb>`` runs the import-lazy tree (bh-lwz8a), inside the same memo."""
+    from beadhive import cli_root
+
+    entered: list[str] = []
+    ran: list[bool] = []
+    monkeypatch.setattr(config_store, "process_load_memo", lambda: _Recorder(entered))
+    monkeypatch.setattr(cli, "main", lambda: ran.append("full"))
+    monkeypatch.setattr(cli_root, "run", lambda app: ran.append(bool(entered)))
+    monkeypatch.setattr(cli_entrypoint.sys, "argv", ["bh", "work", "outbox", "show"])
+
+    cli_entrypoint.main()
+
+    assert ran == [True]
 
 
 @pytest.mark.parametrize(

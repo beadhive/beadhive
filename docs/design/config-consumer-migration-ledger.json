@@ -434,7 +434,7 @@
       {
         "facade_target": "beadhive.config.process_load_memo",
         "kind": "direct-facade",
-        "line": 200,
+        "line": 216,
         "path": "tests/test_config_process_load_memo.py",
         "target": "beadhive.config.process_load_memo"
       },
