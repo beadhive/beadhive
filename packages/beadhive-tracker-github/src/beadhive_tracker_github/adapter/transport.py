@@ -33,13 +33,24 @@ The credential: :class:`Transport` holds the injected zero-argument ``TokenSourc
 **once per operation** (:meth:`Transport.operation`) and keeps the value only for that
 operation; nothing is cached, so a rotated token is picked up. Only provenance is ever shown, and
 every upstream text is scrubbed of the resolved value and of any token shape.
+
+The client: by default each operation builds its own githubkit client and closes it (a new
+connection, and a new TLS context, per operation; about 85 ms each on the factory, bh-vy7dx). A
+transport built ``reuse_client=True`` (an adapter that lives for ONE command, ``command_scoped``)
+builds one client per kind (read, write) on first use and keeps it, and its connection pool, until
+:meth:`Transport.close`. The credential contract is unchanged: the token is still resolved once
+per operation, and the shared client's auth reads it per request from a thread-local holder that
+is set when the operation opens and cleared when it ends, so a rotated token is picked up by the
+next operation and no token value outlives its operation. A resident process (the host daemon's
+timer) never sets ``reuse_client``: it builds a fresh client per operation, as before.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -244,6 +255,39 @@ class Session:
         return self._run(target, None, method=method, payload=payload, no_content=no_content)
 
 
+class _HeldToken:
+    """The token of the operation in flight on THIS thread (a shared client reads it per call)."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def hold(self, token: ResolvedToken | None) -> None:
+        self._local.token = token
+
+    def current(self) -> str | None:
+        token = getattr(self._local, "token", None)
+        return token.value if token is not None else None
+
+
+def _held_auth(held: _HeldToken) -> Any:
+    """A githubkit auth strategy that sets ``Authorization`` from ``held`` on every request (and
+    sends none while nothing is held: an anonymous operation)."""
+    import httpx
+    from githubkit.auth import BaseAuthStrategy
+
+    class Flow(httpx.Auth):
+        def auth_flow(self, request: httpx.Request):
+            if (value := held.current()) is not None:
+                request.headers["Authorization"] = f"token {value}"
+            yield request
+
+    class Strategy(BaseAuthStrategy):
+        def get_auth_flow(self, github: Any) -> httpx.Auth:
+            return Flow()
+
+    return Strategy()
+
+
 @dataclass
 class Transport:
     """The adapter's HTTP seam. ``transport`` is an ``httpx`` transport to send through (tests pass
@@ -257,7 +301,13 @@ class Transport:
     http_cache: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     transport: httpx.BaseTransport | None = field(default=None, repr=False)
+    #: Keep one client (and its connection pool) per kind for the life of this transport. Only an
+    #: adapter that lives for one command sets it; see the module docstring.
+    reuse_client: bool = False
     _cache_strategy: Any = field(default=None, init=False, repr=False)
+    _held: _HeldToken = field(default_factory=_HeldToken, init=False, repr=False)
+    _shared: dict[bool, Any] = field(default_factory=dict, init=False, repr=False)
+    _open: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # "No timeout" is never a configuration: a hung connection must stay a transient failure.
@@ -282,7 +332,7 @@ class Transport:
             raise AuthenticationFailed("the credential source returned no ResolvedToken")
         return token
 
-    def _client(self, token: ResolvedToken | None, *, write: bool = False) -> Any:
+    def _client(self, token: ResolvedToken | None, *, write: bool = False, auth: Any = None) -> Any:
         from githubkit import GitHub
 
         options: dict[str, Any] = {}
@@ -293,7 +343,7 @@ class Transport:
                 self._cache_strategy = MemCacheStrategy()
             options["cache_strategy"] = self._cache_strategy
         return GitHub(
-            token.value if token is not None else None,
+            auth if auth is not None else (token.value if token is not None else None),
             base_url=self.api_base,
             user_agent=USER_AGENT,
             timeout=self.timeout_seconds,
@@ -311,6 +361,27 @@ class Transport:
         """Resolve the credential once, open one client, and yield the operation's seam: GETs,
         plus :meth:`Session.send` when ``write`` (a client that neither caches nor redirects)."""
         token = self._resolve()
-        client = self._client(token, write=write)
-        with client:
-            yield Session(self, token, client, operation, write=write)
+        if not self.reuse_client:
+            client = self._client(token, write=write)
+            with client:
+                yield Session(self, token, client, operation, write=write)
+            return
+        self._held.hold(token)  # this operation's token, read per request; gone when it ends
+        try:
+            yield Session(self, token, self._shared_client(write), operation, write=write)
+        finally:
+            self._held.hold(None)
+
+    def _shared_client(self, write: bool) -> Any:
+        """The one client of this kind (read, or write: never caching, never redirecting)."""
+        client = self._shared.get(write)
+        if client is None:
+            client = self._client(None, write=write, auth=_held_auth(self._held))
+            self._open.enter_context(client)
+            self._shared[write] = client
+        return client
+
+    def close(self) -> None:
+        """Close the shared clients and their pools (a no-op unless ``reuse_client``)."""
+        self._shared.clear()
+        self._open.close()

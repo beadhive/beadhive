@@ -91,12 +91,17 @@ def build_adapter(
     sleep: Callable[[float], None],
     clock: Callable[[], datetime] | None = None,
     transport: httpx.BaseTransport | None = None,
+    command_scoped: bool = False,
 ) -> GitHubTrackerAdapter:
     """The adapter for ``project`` from the folded plugin fragment.
 
     ``transport`` is the ``httpx`` transport to send through (``None``: the network); tests pass
     an ``httpx.MockTransport``. Building sends no request and imports no githubkit; a writer
-    method exists on the result only for an enabled write operation (:mod:`.compose`)."""
+    method exists on the result only for an enabled write operation (:mod:`.compose`).
+
+    ``command_scoped`` says the adapter lives for ONE command: it then keeps one HTTP client
+    (and connection pool) and the organization's issue-field definitions for that life
+    (bh-vy7dx, bh-n0h15). A resident process (the host daemon) leaves it off."""
     parsed = parse_settings(settings)
     return new_adapter(
         project=project,
@@ -112,4 +117,5 @@ def build_adapter(
         timeout_seconds=parsed.timeout_seconds,
         clock=clock,
         transport=transport,
+        command_scoped=command_scoped,
     )

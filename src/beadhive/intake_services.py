@@ -399,9 +399,11 @@ def process_adapters(cfg: Mapping[str, Any], *, resident: bool = False) -> Any:
     cached at module level), so a command, or the daemon's timer, owns exactly one for its
     configuration snapshot. *resident* is for a process that keeps the adapters for its whole
     life (the host daemon's discovery timer): it never caches the token, whatever the key says,
-    so a token rotated or revoked while the daemon runs is picked up by its next operation. This
-    is the one place the production wiring lands; tests inject ``adapters=`` or ``tracker=``
-    instead."""
+    so a token rotated or revoked while the daemon runs is picked up by its next operation, and
+    it never keeps an HTTP client or a memoized read across operations either (a command's
+    adapters reuse one client and the org's issue-field definitions, bh-vy7dx and bh-n0h15; the
+    token is still resolved per operation whenever the cache key is off). This is the one place
+    the production wiring lands; tests inject ``adapters=`` or ``tracker=`` instead."""
     if not external_intake_settings(cfg)[0] or not tracker_plugin_enabled(cfg):
         return None
     from . import run
@@ -413,6 +415,7 @@ def process_adapters(cfg: Mapping[str, Any], *, resident: bool = False) -> Any:
         token_source=run.github_token_source(
             names=_credential_source_names(cfg), cache=not resident and _credential_cache(cfg)
         ),
+        command_scoped=not resident,
     )
 
 
