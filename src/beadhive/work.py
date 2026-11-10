@@ -1450,11 +1450,11 @@ def _pr_merge_gates(bead, main) -> list[dict]:
     return work_merge.impl__pr_merge_gates(sys.modules[__name__], bead, main)
 
 
-def _ensure_pr_gate(main, bead, ref) -> None:
+def _ensure_pr_gate(main, bead, ref, await_id="") -> None:
     """Idempotently open the bd `gh:pr` gate that blocks `bead` until its landing PR merges —
     bd's own gate check/discover watcher machinery can resolve it, and `work land` resolves any
     survivor at close. Reuses an already-open pr-merge gate on re-runs (submit's reuse rule)."""
-    return work_merge.impl__ensure_pr_gate(sys.modules[__name__], main, bead, ref)
+    return work_merge.impl__ensure_pr_gate(sys.modules[__name__], main, bead, ref, await_id)
 
 
 def _open_landing_pr(cfg, entry, main, bead, data, branch, base):
@@ -1671,8 +1671,8 @@ def _prune_landed_hive(entry) -> None:
 
 
 def _guard_land_pr_pending(bead, main) -> None:
-    """Refuse `land` on a bead that isn't `pr-pending` — it only completes a `work.landing: pr`
-    landing opened by `merge`/`finish`."""
+    """Refuse `land` on a bead that isn't `pr-pending` — it only completes a PR landing opened
+    by `merge`/`finish` (`work.landing: pr`) or by a `gh:pr` submit."""
     return work_merge.impl__guard_land_pr_pending(sys.modules[__name__], bead, main)
 
 

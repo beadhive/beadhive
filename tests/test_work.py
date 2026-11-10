@@ -354,6 +354,7 @@ class FakeBd:
             bead = args[args.index("--blocks") + 1] if "--blocks" in args else ""
             reason = args[args.index("--reason") + 1] if "--reason" in args else ""
             gtype = args[args.index("--type") + 1] if "--type" in args else "human"
+            await_id = args[args.index("--await-id") + 1] if "--await-id" in args else ""
             # Mirror real `bd gate` shape: description carries the reason (so `review_gates` can
             # tell a review gate from a kickoff one) and the gate records its await_type.
             self.gates.append(
@@ -362,6 +363,7 @@ class FakeBd:
                     "status": "open",
                     "description": f"blocks {bead}\n\nReason: {reason}",
                     "await_type": gtype,
+                    "await_id": await_id,
                 }
             )
             # Mirror bd's create-then-wire order: the gate bead exists, but the blocking dep
@@ -530,11 +532,14 @@ class FakeGh:
         self.calls = []
         self.prs = list(prs or [])
         self.create_url = create_url
+        self.create_rc = 0  # set non-zero to make `gh pr create` fail
 
     def __call__(self, cmd, **_kw):
         self.calls.append(list(cmd))
         sub = cmd[2] if len(cmd) > 2 else ""
         if cmd[:2] == ["gh", "pr"] and sub == "create":
+            if self.create_rc:
+                return _CP(self.create_rc, "", "pull request create failed: GraphQL error")
             return _CP(0, self.create_url + "\n", "")
         if cmd[:2] == ["gh", "pr"] and sub == "list":
             state = cmd[cmd.index("--state") + 1].lower()
@@ -1731,7 +1736,7 @@ def test_submit_local_gate_failure_retains_refine_backup(hive, fakebd, monkeypat
     assert _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
 
 
-def test_submit_ghpr_gate_pushes(hive, fakebd, monkeypatch):
+def test_submit_ghpr_gate_pushes(hive, fakebd, fakegh, monkeypatch):
     monkeypatch.setattr(config, "review_gate", lambda cfg, entry: "gh:pr")
     fakebd.seed("mr-5", title="t")
     work.claim(bead="mr-5", as_="", hive="myrepo")
@@ -5595,6 +5600,8 @@ def test_merge_pr_landing_pushes_creates_pr_gate_and_leaves_open(hive, fakebd, f
     )
     assert fakebd.states["mr-20"]["landing"] == "pr-pending"
     assert fakebd.did("set-state", "mr-20", "landing=pr-pending")
+    # …and the gate waits on THIS PR, so bd's gh:pr checker can resolve it (bh-srb1r)
+    assert fakebd.did("gate", "create", "--blocks", "mr-20", "--await-id", "7")
     assert fakebd.beads["mr-20"]["status"] != "closed"
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
 
@@ -5674,7 +5681,7 @@ def test_merge_local_landing_never_touches_gh(hive, fakebd, monkeypatch):
     assert fakebd.beads["mr-22"]["close_reason"] == "merged"
 
 
-def test_submit_pushes_to_configured_remote(hive, fakebd, monkeypatch):
+def test_submit_pushes_to_configured_remote(hive, fakebd, fakegh, monkeypatch):
     """work.push_remote is honored at submit's out-of-process publish (the old origin hardcode)."""
     hive.cfg_path.write_text(
         CONFIG_YAML.replace(

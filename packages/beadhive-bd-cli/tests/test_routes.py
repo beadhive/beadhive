@@ -238,6 +238,7 @@ def test_named_gate_dependency_and_coordination_routes() -> None:
     routes.merge_slot_check()
     routes.merge_slot_acquire("merge/a|pid=1")
     routes.merge_slot_release()
+    routes.gate_create("bh-1", "gh:pr", "bh:review abc", await_id="42")
 
     assert [call[1] for call in bd.calls] == [
         ["gate", "create", "--blocks", "bh-1", "--type", "human", "--reason", "review abc"],
@@ -248,6 +249,8 @@ def test_named_gate_dependency_and_coordination_routes() -> None:
         ["merge-slot", "check", "--json"],
         ["merge-slot", "acquire", "--holder", "merge/a|pid=1"],
         ["merge-slot", "release"],
+        ["gate", "create", "--blocks", "bh-1", "--type", "gh:pr", "--reason", "bh:review abc"]
+        + ["--await-id", "42"],
     ]
     assert bd.calls[0] == (
         "run",
