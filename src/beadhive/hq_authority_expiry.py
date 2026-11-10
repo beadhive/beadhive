@@ -34,7 +34,23 @@ _WARNED: set[str] = set()
 #: advisory, prints at most once per process anyway, and an authority whose expiry is that close
 #: is still re-read every few minutes.
 AMBIENT_RECHECK_SECONDS = 300.0
+#: Config key (``hq`` section, HOST scope) that overrides :data:`AMBIENT_RECHECK_SECONDS`; ``0``
+#: re-reads on every command. It is learned from the host config the frame lookup already loads
+#: (no extra load on the hot path), so the first read of a process uses the default.
+RECHECK_KEY = "authority_expiry_recheck_s"
 _ambient_checked_at: list[float] = []
+_ambient_recheck: list[float] = []
+
+
+def _recheck_seconds() -> float:
+    return _ambient_recheck[0] if _ambient_recheck else AMBIENT_RECHECK_SECONDS
+
+
+def _learn_recheck(hq) -> None:
+    """Adopt ``hq.authority_expiry_recheck_s`` from an already-loaded host ``hq`` section."""
+    value = (hq or {}).get(RECHECK_KEY)
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        _ambient_recheck[:] = [float(value)]
 
 
 def parse_duration(value, *, name="duration") -> float:
@@ -220,6 +236,7 @@ def _frame_plane():
     )
 
     hq = hq_control_plane.config.load_host().get("hq", {})
+    _learn_recheck(hq)
     if not (hq.get("authority_anchor") or (hq.get("sql") or {}).get("runtime")):
         return None
     plane = control_plane()
@@ -233,13 +250,12 @@ def warn_if_expiring(plane=None, *, now=None, stream=None, settings_file=None) -
 
     Never raises and never fails the caller: an unreadable authority is simply not warned about
     here (eligibility checks and `bh doctor` already fail closed on that). The ambient form (no
-    ``plane``, no ``now``) reads the status at most once per :data:`AMBIENT_RECHECK_SECONDS`.
+    ``plane``, no ``now``) reads the status at most once per ``hq.authority_expiry_recheck_s``
+    (default :data:`AMBIENT_RECHECK_SECONDS`).
     """
     ambient = plane is None and now is None
     if ambient:
-        if _ambient_checked_at and time.monotonic() - _ambient_checked_at[0] < (
-            AMBIENT_RECHECK_SECONDS
-        ):
+        if _ambient_checked_at and time.monotonic() - _ambient_checked_at[0] < (_recheck_seconds()):
             return None
         _ambient_checked_at[:] = [time.monotonic()]
     try:
@@ -268,6 +284,7 @@ def warn_if_expiring(plane=None, *, now=None, stream=None, settings_file=None) -
 def _reset_for_tests() -> None:
     _WARNED.clear()
     _ambient_checked_at.clear()
+    _ambient_recheck.clear()
 
 
 __all__ = [

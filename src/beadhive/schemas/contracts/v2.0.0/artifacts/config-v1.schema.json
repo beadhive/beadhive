@@ -2111,6 +2111,13 @@
           "title": "Authority Anchor",
           "type": "string"
         },
+        "authority_expiry_recheck_s": {
+          "default": 300.0,
+          "description": "HOST-only. Seconds a command reuses its last read of the HQ authority status for the expiry warning (default 300). `0` re-reads on every command. The first read of a process uses the default; the value is learned from the host config that read loads anyway.",
+          "minimum": 0,
+          "title": "Authority Expiry Recheck S",
+          "type": "number"
+        },
         "authority_mode": {
           "default": "inherit",
           "description": "Frame-local HQ authority mode (HOST only, never fleet). `signed` verifies authority, heartbeat and config signatures; `trusted` is an opt-in waiver; `inherit` (default) follows the fleet default, which resolves to `signed` until one is set. BH_HQ_AUTHORITY_MODE, when set, overrides this value.",
