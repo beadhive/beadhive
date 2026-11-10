@@ -42,7 +42,13 @@ What is composed here:
   catches a report up on already merged work when ``milestones.catch_up_on_link`` is on;
 * the process ``TrackerAdapters`` (:func:`process_adapters`), built from the tracker-github plugin
   and ``run.github_token_source()``, only when ``intake.external.enabled`` and
-  ``plugins.tracker-github.enabled`` are both set (``bh-kzs0b``).
+  ``plugins.tracker-github.enabled`` are both set (``bh-kzs0b``);
+* the outbox write pacer (``bh-eqtxv``): :func:`write_pacer` builds one per ``outbox send`` /
+  ``send-approved`` command over the host-level :class:`FileWriteLedger` of the bound GitHub API
+  host (``$XDG_STATE_HOME/beadhive/github-writes/``) at ``intake.external.outbox.
+  send_writes_per_minute`` / ``send_writes_per_hour`` (80 and 500, on by default, no unpaced
+  mode), wired into the sender as its hook and into that command's adapters as their write gate
+  and wait observer (:func:`pacing_runtime` holds the real clocks, wait and ledger).
 
 Nothing is cached, so every test and integration patch point stays live for each command.
 """
@@ -109,8 +115,11 @@ from .modules.intake.application import (  # the composition root may (gap G7)
     OutboxService,
     StoreOutboxView,
     ThreadService,
+    WritePacer,
 )
 from .modules.intake.domain import (  # the composition root may (gap G7)
+    MAX_WRITES_PER_HOUR,
+    MAX_WRITES_PER_MINUTE,
     BatchSendOutcome,
     CompletionPolicy,
     LeakPolicy,
@@ -122,11 +131,14 @@ from .modules.intake.domain import (  # the composition root may (gap G7)
     OutboxPolicy,
     ReleaseFact,
     ReopenOutcome,
+    SendStop,
     StartFact,
+    StopReason,
     dupes_touching,
     mint_grant_id,
     mint_outbox_id,
 )
+from .outbox_pacing import PacingRuntime
 
 
 class ValidateLabelPolicy:
@@ -1305,6 +1317,7 @@ def outbox_service_for(
     fields_enabled: bool = False,
     index: Any = None,
     reopen_enabled: bool = False,
+    pacer: Any = None,
 ) -> IntakeService:
     """The intake service for ``entry`` with the supervised sender bound over the INJECTED
     ``tracker`` (and its ``marker_line`` codec). With ``threads`` (the comment-ingestion policy,
@@ -1315,7 +1328,8 @@ def outbox_service_for(
     gates of those two operations, and ``reopen_enabled`` its ``issue.reopen`` enable (the reopen
     gate); ``triage`` (:func:`triage_binding`) lets the close backfill
     compute a missing reply's text; ``index`` is the outbox id index (default
-    :func:`outbox_index` in the hive's private state).
+    :func:`outbox_index` in the hive's private state); ``pacer`` is the command's write pacer
+    (:func:`write_pacer`, ``bh-eqtxv``: ``send`` and ``send-approved`` pass one).
 
     Off by default: with ``policy`` absent or disabled no sender is bound at all, so every outbox
     operation refuses with ``OUTBOX_DISABLED`` before the tracker is touched. Enabling it here is
@@ -1364,6 +1378,7 @@ def outbox_service_for(
         holder=f"{socket.gethostname()}:{os.getpid()}",
         completion=milestones.complete,
         index=index if index is not None else outbox_index(directory),
+        pacer=pacer,
     )
     conversation = (
         thread_service_for(store, tracker, held, posture=posture, identity=identity, policy=threads)
@@ -1915,6 +1930,7 @@ def _outbox_port(
     type_enabled: bool = False,
     fields_enabled: bool = False,
     reopen_enabled: bool = False,
+    pacer: Any = None,
 ):
     """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
@@ -1953,6 +1969,7 @@ def _outbox_port(
             type_enabled=type_enabled,
             fields_enabled=fields_enabled,
             reopen_enabled=reopen_enabled,
+            pacer=pacer,
         )
 
     return bind_intake(enabled, build)
@@ -1983,6 +2000,7 @@ def outbox_call(
     type_enabled: bool = False,
     fields_enabled: bool = False,
     reopen_enabled: bool = False,
+    pacer: Any = None,
 ) -> OutboxCall:
     """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
     failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
@@ -2018,6 +2036,7 @@ def outbox_call(
             type_enabled=type_enabled or wiring.get("type_enabled") is True,
             fields_enabled=fields_enabled or wiring.get("fields_enabled") is True,
             reopen_enabled=reopen_enabled or wiring.get("reopen_enabled") is True,
+            pacer=pacer,
         )
         value = run(port)
     except IntakeRefused as exc:
@@ -2214,6 +2233,141 @@ def outbox_approve(
     return call
 
 
+def pacing_runtime() -> PacingRuntime:
+    """The write pacer's clocks, wait and ledger, from the :mod:`.outbox_pacing` seam (the real
+    ones in production; the test suite patches that seam for every test)."""
+    from . import outbox_pacing
+
+    return outbox_pacing.runtime()
+
+
+def outbox_pace(cfg: Mapping[str, Any]) -> tuple[int, int]:
+    """``intake.external.outbox.send_writes_per_minute`` / ``send_writes_per_hour`` (default 80
+    and 500, GitHub's documented limits and their upper bounds). A value outside 1..80 / 1..500
+    (validation refuses it in a loaded config) is refused here too, never clamped."""
+    from .modules.intake.application import check_pace
+
+    section = ((cfg.get("intake") or {}).get("external") or {}).get("outbox") or {}
+    per_minute = section.get("send_writes_per_minute", MAX_WRITES_PER_MINUTE)
+    per_hour = section.get("send_writes_per_hour", MAX_WRITES_PER_HOUR)
+    try:
+        return check_pace(per_minute, per_hour)
+    except ValueError as exc:
+        raise IntakeRefused(
+            RefusalReason.INVALID_REQUEST,
+            f"intake.external.outbox.{exc}: GitHub's documented limits; fix the config "
+            "(`bh config validate`)",
+        ) from None
+
+
+def github_api_host(cfg: Mapping[str, Any]) -> str:
+    """The GitHub API host the outbox writes to (the ledger's name): the tracker plugin's
+    ``base_url`` host for GHES, else ``api.github.com``."""
+    from urllib.parse import urlsplit
+
+    from .bootstrap import tracker as tracker_root
+
+    values = tracker_root.plugin_settings(TRACKER_PLUGIN_ID, cfg.get("plugins")).values
+    base = values.get("base_url") if isinstance(values, Mapping) else None
+    host = urlsplit(base).netloc.lower() if isinstance(base, str) and base else ""
+    return host or "api.github.com"
+
+
+def write_pacer(cfg: Mapping[str, Any], stop: SendStop | None = None) -> WritePacer:
+    """One command's write pacer over the host's ledger for the bound API host (``bh-eqtxv``),
+    bound to ``stop`` (the command's one stop)."""
+    per_minute, per_hour = outbox_pace(cfg)
+    runtime = pacing_runtime()
+    pacer = WritePacer(
+        runtime.ledger(github_api_host(cfg)),
+        per_minute=per_minute,
+        per_hour=per_hour,
+        monotonic=runtime.monotonic,
+        wall=runtime.wall,
+        wait=runtime.wait,
+    )
+    if stop is not None:
+        pacer.begin(stop)
+    return pacer
+
+
+def _paced(cfg, entry, directory, kwargs: dict[str, Any], stop: SendStop) -> dict[str, Any]:
+    """``kwargs`` for :func:`outbox_call` with the command's pacer, as the sender's hook AND as the
+    gate of every write request. Every send goes through it, and no tracker is left unpaced:
+
+    * the adapters this command builds get the pacer as their transport's write gate and wait
+      observer (:meth:`~beadhive.bootstrap.tracker.TrackerAdapters.pace`);
+    * an injected ``tracker`` or ``wiring`` (a test seam), or adapters without ``pace``, get the
+      gate around each writer method instead (:func:`gated_writes`: one request per call)."""
+    pacer = write_pacer(cfg, stop)
+    paced = dict(kwargs)
+    paced["pacer"] = pacer
+    if paced.get("tracker") is not None:
+        paced["tracker"] = gated_writes(paced["tracker"], pacer.gate)
+        return paced
+    if paced.get("wiring") is not None:
+        paced["wiring"] = _gated_wiring(paced["wiring"], pacer)
+        return paced
+    with phase_timings.phase("wiring"):
+        adapters = process_adapters(cfg)
+        pace = getattr(adapters, "pace", None)
+        if callable(pace):
+            adapters = pace(pacer.gate, pacer.observe)
+        wiring = outbox_wiring(cfg, entry, directory, adapters=adapters)
+    paced["wiring"] = wiring if callable(pace) else _gated_wiring(wiring, pacer)
+    return paced
+
+
+def _gated_wiring(wiring: Mapping[str, Any], pacer: WritePacer) -> dict[str, Any]:
+    gated = dict(wiring)
+    if gated.get("tracker") is not None:
+        gated["tracker"] = gated_writes(gated["tracker"], pacer.gate)
+    return gated
+
+
+#: The tracker port's writer methods: each is one write request on a tracker without a transport
+#: gate of its own (the GitHub adapter gates each request itself, a labels change included).
+_WRITER_METHODS = frozenset(
+    {
+        "post_comment",
+        "change_labels",
+        "close_issue",
+        "reopen_issue",
+        "set_issue_type",
+        "set_issue_fields",
+    }
+)
+
+
+def gated_writes(tracker: Any, gate: Callable[[str], None]) -> Any:
+    """``tracker`` with ``gate("WRITE")`` called before each of its writer methods (``bh-eqtxv``),
+    every other public attribute forwarded as is. Only the methods ``tracker`` has are defined, so
+    the port's ``isinstance`` capability checks answer exactly as for ``tracker`` itself."""
+    if getattr(type(tracker), "_bh_gated_writes", False):
+        return tracker
+    namespace: dict[str, Any] = {"_bh_gated_writes": True}
+    for name in dir(tracker):
+        if name.startswith("_") or name in namespace:
+            continue
+        if callable(getattr(tracker, name, None)):
+            namespace[name] = _gated_method(name, gate if name in _WRITER_METHODS else None)
+        else:
+            namespace[name] = property(lambda self, _name=name: getattr(self._inner, _name))
+    wrapper = type(f"Gated{type(tracker).__name__}", (), namespace)()
+    wrapper._inner = tracker
+    return wrapper
+
+
+def _gated_method(name: str, gate: Callable[[str], None] | None) -> Callable[..., Any]:
+    def method(self, *args: Any, **kwargs: Any) -> Any:
+        if gate is not None:
+            gate("WRITE")
+        return getattr(self._inner, name)(*args, **kwargs)
+
+    method.__name__ = name
+    return method
+
+
 def outbox_send(
     cfg, entry, directory, outbox_id: str, kind: str, actor: str, **kwargs
 ) -> OutboxCall:
@@ -2222,19 +2376,38 @@ def outbox_send(
     op = outbox_kind(kind)
     if op is None:
         return _bad_kind(kind)
+    try:
+        paced = _paced(cfg, entry, directory, kwargs, SendStop())
+    except IntakeRefused as exc:
+        return OutboxCall(1, exc.detail, exc.reason.value)
     return outbox_call(
-        cfg, entry, directory, lambda port: port.send(outbox_id, actor=actor, kind=op), **kwargs
+        cfg,
+        entry,
+        directory,
+        lambda port: port.send(outbox_id, actor=actor, kind=op),
+        **paced,
     )
 
 
 def outbox_send_approved(
-    cfg, entry, directory, kind: str, reports: Sequence[str], actor: str, **kwargs
+    cfg,
+    entry,
+    directory,
+    kind: str,
+    reports: Sequence[str],
+    actor: str,
+    *,
+    stop: SendStop | None = None,
+    **kwargs,
 ) -> OutboxCall:
     """``bh work outbox send-approved [--kind K] [--bead <id>]...``: every approved operation in
     ONE process and one store session (``bh-pc9rf``), ordered per report reopen, comment, labels,
     close; each still spends its own single-use grant and writes its own receipt. ``kind`` empty
     means every kind. The value is a :class:`~beadhive.modules.intake.domain.BatchSendOutcome`; a
-    refused or unsettled item is reported there and the rest still go."""
+    refused or unsettled item is reported there and the rest still go.
+
+    Paced (``bh-eqtxv``): one :func:`write_pacer` for the command. ``stop`` is the command's
+    :class:`SendStop` (the CLI's interrupt handler sets it; ``None``: one of its own)."""
     from .modules.intake.domain import BatchSend
 
     kinds: tuple[Any, ...] = ()
@@ -2243,8 +2416,13 @@ def outbox_send_approved(
         if op is None:
             return _bad_kind(kind)
         kinds = (op,)
-    request = BatchSend(actor, kinds, tuple(dict.fromkeys(r for r in reports if r)))
-    return outbox_call(cfg, entry, directory, lambda port: port.send_approved(request), **kwargs)
+    stop = stop if stop is not None else SendStop()
+    request = BatchSend(actor, kinds, tuple(dict.fromkeys(r for r in reports if r)), stop)
+    try:
+        paced = _paced(cfg, entry, directory, kwargs, stop)
+    except IntakeRefused as exc:
+        return OutboxCall(1, exc.detail, exc.reason.value)
+    return outbox_call(cfg, entry, directory, lambda port: port.send_approved(request), **paced)
 
 
 def outbox_backfill_close(
@@ -3832,6 +4010,14 @@ __all__ = [
     "milestone_settings",
     "outbox_service_for",
     "process_adapters",
+    "SendStop",
+    "StopReason",
+    "pacing_runtime",
+    "PacingRuntime",
+    "write_pacer",
+    "gated_writes",
+    "outbox_pace",
+    "github_api_host",
     "queue_rows",
     "report_store",
     "reroute_to_hive",
