@@ -1779,6 +1779,16 @@ class HqConfig(_Section):
             "one is set. BH_HQ_AUTHORITY_MODE, when set, overrides this value."
         ),
     )
+    authority_expiry_recheck_s: float = Field(
+        300.0,
+        ge=0,
+        description=(
+            "HOST-only. Seconds a command reuses its last read of the HQ authority status for "
+            "the expiry warning (default 300). `0` re-reads on every command. The first read "
+            "of a process uses the default; the value is learned from the host config that "
+            "read loads anyway."
+        ),
+    )
     default_authority_mode: Literal["signed", "trusted"] = Field(
         "signed",
         description=(

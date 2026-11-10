@@ -25,6 +25,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "hq.beadyard_id",
         "hq.authority_anchor",
         "hq.authority_mode",
+        "hq.authority_expiry_recheck_s",
         "hq.sql",
         "hq.release_catalog",
         "dolt",
