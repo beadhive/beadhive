@@ -154,11 +154,17 @@ class CliRoutes:
         gate_type: str,
         reason: str = "",
         *,
+        await_id: str = "",
         actor: str = "",
         capture: bool = False,
     ) -> Any:
+        """`bd gate create`; ``await_id`` is the condition a `gh:pr` / `gh:run` gate waits on
+        (the PR number / run id) — without it bd's gate check can never resolve such a gate."""
+        args = ["gate", "create", "--blocks", bead, "--type", gate_type, "--reason", reason]
+        if await_id:
+            args += ["--await-id", await_id]
         return self._bd.run(
-            ["gate", "create", "--blocks", bead, "--type", gate_type, "--reason", reason],
+            args,
             self._cwd,
             actor=actor,
             capture=capture,

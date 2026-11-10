@@ -523,6 +523,9 @@ def test_tool_invocation_is_noop_when_otel_off():
     from fastmcp import Client
 
     assert not otel_mod.is_active()  # otel is off by default
+    # Instruments cached by an earlier test in this worker (e.g. a worktree event) are not this
+    # call's; isolate so the assertion below measures only the tool invocation.
+    otel_mod._instruments.clear()
     server = mcp_mod.build_server()
     spec = {
         "epic": {"title": "Demo epic"},

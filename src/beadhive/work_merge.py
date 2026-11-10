@@ -96,15 +96,18 @@ def impl__pr_merge_gates(api, bead, main):
     ]
 
 
-def impl__ensure_pr_gate(api, main, bead, ref):
+def impl__ensure_pr_gate(api, main, bead, ref, await_id=""):
     """Idempotently open the bd `gh:pr` gate that blocks `bead` until its landing PR merges —
     bd's own gate check/discover watcher machinery can resolve it, and `work land` resolves any
-    survivor at close. Reuses an already-open pr-merge gate on re-runs (submit's reuse rule)."""
+    survivor at close. Reuses an already-open pr-merge gate on re-runs (submit's reuse rule).
+    `await_id` (the PR number) is what bd's gh:pr checker waits on (bh-srb1r)."""
     gates = api._pr_merge_gates(bead, main)
     if gates:
         api.typer.echo(f"• gh:pr gate {gates[0].get('id')} already open for {bead} — reusing it")
         return
-    g = api.bd_cli.routes(main).gate_create(bead, "gh:pr", f"pr-merge {ref}")
+    g = api.bd_cli.routes(main).gate_create(
+        bead, "gh:pr", f"pr-merge {ref}", await_id=str(await_id or "")
+    )
     if g.returncode != 0:
         opened = [
             gg
@@ -156,7 +159,7 @@ def impl__open_landing_pr(api, cfg, entry, main, bead, data, branch, base):
             raise api.typer.Exit(1)
         pr = api.ghpr.pr_from_url(out)
     ref = api._pr_ref(pr)
-    api._ensure_pr_gate(main, bead, ref)
+    api._ensure_pr_gate(main, bead, ref, await_id=str(pr.get("number") or ""))
     if (
         api.bd_cli.routes(main).issue_set_state(bead, "landing=pr-pending", reason=ref).returncode
         != 0
@@ -650,7 +653,8 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         assignee = str(epic_data.get("assignee") or "").strip()
         api.typer.echo(
             f"✗ landed molecule {epic} ({mol_branch} --no-ff → {base}) but FAILED to "
-            f"close {epic}{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            f"close {epic}{f' (assignee {assignee!r})' if assignee else ''} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {epic}`",
             err=True,
         )
         raise api.typer.Exit(1)
@@ -711,8 +715,12 @@ def impl_land(api, bead, hive):
     ref = api._pr_ref(pr)
     api._resolve_land_pr_merge_gates(bead, main, ref)
     reason = "molecule landed" if api._is_epic(data) else "merged"
-    if api.bd_cli.routes(main).issue_close(bead, reason=reason).returncode != 0:
-        api.typer.echo(f"✗ PR merged but failed to close {bead} — close it manually", err=True)
+    if not api.work_logic.close_merged(bead, main, reason, data=data):
+        api.typer.echo(
+            f"✗ PR merged but failed to close {bead} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {bead}`",
+            err=True,
+        )
         raise api.typer.Exit(1)
     api._clear_review_label(bead, data, main)
     if api._is_epic(data):
@@ -742,11 +750,12 @@ def impl__prune_landed_hive(api, entry):
 
 def impl__guard_land_pr_pending(api, bead, main):
     """Refuse `land` on a bead that isn't `pr-pending` — it only completes a `work.landing: pr`
-    landing opened by `merge`/`finish`."""
+    landing opened by `merge`/`finish`, or the review PR a `gh:pr` submit opened (both record
+    `landing=pr-pending`)."""
     if api.bd.state(bead, "landing", main) != "pr-pending":
         api.typer.echo(
-            f"✗ {bead} is not pr-pending — `land` completes a `work.landing: pr` landing "
-            "opened by merge/finish",
+            f"✗ {bead} is not pr-pending — `land` completes a PR opened by merge/finish "
+            "(`work.landing: pr`) or by a `gh:pr` submit",
             err=True,
         )
         raise api.typer.Exit(1)
@@ -765,10 +774,13 @@ def impl__resolve_merged_land_pr(api, entry, branch):
 
 
 def impl__resolve_land_pr_merge_gates(api, bead, main, ref):
-    """Resolve any still-open pr-merge gate — bd's own gh:pr gate watcher may already have (both
-    orders are fine); a resolve failure only warns, the merge already happened on GitHub. `bd
-    gate resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable)."""
-    for g in api._pr_merge_gates(bead, main):
+    """Resolve any still-open pr-merge gate, and any still-open `gh:pr` REVIEW gate a submit
+    opened on the same PR (bh-srb1r) — bd's own gh:pr gate watcher may already have (both orders
+    are fine); a resolve failure only warns, the merge already happened on GitHub. `bd gate
+    resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable)."""
+    open_review, _resolved = api.work_logic.review_gates(bead, main)
+    pr_review = [g for g in open_review if str(g.get("await_type") or "") == "gh:pr"]
+    for g in [*api._pr_merge_gates(bead, main), *pr_review]:
         gid = str(g.get("id") or "")
         if api.bd_cli.routes(main).gate_resolve(gid, reason=f"{ref} merged").returncode != 0:
             api.typer.echo(f"⚠ failed to resolve gh:pr gate {gid} — resolve it manually", err=True)
@@ -1005,7 +1017,7 @@ def impl__guard_bead_clean_history(
     Returns True when the branch is ALREADY LANDED, so the caller reconciles bookkeeping instead
     of merging (bh-lvqs); False on the ordinary path. A genuinely empty branch — no commits over
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
-    count, subjects = api.worktree.history(entry, branch, base)
+    count, subjects = api.worktree.history(entry, branch, base, first_parent=True)
     if count == 0 and bead and _landing_attributed(api, entry, base, bead, bead_data, branch):
         return True
     if count == 0 and api.already_landed(entry, branch, base):
@@ -1079,7 +1091,8 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
         assignee = str(bead_data.get("assignee") or "").strip()
         api.typer.echo(
             f"✗ {bead} is ALREADY MERGED ({branch} → {base}) but could not be closed"
-            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually; "
+            f"{f' (assignee {assignee!r})' if assignee else ''} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {bead}`; "
             "the code is on the integration branch, do NOT re-implement it",
             err=True,
         )
@@ -1482,7 +1495,8 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
         assignee = str(bead_data.get("assignee") or "").strip()
         api.typer.echo(
             f"✗ merged {bead} ({branch} --no-ff → {base}){note} but FAILED to close it"
-            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            f"{f' (assignee {assignee!r})' if assignee else ''} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {bead}`",
             err=True,
         )
         raise api.typer.Exit(1)

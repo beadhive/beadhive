@@ -35,7 +35,7 @@ brief → claim → (work in worktree) → show → refine → check → submit 
 | `bh work bounce <id> -m "<reason>"` | **Reviewer.** Send a submitted bead back for changes: resolve every open review gate (no orphan left blocking a later merge) then set `review:changes-requested`. With no open gate it warns and still records the bounce. Points the developer at `resume`. |
 | `bh work resume <id> [--as …]` | After review returns `changes-requested`: re-attach a fresh worktree on the bead branch, print the feedback, re-assert the claim (GCs any review gate a raw bounce left open). Address it and `submit` again. |
 | `bh work abandon <id> [--rm]` | Atomically release your claim, or reclaim an expired foreign lease as an operator, then **re-read the bead to prove it**. `--rm` removes an already released worktree; it refuses before changing a held claim. A ✓ means the bead is open and unassigned. |
-| `bh work land <id>` | **PR-governed hives only** (`work.landing: pr`): complete a `pr-pending` landing once GitHub reports the PR MERGED — resolve the `gh:pr` gate, close the bead/epic with the squash-proof close_reason. See [PR-governed landing](#pr-governed-landing--worklanding-pr). |
+| `bh work land <id>` | **PR-governed hives only** (`work.landing: pr`, or `review_gate: gh:pr`): complete a `pr-pending` landing once GitHub reports the PR MERGED — resolve the `gh:pr` gate, close the bead/epic with the squash-proof close_reason. See [PR-governed landing](#pr-governed-landing--worklanding-pr). |
 
 Abandon uses the explicit `BH_DEV` identity before configuration defaults; for example,
 `BH_DEV=ops/recovery bh work abandon <id>`. A holder's release
@@ -503,6 +503,16 @@ for grouped operations because one authorization must name exactly one bead.
 
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.
+
+With `review_gate: gh:pr`, `submit` also **opens the PR** for the pushed branch (`gh pr
+create` against the bead's integration base), or **adopts** the PR already open for that head
+branch — a resubmit never opens a second one. The review gate carries the PR number
+(`bd gate create --await-id <n>`), so `bd gate check` resolves it when the PR merges, and the
+bead records `landing=pr-pending` (reason `PR #<n> <url>`), so `bh work land <id>` completes it
+once GitHub reports the PR MERGED (see [PR-governed landing](#pr-governed-landing--worklanding-pr)).
+`gh` must be on PATH and the hive GitHub-backed; otherwise, or if `gh pr create` fails, submit
+refuses before opening any gate. A contribution (`kind: external`) hive is excluded — its PR
+targets the upstream from the fork, which is the contribution plane's job.
 
 ## Converging on failures — `work.validate_subset`
 

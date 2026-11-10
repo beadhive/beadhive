@@ -466,9 +466,11 @@ def impl__guard_submit_ready(api, entry, target, branch, bead, cfg, data=None):
     base = api.worktree.integration_base(
         entry, bead, api.config.integration_branch(cfg, entry), data
     )
-    count, subjects = api.worktree.history(entry, branch, base)
-    limit = api.config.max_commits(cfg, entry)
     data = data if data is not None else api.bd.show(bead, api.registry.hive_dir(entry))
+    # Leaf budget counts only the child's own first-parent line (bh-sl7w0); an epic is audited
+    # over its whole reviewed graph by epic_history_policy, so it keeps the full range.
+    count, subjects = api.worktree.history(entry, branch, base, first_parent=not api._is_epic(data))
+    limit = api.config.max_commits(cfg, entry)
     if api._is_epic(data):
         policy = api.work_logic.epic_history_policy(
             entry,
@@ -650,14 +652,86 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None, override=
         raise api.typer.Exit(1)
 
 
+def _submit_opens_pr(entry, gate) -> bool:
+    """True iff this submit owns the review PR: a `gh:pr` gate waits on a PR merge, so submit
+    opens (or adopts) that PR itself (bh-srb1r). A contribution (kind=external) hive is excluded —
+    its PR targets the upstream from the fork, which is the contribution plane's job."""
+    return gate == "gh:pr" and str((entry or {}).get("kind", "")) != "external"
+
+
+def impl__guard_submit_pr_capable(api, entry):
+    """Refuse a `gh:pr` submit up front — before anything is pushed or gated — when no PR can be
+    opened: `gh` missing or the hive not GitHub-backed. Otherwise the gate would wait on a PR
+    that never exists."""
+    if not api.ghpr.available():
+        api.typer.echo(
+            "✗ work.review_gate is 'gh:pr' but `gh` is not on PATH — install gh or use another "
+            "review gate; nothing submitted",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    if not api.ghpr.is_github(entry) or not api.ghpr.repo_slug(entry):
+        api.typer.echo(
+            "✗ work.review_gate is 'gh:pr' but this hive is not a GitHub repo — nothing submitted",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+
+
+def impl__open_submit_pr(api, cfg, entry, main, bead, branch):
+    """Open — or adopt the already-open — PR for the pushed bead branch and return its
+    ``{number, url}`` row. Idempotent across resubmits: an open PR whose head is ``branch`` is
+    reused, never duplicated. The base is the bead's integration base (the branch `merge` would
+    land it on). A failed `gh pr create` refuses the submit before any gate is opened, so a bead is
+    never review=pending behind a gate with nothing to observe."""
+    pr = api.ghpr.open_pr_for(entry, branch)
+    if pr:
+        api.typer.echo(f"• {api._pr_ref(pr)} already open for {branch} — adopting it")
+        return pr
+    base = api.worktree.integration_base(entry, bead, api.config.integration_branch(cfg, entry))
+    data = api.bd.show(bead, main) or {}
+    title = str(api._first(data, "title") or bead)
+    acceptance = api._first(data, "acceptance_criteria", "acceptance") or ""
+    body = f"Review for {bead} ({branch} → {base}) via `work.review_gate: gh:pr`."
+    if acceptance:
+        body += f"\n\n## Acceptance\n{acceptance}"
+    rc, out = api.ghpr.create_pr(entry, base, branch, title, body)
+    pr = api.ghpr.pr_from_url(out) if rc == 0 else {}
+    if not pr.get("number"):
+        api.typer.echo(f"✗ `gh pr create` failed — nothing submitted:\n{out}", err=True)
+        raise api.typer.Exit(1)
+    api.typer.echo(f"• opened {api._pr_ref(pr)} for {branch} → {base}")
+    return pr
+
+
 def impl__open_submit_gate(api, cfg, entry, bead, branch, main, sha, actor="", hive=""):
     gate = api.config.review_gate(cfg, entry)
+    opens_pr = _submit_opens_pr(entry, gate)
+    if opens_pr:
+        impl__guard_submit_pr_capable(api, entry)
     if gate.startswith("gh:") or str(entry.get("kind", "")) == "external":
         remote = api.config.push_remote(cfg, entry)
         api._guard_fork_remote(entry, remote)
         if api.worktree.push_branch(entry, branch, remote) != 0:
             api.typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
             raise api.typer.Exit(1)
-    reuse = api.work_logic.ensure_review_gate(main, bead, sha, gate)
+    if not opens_pr:
+        reuse = api.work_logic.ensure_review_gate(main, bead, sha, gate)
+        api.work_lifecycle.mark_submitted(cfg, hive, entry, main, bead, sha, actor)
+        return (gate, reuse)
+    pr = impl__open_submit_pr(api, cfg, entry, main, bead, branch)
+    ref = api._pr_ref(pr)
+    reuse = api.work_logic.ensure_review_gate(
+        main, bead, sha, gate, reason=f"bh:review {sha} {ref}", await_id=str(pr["number"])
+    )
+    # The PR is now the bead's landing vehicle: record the same `landing=pr-pending` condition
+    # the merge/finish PR path records, so `work land` completes it once GitHub merges the PR.
+    if (
+        api.bd_cli.routes(main).issue_set_state(bead, "landing=pr-pending", reason=ref).returncode
+        != 0
+    ):
+        api.typer.echo(
+            "⚠ PR opened but failed to record landing=pr-pending — set it by hand", err=True
+        )
     api.work_lifecycle.mark_submitted(cfg, hive, entry, main, bead, sha, actor)
     return (gate, reuse)

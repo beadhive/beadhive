@@ -504,7 +504,7 @@ def submit_group(cfg, hive, group_arg, as_):
         typer.echo("✗ could not pin batch validation revisions", err=True)
         raise typer.Exit(1)
     _guard_group_base_ancestor(entry, branch, head_sha, base, base_sha, boundary="submit")
-    count, subjects = worktree.history(entry, head_sha, base_sha)
+    count, subjects = worktree.history(entry, head_sha, base_sha, first_parent=True)
     limit = config.max_commits(cfg, entry) * len(members)  # relaxed: per-bead-commits × members
     ok, msg = work_logic._history_ok(count, subjects, limit)
     if not ok:
@@ -668,7 +668,7 @@ def merge_group(cfg, group_arg, hive, rm):
     if not head_sha or not base_sha:
         typer.echo("✗ could not pin batch validation revisions", err=True)
         raise typer.Exit(1)
-    count, subjects = worktree.history(entry, head_sha, base_sha)
+    count, subjects = worktree.history(entry, head_sha, base_sha, first_parent=True)
     if count == 0 and worktree.landed_via_merge(entry, branch, base):
         # ALREADY LANDED — the batch merged and its bookkeeping half did not finish (bh-lvqs).
         # Reconcile every member and exit 0 instead of routing the operator to the
@@ -854,7 +854,7 @@ def merge_group(cfg, group_arg, hive, rm):
         typer.echo(
             f"✗ merged batch {group} ({len(members)} beads: {', '.join(members)}) "
             f"({branch} --no-ff → {base}) but FAILED to close: {', '.join(failed_close)} — "
-            f"close manually",
+            f"run `{config.BINARY_ALIAS} worktree mark-landed <id>` for each",
             err=True,
         )
         raise typer.Exit(1)

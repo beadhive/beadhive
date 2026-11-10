@@ -3632,6 +3632,8 @@ def wt_mark_landed(
 ):
     from . import worktree
 
+    # The acting identity is the resolved seat ($BH_DEV / work.identity / git); `--as` is not on
+    # the published wire catalog and wire compat rejects a new parameter on a published verb.
     worktree.mark_landed(hive, ref)
 
 

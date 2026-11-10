@@ -5,6 +5,65 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.8 → 0.35.9 — escalate, submit history budget, landing, verdict self-heal (bh-69snf)
+
+No action required.
+
+- **Long `bh escalate` messages (bh-3egoy).** `bh escalate '<message>'` now accepts a message of any
+  length: the bead title is the message's first line (cut at a sentence or word boundary, at most
+  120 characters) and the full message is the bead description, so a long or multi-paragraph report
+  is no longer rejected by bd's 500-character title limit and no longer truncated in `bh hq intake`
+  / `bh work list`. A failed `bd create` is reported with bd's own error message instead of a bare
+  `{`.
+
+- **Submit history budget (bh-69snf).** `bh work submit`, `submit --group` and the merge-time
+  re-check now count only a branch's first-parent commits over its base against `max_commits`, and
+  check conventional subjects on those commits (the refresh merge commit included). Commits that a
+  refresh merge of the integration branch brought in are already reviewed upstream and no longer
+  count, so a child that merged a refresh is no longer refused with "N commits over base". A branch
+  with more own commits than `max_commits`, or a non-conventional own subject, is still refused.
+  Epic submit is unchanged. Fixes GitHub #88, #27 and #26.
+
+- **`review_gate: gh:pr` submit opens the PR and the gate waits on it (bh-srb1r).** Before,
+  `bh work submit` pushed the branch and opened a `gh:pr` gate with no PR number, so `bd gate check`
+  reported `no PR number specified` forever and `bh work land` refused the bead as not
+  `pr-pending`. Now submit opens the PR for the pushed branch against the bead's integration base,
+  or adopts the PR already open for it (a resubmit never opens a second one); opens the review gate
+  with that PR number (`--await-id`), so `bd gate check` resolves it when the PR merges; and records
+  `landing=pr-pending`, so `bh work land <id>` closes the bead once GitHub reports the PR MERGED (it
+  also resolves the review gate if `bd gate check` has not yet). `gh` must be on PATH and the hive
+  GitHub-backed; otherwise, or when `gh pr create` fails, submit refuses before opening any gate.
+  Agents that opened the PR themselves after submit no longer need to: submit adopts an open PR. A
+  bead stuck by the old behaviour unsticks with a plain resubmit, which replaces the PR-less gate.
+  Contribution (`kind: external`) hives are unchanged. The `pr-merge` gate that `merge`/`finish`
+  open under `work.landing: pr` now carries the PR number too. Fixes GitHub #35 and #50.
+
+- **A lost verdict pointer heals from its green run (bh-0qazu).** A crash, OOM kill or `SIGKILL`
+  after a validation run's manifest completed green but before its verdict pointer was written no
+  longer throws the green away: the next verdict read for the same tree and command rebuilds the
+  pointer from that manifest (when the pointer is missing or still names the previous green) and
+  reuses it instead of re-running the gate. Only a retained completed, qualifying-green, fresh
+  manifest for exactly that tree and command hash can do this; red, none, running, stale and
+  different-identity runs still miss, and `bh release await` still tells a red gate from a missing
+  one. One new verb, part of the fix and published in wire 2.26.0: `bh work validation reindex
+  [--rev REV | --tree TREE] [--dry-run] [--json]` rebuilds pointers from the retained run manifests
+  and lists each identity as `rebuilt`, `unchanged`, `refused` or `revoked`, with the reason; it is
+  idempotent and `--dry-run` writes nothing. Optionally run it once after upgrading (`--dry-run`
+  first) if a crash left greens without pointers; prefer it over `--override-validation`, which
+  records a bypass rather than the green that ran. See [WORKTREES.md](WORKTREES.md). Fixes GitHub
+  #89 and #110.
+
+### Landing closes a bead whatever its assignee (bh-ikygx)
+
+`bh work land` closed a bead directly with no actor, so bd's assignee-vs-actor guard refused it
+whenever the landing seat was not the developer seat that did the work (reports #87, #44, #132).
+`land` now closes through the same assignee-aware path as `merge` and `finish`; the assignee guard
+stays on `claim` and `resume`. `bh worktree mark-landed` records the resolved acting identity
+(`$BH_DEV`, `work.identity`, then git; the published wire catalog cannot take a new `--as` parameter
+within this major) on the close, and lets a dispatcher/merger seat or the operator close another
+seat's bead; a `dev/<name>` seat may only close its own. A close that still fails now names `bh
+worktree mark-landed <id>` instead of telling you to close it manually or force it.
+
 ## 0.35.7 → 0.35.8 — outbox speed (bh-womf3)
 
 One new HOST-only key, `hq.authority_expiry_recheck_s` (default `300`, `0` re-reads on every

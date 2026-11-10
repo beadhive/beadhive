@@ -1119,7 +1119,7 @@ def _resolve_stale_review_gates(main, stale: list[dict], sha: str) -> None:
         typer.echo(f"• resolved stale review gate {old_id} (superseded by resubmit {sha})")
 
 
-def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
+def ensure_review_gate(main, bead, sha, gate_type, reason="", await_id="") -> bool:
     """Open — or reuse / supersede — the review gate for `bead` at `sha`. Returns True iff an
     existing open gate for this EXACT sha was reused (no new gate created). Idempotent (bh-c3il):
     an open review gate carrying `sha` is reused; open gates for a DIFFERENT sha are superseded
@@ -1127,16 +1127,26 @@ def ensure_review_gate(main, bead, sha, gate_type, reason="") -> bool:
     older submits. The shared gate seam for single-bead `submit` and batch `submit_group`, so both
     open the gate identically. `reason` defaults to `bh:review <sha>`; batch submit passes a reason
     naming every member (the sha stays directly after the marker so the gate-marker regex matches).
+    `await_id` is the condition an out-of-process gate waits on — the PR number for `gh:pr`
+    (bh-srb1r): it is passed as `--await-id` so `bd gate check` can resolve the gate when the PR
+    merges, and a same-sha gate is only reused when it already waits on that same id (a gate left
+    without one by an older submit is superseded instead, so it can never strand the bead).
     Raises `typer.Exit(1)` on a bd failure, echoing the submit-context error."""
     reason = reason or f"bh:review {sha}"
     open_review, _resolved = review_gates(bead, main)
-    reuse = [g for g in open_review if sha in str(g.get("description") or "")]
-    stale = [g for g in open_review if sha not in str(g.get("description") or "")]
+
+    def _current(g) -> bool:
+        if sha not in str(g.get("description") or ""):
+            return False
+        return not await_id or str(g.get("await_id") or "") == await_id
+
+    reuse = [g for g in open_review if _current(g)]
+    stale = [g for g in open_review if not _current(g)]
     _resolve_stale_review_gates(main, stale, sha)
     if reuse:
         typer.echo(f"• review gate {reuse[0].get('id')} already open for {sha} — reusing it")
         return True
-    g = bd_cli.routes(main).gate_create(bead, gate_type, reason)
+    g = bd_cli.routes(main).gate_create(bead, gate_type, reason, await_id=await_id)
     if g.returncode != 0 and not _gate_opened_despite_dep_refusal(bead, sha, main):
         typer.echo("✗ failed to open review gate — nothing submitted", err=True)
         raise typer.Exit(1)

@@ -354,6 +354,7 @@ class FakeBd:
             bead = args[args.index("--blocks") + 1] if "--blocks" in args else ""
             reason = args[args.index("--reason") + 1] if "--reason" in args else ""
             gtype = args[args.index("--type") + 1] if "--type" in args else "human"
+            await_id = args[args.index("--await-id") + 1] if "--await-id" in args else ""
             # Mirror real `bd gate` shape: description carries the reason (so `review_gates` can
             # tell a review gate from a kickoff one) and the gate records its await_type.
             self.gates.append(
@@ -362,6 +363,7 @@ class FakeBd:
                     "status": "open",
                     "description": f"blocks {bead}\n\nReason: {reason}",
                     "await_type": gtype,
+                    "await_id": await_id,
                 }
             )
             # Mirror bd's create-then-wire order: the gate bead exists, but the blocking dep
@@ -530,11 +532,14 @@ class FakeGh:
         self.calls = []
         self.prs = list(prs or [])
         self.create_url = create_url
+        self.create_rc = 0  # set non-zero to make `gh pr create` fail
 
     def __call__(self, cmd, **_kw):
         self.calls.append(list(cmd))
         sub = cmd[2] if len(cmd) > 2 else ""
         if cmd[:2] == ["gh", "pr"] and sub == "create":
+            if self.create_rc:
+                return _CP(self.create_rc, "", "pull request create failed: GraphQL error")
             return _CP(0, self.create_url + "\n", "")
         if cmd[:2] == ["gh", "pr"] and sub == "list":
             state = cmd[cmd.index("--state") + 1].lower()
@@ -917,6 +922,59 @@ def test_submit_tolerates_container_refresh_merge(hive, fakebd):
     work.submit(bead="mr-1.2", hive="myrepo")  # rejects if the refresh polluted base..child
 
     assert fakebd.states["mr-1.2"]["review"] == "pending"
+
+
+def _child_with_refresh_merge(hive, fakebd, upstream_commits):
+    """A child of a container that resolved divergence by merging the integration branch into
+    itself (bh-sl7w0); main brought `upstream_commits` commits the container base lacks."""
+    _kicked_off_pair(fakebd)
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    wt = _wt_of(hive, "mr-1.1")
+    _commit(wt, "feat: own first", fname="own1.txt")
+    for i in range(upstream_commits):
+        _commit(hive.main, f"fix: upstream {i}", fname=f"up{i}.txt")
+    _git(
+        "merge",
+        "--no-ff",
+        "-q",
+        "-m",
+        "chore(merge): refresh wt/bead/epic/mr-1 from main",
+        "main",
+        cwd=wt,
+    )
+    return wt
+
+
+def test_history_counts_only_first_parent_for_refresh_merge(hive, fakebd):
+    _child_with_refresh_merge(hive, fakebd, upstream_commits=12)
+    entry = registry.resolve_hive(config.load(), "myrepo")
+    branch, base = "wt/bead/issue/mr-1.1", "wt/bead/epic/mr-1"
+    assert worktree.history(entry, branch, base, first_parent=True)[0] == 2  # own + merge
+    assert worktree.history(entry, branch, base)[0] == 2 + 12
+
+
+def test_submit_passes_with_refresh_merge_of_many_upstream_commits(hive, fakebd):
+    wt = _child_with_refresh_merge(hive, fakebd, upstream_commits=12)
+    _commit(wt, "feat: own second", fname="own2.txt")
+    work.submit(bead="mr-1.1", hive="myrepo")  # 12 upstream commits > max_commits=10
+    assert fakebd.states["mr-1.1"]["review"] == "pending"
+
+
+def test_submit_still_rejects_too_many_own_commits_after_refresh(hive, fakebd):
+    wt = _child_with_refresh_merge(hive, fakebd, upstream_commits=3)
+    for i in range(11):
+        _commit(wt, f"feat: own extra {i}", fname=f"extra{i}.txt")
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-1.1", hive="myrepo")
+    assert "review" not in fakebd.states.get("mr-1.1", {})
+
+
+def test_submit_still_rejects_nonconventional_own_commit_after_refresh(hive, fakebd):
+    wt = _child_with_refresh_merge(hive, fakebd, upstream_commits=3)
+    _commit(wt, "wip junk", fname="junk.txt")
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-1.1", hive="myrepo")
+    assert "review" not in fakebd.states.get("mr-1.1", {})
 
 
 def _second_clone(hive, tmp_path):
@@ -1678,7 +1736,7 @@ def test_submit_local_gate_failure_retains_refine_backup(hive, fakebd, monkeypat
     assert _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
 
 
-def test_submit_ghpr_gate_pushes(hive, fakebd, monkeypatch):
+def test_submit_ghpr_gate_pushes(hive, fakebd, fakegh, monkeypatch):
     monkeypatch.setattr(config, "review_gate", lambda cfg, entry: "gh:pr")
     fakebd.seed("mr-5", title="t")
     work.claim(bead="mr-5", as_="", hive="myrepo")
@@ -5542,6 +5600,8 @@ def test_merge_pr_landing_pushes_creates_pr_gate_and_leaves_open(hive, fakebd, f
     )
     assert fakebd.states["mr-20"]["landing"] == "pr-pending"
     assert fakebd.did("set-state", "mr-20", "landing=pr-pending")
+    # …and the gate waits on THIS PR, so bd's gh:pr checker can resolve it (bh-srb1r)
+    assert fakebd.did("gate", "create", "--blocks", "mr-20", "--await-id", "7")
     assert fakebd.beads["mr-20"]["status"] != "closed"
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
 
@@ -5621,7 +5681,7 @@ def test_merge_local_landing_never_touches_gh(hive, fakebd, monkeypatch):
     assert fakebd.beads["mr-22"]["close_reason"] == "merged"
 
 
-def test_submit_pushes_to_configured_remote(hive, fakebd, monkeypatch):
+def test_submit_pushes_to_configured_remote(hive, fakebd, fakegh, monkeypatch):
     """work.push_remote is honored at submit's out-of-process publish (the old origin hardcode)."""
     hive.cfg_path.write_text(
         CONFIG_YAML.replace(
@@ -5815,6 +5875,91 @@ def test_mark_landed_noop_when_already_landed(hive, fakebd):
 
     assert fakebd.beads["mr-43"]["close_reason"] == "molecule landed"  # untouched
     assert not fakebd.did("close", "mr-43")
+
+
+def _close_calls(fakebd, bead):
+    return [(actor, args) for actor, args in fakebd.calls if args[:2] == ["close", bead]]
+
+
+def test_land_closes_when_the_assignee_seat_is_not_the_actor(hive, fakebd, fakegh):
+    """bh-ikygx (#87): land is a dispatcher/merger step, so the dev seat that did the work is
+    never the acting identity; bd's assignee guard must not strand the bead open."""
+    _pr_pending(hive, fakebd, "mr-31")
+    fakebd.beads["mr-31"]["assignee"] = "dev/other"
+    fakebd.close_actor_guard.add("mr-31")
+    fakegh.prs = [
+        {"number": 7, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    work.land(bead="mr-31", hive="myrepo")
+
+    assert fakebd.beads["mr-31"]["status"] == "closed"
+    assert fakebd.beads["mr-31"]["close_reason"] == "merged"
+    assert _close_calls(fakebd, "mr-31")[0][0] == "dev/other"
+    assert not any("--force" in args for _a, args in _close_calls(fakebd, "mr-31"))
+
+
+def test_land_failure_names_mark_landed_not_bd_force(hive, fakebd, fakegh, capsys):
+    _pr_pending(hive, fakebd, "mr-32")
+    fakebd.close_always_fails.add("mr-32")
+    fakegh.prs = [
+        {"number": 7, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    with pytest.raises(typer.Exit):
+        work.land(bead="mr-32", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "worktree mark-landed mr-32" in err
+    assert "--force" not in err and "close it manually" not in err
+
+
+def test_mark_landed_by_another_seat_closes_and_records_the_actor(hive, fakebd):
+    fakebd.seed("mr-44", title="t", assignee="dev/other")
+    fakebd.close_actor_guard.add("mr-44")
+
+    worktree.mark_landed("myrepo", "mr-44", "disp/boss")
+
+    assert fakebd.beads["mr-44"]["status"] == "closed"
+    assert fakebd.beads["mr-44"]["close_reason"] == "merged"
+    assert _close_calls(fakebd, "mr-44")[-1][0] == "disp/boss"
+
+
+def test_mark_landed_honours_as_for_the_unassigned_case(hive, fakebd):
+    fakebd.seed("mr-45", title="t")
+
+    worktree.mark_landed("myrepo", "mr-45", "merge/m1")
+
+    assert _close_calls(fakebd, "mr-45")[0][0] == "merge/m1"
+
+
+def test_mark_landed_refuses_a_different_dev_seat(hive, fakebd, capsys):
+    fakebd.seed("mr-46", title="t", assignee="dev/other")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_landed("myrepo", "mr-46", "dev/intruder")
+
+    assert fakebd.beads["mr-46"].get("status") != "closed"
+    assert "--force" not in capsys.readouterr().err
+
+
+def test_mark_landed_dev_seat_refusal_names_bh_dev_not_a_nonexistent_as_flag(hive, fakebd, capsys):
+    fakebd.seed("mr-48", title="t", assignee="dev/other")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_landed("myrepo", "mr-48", "dev/intruder")
+
+    err = capsys.readouterr().err
+    assert "BH_DEV=disp/<name>" in err
+    assert "--as" not in err
+
+
+def test_claim_still_refuses_another_actors_bead(hive, fakebd):
+    fakebd.seed("mr-47", title="t")
+    work.claim(bead="mr-47", as_="dev/one", hive="myrepo")
+
+    with pytest.raises(typer.Exit):
+        work.claim(bead="mr-47", as_="dev/two", hive="myrepo")
 
 
 # ---- worktree mark-abandoned: authoritative terminal disposition -----------

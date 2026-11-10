@@ -455,6 +455,23 @@ match: a `--no-ff` land onto an unmoved base rides the tip's verdict, while a mo
 rebase of the same patch, a subtree, a changed command, an expired entry or a red one all miss
 and run the gate for real.
 
+**Recovery: a lost pointer heals from its manifest** (GitHub #89). The pointer is written after
+the run's manifest completes, so a crash, OOM kill or `SIGKILL` between the two used to leave a
+genuine green with no pointer, and the next boundary re-ran the whole gate. A verdict read now
+repairs the pointer when the newest retained manifest for exactly that tree and command hash is
+completed, qualifying-green and fresh, and hits — when the pointer is missing or still names the
+previous green, the two shapes a crash leaves. A red, none, running, stale, contradictory or
+different-identity manifest still misses and writes nothing, and a corrupt or disagreeing
+pointer is still a miss (reindex rewrites it from the manifests). A green command inside a failed
+overall invocation (a `finish` that then crashed) is still recorded as a green run; the
+invocation itself still reports its failure. To rebuild pointers by hand, run
+`bh work validation reindex [--rev REV | --tree TREE] [--dry-run] [--json]`: it rewrites a
+pointer only from a completed, qualifying-green manifest, lists every other identity as
+`refused` (or `revoked`, when it removes a pointer the manifests no longer support) with the
+reason, and is idempotent (`unchanged` on a second pass). It never consults `work.ledger_ttl`;
+freshness is still enforced on every read. Prefer it over `--override-validation`, which records
+a bypass rather than the green that actually ran.
+
 **The key is the tree, not the commit** (bh-ku9n9.3; `docs/design/attested-green-adr.md`). A
 `--no-ff` merge onto an *unmoved* main produces a merge commit whose tree is byte-identical to
 the branch tip's, so the run that validated the tip already exercised exactly the bytes the
