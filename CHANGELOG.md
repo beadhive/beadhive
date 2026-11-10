@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.6 (2026-11-10)
+
+### Fix
+
+- **deps**: cap typer below 0.29
+
 ## v0.35.5 (2026-11-10)
 
 ### Fix
