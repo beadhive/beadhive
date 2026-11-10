@@ -1,10 +1,11 @@
 """Linking a report to work that already merged (bh-61xkc): the report catches up, drafts only.
 
-Without this a duplicate linked after its canonical work landed stays ``delivery:pending``
-forever. With ``catch_up_on_link`` (``intake.external.milestones.catch_up_on_link``, off by
-default) the link runs the merge trigger's own steps for that one report, using the merge (and the
-verified release) another tracking report recorded: the merged fact, ``delivery:merged``, a
-``merged`` record when drafting is on, then ``delivery:released`` and a ``released`` record when
+Without this a report accepted onto work that already landed stays ``delivery:pending``
+forever (a ``duplicate-of`` outcome is the exception, bh-5kpwc: its link catches nothing up).
+With ``catch_up_on_link`` (``intake.external.milestones.catch_up_on_link``, off by default) the
+link runs the merge trigger's own steps for that one report, using the merge (and the verified
+release) another tracking report recorded: the merged fact, ``delivery:merged``, a ``merged``
+record when drafting is on, then ``delivery:released`` and a ``released`` record when
 the release was verified, then the completion policy. Nothing sends: ``write_requests()`` stays 0.
 """
 
@@ -150,6 +151,20 @@ def test_a_duplicate_linked_after_the_merge_catches_up_and_drafts_the_merged_mil
     again = s.link(late)
     assert s.events(late) == [OutboxEvent.MERGED] and s.store.writes == writes
     assert all(not i.drafted for i in again.milestones)
+
+
+def test_a_duplicate_of_link_to_merged_work_catches_nothing_up() -> None:
+    s = Scene()
+    s.land()
+    s.release()
+    duplicate = s.report()
+
+    outcome = s.intake.link(LinkRequest(duplicate, s.work, "dev/triage", duplicate=True))
+
+    assert outcome.milestones == () and outcome.delivery == ""
+    assert s.delivery(duplicate) is None and s.store.read_outbox(duplicate) is None
+    assert s.store.tracked_work(duplicate) == s.work  # it still shares the canonical's work
+    assert s.world.write_requests() == 0
 
 
 def test_a_duplicate_linked_after_a_verified_release_drafts_the_released_milestone() -> None:

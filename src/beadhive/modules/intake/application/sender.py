@@ -1,6 +1,6 @@
 """``OutboxService``: the supervised sender for ``comment.create``, ``labels.change``,
-``issue.close``, ``issue.type`` and ``issue.fields`` (``bh-6wj9y`` R6, R7; D2; ``bh-pr5ll``;
-``bh-poqy0``).
+``issue.close``, ``issue.reopen``, ``issue.type`` and ``issue.fields`` (``bh-6wj9y`` R6, R7; D2;
+``bh-pr5ll``; ``bh-poqy0``; ``bh-ih484``).
 
 The pure O1 to O19 machine lives in :mod:`..domain.outbox` and the translation to and from the
 tracker port in :mod:`.outbox`; this layer runs the machine against a :class:`ReportStore` and a
@@ -12,7 +12,9 @@ tracker in R6's order, and is the only code that ever calls a writer:
   separate from the comment's), and an ``issue.close`` with ``CLOSE_DISABLED`` unless
   ``OutboxPolicy.close_enabled`` (set from the bound adapter's own ``issue.close`` enable), and
   an ``issue.type`` / ``issue.fields`` with ``TYPE_DISABLED`` / ``FIELDS_DISABLED`` unless
-  ``OutboxPolicy.type_enabled`` / ``fields_enabled`` (likewise the adapter's own enables). Even
+  ``OutboxPolicy.type_enabled`` / ``fields_enabled`` and an ``issue.reopen`` with
+  ``REOPEN_DISABLED`` unless ``OutboxPolicy.reopen_enabled`` (likewise the adapter's own
+  enables). Even
   then nothing is written without the adapter's own
   per-operation enable (``probe_capabilities`` reports the operation usable, else O5 refuses; a
   disabled writer refuses before any request, which is O11) AND an operator approval of THAT
@@ -30,6 +32,15 @@ tracker in R6's order, and is the only code that ever calls a writer:
   record is ``sent``: per report, comment, labels, close. :meth:`OutboxService.backfill_closes`
   drafts the close a report closed before this existed never got, on its latest reply (or on the
   reply it drafts when the report never got one).
+* **A reopen goes first.** An ``issue.reopen`` is the operator's explicit correction of a close
+  (:meth:`OutboxService.reopen`, ``bh work outbox reopen``: no trigger drafts one). It rides on the
+  reply that explains it (``ReplyDraft.reopen``), and O9 refuses that reply's comment
+  (``reopen_not_ready``, before any request) until the reopen is sent or retired; the reopen itself
+  is refused while another record of the issue still holds an unsent close, and never drafted
+  while another reopen of the issue is pending. Discarding the reopen retires its reply with it,
+  and so does the report closing afterwards (:meth:`OutboxService.retire_reopens`). Per report:
+  reopen, comment, labels, close, an order only ``send-approved`` guarantees across separate
+  records. It reconciles by reading the issue's state back.
 * **Only owned labels.** A label operation is refused unless every label it adds or removes lies
   under the root's owned prefixes (``LeakPolicy.owned_label_prefixes``, the adapter's
   ``write.labels.owned_prefixes``): at draft, at the leak check (``label_not_owned``, never
@@ -59,8 +70,16 @@ holds it comes from the injected :class:`OutboxIndex`, confirmed against that re
 document; only a miss scans (one :meth:`ReportStore.read_outboxes` pass) and rebuilds the index.
 :meth:`OutboxService.send_approved` sends every approved operation in ONE process: one pass over
 the outbox documents, one issue listing for the labels, and the lock's batch scope
-(:class:`BatchLock`), ordered per report comment, labels, close; each operation is the same
+(:class:`BatchLock`), ordered per report reopen, comment, labels, close; each operation is the same
 write-ahead, single request and receipt as ``send``, with its own grant.
+
+**One read of a report per hold** (``bh-25fvb``): every hold of the binding's lock opens one store
+session (:class:`ReportSession`, when the store has one), so the hold's reads of the report (its
+outbox, thread and view, and the ``seq`` re-read before each write) are one read, and a document
+written in the hold is kept as written for the next compare-and-set. ``send_approved`` sends a
+report's operations under ONE hold (each still its own write-ahead, request and receipt), and
+``approve_label_batch`` approves a report's items under ONE hold and writes them as ONE document
+write (each still its own approval and single-use grant).
 
 The render is the dry run: no store write, and no tracker request beyond that one label read. The
 marker line is encoded by
@@ -74,6 +93,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager, nullcontext
+from itertools import groupby
 
 from beadhive.modules.tracker.contracts import CloseReason as TrackerCloseReason
 from beadhive.modules.tracker.contracts import (
@@ -83,7 +103,9 @@ from beadhive.modules.tracker.contracts import (
     IssueFieldWriter,
     IssueKey,
     IssueQuery,
+    IssueReopener,
     IssueResolver,
+    IssueState,
     IssueTypeWriter,
     LabelOwnership,
     LabelWriter,
@@ -140,6 +162,8 @@ from ..domain import (
     RefusalReason,
     RenderContext,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
     SendPlan,
     StorePosture,
@@ -149,6 +173,7 @@ from ..domain import (
     close_reason_for,
     is_outbox_id,
     outbox_view,
+    reopen_reply_text,
     reply_revision,
     require_private_store,
 )
@@ -157,7 +182,7 @@ from ..domain.outbox import TYPE_VALUE, VALUE_KINDS
 from . import outbox as translate
 from .labels import issue_index, label_base
 from .paging import iterate_pages
-from .threads import binding_key, thread_actor
+from .threads import held, thread_actor
 from .threads import issue_key as binding_issue
 
 #: The states a reconcile pass can still move: the ambiguous ones, and the retired ones a late
@@ -259,15 +284,18 @@ class OutboxService:
         """O1 for an operator reply (O2 when the same text already answers the same thread seq),
         checked at once (O3 holds a leak). With ``request.close`` and the close gate on, the record
         also carries an ``issue.close`` operation, naming ``request.duplicate_of``'s bound issue as
-        a duplicate's canonical (:meth:`_canonical`). Drafting never sends and needs no grant."""
+        a duplicate's canonical (:meth:`_canonical`); with ``request.reopen`` and the reopen gate
+        on, an ``issue.reopen`` that is sent before the comment. Drafting never sends and needs no
+        grant."""
         self._require_enabled()
         require_private_store(self._posture)
         binding = self._binding(request.report)
         close = request.close if self._policy.close_enabled else None
+        reopen = request.reopen and self._policy.reopen_enabled
         canonical = None
         if close is CloseReason.DUPLICATE and request.duplicate_of:
             canonical = self._canonical(request.duplicate_of, binding)
-        with self._lock.hold(binding_key(binding)) as epoch:
+        with held(self._lock, self._store, binding) as epoch:
             doc, expect, rules = self._open(request.report, epoch, request.actor)
             thread = self._store.read_thread(request.report)
             outbox_id = self._ids.outbox_id()
@@ -280,6 +308,7 @@ class OutboxService:
                 # the close rides on the reply only while the hive's close gate is on
                 close=close,
                 duplicate_of=canonical,
+                reopen=reopen,
             )
             applied = machine.draft(
                 doc,
@@ -292,6 +321,79 @@ class OutboxService:
         if applied.changed:
             self._indexed({applied.outbox_id: request.report})
         return self._result(request.report, applied, rules, OpKind.COMMENT)
+
+    def reopen(self, request: ReopenRequest) -> ReopenOutcome:
+        """The operator's explicit correction of a close (``bh-ih484``, ``bh work outbox
+        reopen``): for ONE report whose bound issue reads CLOSED, a reply carrying the text and
+        an ``issue.reopen`` (:meth:`draft_reply` with ``reopen``), drafted and never approved or
+        sent. It reopens an issue closed by anyone, because the operator chose to. Refused when the
+        outbox or the reopen gate is off, the report is not bound to the bound tracker project,
+        the issue cannot be read or is not closed, or a reopen for the issue is already pending
+        (``reopen_pending``: never two). ``dry_run`` makes every check, reading the one issue and
+        the stored outbox, and writes nothing: the outcome carries the planned reply and write."""
+        self._require_enabled()
+        machine.require_kind_enabled(OpKind.REOPEN, self._policy)
+        binding = self._bound_here(request.report)
+        found = self._read_issue(binding)
+        if found is None:
+            raise IntakeRefused(
+                RefusalReason.REOPEN_NOT_NEEDED,
+                f"{request.report}'s issue could not be read, so it is not known to be closed",
+            )
+        if found.state is not IssueState.CLOSED:
+            raise IntakeRefused(
+                RefusalReason.REOPEN_NOT_NEEDED,
+                f"{request.report}'s issue is {found.state.value}; only a closed issue is reopened",
+            )
+        text = request.text.strip() or reopen_reply_text()
+        scan = tuple(machine.check(text, self._leaks, sanitizer=self._sanitizer))
+        outcome = ReopenOutcome(
+            request.report,
+            text,
+            binding.url,
+            machine.REOPEN_PAYLOAD,
+            dry_run=request.dry_run,
+            findings=scan,
+        )
+        if request.dry_run:
+            pending = machine.pending_reopen(
+                self._store.read_outbox(request.report) or OutboxDocument(), binding.url
+            )
+            if pending is not None:  # the refusal the draft would make
+                raise IntakeRefused(
+                    RefusalReason.REOPEN_PENDING,
+                    f"{pending.outbox_id} already holds an unsent issue.reopen for this issue; "
+                    "send it, or discard it (`outbox discard`), before drafting another",
+                )
+            return outcome
+        result = self.draft_reply(ReplyDraft(request.report, text, request.actor, reopen=True))
+        return dataclasses.replace(outcome, result=result)
+
+    def retire_reopens(self, report: str, reason: str, actor: str) -> tuple[str, ...]:
+        """The outbox ids whose pending reopen (and the reply that explains it) was retired
+        because ``report`` was closed afterwards (``bh-ih484``); empty when nothing was pending, or
+        with the outbox or the reopen gate off. It needs no approval and never sends or reads the
+        tracker. A refusal or store failure leaves the records as they were and is raised for the
+        caller to report: the close it follows already stands."""
+        if not (self._policy.enabled and self._policy.reopen_enabled):
+            return ()
+        binding = self._binding(report)
+        with held(self._lock, self._store, binding) as epoch:
+            doc, expect, _ = self._open(report, epoch, actor)
+            applied = machine.retire_reopens(doc, reason=reason, actor=actor)
+            self._commit(report, applied, expect, actor)
+        return tuple(self._retired_ids(doc, applied))
+
+    @staticmethod
+    def _retired_ids(before: OutboxDocument, applied: OutboxApplied) -> list[str]:
+        """The records whose reopen moved in ``applied``."""
+        return [
+            record.outbox_id
+            for record in applied.document.records.values()
+            if (old := before.record(record.outbox_id)) is not None
+            and old.op(OpKind.REOPEN) is not None
+            and old.op(OpKind.REOPEN) != record.op(OpKind.REOPEN)
+        ]
 
     # -- O5: the gate ------------------------------------------------------------------------
 
@@ -307,7 +409,7 @@ class OutboxService:
         binding = self._bound_here(report)
         capabilities = translate.capabilities(self._tracker.probe_capabilities())
         fresh = self._fresh(binding) if request.kind is OpKind.LABELS else None
-        with self._lock.hold(binding_key(binding)) as epoch:
+        with held(self._lock, self._store, binding) as epoch:
             doc, expect, rules = self._open(report, epoch, request.actor)
             ctx = self._ctx(report, binding, request.outbox_id, labels=fresh)
             steps: list[str] = []
@@ -345,10 +447,11 @@ class OutboxService:
     # -- O9 to O13: send ---------------------------------------------------------------------
 
     def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
-        """O9 persisted, then exactly one ``post_comment`` / ``change_labels`` / ``close_issue``,
-        then O10, O11 or O12, all under one hold of the binding's lock. An approval whose render
-        moved is invalidated instead (O7) and nothing is sent; a close whose comment or the
-        report's latest labels are not sent yet is refused (``close_not_ready``) before any
+        """O9 persisted, then exactly one ``post_comment`` / ``change_labels`` / ``close_issue`` /
+        ``reopen_issue``, then O10, O11 or O12, all under one hold of the binding's lock. An
+        approval whose render moved is invalidated instead (O7) and nothing is sent; a close whose
+        comment or the report's latest labels are not sent yet is refused (``close_not_ready``),
+        and so is a comment whose own reopen is not sent (``reopen_not_ready``), before any
         request."""
         self._require_enabled()
         machine.require_kind_enabled(kind, self._policy)  # before any tracker request
@@ -369,69 +472,96 @@ class OutboxService:
         fresh: LabelBase | None,
         actor: str,
     ) -> OutboxResult:
-        """One operation's O9 to O13 under one hold of the binding's lock (``send`` and every
-        item of ``send_approved``): the O7 re-check, the write-ahead, the ONE request with the
-        grant, then the receipt or the outcome, each a durable write."""
-        with self._lock.hold(binding_key(binding)) as epoch:
-            doc, expect, rules = self._open(report, epoch, actor)
-            record = self._record(doc, outbox_id)
-            op = record.op(kind)
-            if op is None:
-                raise IntakeRefused(
-                    RefusalReason.UNKNOWN_OUTBOX, f"{outbox_id} has no {kind.value} operation"
-                )
-            ctx = self._ctx(report, binding, outbox_id, labels=fresh)
-            if op.state is OpState.APPROVED:
-                moved = machine.invalidate(doc, outbox_id, kind, ctx=ctx, actor=actor)
-                if moved.changed:  # O7: never send bytes the operator did not approve
-                    self._commit(report, moved, expect, actor)
-                    result = self._result(report, moved, rules, kind)
-                    return dataclasses.replace(
-                        result, detail="the render moved since it was approved; approve it again"
-                    )
-            ahead = machine.begin_send(
-                doc,
-                outbox_id,
-                kind,
-                actor=actor,
-                policy=self._policy,
-                ctx=ctx,
-                epoch=epoch,
-                holder=self._holder,
+        """One operation's O9 to O13 under one hold of the binding's lock (``send``): the O7
+        re-check, the write-ahead, the ONE request with the grant, then the receipt or the
+        outcome, each a durable write; the completion policy runs after the hold."""
+        with held(self._lock, self._store, binding) as epoch:
+            sent, outcome = self._send_held(
+                report, binding, outbox_id, kind, writer, fresh, actor, epoch
             )
-            doc = self._commit(report, ahead, expect, actor)  # the write-ahead, durable first
-            plan = ahead.plan
-            assert plan is not None  # begin_send always plans its one write
-            record = doc.records[outbox_id]
-            try:
-                answer = self._write(writer, kind, record, plan)
-            except Exception as exc:  # noqa: BLE001 - the classification is the contract
-                if translate.send_outcome(exc) is translate.SendOutcome.REFUSED:
-                    name = translate.refusal_name(exc)
-                    outcome = machine.record_refusal(doc, outbox_id, kind, name, actor=actor)
-                else:
-                    outcome = machine.record_unknown(
-                        doc, outbox_id, kind, actor=actor, detail=type(exc).__name__
-                    )
+        return self._completed(report, sent, outcome, actor)
+
+    def _send_held(
+        self,
+        report: str,
+        binding: IssueBinding,
+        outbox_id: str,
+        kind: OpKind,
+        writer: object,
+        fresh: LabelBase | None,
+        actor: str,
+        epoch: int,
+    ) -> tuple[OutboxResult, OutboxApplied | None]:
+        """:meth:`_send_op`'s body, run by the caller INSIDE its hold of the binding's lock (one
+        operation of ``send``, or one of a report's operations in ``send_approved``): returns the
+        result and the outcome to complete once the hold ends (``None``: nothing was sent)."""
+        doc, expect, rules = self._open(report, epoch, actor)
+        record = self._record(doc, outbox_id)
+        op = record.op(kind)
+        if op is None:
+            raise IntakeRefused(
+                RefusalReason.UNKNOWN_OUTBOX, f"{outbox_id} has no {kind.value} operation"
+            )
+        ctx = self._ctx(report, binding, outbox_id, labels=fresh)
+        if op.state is OpState.APPROVED:
+            moved = machine.invalidate(doc, outbox_id, kind, ctx=ctx, actor=actor)
+            if moved.changed:  # O7: never send bytes the operator did not approve
+                self._commit(report, moved, expect, actor)
+                result = self._result(report, moved, rules, kind)
+                detail = "the render moved since it was approved; approve it again"
+                return dataclasses.replace(result, detail=detail), None
+        ahead = machine.begin_send(
+            doc,
+            outbox_id,
+            kind,
+            actor=actor,
+            policy=self._policy,
+            ctx=ctx,
+            epoch=epoch,
+            holder=self._holder,
+        )
+        doc = self._commit(report, ahead, expect, actor)  # the write-ahead, durable first
+        plan = ahead.plan
+        assert plan is not None  # begin_send always plans its one write
+        record = doc.records[outbox_id]
+        try:
+            answer = self._write(writer, kind, record, plan)
+        except Exception as exc:  # noqa: BLE001 - the classification is the contract
+            if translate.send_outcome(exc) is translate.SendOutcome.REFUSED:
+                name = translate.refusal_name(exc)
+                outcome = machine.record_refusal(doc, outbox_id, kind, name, actor=actor)
             else:
-                outcome = machine.record_receipt(
-                    doc, outbox_id, kind, translate.receipt(answer), actor=actor
+                outcome = machine.record_unknown(
+                    doc, outbox_id, kind, actor=actor, detail=type(exc).__name__
                 )
-            self._commit(report, outcome, ahead.document.seq, actor)
-            notified, detail = self._notify(report, outbox_id, outcome, actor)
-        detail = _joined(detail, self._complete(report, outcome, actor))  # outside the lock
+        else:
+            outcome = machine.record_receipt(
+                doc, outbox_id, kind, translate.receipt(answer), actor=actor
+            )
+        self._commit(report, outcome, ahead.document.seq, actor)
+        notified, detail = self._notify(report, outbox_id, outcome, actor)
         result = self._result(report, outcome, (*rules, *(s.rule for s in ahead.steps)), kind)
-        return dataclasses.replace(result, notified=notified, detail=detail or result.detail)
+        return dataclasses.replace(result, notified=notified, detail=detail), outcome
+
+    def _completed(
+        self, report: str, result: OutboxResult, outcome: OutboxApplied | None, actor: str
+    ) -> OutboxResult:
+        """The completion policy for a sent operation, OUTSIDE the binding's lock (the hook
+        takes it), folded into the result's detail."""
+        if outcome is None:
+            return result
+        completed = self._complete(report, outcome, actor)
+        return dataclasses.replace(result, detail=_joined(result.detail, completed))
 
     def send_approved(self, request: BatchSend) -> BatchSendOutcome:
         """Send every APPROVED operation (of ``request.kinds``, on ``request.reports``) in one
         process (``bh-pc9rf``): ONE pass over the outbox documents, ONE issue listing when a
         labels operation is due, and the lock's batch scope, so a batch of N pays the per-process
-        costs once instead of N times. Per report the order is :data:`SEND_ORDER` (every comment,
-        oldest first, then the labels, then the close), and every operation is exactly ``send``'s
-        O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a store
-        failure on one operation is reported in ``failed`` and the rest continue (a close whose
-        comment did not go out is refused by ``close_not_ready``); only a host-level refusal
+        costs once instead of N times. Per report the order is :data:`SEND_ORDER` (the reopen, every
+        comment oldest first, then the labels, then the close), and every operation is exactly
+        ``send``'s O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a
+        store failure on one operation is reported in ``failed`` and the rest continue (a close
+        whose comment did not go out is refused by ``close_not_ready``); only a host-level refusal
         (``not_primary``) stops the batch, since nothing else could be sent either: the outcome
         so far is returned with ``stopped`` set, so what WAS sent is still reported."""
         self._require_enabled()
@@ -457,23 +587,55 @@ class OutboxService:
         results: list[OutboxResult] = []
         failed: list[BatchSendFailure] = []
         stopped = ""
-        bindings: dict[str, IssueBinding] = {}
         with self._batch():
-            for report, outbox_id, kind in due:
+            for report, group in groupby(due, key=lambda item: item[0]):
+                ops = [(outbox_id, kind) for _, outbox_id, kind in group]
+                try:
+                    stopped = self._send_report(report, ops, live, request, results, failed)
+                except (IntakeRefused, IntakeStoreError) as exc:  # its binding or its hold
+                    reason = exc.reason.value if isinstance(exc, IntakeRefused) else "store_error"
+                    failed.extend(
+                        BatchSendFailure(report, outbox_id, kind, reason, exc.detail)
+                        for outbox_id, kind in ops
+                        if not _reported(outbox_id, kind, results, failed)
+                    )
+                    if isinstance(exc, IntakeRefused) and exc.reason is RefusalReason.NOT_PRIMARY:
+                        stopped = exc.detail
+                if stopped:
+                    break
+        return BatchSendOutcome(tuple(results), tuple(failed), stopped)
+
+    def _send_report(
+        self,
+        report: str,
+        ops: list[tuple[str, OpKind]],
+        live: dict[str, TrackerIssue] | None,
+        request: BatchSend,
+        results: list[OutboxResult],
+        failed: list[BatchSendFailure],
+    ) -> str:
+        """Every due operation of ONE report, in order, under ONE hold of its binding's lock and
+        one store session (``bh-25fvb``): one host check and one read of the report for all of
+        them, while each is still :meth:`_send_held`'s own write-ahead, request and receipt with
+        its own grant. A refusal or store failure is that operation's and the rest go on; the
+        completion policy runs after the hold. Returns a host-level stop (``not_primary``)."""
+        binding = self._bound_here(report)
+        sent: list[tuple[OutboxResult, OutboxApplied | None]] = []
+        stopped = ""
+        with held(self._lock, self._store, binding) as epoch:
+            for outbox_id, kind in ops:
                 try:
                     machine.require_kind_enabled(kind, self._policy)
-                    if report not in bindings:
-                        bindings[report] = self._bound_here(report)
-                    binding = bindings[report]
                     writer = self._writer(kind)
                     fresh = None
                     if kind is OpKind.LABELS:
                         issue = live.get(binding.url) if live is not None else None
                         fresh = label_base(issue) if issue is not None else self._fresh(binding)
-                    sent = self._send_op(
-                        report, binding, outbox_id, kind, writer, fresh, request.actor
+                    sent.append(
+                        self._send_held(
+                            report, binding, outbox_id, kind, writer, fresh, request.actor, epoch
+                        )
                     )
-                    results.append(sent)
                 except IntakeRefused as exc:
                     failed.append(
                         BatchSendFailure(report, outbox_id, kind, exc.reason.value, exc.detail)
@@ -485,7 +647,8 @@ class OutboxService:
                     failed.append(
                         BatchSendFailure(report, outbox_id, kind, "store_error", exc.detail)
                     )
-        return BatchSendOutcome(tuple(results), tuple(failed), stopped)
+        results.extend(self._completed(report, r, o, request.actor) for r, o in sent)
+        return stopped
 
     def _listing_or_none(self) -> dict[str, TrackerIssue] | None:
         """The issues by URL from ONE listing, or ``None`` when it cannot be made (each labels
@@ -512,6 +675,13 @@ class OutboxService:
                 raise IntakeRefused(
                     RefusalReason.CAPABILITY_UNUSABLE,
                     "the bound tracker adapter cannot close an issue (issue.close is not enabled)",
+                )
+        elif kind is OpKind.REOPEN:
+            if not isinstance(self._tracker, IssueReopener):
+                raise IntakeRefused(
+                    RefusalReason.CAPABILITY_UNUSABLE,
+                    "the bound tracker adapter cannot reopen an issue (issue.reopen is not "
+                    "enabled)",
                 )
         elif kind is OpKind.TYPE:
             if not isinstance(self._tracker, IssueTypeWriter):
@@ -558,6 +728,9 @@ class OutboxService:
                     None if canonical is None else IssueKey(canonical.identifier, canonical.url)
                 ),
             )
+        if kind is OpKind.REOPEN:
+            assert isinstance(writer, IssueReopener)
+            return writer.reopen_issue(issue, grant=grant)
         if kind is OpKind.TYPE:
             assert isinstance(writer, IssueTypeWriter) and plan.values
             return writer.set_issue_type(issue, dict(plan.values)[TYPE_VALUE], grant=grant)
@@ -600,8 +773,7 @@ class OutboxService:
         self, report: str, outbox_ids: list[str], actor: str
     ) -> list[OutboxResult]:
         binding = self._bound_here(report)
-        key = binding_key(binding)
-        with self._lock.hold(key) as epoch:  # O13 first, so every attempt has ended
+        with held(self._lock, self._store, binding) as epoch:  # O13 first: every attempt ended
             doc, _, recovered = self._open(report, epoch, actor)
         start_seq = doc.seq  # read before the reads begin (ordered by seq, never by time)
         pending = {
@@ -612,14 +784,18 @@ class OutboxService:
         wanted = {kind for kinds in pending.values() for kind in kinds}
         # a read nobody needs is not made, and is vacuously complete
         comments, complete = self._listing(binding) if OpKind.COMMENT in wanted else ((), True)
-        reads_issue = wanted & {OpKind.LABELS, OpKind.CLOSE, *VALUE_KINDS}
+        reads_issue = wanted & {OpKind.LABELS, OpKind.CLOSE, OpKind.REOPEN, *VALUE_KINDS}
         issue = self._read_issue(binding) if reads_issue else None
         labels = frozenset(issue.labels) if issue is not None and OpKind.LABELS in wanted else None
-        state = issue.state.value if issue is not None and OpKind.CLOSE in wanted else None
+        state = (
+            issue.state.value
+            if issue is not None and wanted & {OpKind.CLOSE, OpKind.REOPEN}
+            else None
+        )
         issue_type = issue.issue_type if issue is not None and OpKind.TYPE in wanted else None
         fields = issue.fields if issue is not None and OpKind.FIELDS in wanted else None
         results: list[OutboxResult] = []
-        with self._lock.hold(key) as epoch:
+        with held(self._lock, self._store, binding) as epoch:
             doc, expect, again = self._open(report, epoch, actor)
             ledger = outbox_view(doc)
             known = set(ledger.known_actors())
@@ -646,6 +822,7 @@ class OutboxService:
                     read_ok = {
                         OpKind.LABELS: labels is not None,
                         OpKind.CLOSE: state is not None,
+                        OpKind.REOPEN: state is not None,
                         OpKind.TYPE: issue_type is not None,
                         OpKind.FIELDS: fields is not None,
                     }.get(kind, complete)  # type: ignore[arg-type]
@@ -684,7 +861,7 @@ class OutboxService:
         require_private_store(self._posture)
         report, _ = self._locate(outbox_id)
         binding = self._binding(report)
-        with self._lock.hold(binding_key(binding)) as epoch:
+        with held(self._lock, self._store, binding) as epoch:
             doc, expect, rules = self._open(report, epoch, actor)
             applied = machine.discard(
                 doc,
@@ -707,7 +884,7 @@ class OutboxService:
         require_private_store(self._posture)
         report, _ = self._locate(outbox_id)
         binding = self._binding(report)
-        with self._lock.hold(binding_key(binding)) as epoch:
+        with held(self._lock, self._store, binding) as epoch:
             doc, expect, rules = self._open(report, epoch, actor)
             applied = machine.retry(doc, outbox_id, kind, actor=actor, policy=self._policy)
             self._commit(report, applied, expect, actor)
@@ -792,7 +969,7 @@ class OutboxService:
         named = canonical.url if canonical is not None else ""
         if request.dry_run:
             return CloseBackfillItem(report, carrier.outbox_id, reason, duplicate_of=named)
-        with self._lock.hold(binding_key(binding)) as epoch:
+        with held(self._lock, self._store, binding) as epoch:
             doc, expect, _ = self._open(report, epoch, request.actor)
             if carrier.outbox_id not in doc.records:  # pragma: no cover - a record never leaves
                 raise IntakeRefused(RefusalReason.UNKNOWN_OUTBOX, carrier.outbox_id)
@@ -879,61 +1056,88 @@ class OutboxService:
                 f"the batch is now {batch.short_digest}; review it again before approving",
             )
         approved: list[OutboxResult] = []
-        stale: list[LabelBatchItem] = []
+        stale = [item for item in batch.items if item.stale]
         failed: list[tuple[str, str]] = []
-        bindings: dict[str, IssueBinding] = {}
+        due = [item for item in batch.items if not item.stale]
         with self._batch():  # one process, one host check (bh-pc9rf)
-            for item in batch.items:
-                if item.stale:
-                    stale.append(item)
-                    continue
+            for report, group in groupby(due, key=lambda item: item.report):
+                items = list(group)
                 try:
-                    if item.report not in bindings:
-                        bindings[item.report] = self._bound_here(item.report)
-                    approved.append(
-                        self._approve_item(
-                            item, bindings[item.report], live[item.url], capabilities, request
-                        )
-                    )
+                    binding = self._bound_here(report)
                 except IntakeRefused as exc:
-                    if exc.reason is RefusalReason.STALE_DIGEST:
-                        stale.append(dataclasses.replace(item, stale=True, note=exc.detail))
-                    else:
-                        failed.append((item.outbox_id, str(exc)))
+                    failed.extend((item.outbox_id, str(exc)) for item in items)
+                    continue
+                self._approve_report(
+                    report, items, binding, live, capabilities, request, approved, stale, failed
+                )
         return LabelBatchOutcome(batch, tuple(approved), tuple(stale), tuple(failed))
 
-    def _approve_item(
+    def _approve_report(
         self,
-        item: LabelBatchItem,
+        report: str,
+        items: list[LabelBatchItem],
         binding: IssueBinding,
-        issue: TrackerIssue,
+        live: dict[str, TrackerIssue],
         capabilities: machine.Capabilities,
         request: LabelBatchApprove,
-    ) -> OutboxResult:
-        """O5 for one batch item, against the listing's labels, minting its own grant."""
-        fresh = label_base(issue)
-        with self._lock.hold(binding_key(binding)) as epoch:
-            doc, expect, rules = self._open(item.report, epoch, request.actor)
-            ctx = self._ctx(item.report, binding, item.outbox_id, labels=fresh)
-            applied = machine.approve(
-                doc,
-                ApprovalRequest(item.outbox_id, item.kind, item.digest, request.actor),
-                grant_id=self._ids.grant_id(),
-                policy=self._policy,
-                ctx=ctx,
-                capabilities=capabilities,
+        approved: list[OutboxResult],
+        stale: list[LabelBatchItem],
+        failed: list[tuple[str, str]],
+    ) -> None:
+        """O5 for every batch item of ONE report, against the listing's labels, under ONE hold
+        of its binding's lock (``bh-25fvb``): each item is approved as its own kind and mints
+        its own single-use grant, and the report's approvals are written as ONE document write
+        (the outbox document is the report's, so a write per item only repeated it). An item
+        whose approval refuses with a stale digest is skipped for re-draft, any other refusal is
+        that item's failure and the rest are still approved; a refused hold or write fails every
+        item of the report not settled yet (none of them was approved)."""
+        steps: list[tuple[LabelBatchItem, OutboxApplied, RenderContext]] = []
+        decided: set[int] = set()  # the items settled stale or failed inside the hold
+        rules: tuple[str, ...] = ()
+        try:
+            with held(self._lock, self._store, binding) as epoch:
+                doc, expect, rules = self._open(report, epoch, request.actor)
+                for index, item in enumerate(items):
+                    fresh = label_base(live[item.url])
+                    ctx = self._ctx(report, binding, item.outbox_id, labels=fresh)
+                    try:
+                        applied = machine.approve(
+                            doc,
+                            ApprovalRequest(item.outbox_id, item.kind, item.digest, request.actor),
+                            grant_id=self._ids.grant_id(),
+                            policy=self._policy,
+                            ctx=ctx,
+                            capabilities=capabilities,
+                        )
+                    except IntakeRefused as exc:
+                        if exc.reason is RefusalReason.STALE_DIGEST:
+                            stale.append(dataclasses.replace(item, stale=True, note=exc.detail))
+                        else:
+                            failed.append((item.outbox_id, str(exc)))
+                        decided.add(index)
+                        continue
+                    doc = applied.document
+                    steps.append((item, applied, ctx))
+                if doc.seq != expect:  # every approval of the report, in one write
+                    self._store.write_outbox(report, doc, expect_seq=expect, actor=request.actor)
+        except IntakeRefused as exc:  # the hold or the write: nothing of the rest was approved
+            failed.extend(
+                (item.outbox_id, str(exc)) for n, item in enumerate(items) if n not in decided
             )
-            self._commit(item.report, applied, expect, request.actor)
+            return
+        for n, (item, applied, ctx) in enumerate(steps):
             record = applied.document.records[item.outbox_id]
             rendered = machine.render(record, item.kind, ctx)
-        approval = record.op(item.kind).approval  # type: ignore[union-attr]
-        result = self._result(item.report, applied, rules, item.kind)
-        return dataclasses.replace(
-            result,
-            rendered=rendered,
-            grant_id=approval.grant_id if approval is not None else "",
-            detail=f"approved {rendered.short_digest} in batch; `send` changes it once",
-        )
+            approval = record.op(item.kind).approval  # type: ignore[union-attr]
+            result = self._result(report, applied, rules if not n else (), item.kind)
+            approved.append(
+                dataclasses.replace(
+                    result,
+                    rendered=rendered,
+                    grant_id=approval.grant_id if approval is not None else "",
+                    detail=f"approved {rendered.short_digest} in batch; `send` changes it once",
+                )
+            )
 
     def _all_outboxes(self) -> dict[str, OutboxDocument]:
         """Every outbox document, read once, by report (a batch's or a scan's one pass), and the
@@ -1251,6 +1455,7 @@ class OutboxService:
         noun = {
             OpKind.LABELS: "label read",
             OpKind.CLOSE: "issue read",
+            OpKind.REOPEN: "issue read",
             OpKind.TYPE: "issue read",
             OpKind.FIELDS: "issue read",
         }.get(
@@ -1305,6 +1510,18 @@ def _live_values(issue: TrackerIssue | None, kind: OpKind) -> dict[str, str] | N
 
 def _noun(kind: OpKind) -> str:
     return "type" if kind is OpKind.TYPE else "field values"
+
+
+def _reported(
+    outbox_id: str,
+    kind: OpKind,
+    results: list[OutboxResult],
+    failed: list[BatchSendFailure],
+) -> bool:
+    """Whether the batch already reported ``outbox_id``'s ``kind`` operation (sent or failed)."""
+    return any(r.outbox_id == outbox_id and r.kind is kind for r in results) or any(
+        f.outbox_id == outbox_id and f.kind is kind for f in failed
+    )
 
 
 def _joined(first: str, second: str) -> str:

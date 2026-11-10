@@ -74,6 +74,7 @@ def test_port_names_match_the_adr() -> None:
         "discard",
         "retry",
         "backfill_closes",
+        "reopen",
         "on_work_merged",
         "on_release",
         # waiting for the reporter (bh-61xkc), additive
@@ -99,6 +100,8 @@ def test_port_names_match_the_adr() -> None:
         "propose",
         "review_proposal",
         "apply_reviewed",
+        # the delivery a rejected report must not hold (bh-5kpwc), additive
+        "sweep_delivery",
     ]
     assert {m for m in vars(contracts.ReportStore) if not m.startswith("_")} >= {
         "scope",
@@ -106,6 +109,7 @@ def test_port_names_match_the_adr() -> None:
         "find_by_external_ref",
         "create",
         "set_state",
+        "clear_state",
         "record_snapshot",
         "update_fields",
         "close",

@@ -9,6 +9,7 @@ no configuration and imports no plugin kernel. Root's lazy factory row builds it
 **This class is the read path; writers are mixins.** It has no write method itself. Each write
 operation is its own module (``comment.create``: :mod:`.comments`; ``labels.change``:
 :mod:`.labels`; ``labels.define``: :mod:`.label_definitions`; ``issue.close``: :mod:`.closing`;
+``issue.reopen``: :mod:`.reopening`;
 ``issue.type`` and ``issue.fields``: :mod:`.issue_values`), composed onto this class by
 :mod:`.compose` only when that operation is enabled,
 so the built object structurally lacks a disabled write's method. A present writer is necessary,
@@ -111,6 +112,7 @@ SUPPORTED_OPERATIONS = frozenset(
         Operation.LABELS_READ,
         Operation.LABELS_DEFINE,
         Operation.ISSUE_CLOSE,
+        Operation.ISSUE_REOPEN,
         Operation.ISSUE_TYPE,
         Operation.ISSUE_FIELDS,
     }

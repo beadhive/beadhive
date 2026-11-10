@@ -234,6 +234,15 @@ class MemoryReportStore:
         row.view = dataclasses.replace(row.view, labels=(*kept, f"{dimension}:{value}"))
         row.history.append((dimension, value, reason))
 
+    def clear_state(self, bead: str, dimension: str, *, reason: str, actor: str) -> None:
+        row = self._row(bead)
+        kept = tuple(label for label in row.view.labels if not label.startswith(f"{dimension}:"))
+        if kept == row.view.labels:
+            return
+        self.writes += 1
+        row.view = dataclasses.replace(row.view, labels=kept)
+        row.history.append((dimension, "", reason))
+
     def record_snapshot(self, bead: str, snapshot: SourceSnapshot, *, actor: str) -> None:
         row = self._row(bead)
         self.writes += 1

@@ -418,6 +418,7 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `enabled` | `false` | the plugin's own gate; off means no owner, no port and no network |
 | `base_url` | unset (public API) | GitHub Enterprise Server prefix: https, no userinfo, query or fragment |
 | `credential.sources` | `[env, gh]` | credential source names in precedence order; empty means anonymous |
+| `credential.per_invocation_cache` | `false` | keep the first token resolved in memory for the rest of ONE command instead of deriving it again for every GitHub operation (one `gh auth token`, about 70 ms, each; bh-25fvb). Opt-in, and the one exception to the never-cached credential: the token lives only in that command's token source, is never written or logged, and a token rotated or revoked while the command runs is not picked up until the next command. Applies to the intake verbs, `bh plugin tracker-github` probes and the tracker overlap re-pull; never to the host daemon's discovery timer, which keeps its adapters for the daemon's whole life and derives the token per operation whatever this key says. New in 0.35.5 (bh-25fvb): an older host rejects the key, so set it only once every host runs that release (the rotation order in [UPGRADING](UPGRADING.md#0354--0355--outbox-reopen-faster-batches-no-delivery-on-a-duplicate-of)) |
 | `read.issues.enabled` / `read.comments.enabled` | `false` | enable `issues.read` / `comments.read` |
 | `read.labels.enabled` | `false` | enable `labels.read`: read the repository's label definitions (name, color, description). A read, so no grant; new (bh-la587), see the rotation note below |
 | `read.include_closed` | `true` | scope within a read, not a feature switch |
@@ -429,13 +430,14 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `write.label_definitions.enabled` | `false` | enable `labels.define`: create or update the repository's label definitions. Repository-scoped, necessary and never sufficient (each use needs an operator-approved single-use grant); new (bh-la587), see the rotation note below |
 | `write.labels.owned_prefixes` | `[]` | labels Beadhive owns; empty means no label write is possible, and `write.labels.enabled: true` with an empty list is refused at config load |
 | `write.issue_close.enabled` | `false` | enable `issue.close`: close a bound issue with its reason (`completed`, `not_planned` or `duplicate`) as `PATCH /issues/{n}` with only `state` and `state_reason`, never the labels. Issue-scoped, necessary and never sufficient (each close needs its own operator-approved single-use grant). It is also the outbox's close gate: with it off no close is drafted, approved or sent (`close_disabled`); there is no separate intake key. New in 0.35.3 (bh-pr5ll), see the rotation note below |
+| `write.issue_reopen.enabled` | `false` | enable `issue.reopen`: reopen a closed bound issue on the operator's say (`bh work outbox reopen`), the inverse of `issue.close`, as `PATCH /issues/{n}` with only `state: open`, never the labels. Issue-scoped, necessary and never sufficient (each reopen needs its own operator-approved single-use grant; the close's grant never reopens). It is also the outbox's reopen gate: with it off no reopen is drafted, approved or sent (`reopen_disabled`); there is no separate intake key. New in 0.35.5 (bh-ih484), see the rotation note below |
 | `write.issue_type.enabled` | `false` | enable `issue.type`: read each issue's type (`TrackerIssue.issue_type`; unread while off) and set it to a type the organization defines as `PATCH /issues/{n}` with only `type`, never the labels. Issue-scoped, necessary and never sufficient (each write needs its own operator-approved single-use grant). It is also the outbox's `issue.type` gate (`type_disabled`); there is no separate intake key. New in 0.35.3 (bh-poqy0), see the rotation note below |
 | `write.issue_fields.enabled` | `false` | enable `issue.fields`: read each issue's field values (`TrackerIssue.fields`; unread while off) and set named ones: one `GET /orgs/{org}/issue-fields` resolves the field id and checks the option, then `POST /issues/{n}/issue-field-values` adds only those values (every other field and the labels are kept). Needs the write role; a classic token needs `read:org`, and a fine-grained token or GitHub App needs the organization permission "Issue Fields" (read) for the field listing and the repository permission "Issues" (write) for the POST. Issue-scoped, necessary and never sufficient (each write needs its own grant). It is also the outbox's `issue.fields` gate (`fields_disabled`). New in 0.35.3 (bh-poqy0), see the rotation note below |
 
 The adapter ships the read path and its writers, `comment.create`, `labels.change` (owned
-prefixes only), `labels.define`, `issue.close` (the state and its reason only), `issue.type` and
-`issue.fields` (the type, or the named field values, only). Each write flag
-binds its writer and nothing else, and each write still needs its own operator-approved
+prefixes only), `labels.define`, `issue.close` (the state and its reason only), `issue.reopen` (the
+state only), `issue.type` and `issue.fields` (the type, or the named field values, only). Each write
+flag binds its writer and nothing else, and each write still needs its own operator-approved
 single-use grant (no key can supply one). A read or write whose flag is off is refused before any
 request (a disabled writer has no method on the bound object).
 `read.include_closed: false` narrows issue listings but never the full id snapshot used to detect
@@ -462,6 +464,30 @@ read with one GET before the write), and the close's digest shows `duplicate_of:
 no other key; a canonical with no issue in the same repository closes as a plain duplicate.
 GitHub's issue dependencies and sub-issues have no key: bh does not write them (no bead edge means
 the same thing).
+
+`write.issue_reopen.enabled` is new in 0.35.5 (bh-ih484), with the `issue.reopen` tracker operation,
+the outbox's `issue.reopen` operation kind and the `bh work outbox reopen` verb, and follows the
+same rotation order: an older host rejects the key and fails closed on an `intake.outbox` document
+holding a reopen, so **every host that reads the hive's outbox runs that release before the key is
+set**. A reopen is **only ever the operator's explicit act**: `bh work outbox reopen <report>
+[--text T | --reply-file F] [--dry-run] [--json]` drafts, for ONE report whose bound issue reads
+closed (closed by anyone), a reply carrying the reopen; `bh work triage apply` and `bh work wake`
+never draft one. With the key off it refuses (`reopen_disabled`); it also refuses an issue that is
+not closed (`reopen_not_needed`) and a second reopen while one is pending for the issue
+(`reopen_pending`: send it, or discard it, first). `--dry-run` makes every check and prints the
+planned reopen and reply, writing nothing. The reopen is sent **before** its reply: the reply's
+comment is refused (`reopen_not_ready`, before any request) until its reopen is sent or retired,
+and the reopen itself is refused while another record of the same issue still holds an unsent close
+(send or discard that close first, or it would close the issue again). Per report the send order,
+and the `send-approved` batch order, is reopen, comment, labels, close; **only `send-approved`
+guarantees that order across separate records** (a question drafted on its own for the still-closed
+issue is a separate record and is not held back by a pending reopen, so send the reopen first or
+use the batch). Discarding the reopen retires its reply with it, and so does closing the report
+afterwards (`reject`, `reroute`): a pending reopen of a closed report is superseded. Nothing is
+approved or sent by the verb: approve it with `bh work outbox approve <id> --op reopen:<digest>`
+(and `--op comment:<digest>`), send it with `bh work outbox send-approved` (or `bh work outbox send
+<id> --kind reopen`); the probe reports `issue.reopen` as `no`
+below the triage role. With the key unset nothing is read, drafted, approved or sent.
 
 `write.issue_type.enabled` and `write.issue_fields.enabled` are new in 0.35.3 (bh-poqy0), with the
 `issue.type` and `issue.fields` tracker operations and outbox operation kinds, and follow the same
@@ -517,7 +543,7 @@ and no key can enable or pre-approve a tracker write.
 
 | Key (under `intake.external`) | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | enable `bh work import <issue-url>` and `bh work discover`; off means the intake port is the null one and they refuse with `intake_disabled`. They also need `plugins.tracker-github.enabled` (and the hive's `stores.public.adapter` binding and `plugins.tracker-github.read.issues.enabled`): without the plugin on no tracker adapter is built and they refuse naming it. The token comes from `plugins.tracker-github.credential.sources`, read per operation and never stored |
+| `enabled` | `false` | enable `bh work import <issue-url>` and `bh work discover`; off means the intake port is the null one and they refuse with `intake_disabled`. They also need `plugins.tracker-github.enabled` (and the hive's `stores.public.adapter` binding and `plugins.tracker-github.read.issues.enabled`): without the plugin on no tracker adapter is built and they refuse naming it. The token comes from `plugins.tracker-github.credential.sources`, read per operation and never stored (unless `credential.per_invocation_cache` opts into keeping it in memory for one command) |
 | `default_type` | `bug` | issue type of an imported report: `bug`, `feature` or `chore` |
 | `discovery.enabled` | `false` | run the opt-in host-daemon discovery timer (needs `enabled` too) |
 | `discovery.interval_seconds` | unset | seconds between timer runs; **required** when `discovery.enabled` is true (there is no default cadence) |
@@ -526,14 +552,14 @@ and no key can enable or pre-approve a tracker write.
 | `milestones.draft_on_merge` | `false` | draft a `merged` outbox record when linked work merges |
 | `milestones.draft_on_release` | `false` | draft a `released` outbox record when `bh work delivery release <tag>` verifies a release |
 | `milestones.append_release_to_closed` | `false` | also draft the `released` record for a report that is already closed |
-| `milestones.catch_up_on_link` | `false` | when `bh work link` (or `accept --work`) links a report to work that already merged, give it the milestones it missed from the merge (and verified release) another tracking report recorded: `delivery:merged` / `released`, a record where drafting is on, then the completion policy. Off, such a report stays `delivery:pending` |
+| `milestones.catch_up_on_link` | `false` | when `bh work link` (or `accept --work`) links a report to work that already merged (never a `duplicate-of`, whose delivery is its canonical report's), give it the milestones it missed from the merge (and verified release) another tracking report recorded: `delivery:merged` / `released`, a record where drafting is on, then the completion policy. Off, such a report stays `delivery:pending` |
 | `milestones.draft_on_start` | `false` | draft a `started` record for every report that tracks work (still `delivery:pending`) when that work is claimed for the first time (`bh work claim`, `claim --group`, `start`, `next`). Keyed on the work: a re-claim, a resume after a bounce or a claim after an abandon drafts nothing. A failure only warns; the claim never fails, and off the claim reads nothing extra |
 | `milestones.draft_on_blocked` | `false` | allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` record (fixed wording plus the reason) for every report that tracks the work and is still `delivery:pending`. Off refuses naming this key |
 | `milestones.draft_on_deprioritised` | `false` | the same for `bh work delivery deprioritised <work> --reason <public text>` and a `deprioritised` record |
 | `outbox.enabled` | `false` | allow outbox records to be drafted and approved; milestones draft nothing without it |
 | `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request. Only `approve` and `send` are gated by this flag: `render`, `discard` and `retry --kind labels` are local state moves that make no tracker request, so they are deliberately not blocked. A retried label operation still cannot reach GitHub without a new `approve` and `send`, and both of those are gated |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
-| `outbox.batch_recheck_seconds` | `0` | how long a one-process batch (`bh work outbox send-approved`, `bh work labels approve --batch`) reuses its primary-host check and epoch read before taking them again (bh-pc9rf). `0` (the default) re-checks on every operation, as a single `send` does; a positive value is an opt-in. Every operation still takes its own per-binding lock, spends its own single-use grant and writes its own receipt; only the host check is shared. The factory sets `300` once every host runs 0.35.3 (an older host rejects the key) |
+| `outbox.batch_recheck_seconds` | `0` | how long a one-process batch (`bh work outbox send-approved`, `bh work labels approve --batch`) reuses its primary-host check and epoch read before taking them again (bh-pc9rf). `0` (the default) re-checks on every hold of the lock, as a single `send` does; a positive value is an opt-in. Since bh-25fvb a batch takes ONE hold of the per-binding lock per report (not one per operation) and sends or approves that report's operations under it; every operation still spends its own single-use grant and writes its own write-ahead and receipt, and only the host check is shared. The check itself costs about 1.9 s per hold on the factory (13 s before), and `bh work labels sync` drafts inside the same batch scope. The factory sets `300` once every host runs 0.35.3 (an older host rejects the key) |
 | `comments.enabled` | `false` | ingest bound reports' issue comments: `bh work thread ingest` (needs `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`), `thread show` and `thread considered`. Reads only; off refuses naming this key |
 | `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |
 | `comments.purge_deleted_bodies` | `true` | drop a tombstoned comment's latest body (its digest is kept; not erasure) |

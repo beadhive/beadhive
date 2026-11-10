@@ -521,3 +521,33 @@ def test_a_sent_progress_comment_records_notified_and_never_completes_the_report
     view = s.store.get(report)
     assert view is not None and view.status == "open"  # progress never completes a report
     assert s.world.write_requests() == 1  # the operator's one approved send, nothing else
+
+
+# -- a rejected report (a duplicate-of ends in one) gets no progress note (bh-5kpwc) ------------
+
+
+def _rejected_with_pending(s: Scene) -> str:
+    report = s.report(status="closed")  # carries the delivery:pending the old link wrote
+    s.store.set_state(report, "intake", "rejected", reason="duplicate", actor="dev/t")
+    return report
+
+
+def test_a_claim_drafts_no_started_record_for_a_rejected_report() -> None:
+    s = Scene()
+    canonical, duplicate = s.report(), _rejected_with_pending(s)
+
+    outcome = s.claim()
+
+    assert outcome.reports == (canonical, duplicate) and not outcome.errors
+    assert len(s.records(canonical)) == 1 and s.records(duplicate) == []
+    assert "rejected or closed" in outcome.items[1].note and not outcome.items[1].drafted
+
+
+@pytest.mark.parametrize("event", [OutboxEvent.BLOCKED, OutboxEvent.DEPRIORITISED])
+def test_a_notice_drafts_nothing_for_a_rejected_report(event) -> None:
+    s = Scene()
+    canonical, duplicate = s.report(), _rejected_with_pending(s)
+
+    s.notice(event)
+
+    assert len(s.records(canonical)) == 1 and s.records(duplicate) == []

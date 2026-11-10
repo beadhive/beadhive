@@ -26,6 +26,9 @@ tracks the claimed work, keyed on the work so only its first claim drafts; ``del
 wording. Both draft only while a report's delivery is ``pending`` and only with their own switch
 on; the leak check runs on the drafted text, so a reason naming a bead id leaves a held record.
 
+A rejected report (a ``duplicate-of`` ends in one) never gets a milestone from any trigger below:
+its delivery is its canonical report's, which already tracks the work (bh-5kpwc).
+
 **Nothing here sends.** This service holds no tracker, no grant and no writer: the most a milestone
 can do is leave a ``drafted`` (or ``held``) record for an operator to render, approve and send
 through the supervised sender. It is free to call from the work layer: a failure for one report is
@@ -67,6 +70,7 @@ from ..domain import (
     delivery_after_merge,
     delivery_after_release,
     delivery_of,
+    delivery_unowned,
     fold_facts,
     is_awaiting_triage,
     merged_draft,
@@ -138,6 +142,8 @@ class MilestoneService:
         view = self._store.get(report)
         if view is None or view.binding is None:
             return MilestoneItem(report, MERGED, note="not a bound report")
+        if delivery_unowned(view.labels):
+            return MilestoneItem(report, MERGED, note=_UNOWNED)
         binding = view.binding
         with self._lock.hold(binding_key(binding)):
             doc = self._store.read_outbox(report) or OutboxDocument()
@@ -208,6 +214,8 @@ class MilestoneService:
         report, binding = view.id, view.binding
         if binding is None:
             return MilestoneItem(report, RELEASED, note="not a bound report")
+        if delivery_unowned(view.labels):
+            return MilestoneItem(report, RELEASED, note=_UNOWNED)
         with self._lock.hold(binding_key(binding)):
             doc = self._store.read_outbox(report) or OutboxDocument()
             current = delivery_of(view.labels)
@@ -263,7 +271,10 @@ class MilestoneService:
         the report the milestones it missed, through the SAME steps the triggers take: the merged
         fact, ``delivery:merged`` and a ``merged`` record when drafting is on, then (when the
         release was verified) ``delivery:released`` and a ``released`` record, then the completion
-        policy. Without this a duplicate linked late stays ``delivery:pending`` forever.
+        policy. Without this a report accepted late onto merged work stays ``delivery:pending``
+        forever. A rejected report (a ``duplicate-of`` ends in one) is never caught up: its
+        delivery is its canonical report's, so the trigger it reaches through ``_merged`` reports
+        that and stops.
 
         The merge (and release) is the one already recorded on another report that tracks
         ``work`` (its ``facts.merged`` names ``work``); a release counts only where that report
@@ -399,6 +410,8 @@ class MilestoneService:
         view = self._store.get(report)
         if view is None or view.binding is None:
             return MilestoneItem(report, event, note="not a bound report")
+        if delivery_unowned(view.labels):
+            return MilestoneItem(report, event, note=_UNOWNED)
         binding = view.binding
         current = delivery_of(view.labels)
         if current != PROGRESS_DELIVERY:
@@ -513,6 +526,11 @@ class MilestoneService:
             return step()
         except (IntakeRefused, IntakeStoreError) as exc:
             return MilestoneItem(report, event, error=_why(exc))
+
+
+_UNOWNED = (
+    "rejected or closed as a duplicate: its delivery is not its own, so no milestone is drafted"
+)
 
 
 def _joined(*parts: str) -> str:

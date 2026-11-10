@@ -9,7 +9,11 @@ The same wiring as the comment, label and close sender tests (``OutboxService`` 
   labels, close, each with its own single-use grant and receipt; a failure or an unknown outcome
   on one item is reported and the rest continue; the labels render from ONE issue listing;
 * ``show`` / ``approve`` / ``send`` find a record with ONE report read through the index, scan
-  only on a miss or a wrong answer, and rebuild the index from that scan.
+  only on a miss or a wrong answer, and rebuild the index from that scan;
+* (``bh-25fvb``) a report's operations go under ONE hold, the label batch writes a report's
+  approvals ONCE (each still its own grant), the labels sync drafts in one batch scope, and one
+  batch sends a record's labels, type and fields in order with their receipts (``--kind type``
+  only the type), on the issue-values ``Hive`` harness.
 """
 
 from __future__ import annotations
@@ -228,9 +232,10 @@ def refused(expected: RefusalReason, call, /, *args, **kwargs) -> IntakeRefused:
 
 
 def test_every_operation_kind_has_its_place_in_the_send_order() -> None:
-    """A kind missing from SEND_ORDER would never be sent by a batch: place it, close last."""
+    """A kind missing from SEND_ORDER would never be sent by a batch: the reopen goes first (it
+    precedes the reply that explains it), the comments next, the close last."""
     assert sorted(SEND_ORDER) == sorted(OpKind) and len(set(SEND_ORDER)) == len(SEND_ORDER)
-    assert SEND_ORDER[0] is C and SEND_ORDER[-1] is X
+    assert SEND_ORDER[:2] == (OpKind.REOPEN, C) and SEND_ORDER[-1] is X
 
 
 def test_every_approved_op_goes_in_one_batch_comment_then_labels_then_close() -> None:
@@ -270,7 +275,7 @@ def test_every_approved_op_goes_in_one_batch_comment_then_labels_then_close() ->
     assert s.world.write_requests() == 6  # one request per operation
     assert s.world.issues[first_issue.identifier].state is IssueState.CLOSED
     assert s.world.issues[second_issue.identifier].state is IssueState.CLOSED
-    assert s.lock.batches == 1 and len(s.lock.batched) == 6  # one scope, a hold per op
+    assert s.lock.batches == 1 and len(s.lock.batched) == 2  # one scope, a hold per report
     assert s.store.calls["read_outboxes"] == 1  # one pass over the outbox documents
     assert s.world.read_requests() - reads_before <= 2  # one issue listing (a page or two)
 
@@ -338,19 +343,23 @@ def test_losing_the_primary_stops_the_batch_and_reports_what_was_sent() -> None:
     lock = DemotableLock()
     s = Scene(lock=lock)
     first, _, reply1, labels1 = s.closing_report("one")
-    s.closing_report("two")
-    lock.allow = 2  # the comment and the labels of the first report go, then the host is demoted
+    second, _, reply2, labels2 = s.closing_report("two")
+    lock.allow = 1  # the first report's hold is the last one granted: then the host is demoted
 
     outcome = s.intake.send_approved(BatchSend("alice"))
 
     assert [(r.outbox_id, r.kind, r.state) for r in outcome.results] == [
         (reply1, C, OpState.SENT),
         (labels1, L, OpState.SENT),
+        (reply1, X, OpState.SENT),
     ]
-    (refusal,) = outcome.failed
-    assert (refusal.outbox_id, refusal.kind, refusal.reason) == (reply1, X, "not_primary")
+    assert [(f.report, f.outbox_id, f.kind, f.reason) for f in outcome.failed] == [
+        (second, reply2, C, "not_primary"),
+        (second, labels2, L, "not_primary"),
+        (second, reply2, X, "not_primary"),
+    ]
     assert outcome.stopped == "not the primary" and not outcome.ok
-    assert s.world.write_requests() == 2  # nothing after the refusal was tried
+    assert s.world.write_requests() == 3  # nothing after the refusal was tried
 
 
 def test_the_label_batch_approves_inside_one_batch_scope() -> None:
@@ -461,3 +470,120 @@ def test_without_an_index_the_sender_still_scans() -> None:
     s.service._index = None
 
     assert s.intake.render(oid).report == report
+
+
+# -- the issue type and fields through send_approved (bh-25fvb, from the bh-pc9rf re-review) -----
+
+
+def _projected_record():
+    """A ``Hive`` (the issue-values harness) whose ONE labels record carries a labels, a type
+    and a fields operation, each approved by the batch with its own grant."""
+    from tests.unit.modules.intake.test_intake_issue_values import Hive
+
+    hive = Hive()
+    report, key = hive.report("a crash")
+    hive.work(report, issue_type="feature", priority="1")
+    hive.define()
+    (item,) = hive.sync().items
+    _, approved = hive.approve()
+    assert [r.kind for r in approved.approved] == [L, OpKind.TYPE, OpKind.FIELDS]
+    grants = {r.kind: r.grant_id for r in approved.approved}
+    assert len(set(grants.values())) == 3
+    return hive, report, key, item.drafted, grants
+
+
+def test_one_batch_sends_labels_then_type_then_fields_each_with_its_receipt() -> None:
+    hive, report, key, oid, grants = _projected_record()
+    writes = hive.world.write_requests()
+    batches, batched = hive.lock.batches, len(hive.lock.batched)
+
+    outcome = hive.intake.send_approved(BatchSend("alice"))
+
+    assert outcome.ok and not outcome.failed
+    assert [(r.report, r.outbox_id, r.kind, r.state) for r in outcome.results] == [
+        (report, oid, L, OpState.SENT),
+        (report, oid, OpKind.TYPE, OpState.SENT),
+        (report, oid, OpKind.FIELDS, OpState.SENT),
+    ]
+    assert hive.world.write_requests() - writes == 3  # one request per operation
+    record = hive.record(report, oid)
+    for op in record.operations:  # each spent ITS OWN grant and holds its own receipt
+        assert op.state is OpState.SENT and op.receipt is not None
+        assert op.approval.grant_id == grants[op.kind]
+        assert op.approval.grant is GrantStatus.CONSUMED
+    receipts = {op.kind: op.receipt for op in record.operations}
+    assert receipts[OpKind.TYPE].values_after == (("type", "Feature"),)
+    assert receipts[OpKind.FIELDS].values_after == (("Priority", "High"),)
+    assert hive.world.server_issue_type(key) == "Feature"
+    assert hive.world.server_issue_fields(key) == {"Priority": "High"}
+    assert "bh:type/feature" in hive.world.server_labels(key)
+    assert hive.lock.batches - batches == 1  # one batch scope ...
+    assert len(hive.lock.batched) - batched == 1  # ... and the report's three ops in ONE hold
+
+
+def test_send_approved_with_kind_type_sends_only_the_type() -> None:
+    hive, report, key, oid, grants = _projected_record()
+    labels_before = hive.world.server_labels(key)
+    writes = hive.world.write_requests()
+
+    outcome = hive.intake.send_approved(BatchSend("alice", kinds=(OpKind.TYPE,)))
+
+    assert [(r.outbox_id, r.kind, r.state) for r in outcome.results] == [
+        (oid, OpKind.TYPE, OpState.SENT)
+    ]
+    assert hive.world.write_requests() - writes == 1
+    assert hive.world.server_issue_type(key) == "Feature"
+    assert hive.world.server_issue_fields(key) == {}
+    assert hive.world.server_labels(key) == labels_before
+    record = hive.record(report, oid)
+    assert record.op(OpKind.TYPE).approval.grant is GrantStatus.CONSUMED
+    for kind in (L, OpKind.FIELDS):  # still approved, their grants unspent
+        assert record.op(kind).state is OpState.APPROVED
+        assert record.op(kind).approval.grant_id == grants[kind]
+        assert record.op(kind).approval.grant is GrantStatus.MINTED
+
+
+def test_the_label_batch_writes_a_reports_approvals_once_each_with_its_own_grant() -> None:
+    from tests.unit.modules.intake.test_intake_issue_values import Hive
+
+    hive = Hive()
+    reports = [hive.report(f"crash {n}") for n in range(2)]
+    for report, _ in reports:
+        hive.work(report, issue_type="feature", priority="1")
+    hive.define()
+    hive.sync()
+    writes: list[str] = []
+    real = hive.store.write_outbox
+
+    def counted(bead, document, *, expect_seq, actor):
+        writes.append(bead)
+        return real(bead, document, expect_seq=expect_seq, actor=actor)
+
+    hive.store.write_outbox = counted
+    holds = len(hive.lock.holds)
+
+    _, outcome = hive.approve()
+
+    assert [r.kind for r in outcome.approved] == [L, OpKind.TYPE, OpKind.FIELDS] * 2
+    assert len(set(outcome.grant_ids)) == 6  # every operation its own single-use grant
+    assert sorted(writes) == sorted(report for report, _ in reports)  # ONE write per report
+    assert len(hive.lock.holds) - holds == 2  # one hold per report
+    for report, _ in reports:
+        (record,) = hive.store.read_outbox(report).records.values()
+        assert all(op.state is OpState.APPROVED for op in record.operations)
+
+
+def test_the_labels_sync_drafts_inside_one_batch_scope() -> None:
+    from tests.unit.modules.intake.test_intake_issue_values import Hive
+
+    hive = Hive()
+    for n in range(3):
+        hive.report(f"crash {n}")
+    hive.define()
+    batches, batched = hive.lock.batches, len(hive.lock.batched)
+
+    outcome = hive.sync()
+
+    assert len(outcome.drafted) == 3
+    assert hive.lock.batches - batches == 1  # the lock may reuse one host check (bh-25fvb)
+    assert len(hive.lock.batched) - batched == 3  # each draft still holds the lock itself

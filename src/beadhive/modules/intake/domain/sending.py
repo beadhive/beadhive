@@ -10,6 +10,7 @@ library only.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from .outbox import CloseReason, OpKind, OpState, OutboxRecord, Rendered
 
@@ -21,13 +22,17 @@ class ReplyDraft:
     it is drafted only while the hive's close gate is on (``OutboxPolicy.close_enabled``).
     ``duplicate_of`` is the CANONICAL REPORT a ``duplicate`` close is a duplicate of
     (``bh-iamru``): the sender resolves it to that report's bound issue, and closes as a plain
-    duplicate when it has none in the same tracker project."""
+    duplicate when it has none in the same tracker project. ``reopen`` asks for an
+    ``issue.reopen`` operation on the same record, sent BEFORE the comment (``bh-ih484``): the
+    reply that explains a corrected close; drafted only while the reopen gate is on
+    (``OutboxPolicy.reopen_enabled``)."""
 
     report: str
     text: str
     actor: str
     close: CloseReason | None = None
     duplicate_of: str = ""
+    reopen: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,8 +71,8 @@ class RenderedRecord:
 class OutboxApprove:
     """O5 (with O4 for each ``publish``): the operator approves the digest they reviewed, the full
     value or at least its 12-hex prefix. ``kind`` selects the operation: ``comment.create`` (the
-    default), ``labels.change`` or ``issue.close``; each is its own approval and mints its own
-    grant."""
+    default), ``labels.change``, ``issue.close`` or ``issue.reopen``; each is its own approval and
+    mints its own grant."""
 
     outbox_id: str
     digest: str
@@ -99,13 +104,16 @@ class OutboxResult:
     detail: str = ""
 
 
-#: The order a batch sends a report's approved operations in (``bh-pc9rf``): every comment
-#: (oldest draft first), then the labels, the type and the field values (``bh-poqy0``, on the same
-#: labels record), then the close, so the reporter reads every reply and the final labels before
-#: the issue closes (the order :func:`~.outbox.close_blocker` enforces).
+#: The order a batch sends a report's approved operations in (``bh-pc9rf``): the reopen first
+#: (``bh-ih484``: it rides on a reply and must reach the issue before that reply, the order
+#: :func:`~.outbox.comment_blocker` enforces), then every comment (oldest draft first), then the
+#: labels, the type and the field values (``bh-poqy0``, on the same labels record), then the close,
+#: so the reporter reads every reply and the final labels before the issue closes (the order
+#: :func:`~.outbox.close_blocker` enforces).
 #: EVERY :class:`OpKind` must appear here exactly once (a test pins it), so a new operation kind
 #: is placed in the order, before the close, rather than silently skipped by the batch.
 SEND_ORDER: tuple[OpKind, ...] = (
+    OpKind.REOPEN,
     OpKind.COMMENT,
     OpKind.LABELS,
     OpKind.TYPE,
@@ -162,6 +170,44 @@ class BatchSendOutcome:
     @property
     def ok(self) -> bool:
         return not self.failed and not self.unsettled and not self.stopped
+
+
+def reopen_reply_text() -> str:
+    """The reply a reopen rides on when the operator gives no text of their own: a template that
+    says only what is being done, never the report's own words (``bh-ih484``)."""
+    return (
+        "On a second look this needs more attention than closing it suggested, so we are "
+        "reopening this issue."
+    )
+
+
+@dataclass(frozen=True)
+class ReopenRequest:
+    """``bh work outbox reopen`` (``bh-ih484``): the operator's explicit correction of a close, for
+    ONE report whose bound issue reads closed. ``text`` is the reply that explains it (empty: the
+    template :func:`reopen_reply_text`). ``dry_run`` plans and writes nothing."""
+
+    report: str
+    actor: str
+    text: str = ""
+    dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class ReopenOutcome:
+    """The reopen and reply planned (``dry_run``) or drafted: ``text`` is the reply as it will be
+    posted (before the marker line), ``target_url`` the issue and ``payload`` the exact write
+    (``state: open``). ``findings`` are the leak scan's over ``text`` (a blocking one holds the
+    reply for the operator, as for any reply); ``result`` is the drafted record, ``None`` on a
+    dry run. Nothing is approved or sent either way."""
+
+    report: str
+    text: str
+    target_url: str
+    payload: str
+    dry_run: bool = False
+    findings: tuple[Any, ...] = ()
+    result: OutboxResult | None = None
 
 
 @dataclass(frozen=True)
@@ -222,5 +268,8 @@ __all__ = [
     "OutboxQuery",
     "OutboxResult",
     "RenderedRecord",
+    "ReopenOutcome",
+    "ReopenRequest",
     "ReplyDraft",
+    "reopen_reply_text",
 ]

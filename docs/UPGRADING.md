@@ -5,6 +5,125 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.4 → 0.35.5 — `outbox reopen`, faster batches, no `delivery` on a `duplicate-of`
+
+### Reopen a GitHub issue on the operator's say (`outbox reopen`, bh-ih484)
+
+0.35.3 closes the GitHub issue of a fixed, rejected or duplicate report, and a close that is wrong
+(or one somebody else made) had no way back through bh. This release adds the `issue.reopen`
+tracker operation behind `plugins.tracker-github.write.issue_reopen.enabled` (default `false`), an
+`issue.reopen` operation kind in the outbox (its own digest, single-use grant and receipt) and one
+new verb, `bh work outbox reopen <report> [--text T | --reply-file F] [--dry-run] [--json]`. The
+PATCH carries only `state: open` and never the labels.
+
+**A reopen is only ever the operator's explicit act.** Nothing drafts one on its own: `triage
+apply` and `wake` do not. The verb drafts, for ONE report whose bound issue reads closed (closed by
+anyone: the operator chose to), a reply carrying the reopen. Its text is `--text`, the contents of
+`--reply-file` (either one must hold some text: blank is refused as `invalid_request`), or a short
+template when neither is given. It refuses (a stable `reason` in `--json`) with the key off
+(`reopen_disabled`), for an issue that is not closed or cannot be read (`reopen_not_needed`), and
+while a reopen for the issue is already pending, unsent and unretired (`reopen_pending`, naming the
+record: send it or `outbox discard` it first, so there is never a second one). `--dry-run` makes
+every check and prints the planned reopen (`state: open`) and the reply text, writing nothing.
+Nothing is approved or sent by the verb: review with `bh work outbox show <id>`, approve with `bh
+work outbox approve <id> --op reopen:<digest>` (and `--op comment:<digest>` for the reply), and send
+with `bh work outbox send-approved`.
+
+**A reopen goes before its reply.** The reply's comment is refused (`reopen_not_ready`, before any
+request) until the reopen is sent or retired, and the reopen is refused while another record of the
+same issue still holds an unsent close. Per report the order, and the `send-approved` batch order,
+is reopen, comment, labels, close. **Only `send-approved` guarantees that order across separate
+records**: a question drafted on its own (`needs-info`) for a still-closed issue is a separate
+record and is not held back by a pending reopen, so send the reopen first or use the batch.
+Discarding the reopen retires its reply with it, and a report rejected or rerouted afterwards
+retires its pending reopen and reply too.
+
+The new verb is an additive wire change: the wire release moves from 2.24.0 to 2.25.0 (one new
+operation, `work.outbox.reopen`); the intake outbox document keeps schema 1.
+
+### Faster outbox, labels and intake commands (bh-25fvb)
+
+Nothing to migrate: no record, receipt or document shape changes, and no new verb. What changes is
+how often the work is done:
+
+- **The intake lock's host check is about 1.9 s, not 13 s** (factory). The lock asked
+  `guard_primary` and then `live_epoch` on every hold, and each re-ran the whole frame-eligibility
+  evaluation; it now takes both from ONE evaluation (`guard.primary_epoch`), the lease
+  `require_intake` just read is not read again, and the pure parts of an eligibility read are
+  memoized: SSH key fingerprints (410 `ssh-keygen` processes per check before), the committed config
+  carrier's validation, the HOST file inside one command, and the authority-expiry warning's read
+  (skipped in trusted mode, at most once per 300 s otherwise). Refusals are unchanged.
+- **Every one-shot `bh` command starts about 1 to 1.2 s sooner than on 0.35.3.** The operation
+  catalog is no longer parsed quadratically at import (0.8 s), the config partition's leaf paths are
+  found in linear time, and the stale-schema nudge reads `schema_version` from the config the
+  command already loaded instead of fetching the SQL fleet snapshot a second time. On the factory
+  `bh work outbox --help` went from about 5.1 s to 3.9 s and `bh work outbox show <id>` from about
+  6.5 s to 5.3 s.
+- **The batches pay per report, not per operation.** Under each hold a report is read once (the
+  store session); `bh work outbox send-approved` sends a report's operations under one hold, and
+  `bh work labels approve --batch` writes a report's approvals as one document write. Every
+  operation still has its own digest, single-use grant, write-ahead and receipt.
+  `bh work labels sync` now drafts inside the same batch scope, so
+  `intake.external.outbox.batch_recheck_seconds` covers it too.
+
+Modeled on measured latencies (`tests/test_intake_outbox_batch_perf.py`, `-m perf`) for the type
+and Priority of 135 issues, with `batch_recheck_seconds: 300`: labels sync about 57 s (745 s
+before), labels approve --batch about 46 s (1440 s), send-approved about 256 s (1770 s; 238 s with
+the token cache below); a single send about 8 s (about 21 s).
+
+**New opt-in key, default off:** `plugins.tracker-github.credential.per_invocation_cache` keeps the
+first GitHub token resolved in memory for the rest of one command instead of running
+`gh auth token` for every operation. It is the one exception to the never-cached credential: never
+written or logged, and a token rotated mid-command is picked up by the next command. The host
+daemon's discovery timer never caches, whatever the key says: it keeps its adapters for the
+daemon's whole life, so it derives the token per operation as before. Set it only after every
+host runs this release (see the rotation order below).
+
+**Operator step after rollout:** once every host runs this release, set
+`intake.external.outbox.batch_recheck_seconds: 300` at the factory's host scope (the default `0`
+still checks the host on every hold, about 1.9 s each).
+
+### A `duplicate-of` no longer carries `delivery` (bh-5kpwc)
+
+`bh work triage apply --reviewed` linked a `duplicate-of` report to its canonical report's work
+through the ordinary link, which wrote `delivery:pending` on the duplicate. The label projection
+then published `bh:delivery/pending` on the closed duplicate's issue, and a later merge, release,
+claim or notice could draft a milestone note for it, repeating the one the canonical report gets.
+Now a `duplicate-of` link writes no `delivery` value (and clears one already there) and catches
+nothing up; no milestone trigger drafts for a rejected report; and the label projection emits no
+`bh:delivery/*` or `bh:progress/*` for one, so a `labels sync` drafts the removal of those labels.
+A `tracks` link (`accept --work`, `--new-work`, `bh work link`) still writes `delivery:pending`. This
+change adds no config key and no wire change.
+
+**Repair reports already in this state.** List them first (the default writes nothing), then clear
+the value, then draft the label removal on GitHub and review it as any label batch:
+
+```sh
+uv run python scripts/repair_duplicate_delivery.py --repo <hive checkout>
+uv run python scripts/repair_duplicate_delivery.py --repo <hive checkout> --apply
+bh work labels sync --include-closed
+```
+
+`bd set-state` cannot clear a dimension, so `--apply` removes the `delivery:<value>` label cache
+entry with `bd label remove`; the bead's event history keeps the old value. Nothing is sent to
+GitHub and no outbox record is written until an operator approves the label batch.
+
+### Rotation order for both new keys (the 0.35.0 pattern)
+
+This release adds two config keys, both default off:
+`plugins.tracker-github.write.issue_reopen.enabled` and
+`plugins.tracker-github.credential.per_invocation_cache`. An older host rejects either one
+(`extra=forbid`), and fails closed on an `intake.outbox` document holding an `issue.reopen`
+operation. So:
+
+1. Install the release on **every** host that reads the hive's outbox (any host that runs
+   `bh work outbox`, `bh work triage apply`, `bh work wake`, `bh doctor` or a merge / release hook
+   on that hive).
+2. Only then set either key in a shared config.
+
+With `write.issue_reopen.enabled` unset nothing is read, drafted, approved or sent for a reopen;
+with `credential.per_invocation_cache` unset every GitHub operation derives its token as before.
+
 ## 0.35.2 → 0.35.3 — close the GitHub issue after the reply and labels (switch default off)
 
 `bh work triage apply --reviewed` closed fixed, rejected and duplicate reports in beads but left

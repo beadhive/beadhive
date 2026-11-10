@@ -76,7 +76,12 @@ from beadhive.modules.intake.domain import (
     mark_applied,
     version_key,
 )
-from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS, OwnMarker
+from beadhive.modules.tracker.contracts import (
+    READ_OPERATIONS,
+    WRITE_OPERATIONS,
+    IssueState,
+    OwnMarker,
+)
 from beadhive.testing.intake import (
     SCOPE,
     FakeLandedCommits,
@@ -1157,6 +1162,33 @@ def test_with_the_outbox_off_a_duplicate_is_linked_and_rejected_as_before() -> N
     assert hive.proposal(member).status is ProposalStatus.APPLIED
 
 
+def _deliveries(hive: Hive, report: str) -> list[str]:
+    return [label for label in hive.store.get(report).labels if label.startswith("delivery:")]
+
+
+@pytest.mark.parametrize("outbox_on", [True, False])
+def test_a_duplicate_of_leaves_no_delivery_while_its_canonical_keeps_pending(outbox_on) -> None:
+    """bh-5kpwc: a duplicate shares its canonical's work but never its delivery."""
+    hive = Hive(outbox=CLOSING) if outbox_on else Hive(sender=False)
+    canonical, member = _family(hive)
+
+    assert item(hive.apply(), member).status is ApplyStatus.APPLIED
+
+    assert hive.store.tracked_work(member) == hive.store.tracked_work(canonical)
+    assert _deliveries(hive, member) == []  # no delivery:* on the duplicate
+    assert _deliveries(hive, canonical) == ["delivery:pending"]  # a tracks link is as before
+
+
+def test_a_duplicate_of_clears_a_delivery_the_report_already_carries() -> None:
+    hive = Hive(sender=False)
+    canonical, member = _family(hive)
+    hive.store.set_state(member, "delivery", "pending", reason="linked earlier", actor=TRIAGE)
+
+    assert item(hive.apply(), member).status is ApplyStatus.APPLIED
+
+    assert _deliveries(hive, member) == [] and _deliveries(hive, canonical) == ["delivery:pending"]
+
+
 def test_with_the_outbox_off_a_reject_fails_cleanly_with_nothing_written() -> None:
     hive = Hive(sender=False)
     report = hive.report("not a bug")
@@ -1294,3 +1326,20 @@ def test_a_run_that_mentions_nothing_never_lists_the_issues() -> None:
     _reject(hive, "not a bug", "Works as designed.")
     hive.apply()
     assert hive.listings.calls == 0
+
+
+# -- no automatic reopen (bh-ih484): only the operator's `outbox reopen` drafts one ---------------
+
+
+def test_apply_never_drafts_a_reopen_even_for_a_closed_issue_with_the_gate_on() -> None:
+    hive = Hive(outbox=OutboxPolicy(enabled=True, close_enabled=True, reopen_enabled=True))
+    report = hive.report("a hang")
+    hive.world.update_issue(hive.issues[report], at=at(2), state=IssueState.CLOSED)
+    hive.propose(report, {"disposition": "new", "type": "bug", "priority": "2"})
+    hive.review(report, {"verdict": "confirmed"})
+
+    done = item(hive.apply(), report)
+
+    assert done.status is ApplyStatus.APPLIED and done.drafted == ()
+    assert not [r for r in hive.records(report) if r.op(OpKind.REOPEN) is not None]
+    assert hive.world.write_requests() == 0

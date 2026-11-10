@@ -262,6 +262,7 @@ class Operation(StrEnum):
     LABELS_READ = "labels.read"
     LABELS_DEFINE = "labels.define"
     ISSUE_CLOSE = "issue.close"
+    ISSUE_REOPEN = "issue.reopen"
     ISSUE_TYPE = "issue.type"
     ISSUE_FIELDS = "issue.fields"
 
@@ -273,6 +274,7 @@ WRITE_OPERATIONS = frozenset(
         Operation.LABELS_CHANGE,
         Operation.LABELS_DEFINE,
         Operation.ISSUE_CLOSE,
+        Operation.ISSUE_REOPEN,
         Operation.ISSUE_TYPE,
         Operation.ISSUE_FIELDS,
     }

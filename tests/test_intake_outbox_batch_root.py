@@ -157,6 +157,137 @@ def test_the_production_lock_reads_its_bound_from_config(tmp_path, monkeypatch) 
     assert checks == ["acme"]  # opted in: one check reused
 
 
+# -- the one-evaluation form, ``admit`` (production since bh-25fvb) ---------------------------
+
+
+class Admits:
+    """``guard.primary_epoch`` as the lock sees it: the host check and the epoch in one call."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.refuse = False
+
+    def __call__(self) -> int:
+        self.calls += 1
+        if self.refuse:
+            raise IntakeRefused(RefusalReason.NOT_PRIMARY, "not this host")
+        return 40 + self.calls
+
+
+def _admit_lock(tmp_path, admit: Admits, *, recheck: float = 60.0, clock=None):
+    return intake_services.FlockIntakeLock(
+        tmp_path / "locks", admit=admit, recheck_seconds=recheck, clock=clock or FakeClock()
+    )
+
+
+def test_the_lock_needs_admit_or_both_halves(tmp_path) -> None:
+    with pytest.raises(TypeError, match="admit, or both primary and epoch"):
+        intake_services.FlockIntakeLock(tmp_path / "locks", primary=lambda: None)
+    with pytest.raises(TypeError):
+        intake_services.FlockIntakeLock(tmp_path / "locks", epoch=lambda: 1)
+    with pytest.raises(TypeError):
+        intake_services.FlockIntakeLock(tmp_path / "locks")
+
+
+def test_admit_runs_once_per_hold_and_its_epoch_is_yielded(tmp_path) -> None:
+    admit = Admits()
+    lock = _admit_lock(tmp_path, admit)
+    epochs = []
+    for key in ("a", "b", "a"):
+        with lock.hold(key) as epoch:
+            epochs.append(epoch)
+    assert admit.calls == 3 and epochs == [41, 42, 43]
+
+
+def test_admit_is_reused_in_a_batch_until_recheck_seconds_old(tmp_path) -> None:
+    admit, clock = Admits(), FakeClock()
+    lock = _admit_lock(tmp_path, admit, recheck=60.0, clock=clock)
+    epochs = []
+    with lock.batch():
+        for key in ("a", "b"):
+            with lock.hold(key) as epoch:
+                epochs.append(epoch)
+            clock.now += 30.0
+        with lock.hold("c") as epoch:  # 60 s after the check: taken again
+            epochs.append(epoch)
+    assert admit.calls == 2 and epochs == [41, 41, 42]
+    with lock.hold("a") as epoch:  # the scope is gone: a single hold admits afresh
+        assert epoch == 43
+
+
+def test_admit_with_recheck_zero_runs_on_every_hold_of_a_batch(tmp_path) -> None:
+    admit = Admits()
+    lock = _admit_lock(tmp_path, admit, recheck=0)
+    with lock.batch():
+        for key in ("a", "b", "c"):
+            with lock.hold(key):
+                pass
+    assert admit.calls == 3
+
+
+def test_a_refused_admit_takes_no_flock_and_is_never_reused(tmp_path) -> None:
+    admit = Admits()
+    lock = _admit_lock(tmp_path, admit)
+    with lock.batch():
+        admit.refuse = True
+        for _ in range(2):
+            with pytest.raises(IntakeRefused) as refused:
+                with lock.hold("a"):
+                    pytest.fail("a refused host check must not yield")
+            assert refused.value.reason is RefusalReason.NOT_PRIMARY
+        assert admit.calls == 2
+        admit.refuse = False
+        with lock.hold("a") as epoch:  # nothing was left holding the binding's flock
+            assert epoch == 43
+
+
+def test_admit_runs_before_the_flock_and_a_busy_binding_still_refuses(tmp_path) -> None:
+    admit = Admits()
+    lock = _admit_lock(tmp_path, admit)
+    with lock.hold("a"):
+        with pytest.raises(IntakeRefused) as busy:
+            with lock.hold("a"):
+                pass
+        assert busy.value.reason is RefusalReason.INTAKE_BUSY
+    assert admit.calls == 2
+
+
+def test_the_production_lock_admits_through_primary_epoch(tmp_path, monkeypatch) -> None:
+    seen: list[tuple] = []
+
+    def primary_epoch(hive, *, cfg, verb):
+        seen.append((hive, verb))
+        return 5
+
+    def unused(*_a, **_k):
+        raise AssertionError("the production lock takes the host check and epoch in one call")
+
+    monkeypatch.setattr(guard, "primary_epoch", primary_epoch)
+    monkeypatch.setattr(guard, "guard_primary", unused)
+    monkeypatch.setattr(guard, "live_epoch", unused)
+    monkeypatch.setattr(private_paths, "ensure_repo_private_root", lambda d: tmp_path / ".bh")
+    lock = intake_services.intake_lock({}, "/hive", hive="acme", verb="work labels")
+    with lock.hold("a") as epoch:
+        assert epoch == 5
+    assert seen == [("acme", "work labels")]
+
+
+def test_the_production_lock_maps_a_refused_host_to_not_primary(tmp_path, monkeypatch) -> None:
+    import typer
+
+    def refuse(hive, *, cfg, verb):
+        raise typer.Exit(1)
+
+    monkeypatch.setattr(guard, "primary_epoch", refuse)
+    monkeypatch.setattr(private_paths, "ensure_repo_private_root", lambda d: tmp_path / ".bh")
+    lock = intake_services.intake_lock({}, "/hive", hive="acme", verb="work outbox")
+    with pytest.raises(IntakeRefused) as refused:
+        with lock.hold("a"):
+            pytest.fail("a refused host check must not yield")
+    assert refused.value.reason is RefusalReason.NOT_PRIMARY
+    assert "bh work outbox" in str(refused.value)
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(None, 0.0), (0, 0.0), (45, 45.0), (300, 300.0), (-1, 0.0), (True, 0.0), ("10", 0.0)],

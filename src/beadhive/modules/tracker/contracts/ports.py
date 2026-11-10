@@ -3,10 +3,10 @@
 Small capability interfaces: :class:`TrackerReader` and :class:`TrackerIdentity` are required
 and together form :class:`TrackerAdapter`, the one Protocol the plugin wiring binds.
 :class:`CommentWriter`, :class:`LabelWriter`, :class:`LabelReader`, :class:`LabelDefiner`,
-:class:`LabelPruner`, :class:`IssueCloser`, :class:`IssueTypeWriter`, :class:`IssueFieldWriter`,
-:class:`IssueResolver` and :class:`MarkerCodec` are optional and are discovered with
-``isinstance`` on the bound object. A writer's presence is necessary, never sufficient: the
-operation must also be enabled and each call must carry a fresh grant.
+:class:`LabelPruner`, :class:`IssueCloser`, :class:`IssueReopener`, :class:`IssueTypeWriter`,
+:class:`IssueFieldWriter`, :class:`IssueResolver` and :class:`MarkerCodec` are optional and are
+discovered with ``isinstance`` on the bound object. A writer's presence is necessary, never
+sufficient: the operation must also be enabled and each call must carry a fresh grant.
 """
 
 from __future__ import annotations
@@ -132,6 +132,17 @@ class IssueCloser(Protocol):
 
 
 @runtime_checkable
+class IssueReopener(Protocol):
+    """Optional (additive; the API version stays 1): reopen one closed issue (``issue.reopen``,
+    ``bh-ih484``), the inverse of :class:`IssueCloser` for a close that triage later corrects. An
+    issue-scoped write, so ``grant.target`` is the :class:`IssueKey`. It changes the issue's state
+    and nothing else: never its labels, title or body. Reopening an issue that is already open is
+    not an error (the receipt reports the state it holds)."""
+
+    def reopen_issue(self, issue: IssueKey, *, grant: WriteGrant) -> WriteReceipt: ...
+
+
+@runtime_checkable
 class IssueTypeWriter(Protocol):
     """Optional (additive; the API version stays 1): set one issue's type (``issue.type``) to
     ``issue_type``, a type the tracker defines, by its name. An issue-scoped write, so
@@ -224,6 +235,7 @@ __all__ = [
     "CommentWriter",
     "IssueCloser",
     "IssueFieldWriter",
+    "IssueReopener",
     "IssueResolver",
     "IssueTypeWriter",
     "LabelDefiner",

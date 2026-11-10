@@ -137,6 +137,12 @@ class ApiReportStore(BdReportStore):
     def _api(self) -> ReportApi | None:
         return self._select_api()
 
+    def _compare_and_set(self) -> bool:
+        """Over the service a document write is a compare-and-set against the row just read
+        (:meth:`_set_document`); on the CLI fallback (``api`` is ``None``) it is the parent's
+        overwrite, so the ``seq`` re-read must read the store."""
+        return self._api() is not None
+
     @staticmethod
     def _failed(exc: ReportApiError, operation: str, bead: str) -> IntakeStoreError:
         return IntakeStoreError(f"{operation} failed: {exc.detail}", bead=bead, operation=operation)
@@ -156,14 +162,13 @@ class ApiReportStore(BdReportStore):
         api = self._api()
         if api is None:
             return super()._edges(bead, direction=direction, type_=type_)
-        try:
-            if direction == "up":
+        if direction == "up":
+            try:
                 rows = api.dependents(bead)
-            else:
-                row = api.issue(bead)
-                rows = (row or {}).get("dependencies") or []
-        except ReportApiError as exc:
-            raise self._failed(exc, "read", bead) from exc
+            except ReportApiError as exc:
+                raise self._failed(exc, "read", bead) from exc
+        else:  # the row's own dependencies: the same read as the bead (one per session)
+            rows = (self._row(bead) or {}).get("dependencies") or []
         return [
             row for row in rows if isinstance(row, dict) and row.get("dependency_type") == type_
         ]
@@ -267,6 +272,7 @@ class ApiReportStore(BdReportStore):
         return super().create_work(draft)
 
     def update_fields(self, bead: str, *, issue_type: str, priority: str, actor: str) -> None:
+        self._wrote()
         api = self._api()
         number = _priority(priority) if priority else None
         if api is None or (priority and number is None):
@@ -281,6 +287,7 @@ class ApiReportStore(BdReportStore):
             raise self._failed(exc, "update_fields", bead) from exc
 
     def assign(self, bead: str, seat: str, *, actor: str) -> None:
+        self._wrote()
         api = self._api()
         if api is None:
             return super().assign(bead, seat, actor=actor)
@@ -290,6 +297,7 @@ class ApiReportStore(BdReportStore):
             raise self._failed(exc, "assign", bead) from exc
 
     def track(self, report: str, work: str, *, actor: str) -> None:
+        self._wrote()
         api = self._api()
         if api is None:
             return super().track(report, work, actor=actor)
@@ -299,6 +307,7 @@ class ApiReportStore(BdReportStore):
             raise self._failed(exc, "track", report) from exc
 
     def untrack(self, report: str, work: str, *, actor: str) -> None:
+        self._wrote()
         api = self._api()
         if api is None:
             return super().untrack(report, work, actor=actor)
@@ -309,6 +318,7 @@ class ApiReportStore(BdReportStore):
 
     def investigate(self, report: str, work: str, *, actor: str) -> None:
         """The ``investigates`` edge runs work -> report, the opposite direction to ``tracks``."""
+        self._wrote()
         api = self._api()
         if api is None:
             return super().investigate(report, work, actor=actor)
@@ -318,6 +328,7 @@ class ApiReportStore(BdReportStore):
             raise self._failed(exc, "investigate", report) from exc
 
     def relate(self, report: str, other: str, *, actor: str) -> None:
+        self._wrote()
         api = self._api()
         if api is None:
             return super().relate(report, other, actor=actor)
@@ -329,6 +340,7 @@ class ApiReportStore(BdReportStore):
             raise self._failed(exc, "relate", report) from exc
 
     def uninvestigate(self, report: str, work: str, *, actor: str) -> None:
+        self._wrote()
         api = self._api()
         if api is None:
             return super().uninvestigate(report, work, actor=actor)
@@ -360,6 +372,7 @@ class ApiReportStore(BdReportStore):
         closes, and fails, as it always did); only a REFUSAL by the service reads the blockers,
         and a transport failure is reported as it is. The forced close is the service's own
         ``force`` (the live-blocker refusal and nothing else), then each hold is resolved."""
+        self._wrote()
         api = self._api()
         if api is None:
             return super().close(bead, reason=reason, actor=actor)

@@ -613,3 +613,104 @@ def test_every_outbox_document_comes_from_one_listing_over_the_api() -> None:
 
     assert bd.calls == [] and len(requests) == 1  # one listing request, nothing per report
     assert docs == {report: store.read_outbox(report) for report in reports}
+
+
+# -- the unit-of-work session (ReportSession, bh-25fvb) -----------------------------------------
+
+
+def _reads(service: FakeBeadsService, report: str) -> int:
+    return sum(1 for op in service.operations() if op == f"GET /v0/beads/issues/{report}")
+
+
+def _plain(bd: FakeBd | None = None) -> tuple[BdReportStore, FakeBd, FakeBeadsService]:
+    """``work.beads.route=cli``: the plain ``bd`` store, no service and no compare-and-set."""
+    bd = bd or FakeBd()
+    store = BdReportStore(CliRoutes(bd, "/hive"), SCOPE, error_line=err_line)
+    return store, bd, FakeBeadsService(bd)
+
+
+ROUTES = {
+    "api": lambda: _rig(),
+    "cli-fallback": lambda: _rig(api=False),
+    "cli": lambda: _plain(),
+}
+
+
+@pytest.mark.parametrize(
+    ("route", "within", "after"), [("api", 1, 2), ("cli-fallback", 3, 4), ("cli", 3, 4)]
+)
+def test_inside_a_session_a_report_is_read_once_and_its_own_writes_are_kept(
+    route, within, after
+) -> None:
+    store, bd, service = ROUTES[route]()
+    report = store.create(draft(bound=True))
+    store.write_outbox(report, outbox(2), expect_seq=0, actor=ACTOR)
+    bd.calls.clear()
+    service.requests.clear()
+
+    def reads() -> int:
+        return _reads(service, report) if route == "api" else _verbs(bd).count("show")
+
+    with store.session():
+        first = store.read_outbox(report)
+        assert store.get(report) is not None and store.read_thread(report) is None
+        store.write_outbox(report, outbox(3), expect_seq=first.seq, actor=ACTOR)  # write-ahead
+        store.write_outbox(report, outbox(4), expect_seq=3, actor=ACTOR)  # receipt
+        assert store.read_outbox(report).seq == 4  # the session keeps what it wrote
+
+    # over the API ONE read serves the unit of work (each write is a compare-and-set); with no
+    # compare-and-set each write's seq re-read reads the store (bh-25fvb B3): 1 + 2 writes
+    assert reads() == within
+    assert store.read_outbox(report).seq == 4  # the store holds it: the session was not a cache
+    assert reads() == after  # outside the session every read reads
+
+
+@pytest.mark.parametrize("route", ["cli-fallback", "cli"])
+def test_without_compare_and_set_the_seq_re_read_never_comes_from_the_session(route) -> None:
+    store, bd, _service = ROUTES[route]()
+    report = store.create(draft(bound=True))
+    store.write_outbox(report, outbox(2), expect_seq=0, actor=ACTOR)
+    bd.calls.clear()
+
+    with store.session():
+        assert store.read_outbox(report).seq == 2
+        assert store.read_outbox(report).seq == 2  # an ordinary read is served
+        assert _verbs(bd).count("show") == 1
+        store.write_outbox(report, outbox(3), expect_seq=2, actor=ACTOR)
+        assert _verbs(bd).count("show") == 2  # the write's seq re-read read the store
+        assert store.read_outbox(report).seq == 3  # and the session keeps what it wrote
+        assert _verbs(bd).count("show") == 2
+
+
+@pytest.mark.parametrize("route", sorted(ROUTES))
+def test_a_session_still_refuses_a_document_moved_underneath(route) -> None:
+    store, bd, _service = ROUTES[route]()
+    report = store.create(draft(bound=True))
+    store.write_outbox(report, outbox(2), expect_seq=0, actor=ACTOR)
+
+    with store.session():
+        doc = store.read_outbox(report)
+        bd.issues[report]["metadata"]["intake.outbox"]["seq"] = 7  # another writer, unlocked
+        if route == "api":  # the service's compare-and-set refuses the write
+            with pytest.raises(IntakeStoreError) as failed:
+                store.write_outbox(report, outbox(3), expect_seq=doc.seq, actor=ACTOR)
+            assert "changed since it was read" in failed.value.detail
+        else:  # no compare-and-set: the seq re-read reads the store, never the session
+            with pytest.raises(IntakeRefused) as refused:
+                store.write_outbox(report, outbox(3), expect_seq=doc.seq, actor=ACTOR)
+            assert refused.value.reason is RefusalReason.OUTBOX_MOVED
+        assert store.read_outbox(report).seq == 7  # the session no longer holds the stale row
+
+    assert bd.issues[report]["metadata"]["intake.outbox"]["seq"] == 7  # nothing overwritten
+
+
+def test_any_other_write_in_a_session_drops_what_it_read() -> None:
+    store, _bd, service = _rig()
+    report = store.create(draft(bound=True))
+    service.requests.clear()
+
+    with store.session():
+        assert "intake:untriaged" not in store.get(report).labels
+        store.set_state(report, "intake", "untriaged", reason="imp", actor=ACTOR)
+        assert "intake:untriaged" in store.get(report).labels  # read again, not served stale
+        assert _reads(service, report) == 2

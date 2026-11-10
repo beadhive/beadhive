@@ -51,7 +51,12 @@ from beadhive.modules.intake.domain import (
     is_needs_info,
     may_disposition,
 )
-from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS, OwnMarker
+from beadhive.modules.tracker.contracts import (
+    READ_OPERATIONS,
+    WRITE_OPERATIONS,
+    IssueState,
+    OwnMarker,
+)
 from beadhive.testing.intake import (
     SCOPE,
     InProcessIntakeLock,
@@ -83,7 +88,9 @@ class _NoLabels:
 class Scene:
     """Bound reports on memory issues with comment ingestion and the sender wired."""
 
-    def __init__(self, *, outbox: bool = True, threads: bool = True) -> None:
+    def __init__(
+        self, *, outbox: bool = True, threads: bool = True, policy: OutboxPolicy = ON
+    ) -> None:
         self.world = MemoryWorld()
         self.world.set_write_time(at(3))
         self.tracker = MemoryTracker(
@@ -107,7 +114,7 @@ class Scene:
             ids=self.ids,
             identity=ME,
             marker_line=marker_line,
-            policy=ON,
+            policy=policy,
             leak_policy=LEAKS,
             sanitizer=RecordingSanitizer.of(["s3cr3t"]),
             posture=PRIVATE,
@@ -454,3 +461,25 @@ def test_null_intake_refuses_waiting_for_the_reporter() -> None:
         lambda: null.wake_all(actor="x"),
     ):
         refused(RefusalReason.INTAKE_DISABLED, call)
+
+
+def test_a_wake_on_a_closed_issue_never_drafts_a_reopen_even_with_the_gate_on() -> None:
+    """The reopen is an operator verb (``outbox reopen``, bh-ih484), never a wake side effect."""
+    s = Scene(policy=OutboxPolicy(enabled=True, reopen_enabled=True))
+    report = s.report()
+    s.comment(report, "It crashes when I start it.", hour=1)
+    s.ingest(report)
+    s.read_and_consider(report)
+    s.ask(report)
+    s.world.update_issue(s.issues[report], at=at(3), state=IssueState.CLOSED)
+    s.comment(report, "v2.3.1, and yes, with a fresh config too.", day=4, hour=2)
+    s.ingest(report)
+    outbox_before = s.store.read_outbox(report)
+
+    woken = s.wake(report)
+
+    assert woken.woken and woken.detail == ""
+    after = s.store.read_outbox(report)
+    assert [r.outbox_id for r in after.records.values()] == [
+        r.outbox_id for r in outbox_before.records.values()
+    ]

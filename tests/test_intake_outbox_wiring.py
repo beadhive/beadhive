@@ -116,6 +116,7 @@ def test_with_every_switch_on_the_wiring_comes_from_the_plugin_binding(rig) -> N
     )
     assert wiring["owned_label_prefixes"] == ()  # labels.change is not enabled
     assert wiring["close_enabled"] is False  # issue.close is off by default
+    assert wiring["reopen_enabled"] is False  # issue.reopen is off by default
     assert (wiring["type_enabled"], wiring["fields_enabled"]) == (False, False)
     assert rig.world.read_requests() == rig.world.write_requests() == 0  # building reads nothing
 
@@ -154,6 +155,41 @@ def test_the_close_gate_follows_the_bindings_own_issue_close_enable(tmp_path, mo
     assert missing.exit_code == 1 and doc(missing)["reason"] == "unknown_outbox"
     off = bh("outbox", "backfill-close", "--dry-run", *COMMON)
     assert off.exit_code == 0 and doc(off)["items"] == []
+
+
+def test_a_close_enable_alone_never_opens_the_reopen_gate(tmp_path, monkeypatch) -> None:
+    on = plugin(comments=True, comment=True)
+    on["write"]["issue_close"] = {"enabled": True}
+    rig = Wired(tmp_path, monkeypatch, {"tracker-github": on})
+
+    wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
+
+    assert wiring["close_enabled"] is True and wiring["reopen_enabled"] is False
+
+
+def test_the_reopen_gate_follows_the_bindings_own_issue_reopen_enable(
+    tmp_path, monkeypatch
+) -> None:
+    on = plugin(comments=True, comment=True)
+    on["write"]["issue_reopen"] = {"enabled": True}
+    rig = Wired(tmp_path, monkeypatch, {"tracker-github": on})
+    monkeypatch.setattr(
+        work_intake,
+        "config",
+        SimpleNamespace(load=lambda: rig.cfg, integration_branch=lambda cfg, entry: "main"),
+    )
+
+    wiring = intake_services.outbox_wiring(rig.cfg, rig.entry, rig.hive)
+
+    assert wiring["reopen_enabled"] is True and wiring["close_enabled"] is False
+    report, _issue = rig.report()
+    replied = bh("outbox", "draft", report, "--text", "Thanks.", *COMMON)
+    assert replied.exit_code == 0
+    # past the gate: the record has no reopen (a CLI draft asks for none), so the send refuses
+    # on the missing operation, never on the gate
+    oid = doc(replied)["results"][0]["outbox_id"]
+    missing = bh("outbox", "send", oid, "--kind", "reopen", *COMMON)
+    assert missing.exit_code == 1 and doc(missing)["reason"] == "unknown_outbox"
 
 
 def test_the_mention_checks_issue_listing_comes_from_the_binding_lazily(rig) -> None:
@@ -199,11 +235,13 @@ def test_each_value_gate_follows_the_bindings_own_enable(tmp_path, monkeypatch, 
     assert intake_services.value_gates(off, rig.entry) == (False, False)
 
 
-def test_the_outbox_kinds_name_type_and_fields() -> None:
+def test_the_outbox_kinds_name_type_fields_and_reopen() -> None:
     from beadhive.modules.intake.domain import OpKind
 
     assert intake_services.outbox_kind("type") is OpKind.TYPE
     assert intake_services.outbox_kind("issue.fields") is OpKind.FIELDS
+    assert intake_services.outbox_kind("reopen") is OpKind.REOPEN
+    assert intake_services.outbox_kind("issue.reopen") is OpKind.REOPEN
     assert intake_services.outbox_kind("priority") is None
 
 

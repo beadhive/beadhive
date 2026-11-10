@@ -4,6 +4,12 @@
       "additionalProperties": false,
       "description": "Where the ambient credential is looked up; names and precedence only, never a value.",
       "properties": {
+        "per_invocation_cache": {
+          "default": false,
+          "description": "Keep the first token resolved in memory for the rest of ONE command, instead of deriving it again for every GitHub operation (one `gh auth token` each). Opt-in, default off: it is the one exception to the never-cached credential, never written or logged, and a token rotated or revoked mid-command is not picked up until the next command.",
+          "title": "Per Invocation Cache",
+          "type": "boolean"
+        },
         "sources": {
           "description": "Credential source names in precedence order (`env`: GH_TOKEN/GITHUB_TOKEN; `gh`: the gh CLI). Empty means anonymous reads only.",
           "items": {
@@ -141,6 +147,10 @@
         "issue_fields": {
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`issue.fields`: read an issue's field values and set the named ones (such as Priority) to an option the organization defines, never touching its labels or other fields (default off; each write needs an operator-approved single-use grant)."
+        },
+        "issue_reopen": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`issue.reopen`: reopen a closed issue on the operator's say (`bh work outbox reopen`), never touching its labels (default off; each use needs an operator-approved single-use grant)."
         },
         "issue_type": {
           "$ref": "#/$defs/TrackerGithubFlag",

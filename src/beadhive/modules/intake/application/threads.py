@@ -14,6 +14,8 @@ writes to the tracker: ingestion reads comments and ids only, so ``write_request
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 
 from beadhive.modules.tracker.contracts import (
     Actor,
@@ -28,7 +30,7 @@ from beadhive.modules.tracker.contracts import (
     TrackerError,
 )
 
-from ..contracts import IntakeLock, OutboxView, ReportStore
+from ..contracts import IntakeLock, OutboxView, ReportSession, ReportStore
 from ..domain import (
     CheckpointScope,
     ConsiderRequest,
@@ -94,6 +96,21 @@ def issue_key(binding: IssueBinding) -> IssueKey:
 def binding_key(binding: IssueBinding) -> str:
     """The :class:`IntakeLock` key: one binding (``tracker`` + ``project``), per ADR section 4."""
     return f"{binding.tracker}:{binding.project}"
+
+
+def store_session(store: ReportStore) -> AbstractContextManager[None]:
+    """``store``'s unit-of-work scope when it has one (:class:`ReportSession`, ``bh-25fvb``),
+    else nothing: inside it each report is read once."""
+    return store.session() if isinstance(store, ReportSession) else nullcontext()
+
+
+@contextmanager
+def held(lock: IntakeLock, store: ReportStore, binding: IssueBinding) -> Iterator[int]:
+    """One hold of ``binding``'s lock with one store session inside it (``bh-25fvb``): the hold's
+    reads of a report (its outbox, thread and view, and the ``seq`` re-read before a write) are
+    one read, and the session never outlives the hold, so the next hold reads afresh."""
+    with lock.hold(binding_key(binding)) as epoch, store_session(store):
+        yield epoch
 
 
 class _NoOutbox:

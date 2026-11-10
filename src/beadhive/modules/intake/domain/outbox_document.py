@@ -14,6 +14,10 @@ Likewise an ``issue.type`` / ``issue.fields`` operation's ``values`` (and a rece
 ``values_after``) are written only when set, and a labels record may carry them: a host older than
 0.35.3 fails closed on such a document too.
 
+An ``issue.reopen`` operation (``bh-ih484``) carries nothing but its kind and state, so only the
+kind tells it apart: a host older than 0.35.5 cannot decode it and fails closed on such a document
+(the same rotation order: every outbox-reading host upgrades before any hive turns reopens on).
+
 Decoding fails closed (:class:`OutboxDocumentError`) on a malformed document or one written by a
 newer schema: a store must never read such a document as an empty outbox, because the next write
 would replace it and lose the records of messages that may already exist.
@@ -366,6 +370,10 @@ def _decode_record(outbox_id: str, value: Any) -> OutboxRecord:
     kinds = [op.kind for op in operations]
     if OpKind.CLOSE in kinds and OpKind.COMMENT not in kinds:
         raise OutboxDocumentError(f"record {outbox_id} has a close without the comment it follows")
+    if OpKind.REOPEN in kinds and OpKind.COMMENT not in kinds:
+        raise OutboxDocumentError(
+            f"record {outbox_id} has a reopen without the comment it precedes"
+        )
     projected = {OpKind.LABELS} | VALUE_KINDS
     if any(kind in VALUE_KINDS for kind in kinds) and event is not OutboxEvent.LABELS:
         raise OutboxDocumentError(f"record {outbox_id} sets a type or field off a labels record")

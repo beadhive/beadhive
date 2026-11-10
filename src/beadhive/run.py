@@ -183,17 +183,27 @@ def github_token_source(
     *,
     names: Sequence[str] = GITHUB_TOKEN_SOURCE_NAMES,
     gh_auth_token: Callable[[], str | None] | None = None,
+    cache: bool = False,
 ) -> TokenSource:
     """The one derivation of bh's GitHub credential chain, as an injectable zero-argument
     :class:`~beadhive_plugins.credentials.TokenSource`.
 
     Resolves in the order of *names* (default ``env`` then ``gh``): ``GITHUB_TOKEN``, then
     ``GH_TOKEN`` (blank counts as unset), then a fresh ``gh auth token``. The result carries its
-    provenance (``env:GH_TOKEN``) and its value is redacted from ``repr``/``str``. Nothing is
-    cached, logged or stored: the source is called once per operation, and the ``gh`` leg is only
-    reached when no environment variable supplied a token. *environ* defaults to the live process
-    environment, read fresh on each call; *gh_auth_token* is the injectable ``gh`` leg (tests
-    pass a fake, so no process is spawned)."""
+    provenance (``env:GH_TOKEN``) and its value is redacted from ``repr``/``str``. By default
+    nothing is cached, logged or stored: the source is called once per operation, and the ``gh``
+    leg is only reached when no environment variable supplied a token. *environ* defaults to the
+    live process environment, read fresh on each call; *gh_auth_token* is the injectable ``gh``
+    leg (tests pass a fake, so no process is spawned).
+
+    ``cache=True`` (opt-in, ``plugins.tracker-github.credential.per_invocation_cache``, bh-25fvb)
+    is the ONE exception to never-cached: the first token resolved is kept IN MEMORY, in this
+    source object only, and answered to every later call, so a command of N operations derives
+    it once instead of N times (one ``gh auth token`` is about 70 ms on the factory). It is
+    never written, logged or shared: the source is built per command and the token goes with
+    it; a resident process (the host daemon's discovery timer) never asks for the cache. A
+    failed resolution (``None``) is not kept. The cost of the opt-in: a token rotated or revoked
+    while the command runs is not picked up until the next command."""
     unknown = [name for name in names if name not in GITHUB_TOKEN_SOURCE_NAMES]
     if unknown:
         raise ValueError(f"unknown credential source name(s): {unknown}")
@@ -210,7 +220,19 @@ def github_token_source(
                 return ResolvedToken(value, GH_AUTH_TOKEN_SOURCE)
         return None
 
-    return source
+    if not cache:
+        return source
+    held: list[ResolvedToken] = []
+
+    def cached() -> ResolvedToken | None:
+        if held:
+            return held[0]
+        token = source()
+        if token is not None:
+            held.append(token)
+        return token
+
+    return cached
 
 
 def resolve_github_token(

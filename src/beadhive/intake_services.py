@@ -22,8 +22,9 @@ What is composed here:
   :func:`accept_to_work`, over the same operational store and the root lock, off unless
   ``intake.external.enabled`` and with no tracker (a link reads and writes no tracker);
 * the supervised outbox sender (I9a): the root :class:`FlockIntakeLock` (``guard_primary`` for
-  one host, an ``fcntl.flock`` on a per-binding file in the hive's private ``.bh/`` state for one
-  process, ``guard.live_epoch`` as the epoch; the store's ``seq`` re-check is the record half; a
+  one host and ``guard.live_epoch`` as the epoch, both from ONE evaluation,
+  ``guard.primary_epoch``; an ``fcntl.flock`` on a per-binding file in the hive's private
+  ``.bh/`` state for one process; the store's ``seq`` re-check is the record half; a
   one-process batch reuses one host check and epoch read for at most
   ``intake.external.outbox.batch_recheck_seconds``, opt-in, default 0), a random
   :class:`RandomIdSource`, the outbox id index (:func:`outbox_index`, ``bh-pc9rf``), the
@@ -68,6 +69,8 @@ from .modules.intake import (
     ORIGIN_REPORT,
     REPORT_TYPES,
     ConsiderRequest,
+    DeliverySweep,
+    DeliverySweepRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     Disposition,
@@ -118,6 +121,7 @@ from .modules.intake.domain import (  # the composition root may (gap G7)
     OutboxEvent,
     OutboxPolicy,
     ReleaseFact,
+    ReopenOutcome,
     StartFact,
     dupes_touching,
     mint_grant_id,
@@ -297,6 +301,21 @@ def sweep_holds(
     )
 
 
+# -- the delivery a rejected report must not hold (bh-5kpwc) -----------------------------------
+
+
+def sweep_delivery(
+    directory, *, repair: bool = False, actor: str = "", entry=None, cli_only: bool = False
+) -> DeliverySweep:
+    """List the rejected (or duplicate-closed) reports of the store at ``directory`` that still
+    carry a ``delivery`` value and, with ``repair``, clear it. The listing is the dry run. Writes
+    only the bead store: ``bh work labels sync --include-closed`` then drafts the label removal on
+    the issue, and nothing is sent."""
+    return service_for_directory(directory, entry=entry, cli_only=cli_only).sweep_delivery(
+        DeliverySweepRequest(actor, repair)
+    )
+
+
 # -- import (bh work import) ------------------------------------------------------------------
 
 
@@ -355,7 +374,16 @@ def _credential_source_names(cfg: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(((values.get("credential") or {}).get("sources")) or ())
 
 
-def process_adapters(cfg: Mapping[str, Any]) -> Any:
+def _credential_cache(cfg: Mapping[str, Any]) -> bool:
+    """``plugins.tracker-github.credential.per_invocation_cache`` (opt-in, default off,
+    ``bh-25fvb``): keep the first token in memory for the rest of the command."""
+    from .bootstrap import tracker as tracker_root
+
+    values = tracker_root.plugin_settings(TRACKER_PLUGIN_ID, cfg.get("plugins")).values
+    return ((values.get("credential") or {}).get("per_invocation_cache")) is True
+
+
+def process_adapters(cfg: Mapping[str, Any], *, resident: bool = False) -> Any:
     """The process's ``TrackerAdapters`` for ``cfg``, or ``None`` unless the tracker is switched on.
 
     Two host-owned switches, both off by default, must both be ``true``: ``intake.external.enabled``
@@ -365,10 +393,15 @@ def process_adapters(cfg: Mapping[str, Any]) -> Any:
 
     Composition reads no credential: the token source is ``run.github_token_source()`` over the
     configured ``credential.sources`` (default env, then ``gh auth token``), called by the adapter
-    once per operation and never cached, logged or stored here. The result is built fresh per call
-    (nothing is cached at module level), so a command, or the daemon's timer, owns exactly one for
-    its configuration snapshot. This is the one place the production wiring lands; tests inject
-    ``adapters=`` or ``tracker=`` instead."""
+    once per operation and never cached, logged or stored here, unless the operator opted into
+    ``credential.per_invocation_cache`` (bh-25fvb), which keeps the first token in that source's
+    memory for the one command that built it. The result is built fresh per call (nothing is
+    cached at module level), so a command, or the daemon's timer, owns exactly one for its
+    configuration snapshot. *resident* is for a process that keeps the adapters for its whole
+    life (the host daemon's discovery timer): it never caches the token, whatever the key says,
+    so a token rotated or revoked while the daemon runs is picked up by its next operation. This
+    is the one place the production wiring lands; tests inject ``adapters=`` or ``tracker=``
+    instead."""
     if not external_intake_settings(cfg)[0] or not tracker_plugin_enabled(cfg):
         return None
     from . import run
@@ -377,7 +410,9 @@ def process_adapters(cfg: Mapping[str, Any]) -> Any:
     return TrackerAdapters(
         plugins=cfg.get("plugins"),
         plugin_kernel=cfg.get("plugin_kernel"),
-        token_source=run.github_token_source(names=_credential_source_names(cfg)),
+        token_source=run.github_token_source(
+            names=_credential_source_names(cfg), cache=not resident and _credential_cache(cfg)
+        ),
     )
 
 
@@ -984,20 +1019,29 @@ class FlockIntakeLock:
     13 s together, every hold) are taken on the first hold and reused by the holds that follow
     until they are ``recheck_seconds`` old, then taken again; every hold still takes its own
     flock. ``0`` re-checks on every hold, as outside a batch. ``clock`` is injectable (monotonic
-    seconds) so the bound is tested without waiting."""
+    seconds) so the bound is tested without waiting.
+
+    ``admit`` (production, ``bh-25fvb``) is the host check and the epoch read in ONE evaluation
+    (``guard.primary_epoch``): taken before the flock, as ``primary`` is, and its epoch yielded,
+    instead of evaluating the frame-eligibility reads twice. Without it ``primary()`` runs before
+    the flock and ``epoch()`` under it."""
 
     def __init__(
         self,
         lock_dir: Path | Callable[[], Path],
         *,
-        primary: Callable[[], None],
-        epoch: Callable[[], int],
+        primary: Callable[[], None] | None = None,
+        epoch: Callable[[], int] | None = None,
+        admit: Callable[[], int] | None = None,
         recheck_seconds: float = 0.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        if admit is None and (primary is None or epoch is None):
+            raise TypeError("FlockIntakeLock needs admit, or both primary and epoch")
         self._lock_dir = lock_dir
         self._primary = primary
         self._epoch = epoch
+        self._admit = admit
         self._recheck = max(0.0, float(recheck_seconds))
         self._clock = clock
         self._batch_depth = 0
@@ -1031,7 +1075,12 @@ class FlockIntakeLock:
         reused = self._reused()
         taken = self._clock()
         if reused is None:
-            self._primary()
+            if self._admit is not None:
+                reused = self._admit()
+                if self._batch_depth:
+                    self._checked = (taken, reused)
+            else:
+                self._primary()  # type: ignore[misc]
         with self._path(binding_key).open("a+") as handle:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1042,7 +1091,7 @@ class FlockIntakeLock:
                 ) from None
             try:
                 if reused is None:
-                    reused = self._epoch()
+                    reused = self._epoch()  # type: ignore[misc]
                     if self._batch_depth:
                         self._checked = (taken, reused)
                 yield reused
@@ -1063,32 +1112,26 @@ class RandomIdSource:
         return mint_grant_id(self._entropy(16))
 
 
-def _primary_guard(
+def _admitted_epoch(
     cfg: Mapping[str, Any], hive: str, verb: str = "work outbox"
-) -> Callable[[], None]:
-    def check() -> None:
+) -> Callable[[], int]:
+    """The host check and the epoch read in one evaluation (``guard.primary_epoch``,
+    ``bh-25fvb``); a refusal (``guard_primary``'s ``typer.Exit``) is ``NOT_PRIMARY``."""
+
+    def admit() -> int:
         import typer
 
         from . import guard
 
         try:
-            guard.guard_primary(hive, cfg=cfg, verb=verb)
+            return int(guard.primary_epoch(hive, cfg=cfg, verb=verb))
         except typer.Exit as exc:
             raise IntakeRefused(
                 RefusalReason.NOT_PRIMARY,
                 f"this host is not the hive's primary writer; run `bh {verb}` on the primary",
             ) from exc
 
-    return check
-
-
-def _live_epoch(cfg: Mapping[str, Any], hive: str) -> Callable[[], int]:
-    def epoch() -> int:
-        from . import guard
-
-        return int(guard.live_epoch(hive, cfg=cfg))
-
-    return epoch
+    return admit
 
 
 def _intake_state_dir(directory, what: str, operation: str) -> Path:
@@ -1178,8 +1221,7 @@ def intake_lock(
     names the write verb in a primary-host refusal)."""
     return FlockIntakeLock(
         lambda: lock_dir(directory),
-        primary=_primary_guard(cfg, hive, verb),
-        epoch=_live_epoch(cfg, hive),
+        admit=_admitted_epoch(cfg, hive, verb),
         recheck_seconds=batch_recheck_seconds(cfg),
     )
 
@@ -1238,6 +1280,7 @@ def outbox_service_for(
     type_enabled: bool = False,
     fields_enabled: bool = False,
     index: Any = None,
+    reopen_enabled: bool = False,
 ) -> IntakeService:
     """The intake service for ``entry`` with the supervised sender bound over the INJECTED
     ``tracker`` (and its ``marker_line`` codec). With ``threads`` (the comment-ingestion policy,
@@ -1245,7 +1288,8 @@ def outbox_service_for(
     also serve the thread operations (:func:`thread_service_for`). ``close_enabled`` is the bound
     adapter's own ``issue.close`` enable (:func:`tracker_wiring`): the sender's close gate, and
     ``type_enabled`` / ``fields_enabled`` its ``issue.type`` / ``issue.fields`` enables, the
-    gates of those two operations; ``triage`` (:func:`triage_binding`) lets the close backfill
+    gates of those two operations, and ``reopen_enabled`` its ``issue.reopen`` enable (the reopen
+    gate); ``triage`` (:func:`triage_binding`) lets the close backfill
     compute a missing reply's text; ``index`` is the outbox id index (default
     :func:`outbox_index` in the hive's private state).
 
@@ -1254,8 +1298,11 @@ def outbox_service_for(
     still never sufficient to post: the adapter's own per-operation enable and an operator
     approval minting a single-use grant are both required. ``sanitizer`` defaults to the shared
     :class:`~beadhive.adapters.intake.ScrubSanitizer`; the store is the OPERATIONAL one only."""
-    policy = with_value_gates(
-        with_close(policy or OutboxPolicy(), close_enabled), type_enabled, fields_enabled
+    policy = with_reopen(
+        with_value_gates(
+            with_close(policy or OutboxPolicy(), close_enabled), type_enabled, fields_enabled
+        ),
+        reopen_enabled,
     )
     store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
     labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
@@ -1325,6 +1372,13 @@ def with_close(policy: OutboxPolicy, close_enabled: Any) -> OutboxPolicy:
     with the outbox on and the tracker plugin's ``write.issue_close.enabled`` resolved true for
     the hive's binding. There is no separate intake key: the adapter switch is the one gate."""
     return replace(policy, close_enabled=policy.enabled and close_enabled is True)
+
+
+def with_reopen(policy: OutboxPolicy, reopen_enabled: Any) -> OutboxPolicy:
+    """``policy`` with the ``issue.reopen`` gate set from the bound adapter's own enable
+    (``write.issue_reopen.enabled``): on only with the outbox on. Like the close, there is no
+    separate intake key (``bh-ih484``)."""
+    return replace(policy, reopen_enabled=policy.enabled and reopen_enabled is True)
 
 
 def with_value_gates(policy: OutboxPolicy, type_enabled: Any, fields_enabled: Any) -> OutboxPolicy:
@@ -1773,6 +1827,8 @@ def tracker_wiring(
         # likewise the issue.type / issue.fields gates (no separate intake keys either)
         "type_enabled": Operation.ISSUE_TYPE in bound.enabled,
         "fields_enabled": Operation.ISSUE_FIELDS in bound.enabled,
+        # and the issue.reopen gate (bh-ih484)
+        "reopen_enabled": Operation.ISSUE_REOPEN in bound.enabled,
     }
 
 
@@ -1834,6 +1890,7 @@ def _outbox_port(
     triage: Any = None,
     type_enabled: bool = False,
     fields_enabled: bool = False,
+    reopen_enabled: bool = False,
 ):
     """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
@@ -1871,6 +1928,7 @@ def _outbox_port(
             triage=triage() if callable(triage) else triage,
             type_enabled=type_enabled,
             fields_enabled=fields_enabled,
+            reopen_enabled=reopen_enabled,
         )
 
     return bind_intake(enabled, build)
@@ -1900,6 +1958,7 @@ def outbox_call(
     triage: Any = None,
     type_enabled: bool = False,
     fields_enabled: bool = False,
+    reopen_enabled: bool = False,
 ) -> OutboxCall:
     """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
     failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
@@ -1933,6 +1992,7 @@ def outbox_call(
             triage=triage,
             type_enabled=type_enabled or wiring.get("type_enabled") is True,
             fields_enabled=fields_enabled or wiring.get("fields_enabled") is True,
+            reopen_enabled=reopen_enabled or wiring.get("reopen_enabled") is True,
         )
         value = run(port)
     except IntakeRefused as exc:
@@ -1951,6 +2011,8 @@ _OUTBOX_KINDS = {
     "labels.change": "labels.change",
     "close": "issue.close",
     "issue.close": "issue.close",
+    "reopen": "issue.reopen",
+    "issue.reopen": "issue.reopen",
     "type": "issue.type",
     "issue.type": "issue.type",
     "fields": "issue.fields",
@@ -1959,9 +2021,9 @@ _OUTBOX_KINDS = {
 
 
 def outbox_kind(text: str) -> Any:
-    """The :class:`OpKind` an operator typed (``comment`` | ``labels`` | ``close`` | ``type`` |
-    ``fields``, or the full operation name), or ``None`` when it names none. An empty string is
-    the default, ``comment.create``."""
+    """The :class:`OpKind` an operator typed (``comment`` | ``labels`` | ``close`` | ``reopen`` |
+    ``type`` | ``fields``, or the full operation name), or ``None`` when it names none. An empty
+    string is the default, ``comment.create``."""
     from .modules.intake.domain import OpKind
 
     name = _OUTBOX_KINDS.get((text or "comment").strip().lower())
@@ -1971,7 +2033,7 @@ def outbox_kind(text: str) -> Any:
 def _bad_kind(text: str) -> OutboxCall:
     return OutboxCall(
         2,
-        f"unknown operation {text!r}: use comment, labels, close, type or fields",
+        f"unknown operation {text!r}: use comment, labels, close, reopen, type or fields",
         "bad_argument",
     )
 
@@ -2144,9 +2206,9 @@ def outbox_send_approved(
     cfg, entry, directory, kind: str, reports: Sequence[str], actor: str, **kwargs
 ) -> OutboxCall:
     """``bh work outbox send-approved [--kind K] [--bead <id>]...``: every approved operation in
-    ONE process and one store session (``bh-pc9rf``), ordered per report comment, labels, close;
-    each still spends its own single-use grant and writes its own receipt. ``kind`` empty means
-    every kind. The value is a :class:`~beadhive.modules.intake.domain.BatchSendOutcome`; a
+    ONE process and one store session (``bh-pc9rf``), ordered per report reopen, comment, labels,
+    close; each still spends its own single-use grant and writes its own receipt. ``kind`` empty
+    means every kind. The value is a :class:`~beadhive.modules.intake.domain.BatchSendOutcome`; a
     refused or unsettled item is reported there and the rest still go."""
     from .modules.intake.domain import BatchSend
 
@@ -2189,6 +2251,31 @@ def outbox_backfill_close(
         directory,
         lambda port: port.backfill_closes(CloseBackfill(actor, dry_run=dry_run)),
         triage=binding,
+        **kwargs,
+    )
+
+
+def outbox_reopen(
+    cfg,
+    entry,
+    directory,
+    report: str,
+    actor: str,
+    text: str = "",
+    dry_run: bool = False,
+    **kwargs,
+) -> OutboxCall:
+    """``bh work outbox reopen <report> [--text T] [--dry-run]``: draft the reopen of ONE report
+    whose bound issue reads closed, on the reply that explains it (``text``, or the template), and
+    never approve or send it (``bh-ih484``). ``dry_run`` makes every check and writes nothing. Off
+    unless the outbox is on and the tracker plugin's ``write.issue_reopen.enabled``."""
+    from .modules.intake.contracts import ReopenRequest
+
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.reopen(ReopenRequest(report, actor, text, dry_run=dry_run)),
         **kwargs,
     )
 
@@ -2893,10 +2980,13 @@ def _compose(
             ids=source,
             identity=outbox["identity"],
             marker_line=outbox["marker_line"],
-            policy=with_value_gates(
-                with_close(policy, outbox.get("close_enabled")),
-                outbox.get("type_enabled"),
-                outbox.get("fields_enabled"),
+            policy=with_reopen(
+                with_value_gates(
+                    with_close(policy, outbox.get("close_enabled")),
+                    outbox.get("type_enabled"),
+                    outbox.get("fields_enabled"),
+                ),
+                outbox.get("reopen_enabled"),
             ),
             leak_policy=leaks,
             sanitizer=scrubber,
@@ -3637,6 +3727,7 @@ __all__ = [
     "IntakeCall",
     "LabelsConfig",
     "LinkageLandedCommits",
+    "ReopenOutcome",
     "TriageChecks",
     "audit_path",
     "intake_message",
@@ -3718,6 +3809,7 @@ __all__ = [
     "queue_rows",
     "report_store",
     "reroute_to_hive",
+    "sweep_delivery",
     "sweep_holds",
     "service_for",
     "service_for_directory",

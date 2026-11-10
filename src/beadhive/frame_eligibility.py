@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -752,14 +753,41 @@ def last_admission(*, consume: bool = True) -> dict:
     return stamps
 
 
+#: The authoritative primary the most recent :func:`require_intake` of THIS thread read and found
+#: held, with that call's sequence number and its ``(hive, hive_dir)`` arguments (bh-25fvb):
+#: ``guard.guard_primary`` asks for it right after its own call, instead of reading the same
+#: lease again (about 1 s on the factory).
+_PRIMARY = threading.local()
+
+
+def intake_calls() -> int:
+    """How many :func:`require_intake` calls this thread has begun (:func:`admitted_primary`)."""
+    return getattr(_PRIMARY, "calls", 0)
+
+
+def admitted_primary(hive="", *, hive_dir=None, after: int):
+    """The ``(prefix, identity, lease)`` that the ONE :func:`require_intake` call begun after
+    :func:`intake_calls` read ``after`` admitted, for exactly this ``hive`` / ``hive_dir``;
+    consumed. ``None`` for anything else (no such call, another call since, other arguments, or
+    a legacy host), and the caller then reads :func:`authoritative_primary` itself."""
+    held = getattr(_PRIMARY, "value", None)
+    _PRIMARY.value = None
+    if held is None or held[0] != after + 1 or held[1] != (hive, hive_dir):
+        return None
+    return held[2]
+
+
 def require_intake(hive="", *, cfg=None, hive_dir=None):
     from .hq_authority_expiry import warn_if_expiring
 
     warn_if_expiring()
     _ADMISSION.clear()
+    _PRIMARY.calls = call = intake_calls() + 1
+    _PRIMARY.value = None
     decision = require_local(hive, cfg=cfg, hive_dir=hive_dir)
     if decision is not None:
-        _prefix, identity, lease = authoritative_primary(hive, cfg=cfg, hive_dir=hive_dir)
+        primary = authoritative_primary(hive, cfg=cfg, hive_dir=hive_dir)
+        _prefix, identity, lease = primary
         if lease is None or not lease.held_by(identity):
             raise EligibilityError("frame ineligible: current_hive_lease_holder")
         # Ownership reads cannot mask a concurrent admission or receipt revocation.
@@ -767,6 +795,7 @@ def require_intake(hive="", *, cfg=None, hive_dir=None):
         if decision is not None and decision.admission:
             _ADMISSION.update(decision.admission)
             _ADMISSION["admitted_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _PRIMARY.value = (call, (hive, hive_dir), primary)
     return decision
 
 

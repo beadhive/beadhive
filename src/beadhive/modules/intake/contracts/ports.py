@@ -29,6 +29,8 @@ from ..domain import (
     CloseBackfill,
     CloseBackfillOutcome,
     ConsiderRequest,
+    DeliverySweep,
+    DeliverySweepRequest,
     DiscoveryOutcome,
     DiscoveryRequest,
     DispositionOutcome,
@@ -73,6 +75,8 @@ from ..domain import (
     QueueView,
     ReleaseFact,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
     ReportDraft,
     ReportRelations,
@@ -179,6 +183,10 @@ class IntakePort(Protocol):
         self, request: CloseBackfill
     ) -> CloseBackfillOutcome: ...  # O1 for the closes of reports closed before closes existed
 
+    def reopen(
+        self, request: ReopenRequest
+    ) -> ReopenOutcome: ...  # O1 for the operator's reopen of one closed issue (bh-ih484)
+
     # the milestone triggers (bh-6wj9y R9; I10). They DRAFT and never send: no grant, no writer, no
     # tracker request. Free under ``NullIntake``; the work layer wraps both so a failure here is
     # reported and never fails a merge or a release.
@@ -252,6 +260,13 @@ class IntakePort(Protocol):
 
     def apply_reviewed(self, request: ApplyRequest) -> ApplyOutcome: ...  # triage apply --reviewed
 
+    # the delivery a rejected report must not hold (bh-5kpwc): a duplicate-of linked before the fix
+    # carries ``delivery:pending``; the sweep lists those reports and, with ``repair``, clears it
+
+    def sweep_delivery(
+        self, request: DeliverySweepRequest
+    ) -> DeliverySweep: ...  # scripts/repair_duplicate_delivery.py
+
 
 @runtime_checkable
 class ReportStore(Protocol):
@@ -274,6 +289,15 @@ class ReportStore(Protocol):
     def set_state(
         self, bead: str, dimension: str, value: str, *, reason: str, actor: str
     ) -> None: ...
+
+    def clear_state(self, bead: str, dimension: str, *, reason: str, actor: str) -> None:
+        """Drop ``dimension``'s value from ``bead`` (a no-op when it has none).
+
+        ``bd set-state`` cannot clear a dimension, so this removes the ``<dimension>:<value>``
+        label cache entry directly: the bead's event history keeps the last value it set. Only for
+        a value that was never the bead's to hold (a duplicate's ``delivery``, bh-5kpwc); a
+        value that merely ended belongs to a replacing ``set_state`` or an ``unlinked`` fact."""
+        ...
 
     def record_snapshot(self, bead: str, snapshot: SourceSnapshot, *, actor: str) -> None: ...
 
@@ -446,6 +470,27 @@ class BatchLock(Protocol):
     ``labels approve --batch``) enters it; nothing about a single hold changes."""
 
     def batch(self) -> AbstractContextManager[None]: ...
+
+
+@runtime_checkable
+class ReportSession(Protocol):
+    """The optional unit-of-work scope of a :class:`ReportStore` (``bh-25fvb``).
+
+    Inside ``session()`` each report is read from the backing store at most once: the reads of
+    one unit of work that name the same report (its outbox, thread and view) share that one
+    read, and a document this store writes is kept as written. The ``seq`` re-read before a
+    document write shares it too, but ONLY where that write is a compare-and-set the store
+    itself enforces; where it is not (the ``bd`` CLI's overwrite), the re-read is the only check
+    and always reads the store. Any other write drops what the scope holds. Leaving the scope
+    drops it all, so nothing read in one unit of work is ever served to the next. Every write is
+    still its own write: the outbox and label services enter it once per hold of the binding's
+    lock, where the lock already makes them the report's only writer, so a send's write-ahead
+    and receipt and an approval's grant are each still written (and checked) on their own.
+
+    A session is state on the store object and is NOT thread-safe: one store, and so one open
+    session, belongs to one thread of work."""
+
+    def session(self) -> AbstractContextManager[None]: ...
 
 
 @runtime_checkable

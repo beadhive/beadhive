@@ -573,7 +573,13 @@ Link (`bh-v2rr6`, I5) is `application/linker.py` (`LinkService`, behind `IntakeS
 `unlink`, `work_progress` and `dispose(accept)` with `work` / `new_work`): a bound report `tracks`
 a work bead of the same operational store (several reports to one work), decided by the pure rules
 in `domain/link.py` before any write; a bound report is never a target (D-a) and no edge crosses
-stores. A link writes `delivery:pending`; an unlink keeps the value (`bd set-state` cannot clear
+stores. A link writes `delivery:pending`, except a `duplicate-of` link (`LinkRequest.duplicate`,
+bh-5kpwc): the duplicate shares its canonical's work but its delivery is the canonical report's, so
+that link writes no value, clears one already there (`ReportStore.clear_state`, a raw label
+removal) and catches nothing up; no milestone trigger drafts for a rejected report, and the label
+projection emits no `bh:delivery/*` or `bh:progress/*` for one. `IntakeService.sweep_delivery`
+lists (and, with `repair`, clears) the rejected reports that still carry a value
+(`scripts/repair_duplicate_delivery.py`). An unlink keeps the value (`bd set-state` cannot clear
 one) and records an `unlinked` fact in the report's `intake.outbox` document. Work progress is
 derived on read from the tracked bead. `intake_services.link_report` / `accept_to_work` compose it
 under the root lock, off unless `intake.external.enabled` and without a tracker; `bh work link` and
@@ -673,6 +679,24 @@ every report closed in the store whose issue is still open, and drafts the reply
 got from its applied proposal (`ProposalService.backfill_reply`). Tests:
 `tests/unit/modules/intake/test_intake_outbox_close_sender.py`.
 
+The sender carries `issue.reopen` (`bh-ih484`) as a fourth gate, the inverse of a close:
+`OutboxPolicy.reopen_enabled` is set from the bound adapter's own `issue.reopen` enable
+(`plugins.tracker-github.write.issue_reopen.enabled`; no separate intake key), and a reopen is
+refused with `REOPEN_DISABLED` otherwise. A reopen rides on a reply record (`ReplyDraft.reopen`,
+payload `state: open`), has its own digest, grant and receipt, and goes BEFORE the reply:
+`comment_blocker` refuses the record's comment (`REOPEN_NOT_READY`) until its reopen is settled,
+`reopen_blocker` refuses the reopen while another record of the same issue holds an unsent close,
+and `SEND_ORDER` is reopen, comment, labels, type, fields, close (across separate records only
+`send-approved` guarantees it). `reconcile` reads the issue's state back (`open`). It is DRAFTED,
+never sent, and only on the operator's say: `IntakePort.reopen` (`bh work outbox reopen`,
+`OutboxService.reopen`) drafts a reply (the operator's text or a template) with the reopen for ONE
+report whose issue reads CLOSED, refuses a second while one is pending (`machine.pending_reopen`,
+`REOPEN_PENDING`), and with `ReopenRequest.dry_run` makes every check and writes nothing; no
+trigger (`apply`, `wake`) drafts one. Discarding a reopen retires its reply too
+(`machine.discard`), and `IntakeService`'s close of a rejected or rerouted report retires the
+pending reopen and its reply (`OutboxService.retire_reopens`, no approval needed). Tests:
+`tests/unit/modules/intake/test_intake_outbox_reopen_sender.py`.
+
 A `duplicate-of` close names its canonical (`bh-iamru`). `ReplyDraft.duplicate_of` is the
 canonical REPORT (apply passes `share_with`, the backfill does the same); the sender resolves it
 to that report's bound issue (`CanonicalIssue`, only within the member's tracker project, else a
@@ -741,11 +765,27 @@ receipt, and reports a refused one in `BatchSendOutcome.failed` while the rest c
 primary host stops it with `BatchSendOutcome.stopped`, keeping what was sent). It and
 `approve_label_batch` run inside the lock's optional `BatchLock.batch()` scope, where
 `FlockIntakeLock` reuses one host check and epoch read for at most
-`intake.external.outbox.batch_recheck_seconds` (default `0`: every operation checks; reuse is
-opt-in). Tests:
+`intake.external.outbox.batch_recheck_seconds` (default `0`: every hold of the lock checks, one
+hold per report since bh-25fvb; reuse is opt-in). Tests:
 `tests/unit/modules/intake/test_intake_outbox_batch_send.py`,
 `tests/test_intake_outbox_batch_root.py` and the perf check
 `tests/test_intake_outbox_batch_perf.py` (`-m perf`).
+
+`bh-25fvb` made the per-record cost cheap. The optional `ReportSession` port (`session()` on a
+`ReportStore`; `BdReportStore` implements it for both routes) reads each report once per unit of
+work and keeps the documents it writes, so the next compare-and-set expects exactly them; any other
+write drops what it holds. The `seq` re-read before a document write is served from the session
+only where the write is a compare-and-set (the API route); on the `bd` CLI route
+(`work.beads.route=cli`, or the API route's CLI fallback) it always reads the store, because that
+re-read is the only check. The session is state on the store object and is not thread-safe: one
+store and its session belong to one thread of work. The sender and the labels projection open one
+session per hold of the binding's lock (`application/threads.held`), so every read under the lock
+is still that hold's own fresh read. `send_approved` sends a report's operations under ONE hold, `approve_label_batch`
+approves a report's items under ONE hold and writes them as ONE document write (each item still
+its own approval and grant), and `LabelProjection.sync` drafts inside `BatchLock.batch()`. The
+root's lock takes the host check and the epoch in one evaluation (`guard.primary_epoch`). Tests:
+the session cases in `tests/test_intake_api_store.py` and the per-report and type/fields cases in
+`tests/unit/modules/intake/test_intake_outbox_batch_send.py`.
 
 The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.py`:
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and

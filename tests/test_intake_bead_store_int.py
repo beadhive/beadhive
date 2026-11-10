@@ -151,6 +151,22 @@ def test_set_state_cannot_clear_a_delivery_value_so_unlinking_keeps_it(fresh) ->
     assert view is not None and "delivery:merged" in view.labels
 
 
+def test_clear_state_drops_a_dimension_the_report_never_owned_and_nothing_else(fresh) -> None:
+    """bh-5kpwc: a duplicate's ``delivery`` is cleared with the one raw label removal bd allows.
+    Only the named dimension goes, and clearing it again is a no-op."""
+    store = fresh()
+    bead = store.create(draft(bound=True))
+    store.set_state(bead, "intake", "rejected", reason="duplicate", actor="dev/test")
+    store.set_state(bead, "delivery", "pending", reason="linked", actor="dev/test")
+
+    store.clear_state(bead, "delivery", reason="duplicate", actor="dev/test")
+    store.clear_state(bead, "delivery", reason="again", actor="dev/test")
+
+    view = store.get(bead)
+    assert view is not None and not [x for x in view.labels if x.startswith("delivery:")]
+    assert "intake:rejected" in view.labels
+
+
 def test_unknown_metadata_target_is_a_store_failure(fresh) -> None:
     store = fresh()
     with pytest.raises(IntakeStoreError):

@@ -294,6 +294,7 @@ work outbox backfill-close|dry_run:boolean:o,as_:string:o,hive:string:o,as_json:
 work outbox discard|outbox_id:string:r,reason:string:r,accept_unknown:boolean:o,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox draft|bead:string:r,text:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox reconcile|outbox_id:string:o,as_:string:o,hive:string:o,as_json:boolean:o
+work outbox reopen|bead:string:r,text:string:o,reply_file:string:o,dry_run:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox retry|outbox_id:string:r,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox send|outbox_id:string:r,kind:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work outbox send-approved|kind:string:o,bead:array:o,as_:string:o,hive:string:o,as_json:boolean:o
@@ -750,12 +751,32 @@ def _extra_parameter(name: str) -> ParameterSpec:
     return ParameterSpec(name, schema, required)
 
 
-def _raw_cli_rows() -> dict[str, list[ParameterSpec]]:
+#: The parsed declaration tables, keyed on the declaration text they were parsed from: one build
+#: reads them once per CLI path (about 300 times), and re-parsing ``_CLI_ROWS`` on every read made
+#: the catalog build at import quadratic (bh-25fvb: 0.8 s of every ``bh`` invocation). A test that
+#: monkeypatches a declaration gets a fresh parse, exactly as the catalog snapshot is keyed. The
+#: parsed values are shared: readers only read them (every build copies what it keeps).
+_parsed_tables: dict[str, tuple[str, Any]] = {}
+
+
+def _parsed(table: str, source: str, parse) -> Any:
+    cached = _parsed_tables.get(table)
+    if cached is None or cached[0] is not source:
+        cached = (source, parse(source))
+        _parsed_tables[table] = cached
+    return cached[1]
+
+
+def _parse_cli_rows(source: str) -> dict[str, list[ParameterSpec]]:
     rows: dict[str, list[ParameterSpec]] = {}
-    for row in _CLI_ROWS.splitlines():
+    for row in source.splitlines():
         path, encoded = row.split("|", 1)
         rows[path] = _parse_parameters(encoded)
     return rows
+
+
+def _raw_cli_rows() -> dict[str, list[ParameterSpec]]:
+    return _parsed("cli_rows", _CLI_ROWS, _parse_cli_rows)
 
 
 def _canonical_parameters(path: str, parameters: list[ParameterSpec]) -> list[ParameterSpec]:
@@ -774,12 +795,16 @@ def _cli_rows() -> dict[str, tuple[str, list[ParameterSpec]]]:
     }
 
 
-def _parent_rows() -> dict[str, dict[str, Any]]:
+def _parse_parent_rows(source: str) -> dict[str, dict[str, Any]]:
     parents: dict[str, dict[str, Any]] = {}
-    for row in _CLI_PARENT_ROWS.splitlines():
+    for row in source.splitlines():
         path, hidden, panel = row.split("|", 2)
         parents[path] = {"declared_hidden": hidden == "true", "panel": panel or None}
     return parents
+
+
+def _parent_rows() -> dict[str, dict[str, Any]]:
+    return _parsed("parent_rows", _CLI_PARENT_ROWS, _parse_parent_rows)
 
 
 def _effective_parent_value(path: str, key: str) -> Any:

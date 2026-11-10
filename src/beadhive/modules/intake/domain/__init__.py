@@ -152,6 +152,7 @@ from .vocabulary import (
     is_escalation_origin,
     is_needs_info,
     is_promoted,
+    is_rejected,
     is_report_origin,
     is_untriaged_intake,
     origin_from_source_system,
@@ -282,6 +283,7 @@ __all__ = [
     "half_rejected",
     "is_escalation_origin",
     "is_promoted",
+    "is_rejected",
     "is_report_origin",
     "is_untriaged_intake",
     "is_awaiting_triage",
@@ -307,13 +309,18 @@ __all__ = [
 from .delivery import (  # noqa: E402
     NOTIFIED_BY_EVENT,
     CompletionPolicy,
+    DeliverySweep,
+    DeliverySweepRequest,
+    StrayDelivery,
     Verdict,
     completion_event,
     delivery_after_merge,
     delivery_after_release,
     delivery_complete,
+    delivery_unowned,
     notification_behind,
     notified_of,
+    stray_deliveries,
 )
 from .leaks import (  # noqa: E402
     NEVER_OVERRIDABLE,
@@ -369,13 +376,17 @@ from .outbox import (  # noqa: E402
     UnlinkedFact,
     ValueIntent,
     close_blocker,
+    comment_blocker,
     is_grant_id,
     is_operator_seat,
     is_outbox_id,
     mint_grant_id,
     mint_outbox_id,
     outbox_view,
+    pending_reopen,
+    reopen_blocker,
     reply_revision,
+    retire_reopens,
     values_payload,
 )
 from .outbox_document import (  # noqa: E402
@@ -404,6 +415,8 @@ __all__ += [
     "CloseReason",
     "CompletionPolicy",
     "DeliveryFacts",
+    "DeliverySweep",
+    "DeliverySweepRequest",
     "DraftKey",
     "DraftRequest",
     "GrantStatus",
@@ -437,14 +450,17 @@ __all__ += [
     "SanitizerFinding",
     "SendPlan",
     "Step",
+    "StrayDelivery",
     "UnlinkedFact",
     "ValueIntent",
     "Verdict",
     "close_blocker",
+    "comment_blocker",
     "completion_event",
     "delivery_after_merge",
     "delivery_after_release",
     "delivery_complete",
+    "delivery_unowned",
     "is_grant_id",
     "is_operator_seat",
     "is_outbox_id",
@@ -456,7 +472,11 @@ __all__ += [
     "outbox_from_document",
     "outbox_to_document",
     "outbox_view",
+    "pending_reopen",
+    "reopen_blocker",
     "reply_revision",
+    "retire_reopens",
+    "stray_deliveries",
     "values_payload",
 ]
 
@@ -476,7 +496,10 @@ from .sending import (  # noqa: E402
     OutboxQuery,
     OutboxResult,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
+    reopen_reply_text,
 )
 
 __all__ += [
@@ -493,7 +516,10 @@ __all__ += [
     "OutboxQuery",
     "OutboxResult",
     "RenderedRecord",
+    "ReopenOutcome",
+    "ReopenRequest",
     "ReplyDraft",
+    "reopen_reply_text",
 ]
 
 # -- the merge and release milestones (I10): facts, policy and fixed public wording -----------

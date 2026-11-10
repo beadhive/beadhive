@@ -309,6 +309,8 @@ def test_a_resync_before_approval_refreshes_nothing_and_never_stacks() -> None:
 
 
 def test_a_disposition_change_drafts_exactly_the_group_swap() -> None:
+    """Accepted to rejected swaps the intake label and, since a rejected report's delivery is not
+    its own (bh-5kpwc), also drops the progress label its tracked work had projected."""
     hive = Hive()
     moved, key = hive.report("a crash")
     hive.work(moved)
@@ -321,15 +323,20 @@ def test_a_disposition_change_drafts_exactly_the_group_swap() -> None:
 
     by_report = {i.report: i for i in outcome.items}
     item = by_report[moved]
-    assert item.add == {"bh:intake/rejected"} and item.remove == {"bh:intake/accepted"}
+    assert item.add == {"bh:intake/rejected"}
+    assert item.remove == {"bh:intake/accepted", "bh:progress/started"}
     assert item.swaps == (("intake", "bh:intake/accepted", "bh:intake/rejected"),)
     assert outcome.drafted == (item.drafted,)  # the other report drafts nothing
     assert not by_report[still].changed
     diff = hive.op(moved, item.drafted).labels
-    assert (diff.add, diff.remove) == ({"bh:intake/rejected"}, {"bh:intake/accepted"})
+    assert (diff.add, diff.remove) == (
+        {"bh:intake/rejected"},
+        {"bh:intake/accepted", "bh:progress/started"},
+    )
 
     hive.send(hive.approve())
     assert "bh:intake/rejected" in hive.labels(key) and "bh:intake/accepted" not in hive.labels(key)
+    assert "bh:progress/started" not in hive.labels(key)
 
 
 def test_a_new_diff_supersedes_the_unsent_record_instead_of_stacking() -> None:
@@ -368,6 +375,36 @@ def test_include_closed_converges_open_and_closed_fixtures_in_one_pass() -> None
 
     for key in (open_issue, closed_issue, stale_issue):
         assert {"bh:intake/accepted", "bh:type/bug"} <= hive.labels(key)
+    assert hive.sync(include_closed=True).drafted == ()
+
+
+def test_sync_drafts_the_removal_of_a_closed_duplicates_stale_delivery_label() -> None:
+    """bh-0d5th / #75: closed as a duplicate, still ``delivery:pending``, and the label already
+    published. Syncing it with ``--include-closed`` drafts that one removal; a send converges."""
+    hive = Hive()
+    duplicate, issue = hive.report(
+        "same crash",
+        labels=(
+            "bug",
+            "bh:intake/rejected",
+            "bh:delivery/pending",
+            "bh:type/bug",
+            "bh:priority/p2",
+        ),
+        state=IssueState.CLOSED,
+        intake="rejected",
+    )
+    hive.work(duplicate, status="closed", labels=(), issue_type="bug")  # the canonical's work
+    hive.store.set_state(duplicate, "delivery", "pending", reason="linked", actor="dev/x")
+    hive.store.close(duplicate, reason="duplicate", actor="alice")
+    hive.define()
+
+    outcome = hive.sync(include_closed=True)
+
+    (item,) = outcome.items
+    assert item.remove == {"bh:delivery/pending"} and not item.add and item.drafted
+    hive.send(hive.approve())
+    assert "bh:delivery/pending" not in hive.labels(issue)
     assert hive.sync(include_closed=True).drafted == ()
 
 
