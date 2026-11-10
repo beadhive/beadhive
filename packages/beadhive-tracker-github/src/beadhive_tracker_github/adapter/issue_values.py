@@ -13,6 +13,15 @@
   and checks a select field's option, BEFORE the grant is spent, so an unknown field or option
   is ``PayloadRejected`` with the grant kept. GitHub answers the issue's field values.
 
+  An adapter that lives for ONE command (``command_scoped``) memoizes that answer, so a batch of
+  N field writes reads the definitions once, not N times (bh-n0h15); one that does not (a
+  resident process) reads them afresh every write. The memo is checked, never trusted: an unknown
+  field or option found in it, or a ``404`` / ``422`` from the write built on it, drops it, reads
+  the definitions once more and retries once; a second failure is the normal error. A definitions
+  read made by the very write that fails is authoritative and is not repeated. The retry of a
+  rejected write reuses the same grant (spent once, for one logical write: a ``4xx`` proves
+  nothing was written).
+
 The endpoints were checked against GitHub's REST reference (docs.github.com ``/rest/issues/
 issue-field-values``, ``/rest/orgs/issue-fields`` and ``/rest/issues/issues#update-an-issue``,
 2026-11-06); both are served on API version 2022-11-28.
@@ -35,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 from beadhive.modules.tracker.contracts import (
     AuthenticationFailed,
     IssueKey,
+    NotVisible,
     Operation,
     PayloadRejected,
     WriteGrant,
@@ -90,6 +100,8 @@ class _ValueWriting:
     _grants: GrantLedger
     _location: GitHubLocation
     _transport: Transport
+    _command_scoped: bool
+    _field_definitions: Any
     _require: Callable[[Operation], None]
     _issue_number: Callable[[IssueKey], int]
 
@@ -137,6 +149,19 @@ class IssueTyping(_ValueWriting):
 class IssueFieldWriting(_ValueWriting):
     """Mixin: ``set_issue_fields`` over the host adapter's location, transport and ledger."""
 
+    def _definitions(self, session: Session, *, refresh: bool = False) -> tuple[Any, bool]:
+        """The organization's field definitions and whether they came from the memo.
+
+        The memo exists only on a ``command_scoped`` adapter; ``refresh`` drops it first."""
+        if refresh:
+            self._field_definitions = None
+        if self._command_scoped and self._field_definitions is not None:
+            return self._field_definitions, True
+        body = session.get(f"/orgs/{self._location.owner}/issue-fields").body
+        if self._command_scoped and isinstance(body, list):
+            self._field_definitions = body
+        return body, False
+
     def set_issue_fields(
         self, issue: IssueKey, values: Mapping[str, str], *, grant: WriteGrant
     ) -> WriteReceipt:
@@ -148,11 +173,26 @@ class IssueFieldWriting(_ValueWriting):
         path = f"{self._location.repo_path}/issues/{number}/issue-field-values"
         with self._transport.operation(operation, write=True) as session:
             self._signed_in(session, operation)
-            # the field ids are the organization's: one read, before the grant is spent
-            fields = session.get(f"/orgs/{self._location.owner}/issue-fields")
-            payload = field_payload(values, fields.body)
+            # the field ids are the organization's: read (or remembered), before the grant is spent
+            definitions, remembered = self._definitions(session)
+            try:
+                payload = field_payload(values, definitions)
+            except PayloadRejected:
+                if not remembered:
+                    raise
+                # the memo may be stale (a field or option added since it was read): drop it,
+                # read once more, and let a second refusal be the normal error
+                payload = field_payload(values, self._definitions(session, refresh=True)[0])
+                remembered = False  # just read: a refusal of the write is authoritative
             ledger.spend(checked)
-            reply = session.send("POST", path, payload)
+            try:
+                reply = session.send("POST", path, payload)
+            except (PayloadRejected, NotVisible):
+                if not remembered:
+                    raise
+                # a 422/404 on ids from the memo: re-read once and retry once, on the same grant
+                payload = field_payload(values, self._definitions(session, refresh=True)[0])
+                reply = session.send("POST", path, payload)
         try:
             after = mapping.field_values(reply.body)
         except mapping.PayloadUnreadable:
