@@ -13,6 +13,21 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.5 (2026-11-10)
+
+### Fix
+
+- **run**: opt-in per-invocation GitHub token cache, default off
+- **intake**: one store read per hold and one hold per report in the batches
+- **config**: drop two repeated reads from every one-shot command
+- **intake**: one host evaluation per intake lock hold
+- **hq**: memoize the pure parts of a frame-eligibility read
+- **kernel**: parse the CLI declaration tables once per catalog build
+- **intake**: draft a reopen only through the explicit bh work outbox reopen verb
+- **intake**: send an issue.reopen before the reply that explains a corrected close
+- **tracker**: add the issue.reopen write operation and IssueReopener to the port and GitHub adapter
+- **intake**: a duplicate-of writes no delivery and rejected reports get no milestones
+
 ## v0.35.4 (2026-11-09)
 
 ### Fix
