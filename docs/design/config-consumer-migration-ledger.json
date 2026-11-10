@@ -2107,14 +2107,14 @@
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 6398,
+        "line": 6483,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 7633,
+        "line": 7718,
         "path": "tests/test_work.py",
         "target": "beadhive.config.max_commits"
       },

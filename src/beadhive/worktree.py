@@ -60,7 +60,7 @@ from . import (
     wt_status,  # noqa: F401 - compatibility patch seam
 )  # noqa: F401 - compatibility patch seams retained on the facade
 from .config_consumer_ports import work_settings as config
-from .identity import workspace_identity
+from .identity import resolve_actor, workspace_identity
 from .modules.worktrees import (
     BATCH_BRANCH_PREFIX as _BATCH_BRANCH_PREFIX,
 )
@@ -1531,7 +1531,7 @@ _LANDED_REASONS = ("merged", "molecule landed")  # the close_reasons is_landed t
 _ABANDONED_REASONS = frozenset({"pivot", "superseded", "obsolete"})
 
 
-def mark_landed(hive: str, ref: str) -> None:
+def mark_landed(hive: str, ref: str, as_: str = "") -> None:
     """Operator escape hatch (bh-v0wu): assert an OUT-OF-BAND landing by stamping the
     authoritative close_reason (`merged`) on the bead, so `prune`'s landed detection reclassifies
     the seat LANDED when no git/gh signal exists to find (hand-squashed from a laptop, landed on
@@ -1540,7 +1540,11 @@ def mark_landed(hive: str, ref: str) -> None:
     ``ref`` is a bead id or its ``wt/bead/<type>/<id>`` branch. An open bead is closed with
     reason ``merged``; one already closed with a landed reason is a no-op; one closed for
     another reason is reopened + reclosed so the close_reason becomes authoritative (bd has no
-    close-reason edit). This ASSERTS a landing — prefer `work land` when a PR exists to check."""
+    close-reason edit). This ASSERTS a landing — prefer `work land` when a PR exists to check.
+
+    The close is attributed to the acting identity (``as_`` > config profile > ``$BH_DEV`` > git).
+    Landing is a dispatcher/merger/operator step, so bd's assignee-vs-actor guard is bypassed
+    for any such actor; a developer seat (`dev/<name>`) may only close a bead assigned to it."""
     cfg = config.load()
     bead = (_bead_id_from_branch(ref) or "") if ref.startswith(WT_PREFIX) else ref
     if not bead:
@@ -1551,6 +1555,16 @@ def mark_landed(hive: str, ref: str) -> None:
     if data is None:
         typer.echo(f"✗ no such bead: {bead}", err=True)
         raise typer.Exit(1)
+    actor = resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
+    assignee = str(data.get("assignee") or "").strip()
+    if actor.startswith("dev/") and assignee and assignee != actor:
+        typer.echo(
+            f"✗ {bead} is assigned to {assignee!r}; a developer seat may not mark another seat's "
+            f"bead landed — re-run as a dispatcher/merger seat or the operator "
+            f"(`BH_DEV=disp/<name> {config.BINARY_ALIAS} worktree mark-landed {bead}`)",
+            err=True,
+        )
+        raise typer.Exit(1)
     if str(data.get("status")) == "closed":
         reason = str(data.get("close_reason") or "")
         if reason in _LANDED_REASONS:
@@ -1559,11 +1573,17 @@ def mark_landed(hive: str, ref: str) -> None:
         if bd.routes(main).issue_reopen(bead).returncode != 0:
             typer.echo(f"✗ cannot reopen {bead} to restamp its close_reason", err=True)
             raise typer.Exit(1)
-    if bd.routes(main).issue_close(bead, reason="merged").returncode != 0:
+    routes = bd.routes(main)
+    res = routes.issue_close(bead, reason="merged", actor=actor)
+    if res.returncode != 0 and assignee and assignee != actor:
+        # bd's assignee-vs-actor guard: landing is not the assignee's act, so keep the acting
+        # identity on the close and bypass the guard (the seat rule above is the real check).
+        res = routes.issue_close(bead, reason="merged", actor=actor, force=True)
+    if res.returncode != 0:
         typer.echo(f"✗ failed to close {bead} with close_reason 'merged'", err=True)
         raise typer.Exit(1)
     typer.echo(
-        f"✓ marked {bead} landed (close_reason: merged) — "
+        f"✓ marked {bead} landed as {actor} (close_reason: merged) — "
         f"`{config.BINARY_ALIAS} worktree prune` can now reap {branch}"
     )
 

@@ -5,13 +5,24 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
-## 0.35.8 → 0.35.9 — long `bh escalate` messages (bh-3egoy)
+## 0.35.8 → 0.35.9 — long `bh escalate` messages (bh-3egoy) and landing (bh-69snf)
 
 No action required. `bh escalate '<message>'` now accepts a message of any length: the bead title
 is the message's first line (cut at a sentence or word boundary, at most 120 characters) and the
 full message is the bead description, so a long or multi-paragraph report is no longer rejected by
 bd's 500-character title limit and no longer truncated in `bh hq intake` / `bh work list`. A failed
 `bd create` is reported with bd's own error message instead of a bare `{`.
+
+### Landing closes a bead whatever its assignee (bh-ikygx)
+
+`bh work land` closed a bead directly with no actor, so bd's assignee-vs-actor guard refused it
+whenever the landing seat was not the developer seat that did the work (reports #87, #44, #132).
+`land` now closes through the same assignee-aware path as `merge` and `finish`; the assignee guard
+stays on `claim` and `resume`. `bh worktree mark-landed` records the resolved acting identity
+(`$BH_DEV`, `work.identity`, then git; the published wire catalog cannot take a new `--as` parameter
+within this major) on the close, and lets a dispatcher/merger seat or the operator close another
+seat's bead; a `dev/<name>` seat may only close its own. A close that still fails now names `bh
+worktree mark-landed <id>` instead of telling you to close it manually or force it.
 
 ## 0.35.7 → 0.35.8 — outbox speed (bh-womf3)
 

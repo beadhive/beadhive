@@ -5817,6 +5817,91 @@ def test_mark_landed_noop_when_already_landed(hive, fakebd):
     assert not fakebd.did("close", "mr-43")
 
 
+def _close_calls(fakebd, bead):
+    return [(actor, args) for actor, args in fakebd.calls if args[:2] == ["close", bead]]
+
+
+def test_land_closes_when_the_assignee_seat_is_not_the_actor(hive, fakebd, fakegh):
+    """bh-ikygx (#87): land is a dispatcher/merger step, so the dev seat that did the work is
+    never the acting identity; bd's assignee guard must not strand the bead open."""
+    _pr_pending(hive, fakebd, "mr-31")
+    fakebd.beads["mr-31"]["assignee"] = "dev/other"
+    fakebd.close_actor_guard.add("mr-31")
+    fakegh.prs = [
+        {"number": 7, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    work.land(bead="mr-31", hive="myrepo")
+
+    assert fakebd.beads["mr-31"]["status"] == "closed"
+    assert fakebd.beads["mr-31"]["close_reason"] == "merged"
+    assert _close_calls(fakebd, "mr-31")[0][0] == "dev/other"
+    assert not any("--force" in args for _a, args in _close_calls(fakebd, "mr-31"))
+
+
+def test_land_failure_names_mark_landed_not_bd_force(hive, fakebd, fakegh, capsys):
+    _pr_pending(hive, fakebd, "mr-32")
+    fakebd.close_always_fails.add("mr-32")
+    fakegh.prs = [
+        {"number": 7, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    with pytest.raises(typer.Exit):
+        work.land(bead="mr-32", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "worktree mark-landed mr-32" in err
+    assert "--force" not in err and "close it manually" not in err
+
+
+def test_mark_landed_by_another_seat_closes_and_records_the_actor(hive, fakebd):
+    fakebd.seed("mr-44", title="t", assignee="dev/other")
+    fakebd.close_actor_guard.add("mr-44")
+
+    worktree.mark_landed("myrepo", "mr-44", "disp/boss")
+
+    assert fakebd.beads["mr-44"]["status"] == "closed"
+    assert fakebd.beads["mr-44"]["close_reason"] == "merged"
+    assert _close_calls(fakebd, "mr-44")[-1][0] == "disp/boss"
+
+
+def test_mark_landed_honours_as_for_the_unassigned_case(hive, fakebd):
+    fakebd.seed("mr-45", title="t")
+
+    worktree.mark_landed("myrepo", "mr-45", "merge/m1")
+
+    assert _close_calls(fakebd, "mr-45")[0][0] == "merge/m1"
+
+
+def test_mark_landed_refuses_a_different_dev_seat(hive, fakebd, capsys):
+    fakebd.seed("mr-46", title="t", assignee="dev/other")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_landed("myrepo", "mr-46", "dev/intruder")
+
+    assert fakebd.beads["mr-46"].get("status") != "closed"
+    assert "--force" not in capsys.readouterr().err
+
+
+def test_mark_landed_dev_seat_refusal_names_bh_dev_not_a_nonexistent_as_flag(hive, fakebd, capsys):
+    fakebd.seed("mr-48", title="t", assignee="dev/other")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_landed("myrepo", "mr-48", "dev/intruder")
+
+    err = capsys.readouterr().err
+    assert "BH_DEV=disp/<name>" in err
+    assert "--as" not in err
+
+
+def test_claim_still_refuses_another_actors_bead(hive, fakebd):
+    fakebd.seed("mr-47", title="t")
+    work.claim(bead="mr-47", as_="dev/one", hive="myrepo")
+
+    with pytest.raises(typer.Exit):
+        work.claim(bead="mr-47", as_="dev/two", hive="myrepo")
+
+
 # ---- worktree mark-abandoned: authoritative terminal disposition -----------
 
 
