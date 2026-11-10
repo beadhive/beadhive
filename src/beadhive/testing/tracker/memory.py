@@ -5,8 +5,8 @@ no consumer test needs a plugin package, an HTTP client or a network. It is also
 second implementation: it passes the same :data:`~beadhive.testing.tracker.cases.TRACKER_CASES`
 a real adapter must pass. It implements the required :class:`TrackerAdapter` plus every optional
 Protocol (``CommentWriter``, ``LabelWriter``, ``LabelReader``, ``LabelDefiner``,
-``LabelPruner``, ``IssueCloser``, ``IssueTypeWriter``, ``IssueFieldWriter``, ``IssueResolver``,
-``MarkerCodec``);
+``LabelPruner``, ``IssueCloser``, ``IssueReopener``, ``IssueTypeWriter``, ``IssueFieldWriter``,
+``IssueResolver``, ``MarkerCodec``);
 :func:`without_resolver` hides the resolver to exercise a consumer's fallback.
 
 Deterministic: no clock (every timestamp is supplied by the world), and a rate-limit wait calls
@@ -96,8 +96,8 @@ _DEFAULT_OWNERSHIP = LabelOwnership(prefixes=("bh:",))
 
 class MemoryTracker:
     """Implements ``TrackerAdapter``, ``CommentWriter``, ``LabelWriter``, ``LabelReader``,
-    ``LabelDefiner``, ``LabelPruner``, ``IssueCloser``, ``IssueTypeWriter``, ``IssueFieldWriter``,
-    ``IssueResolver`` and ``MarkerCodec``.
+    ``LabelDefiner``, ``LabelPruner``, ``IssueCloser``, ``IssueReopener``, ``IssueTypeWriter``,
+    ``IssueFieldWriter``, ``IssueResolver`` and ``MarkerCodec``.
 
     ``enabled`` is the resolved set of enabled operations, as a composition root would hand it to
     a real adapter. The default enables the three reads and no write. A disabled operation is
@@ -405,6 +405,23 @@ class MemoryTracker:
             closed_reason=reason.value,
         )
 
+    def reopen_issue(self, issue: IssueKey, *, grant: WriteGrant) -> WriteReceipt:
+        """Reopen ``issue`` under an ``issue.reopen`` grant. Only the state changes (never a
+        label); an issue already open stays open."""
+        self._require(Operation.ISSUE_REOPEN)
+        self._authorise(Operation.ISSUE_REOPEN, issue, grant)
+        self._request(write=True)
+        self.world.writes += 1
+        ambiguous, self.world.ambiguous_next_write = self.world.ambiguous_next_write, None
+        if ambiguous is False:  # cut off before the tracker applied anything (K1)
+            raise WriteOutcomeUnknown("the tracker did not confirm the reopen")
+        row = self.world.issues[issue.identifier]
+        row.state, row.closed_reason, row.duplicate_of = IssueState.OPEN, None, None
+        row.updated = self._when()
+        if ambiguous:  # applied, but the caller cannot know
+            raise WriteOutcomeUnknown("the tracker did not confirm the reopen")
+        return WriteReceipt(grant.grant_id, grant.operation, issue, state_after=IssueState.OPEN)
+
     def set_issue_type(
         self, issue: IssueKey, issue_type: str, *, grant: WriteGrant
     ) -> WriteReceipt:
@@ -571,6 +588,9 @@ class _WithoutResolver:
         duplicate_of: IssueKey | None = None,
     ) -> WriteReceipt:
         return self._inner.close_issue(issue, reason=reason, grant=grant, duplicate_of=duplicate_of)
+
+    def reopen_issue(self, issue: IssueKey, *, grant: WriteGrant) -> WriteReceipt:
+        return self._inner.reopen_issue(issue, grant=grant)
 
     def set_issue_type(
         self, issue: IssueKey, issue_type: str, *, grant: WriteGrant

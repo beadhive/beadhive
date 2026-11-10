@@ -96,6 +96,8 @@ from ..domain import (
     RefusalReason,
     ReleaseFact,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
     ReportDraft,
     ReportRelations,
@@ -468,6 +470,19 @@ class IntakeService:
         """Close a fielded report. The reason is cut to what Beads stores: the full text is in
         the ``intake`` state change just written (and, for a reply, in the outbox)."""
         self._store.close(report, reason=close_reason(reason), actor=actor)
+        self._retire_reopens(report, reason, actor)
+
+    def _retire_reopens(self, report: str, reason: str, actor: str) -> None:
+        """A pending reopen (and the reply explaining it) of a report just closed is retired
+        (``bh-ih484``): the report ended, so nothing is to be reopened. Best effort and silent: the
+        close already stands, a store that cannot be written leaves the records for the operator
+        to discard, and with no outbox or the reopen gate off nothing is read."""
+        if self._outbox is None:
+            return
+        try:
+            self._outbox.retire_reopens(report, f"report closed: {reason}"[:200], actor)
+        except (IntakeRefused, IntakeStoreError):
+            pass
 
     def _reject(self, request: DispositionRequest) -> DispositionOutcome:
         state = self._clear_intake(request, f"rejected: {request.reason}")
@@ -769,6 +784,9 @@ class IntakeService:
             request, reply_text=self._proposals.backfill_reply
         )
 
+    def reopen(self, request: ReopenRequest) -> ReopenOutcome:
+        return self._outbox_service().reopen(request)
+
     # -- the merge and release milestones (I10): they draft, they never send -----------------
 
     def _milestone_service(self) -> MilestoneService:
@@ -1004,6 +1022,9 @@ class NullIntake:
         raise _disabled()
 
     def backfill_closes(self, request: CloseBackfill) -> CloseBackfillOutcome:
+        raise _disabled()
+
+    def reopen(self, request: ReopenRequest) -> ReopenOutcome:
         raise _disabled()
 
     def on_work_merged(self, fact: MergeFact) -> MilestoneOutcome:

@@ -142,6 +142,10 @@
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`issue.fields`: read an issue's field values and set the named ones (such as Priority) to an option the organization defines, never touching its labels or other fields (default off; each write needs an operator-approved single-use grant)."
         },
+        "issue_reopen": {
+          "$ref": "#/$defs/TrackerGithubFlag",
+          "description": "`issue.reopen`: reopen a closed issue on the operator's say (`bh work outbox reopen`), never touching its labels (default off; each use needs an operator-approved single-use grant)."
+        },
         "issue_type": {
           "$ref": "#/$defs/TrackerGithubFlag",
           "description": "`issue.type`: read an issue's type and set it to one the organization defines, never touching its labels (default off; each write needs an operator-approved single-use grant)."

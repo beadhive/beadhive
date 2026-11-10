@@ -16,6 +16,8 @@ Module                 Holds
                        (``LabelDefiner.define_labels``): repository label definitions, owned only
 ``closing``            the ``issue.close`` writer (``IssueCloser.close_issue``): the state and
                        its reason only, never the labels
+``reopening``          the ``issue.reopen`` writer (``IssueReopener.reopen_issue``): the state
+                       only, never the labels
 ``issue_values``       the ``issue.type`` (``IssueTypeWriter.set_issue_type``) and
                        ``issue.fields`` (``IssueFieldWriter.set_issue_fields``) writers: the
                        type, or the named fields' values, only, never the labels
@@ -49,6 +51,7 @@ from .issue_values import IssueFieldWriting, IssueTyping
 from .label_definitions import LabelDefining, LabelDefinitionReading
 from .labels import LabelWriting
 from .marker import decode_marker, encode_marker
+from .reopening import IssueReopening
 from .settings import AdapterSettings, parse_settings
 from .tracker import CHECKPOINT_PREFIX, SUPPORTED_OPERATIONS, GitHubTrackerAdapter
 
@@ -64,6 +67,7 @@ __all__ = [
     "GrantLedger",
     "IssueClosing",
     "IssueFieldWriting",
+    "IssueReopening",
     "IssueTyping",
     "LabelDefining",
     "LabelDefinitionReading",

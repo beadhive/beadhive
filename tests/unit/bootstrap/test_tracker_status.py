@@ -173,6 +173,8 @@ def test_the_disabled_default_renders_these_exact_lines():
         "[operator-approved single-use grant per use]",
         "               issue.close     disabled  probe=not-probed  "
         "[operator-approved single-use grant per use]",
+        "               issue.reopen    disabled  probe=not-probed  "
+        "[operator-approved single-use grant per use]",
         "               issue.type      disabled  probe=not-probed  "
         "[operator-approved single-use grant per use]",
         "               issue.fields    disabled  probe=not-probed  "
@@ -222,6 +224,8 @@ def test_an_enabled_probed_store_renders_identity_credential_and_the_tri_state()
         "[operator-approved single-use grant per use]",
         "               issue.close     disabled  probe=yes        not usable  "
         "[operator-approved single-use grant per use]",
+        "               issue.reopen    disabled  probe=yes        not usable  "
+        "[operator-approved single-use grant per use]",
         "               issue.type      disabled  probe=yes        not usable  "
         "[operator-approved single-use grant per use]",
         "               issue.fields    disabled  probe=yes        not usable  "
@@ -239,6 +243,7 @@ def test_an_enabled_probed_store_renders_identity_credential_and_the_tri_state()
         "unknown",
         "yes",
         "no",
+        "yes",
         "yes",
         "yes",
         "yes",

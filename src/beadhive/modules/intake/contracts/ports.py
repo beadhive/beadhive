@@ -75,6 +75,8 @@ from ..domain import (
     QueueView,
     ReleaseFact,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
     ReportDraft,
     ReportRelations,
@@ -180,6 +182,10 @@ class IntakePort(Protocol):
     def backfill_closes(
         self, request: CloseBackfill
     ) -> CloseBackfillOutcome: ...  # O1 for the closes of reports closed before closes existed
+
+    def reopen(
+        self, request: ReopenRequest
+    ) -> ReopenOutcome: ...  # O1 for the operator's reopen of one closed issue (bh-ih484)
 
     # the milestone triggers (bh-6wj9y R9; I10). They DRAFT and never send: no grant, no writer, no
     # tracker request. Free under ``NullIntake``; the work layer wraps both so a failure here is

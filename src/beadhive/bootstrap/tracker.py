@@ -71,6 +71,7 @@ from ..modules.tracker.contracts import (
     CommentWriter,
     IssueCloser,
     IssueFieldWriter,
+    IssueReopener,
     IssueResolver,
     IssueTypeWriter,
     LabelDefiner,
@@ -102,6 +103,7 @@ OPERATION_FLAG_KEYS: Mapping[Operation, str] = MappingProxyType(
         Operation.LABELS_READ: "read.labels.enabled",
         Operation.LABELS_DEFINE: "write.label_definitions.enabled",
         Operation.ISSUE_CLOSE: "write.issue_close.enabled",
+        Operation.ISSUE_REOPEN: "write.issue_reopen.enabled",
         Operation.ISSUE_TYPE: "write.issue_type.enabled",
         Operation.ISSUE_FIELDS: "write.issue_fields.enabled",
     }
@@ -612,6 +614,12 @@ class _IssueClosing:
         )
 
 
+class _IssueReopening:
+    def reopen_issue(self, issue, *, grant):
+        self._check_grant(grant, Operation.ISSUE_REOPEN)  # type: ignore[attr-defined]
+        return self._inner.reopen_issue(issue, grant=grant)  # type: ignore[attr-defined]
+
+
 class _IssueTyping:
     def set_issue_type(self, issue, issue_type, *, grant):
         self._check_grant(grant, Operation.ISSUE_TYPE)  # type: ignore[attr-defined]
@@ -651,6 +659,7 @@ def _view_type(
     closer: bool = False,
     typer: bool = False,
     fielder: bool = False,
+    reopener: bool = False,
 ) -> type:
     key = (
         comment,
@@ -663,6 +672,7 @@ def _view_type(
         closer,
         typer,
         fielder,
+        reopener,
     )
     if key not in _VIEW_TYPES:
         mixins = tuple(
@@ -678,6 +688,7 @@ def _view_type(
                 (closer, _IssueClosing),
                 (typer, _IssueTyping),
                 (fielder, _IssueFieldWriting),
+                (reopener, _IssueReopening),
             )
             if present
         )
@@ -701,6 +712,7 @@ def narrow(adapter: object, enabled: frozenset[Operation]) -> TrackerAdapter:
         Operation.ISSUE_CLOSE in enabled and isinstance(adapter, IssueCloser),
         Operation.ISSUE_TYPE in enabled and isinstance(adapter, IssueTypeWriter),
         Operation.ISSUE_FIELDS in enabled and isinstance(adapter, IssueFieldWriter),
+        Operation.ISSUE_REOPEN in enabled and isinstance(adapter, IssueReopener),
     )
     return view(adapter, enabled)
 

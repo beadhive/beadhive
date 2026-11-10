@@ -1,6 +1,6 @@
 """``OutboxService``: the supervised sender for ``comment.create``, ``labels.change``,
-``issue.close``, ``issue.type`` and ``issue.fields`` (``bh-6wj9y`` R6, R7; D2; ``bh-pr5ll``;
-``bh-poqy0``).
+``issue.close``, ``issue.reopen``, ``issue.type`` and ``issue.fields`` (``bh-6wj9y`` R6, R7; D2;
+``bh-pr5ll``; ``bh-poqy0``; ``bh-ih484``).
 
 The pure O1 to O19 machine lives in :mod:`..domain.outbox` and the translation to and from the
 tracker port in :mod:`.outbox`; this layer runs the machine against a :class:`ReportStore` and a
@@ -12,7 +12,9 @@ tracker in R6's order, and is the only code that ever calls a writer:
   separate from the comment's), and an ``issue.close`` with ``CLOSE_DISABLED`` unless
   ``OutboxPolicy.close_enabled`` (set from the bound adapter's own ``issue.close`` enable), and
   an ``issue.type`` / ``issue.fields`` with ``TYPE_DISABLED`` / ``FIELDS_DISABLED`` unless
-  ``OutboxPolicy.type_enabled`` / ``fields_enabled`` (likewise the adapter's own enables). Even
+  ``OutboxPolicy.type_enabled`` / ``fields_enabled`` and an ``issue.reopen`` with
+  ``REOPEN_DISABLED`` unless ``OutboxPolicy.reopen_enabled`` (likewise the adapter's own
+  enables). Even
   then nothing is written without the adapter's own
   per-operation enable (``probe_capabilities`` reports the operation usable, else O5 refuses; a
   disabled writer refuses before any request, which is O11) AND an operator approval of THAT
@@ -30,6 +32,15 @@ tracker in R6's order, and is the only code that ever calls a writer:
   record is ``sent``: per report, comment, labels, close. :meth:`OutboxService.backfill_closes`
   drafts the close a report closed before this existed never got, on its latest reply (or on the
   reply it drafts when the report never got one).
+* **A reopen goes first.** An ``issue.reopen`` is the operator's explicit correction of a close
+  (:meth:`OutboxService.reopen`, ``bh work outbox reopen``: no trigger drafts one). It rides on the
+  reply that explains it (``ReplyDraft.reopen``), and O9 refuses that reply's comment
+  (``reopen_not_ready``, before any request) until the reopen is sent or retired; the reopen itself
+  is refused while another record of the issue still holds an unsent close, and never drafted
+  while another reopen of the issue is pending. Discarding the reopen retires its reply with it,
+  and so does the report closing afterwards (:meth:`OutboxService.retire_reopens`). Per report:
+  reopen, comment, labels, close, an order only ``send-approved`` guarantees across separate
+  records. It reconciles by reading the issue's state back.
 * **Only owned labels.** A label operation is refused unless every label it adds or removes lies
   under the root's owned prefixes (``LeakPolicy.owned_label_prefixes``, the adapter's
   ``write.labels.owned_prefixes``): at draft, at the leak check (``label_not_owned``, never
@@ -59,7 +70,7 @@ holds it comes from the injected :class:`OutboxIndex`, confirmed against that re
 document; only a miss scans (one :meth:`ReportStore.read_outboxes` pass) and rebuilds the index.
 :meth:`OutboxService.send_approved` sends every approved operation in ONE process: one pass over
 the outbox documents, one issue listing for the labels, and the lock's batch scope
-(:class:`BatchLock`), ordered per report comment, labels, close; each operation is the same
+(:class:`BatchLock`), ordered per report reopen, comment, labels, close; each operation is the same
 write-ahead, single request and receipt as ``send``, with its own grant.
 
 The render is the dry run: no store write, and no tracker request beyond that one label read. The
@@ -83,7 +94,9 @@ from beadhive.modules.tracker.contracts import (
     IssueFieldWriter,
     IssueKey,
     IssueQuery,
+    IssueReopener,
     IssueResolver,
+    IssueState,
     IssueTypeWriter,
     LabelOwnership,
     LabelWriter,
@@ -140,6 +153,8 @@ from ..domain import (
     RefusalReason,
     RenderContext,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
     SendPlan,
     StorePosture,
@@ -149,6 +164,7 @@ from ..domain import (
     close_reason_for,
     is_outbox_id,
     outbox_view,
+    reopen_reply_text,
     reply_revision,
     require_private_store,
 )
@@ -259,11 +275,14 @@ class OutboxService:
         """O1 for an operator reply (O2 when the same text already answers the same thread seq),
         checked at once (O3 holds a leak). With ``request.close`` and the close gate on, the record
         also carries an ``issue.close`` operation, naming ``request.duplicate_of``'s bound issue as
-        a duplicate's canonical (:meth:`_canonical`). Drafting never sends and needs no grant."""
+        a duplicate's canonical (:meth:`_canonical`); with ``request.reopen`` and the reopen gate
+        on, an ``issue.reopen`` that is sent before the comment. Drafting never sends and needs no
+        grant."""
         self._require_enabled()
         require_private_store(self._posture)
         binding = self._binding(request.report)
         close = request.close if self._policy.close_enabled else None
+        reopen = request.reopen and self._policy.reopen_enabled
         canonical = None
         if close is CloseReason.DUPLICATE and request.duplicate_of:
             canonical = self._canonical(request.duplicate_of, binding)
@@ -280,6 +299,7 @@ class OutboxService:
                 # the close rides on the reply only while the hive's close gate is on
                 close=close,
                 duplicate_of=canonical,
+                reopen=reopen,
             )
             applied = machine.draft(
                 doc,
@@ -292,6 +312,79 @@ class OutboxService:
         if applied.changed:
             self._indexed({applied.outbox_id: request.report})
         return self._result(request.report, applied, rules, OpKind.COMMENT)
+
+    def reopen(self, request: ReopenRequest) -> ReopenOutcome:
+        """The operator's explicit correction of a close (``bh-ih484``, ``bh work outbox
+        reopen``): for ONE report whose bound issue reads CLOSED, a reply carrying the text and
+        an ``issue.reopen`` (:meth:`draft_reply` with ``reopen``), drafted and never approved or
+        sent. It reopens an issue closed by anyone, because the operator chose to. Refused when the
+        outbox or the reopen gate is off, the report is not bound to the bound tracker project,
+        the issue cannot be read or is not closed, or a reopen for the issue is already pending
+        (``reopen_pending``: never two). ``dry_run`` makes every check, reading the one issue and
+        the stored outbox, and writes nothing: the outcome carries the planned reply and write."""
+        self._require_enabled()
+        machine.require_kind_enabled(OpKind.REOPEN, self._policy)
+        binding = self._bound_here(request.report)
+        found = self._read_issue(binding)
+        if found is None:
+            raise IntakeRefused(
+                RefusalReason.REOPEN_NOT_NEEDED,
+                f"{request.report}'s issue could not be read, so it is not known to be closed",
+            )
+        if found.state is not IssueState.CLOSED:
+            raise IntakeRefused(
+                RefusalReason.REOPEN_NOT_NEEDED,
+                f"{request.report}'s issue is {found.state.value}; only a closed issue is reopened",
+            )
+        text = request.text.strip() or reopen_reply_text()
+        scan = tuple(machine.check(text, self._leaks, sanitizer=self._sanitizer))
+        outcome = ReopenOutcome(
+            request.report,
+            text,
+            binding.url,
+            machine.REOPEN_PAYLOAD,
+            dry_run=request.dry_run,
+            findings=scan,
+        )
+        if request.dry_run:
+            pending = machine.pending_reopen(
+                self._store.read_outbox(request.report) or OutboxDocument(), binding.url
+            )
+            if pending is not None:  # the refusal the draft would make
+                raise IntakeRefused(
+                    RefusalReason.REOPEN_PENDING,
+                    f"{pending.outbox_id} already holds an unsent issue.reopen for this issue; "
+                    "send it, or discard it (`outbox discard`), before drafting another",
+                )
+            return outcome
+        result = self.draft_reply(ReplyDraft(request.report, text, request.actor, reopen=True))
+        return dataclasses.replace(outcome, result=result)
+
+    def retire_reopens(self, report: str, reason: str, actor: str) -> tuple[str, ...]:
+        """The outbox ids whose pending reopen (and the reply that explains it) was retired
+        because ``report`` was closed afterwards (``bh-ih484``); empty when nothing was pending, or
+        with the outbox or the reopen gate off. It needs no approval and never sends or reads the
+        tracker. A refusal or store failure leaves the records as they were and is raised for the
+        caller to report: the close it follows already stands."""
+        if not (self._policy.enabled and self._policy.reopen_enabled):
+            return ()
+        binding = self._binding(report)
+        with self._lock.hold(binding_key(binding)) as epoch:
+            doc, expect, _ = self._open(report, epoch, actor)
+            applied = machine.retire_reopens(doc, reason=reason, actor=actor)
+            self._commit(report, applied, expect, actor)
+        return tuple(self._retired_ids(doc, applied))
+
+    @staticmethod
+    def _retired_ids(before: OutboxDocument, applied: OutboxApplied) -> list[str]:
+        """The records whose reopen moved in ``applied``."""
+        return [
+            record.outbox_id
+            for record in applied.document.records.values()
+            if (old := before.record(record.outbox_id)) is not None
+            and old.op(OpKind.REOPEN) is not None
+            and old.op(OpKind.REOPEN) != record.op(OpKind.REOPEN)
+        ]
 
     # -- O5: the gate ------------------------------------------------------------------------
 
@@ -345,10 +438,11 @@ class OutboxService:
     # -- O9 to O13: send ---------------------------------------------------------------------
 
     def send(self, outbox_id: str, *, actor: str, kind: OpKind = OpKind.COMMENT) -> OutboxResult:
-        """O9 persisted, then exactly one ``post_comment`` / ``change_labels`` / ``close_issue``,
-        then O10, O11 or O12, all under one hold of the binding's lock. An approval whose render
-        moved is invalidated instead (O7) and nothing is sent; a close whose comment or the
-        report's latest labels are not sent yet is refused (``close_not_ready``) before any
+        """O9 persisted, then exactly one ``post_comment`` / ``change_labels`` / ``close_issue`` /
+        ``reopen_issue``, then O10, O11 or O12, all under one hold of the binding's lock. An
+        approval whose render moved is invalidated instead (O7) and nothing is sent; a close whose
+        comment or the report's latest labels are not sent yet is refused (``close_not_ready``),
+        and so is a comment whose own reopen is not sent (``reopen_not_ready``), before any
         request."""
         self._require_enabled()
         machine.require_kind_enabled(kind, self._policy)  # before any tracker request
@@ -427,11 +521,11 @@ class OutboxService:
         """Send every APPROVED operation (of ``request.kinds``, on ``request.reports``) in one
         process (``bh-pc9rf``): ONE pass over the outbox documents, ONE issue listing when a
         labels operation is due, and the lock's batch scope, so a batch of N pays the per-process
-        costs once instead of N times. Per report the order is :data:`SEND_ORDER` (every comment,
-        oldest first, then the labels, then the close), and every operation is exactly ``send``'s
-        O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a store
-        failure on one operation is reported in ``failed`` and the rest continue (a close whose
-        comment did not go out is refused by ``close_not_ready``); only a host-level refusal
+        costs once instead of N times. Per report the order is :data:`SEND_ORDER` (the reopen, every
+        comment oldest first, then the labels, then the close), and every operation is exactly
+        ``send``'s O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a
+        store failure on one operation is reported in ``failed`` and the rest continue (a close
+        whose comment did not go out is refused by ``close_not_ready``); only a host-level refusal
         (``not_primary``) stops the batch, since nothing else could be sent either: the outcome
         so far is returned with ``stopped`` set, so what WAS sent is still reported."""
         self._require_enabled()
@@ -513,6 +607,13 @@ class OutboxService:
                     RefusalReason.CAPABILITY_UNUSABLE,
                     "the bound tracker adapter cannot close an issue (issue.close is not enabled)",
                 )
+        elif kind is OpKind.REOPEN:
+            if not isinstance(self._tracker, IssueReopener):
+                raise IntakeRefused(
+                    RefusalReason.CAPABILITY_UNUSABLE,
+                    "the bound tracker adapter cannot reopen an issue (issue.reopen is not "
+                    "enabled)",
+                )
         elif kind is OpKind.TYPE:
             if not isinstance(self._tracker, IssueTypeWriter):
                 raise IntakeRefused(
@@ -558,6 +659,9 @@ class OutboxService:
                     None if canonical is None else IssueKey(canonical.identifier, canonical.url)
                 ),
             )
+        if kind is OpKind.REOPEN:
+            assert isinstance(writer, IssueReopener)
+            return writer.reopen_issue(issue, grant=grant)
         if kind is OpKind.TYPE:
             assert isinstance(writer, IssueTypeWriter) and plan.values
             return writer.set_issue_type(issue, dict(plan.values)[TYPE_VALUE], grant=grant)
@@ -612,10 +716,14 @@ class OutboxService:
         wanted = {kind for kinds in pending.values() for kind in kinds}
         # a read nobody needs is not made, and is vacuously complete
         comments, complete = self._listing(binding) if OpKind.COMMENT in wanted else ((), True)
-        reads_issue = wanted & {OpKind.LABELS, OpKind.CLOSE, *VALUE_KINDS}
+        reads_issue = wanted & {OpKind.LABELS, OpKind.CLOSE, OpKind.REOPEN, *VALUE_KINDS}
         issue = self._read_issue(binding) if reads_issue else None
         labels = frozenset(issue.labels) if issue is not None and OpKind.LABELS in wanted else None
-        state = issue.state.value if issue is not None and OpKind.CLOSE in wanted else None
+        state = (
+            issue.state.value
+            if issue is not None and wanted & {OpKind.CLOSE, OpKind.REOPEN}
+            else None
+        )
         issue_type = issue.issue_type if issue is not None and OpKind.TYPE in wanted else None
         fields = issue.fields if issue is not None and OpKind.FIELDS in wanted else None
         results: list[OutboxResult] = []
@@ -646,6 +754,7 @@ class OutboxService:
                     read_ok = {
                         OpKind.LABELS: labels is not None,
                         OpKind.CLOSE: state is not None,
+                        OpKind.REOPEN: state is not None,
                         OpKind.TYPE: issue_type is not None,
                         OpKind.FIELDS: fields is not None,
                     }.get(kind, complete)  # type: ignore[arg-type]
@@ -1251,6 +1360,7 @@ class OutboxService:
         noun = {
             OpKind.LABELS: "label read",
             OpKind.CLOSE: "issue read",
+            OpKind.REOPEN: "issue read",
             OpKind.TYPE: "issue read",
             OpKind.FIELDS: "issue read",
         }.get(

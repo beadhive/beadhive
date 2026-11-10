@@ -76,7 +76,12 @@ from beadhive.modules.intake.domain import (
     mark_applied,
     version_key,
 )
-from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS, OwnMarker
+from beadhive.modules.tracker.contracts import (
+    READ_OPERATIONS,
+    WRITE_OPERATIONS,
+    IssueState,
+    OwnMarker,
+)
 from beadhive.testing.intake import (
     SCOPE,
     FakeLandedCommits,
@@ -1321,3 +1326,20 @@ def test_a_run_that_mentions_nothing_never_lists_the_issues() -> None:
     _reject(hive, "not a bug", "Works as designed.")
     hive.apply()
     assert hive.listings.calls == 0
+
+
+# -- no automatic reopen (bh-ih484): only the operator's `outbox reopen` drafts one ---------------
+
+
+def test_apply_never_drafts_a_reopen_even_for_a_closed_issue_with_the_gate_on() -> None:
+    hive = Hive(outbox=OutboxPolicy(enabled=True, close_enabled=True, reopen_enabled=True))
+    report = hive.report("a hang")
+    hive.world.update_issue(hive.issues[report], at=at(2), state=IssueState.CLOSED)
+    hive.propose(report, {"disposition": "new", "type": "bug", "priority": "2"})
+    hive.review(report, {"verdict": "confirmed"})
+
+    done = item(hive.apply(), report)
+
+    assert done.status is ApplyStatus.APPLIED and done.drafted == ()
+    assert not [r for r in hive.records(report) if r.op(OpKind.REOPEN) is not None]
+    assert hive.world.write_requests() == 0

@@ -733,17 +733,54 @@ def _rendered_row(rendered) -> dict:
         "close": rendered.close.value if rendered.close is not None else None,
         "duplicate_of": rendered.duplicate_of.url if rendered.duplicate_of is not None else None,
         "values": [list(pair) for pair in rendered.values],
-        "findings": [
-            {
-                "id": finding.id,
-                "kind": finding.kind.value,
-                "match": finding.match,
-                "overridable": finding.overridable,
-                "warning": finding.warning,
-            }
-            for finding in rendered.findings
-        ],
+        "findings": [_finding_row(finding) for finding in rendered.findings],
     }
+
+
+def _finding_row(finding) -> dict:
+    return {
+        "id": finding.id,
+        "kind": finding.kind.value,
+        "match": finding.match,
+        "overridable": finding.overridable,
+        "warning": finding.warning,
+    }
+
+
+def _reopen_row(outcome) -> dict:
+    """``outbox reopen``: the planned (or drafted) reply and write, and the record when drafted."""
+    row: dict = {
+        "report": outcome.report,
+        "dry_run": outcome.dry_run,
+        "target_url": outcome.target_url,
+        "reopen": outcome.payload,
+        "reply_text": outcome.text,
+        "findings": [_finding_row(finding) for finding in outcome.findings],
+    }
+    if outcome.result is not None:
+        row["outbox_id"] = outcome.result.outbox_id
+        row["results"] = [_outbox_result_row(outcome.result)]
+    return row
+
+
+def _reopen_lines(outcome) -> list[str]:
+    verb = "would draft" if outcome.dry_run else "drafted"
+    lines = [f"{verb} issue.reopen + reply on {outcome.report} → {outcome.target_url}"]
+    lines.append(f"  reopen | {outcome.payload}")
+    lines += [f"  reply  | {line}" for line in outcome.text.splitlines() or [""]]
+    for finding in outcome.findings:
+        how = "warning" if finding.warning else ("publishable" if finding.overridable else "blocks")
+        lines.append(f"  finding {finding.id} ({how}): {finding.match}")
+    if outcome.result is not None:
+        lines += _outbox_result_lines(outcome.result)
+        lines.append(
+            f"  → nothing is approved or sent: review `outbox show {outcome.result.outbox_id}`, "
+            "approve with `--op reopen:<digest>` and `--op comment:<digest>`, then "
+            "`outbox send-approved` (reopen first)"
+        )
+    else:
+        lines.append("  → dry run: nothing was written")
+    return lines
 
 
 def _record_row(report: str, record) -> dict:
@@ -783,6 +820,8 @@ def _outbox_payload(call, verb: str) -> dict:
             "note": value.note,
             "operations": [_stored_operation_row(op) for op in value.record.operations],
         }
+    elif isinstance(value, intake_services.ReopenOutcome):  # outbox reopen (bh-ih484)
+        payload.update(_reopen_row(value))
     elif hasattr(value, "renders"):  # a RenderedRecord
         payload["record"] = _record_row(value.report, value.record)
         payload["renders"] = [_rendered_row(r) for r in value.renders]
@@ -893,6 +932,9 @@ def render_outbox(call, verb: str, as_json: bool) -> None:
     elif isinstance(value, intake_services.StoredOutboxRecord):
         for line in _stored_lines(value):
             typer.echo(line)
+    elif isinstance(value, intake_services.ReopenOutcome):
+        for line in _reopen_lines(value):
+            typer.echo(line)
     elif hasattr(value, "renders"):
         typer.echo(f"{value.record.outbox_id} on {value.report} ({value.record.event.value})")
         for rendered in value.renders:
@@ -939,6 +981,46 @@ def outbox_draft(bead: str, text: str, as_: str = "", hive: str = "", as_json: b
         as_json,
         lambda cfg, entry, directory: intake_services.outbox_draft(
             cfg, entry, directory, bead, text, actor, hive=hive
+        ),
+    )
+
+
+def outbox_reopen(
+    bead: str,
+    text: str = "",
+    reply_file: str = "",
+    dry_run: bool = False,
+    as_: str = "",
+    hive: str = "",
+    as_json: bool = False,
+):
+    """Draft the reopen of one report whose issue reads closed, with the reply that explains it
+    (``--text`` or ``--reply-file``, else a template): nothing is approved or sent."""
+    otel.set_bead(bead)
+    actor = identity.resolve_actor(as_)
+    if text and reply_file:
+        bad = "give either --text or --reply-file, not both"
+    else:
+        bad = ""
+        if reply_file:
+            try:
+                text = Path(reply_file).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                bad = f"cannot read --reply-file {reply_file}: {exc}"
+            else:
+                if not text.strip():
+                    bad = f"--reply-file {reply_file} holds no text"
+        elif text and not text.strip():
+            bad = "--text holds only whitespace"
+    if bad:
+        render_outbox(intake_services.OutboxCall(1, bad, "invalid_request"), "reopen", as_json)
+        return
+    _outbox(
+        "reopen",
+        hive,
+        as_json,
+        lambda cfg, entry, directory: intake_services.outbox_reopen(
+            cfg, entry, directory, bead, actor, text, dry_run, hive=hive
         ),
     )
 

@@ -376,13 +376,17 @@ from .outbox import (  # noqa: E402
     UnlinkedFact,
     ValueIntent,
     close_blocker,
+    comment_blocker,
     is_grant_id,
     is_operator_seat,
     is_outbox_id,
     mint_grant_id,
     mint_outbox_id,
     outbox_view,
+    pending_reopen,
+    reopen_blocker,
     reply_revision,
+    retire_reopens,
     values_payload,
 )
 from .outbox_document import (  # noqa: E402
@@ -451,6 +455,7 @@ __all__ += [
     "ValueIntent",
     "Verdict",
     "close_blocker",
+    "comment_blocker",
     "completion_event",
     "delivery_after_merge",
     "delivery_after_release",
@@ -467,7 +472,10 @@ __all__ += [
     "outbox_from_document",
     "outbox_to_document",
     "outbox_view",
+    "pending_reopen",
+    "reopen_blocker",
     "reply_revision",
+    "retire_reopens",
     "stray_deliveries",
     "values_payload",
 ]
@@ -488,7 +496,10 @@ from .sending import (  # noqa: E402
     OutboxQuery,
     OutboxResult,
     RenderedRecord,
+    ReopenOutcome,
+    ReopenRequest,
     ReplyDraft,
+    reopen_reply_text,
 )
 
 __all__ += [
@@ -505,7 +516,10 @@ __all__ += [
     "OutboxQuery",
     "OutboxResult",
     "RenderedRecord",
+    "ReopenOutcome",
+    "ReopenRequest",
     "ReplyDraft",
+    "reopen_reply_text",
 ]
 
 # -- the merge and release milestones (I10): facts, policy and fixed public wording -----------

@@ -46,6 +46,7 @@ from beadhive.modules.tracker.contracts import (
     IssueFieldWriter,
     IssueKey,
     IssueQuery,
+    IssueReopener,
     IssueResolver,
     IssueState,
     IssueTypeWriter,
@@ -675,6 +676,103 @@ def _close_duplicate_of_canonical(factory: TrackerFactory) -> None:
     assert s.world.duplicate_of(member) == canonical.url
     assert s.world.duplicate_of(canonical) is None
     assert s.world.write_requests() == 1
+
+
+# ---- cases: reopening an issue (issue.reopen) ----------------------------------------------
+#
+# Optional, like issue.close: a case whose operation is not in ``describe().supported`` returns,
+# but an adapter that DECLARES ``issue.reopen`` must expose ``IssueReopener`` and pass every case.
+
+
+def _reopener_subject(factory: TrackerFactory) -> TrackerSubject | None:
+    if Operation.ISSUE_REOPEN not in factory().adapter.describe().supported:
+        return None
+    s = factory(enabled=frozenset({Operation.ISSUE_REOPEN}))
+    assert isinstance(s.adapter, IssueReopener), "issue.reopen is supported but has no reopener"
+    return s
+
+
+def _reopen_refused_when_not_enabled(factory: TrackerFactory) -> None:
+    s = factory()  # no write enabled
+    issue = s.world.add_issue("thread", at=at(2), state=IssueState.CLOSED)
+    s.world.set_write_time(at(5))
+    if isinstance(s.adapter, IssueReopener):  # an absent reopener is the structural refusal
+        _refused(
+            lambda: s.adapter.reopen_issue(issue, grant=grant(Operation.ISSUE_REOPEN, issue)),
+            OperationNotEnabled,
+            "an issue was reopened with issue.reopen disabled",
+        )
+    assert s.world.write_requests() == 0
+    found = find_by_listing(s.adapter, issue.url)
+    assert found is not None and found.state is IssueState.CLOSED
+
+
+def _reopen_grant_matches_and_single_use(factory: TrackerFactory) -> None:
+    s = _reopener_subject(factory)
+    if s is None:
+        return
+    issue = s.world.add_issue("thread", at=at(2), state=IssueState.CLOSED)
+    other = s.world.add_issue("other", at=at(2), state=IssueState.CLOSED)
+    project = s.adapter.describe().project
+    s.world.set_write_time(at(5))
+    wrong = [
+        grant(Operation.ISSUE_REOPEN, other, "g-other"),  # another issue
+        grant(Operation.ISSUE_REOPEN, project, "g-repo"),  # a reopen is issue-scoped
+        grant(Operation.ISSUE_CLOSE, issue, "g-op"),  # another operation (the close's)
+    ]
+    for bad in wrong:
+        _refused(
+            lambda bad=bad: s.adapter.reopen_issue(issue, grant=bad),
+            OperationNotEnabled,
+            f"a mismatched grant was accepted: {bad}",
+        )
+    assert s.world.write_requests() == 0
+    good = grant(Operation.ISSUE_REOPEN, issue, "g-once")
+    s.adapter.reopen_issue(issue, grant=good)
+    _refused(
+        lambda: s.adapter.reopen_issue(issue, grant=good),
+        OperationNotEnabled,
+        "a grant was used twice",
+    )
+    assert s.world.write_requests() == 1
+
+
+def _reopen_round_trip(factory: TrackerFactory) -> None:
+    """The issue is reopened, read back as open, and nothing else changes."""
+    s = _reopener_subject(factory)
+    if s is None:
+        return
+    issue = s.world.add_issue(
+        "thread", at=at(2), labels=("bug", "bh:triage"), state=IssueState.CLOSED
+    )
+    s.world.add_human_label(issue, "needs-love")
+    s.world.set_write_time(at(6))
+    receipt = s.adapter.reopen_issue(issue, grant=grant(Operation.ISSUE_REOPEN, issue))
+    assert_contract_only(receipt)
+    assert receipt.grant_id == "g-1" and receipt.operation is Operation.ISSUE_REOPEN
+    assert receipt.target == issue and receipt.state_after is IssueState.OPEN
+    found = find_by_listing(s.adapter, issue.url)
+    assert found is not None and found.state is IssueState.OPEN
+    assert s.world.server_labels(issue) == {"bug", "bh:triage", "needs-love"}  # never a label
+    assert s.world.comment_count(issue) == 0 and s.world.write_requests() == 1
+
+
+def _reopen_ambiguous_not_retried(factory: TrackerFactory) -> None:
+    """Applied, but the caller cannot know: surfaced, never retried, read back as open."""
+    s = _reopener_subject(factory)
+    if s is None:
+        return
+    issue = s.world.add_issue("thread", at=at(2), state=IssueState.CLOSED)
+    s.world.set_write_time(at(6))
+    s.world.fail_next_write_ambiguously()
+    _refused(
+        lambda: s.adapter.reopen_issue(issue, grant=grant(Operation.ISSUE_REOPEN, issue)),
+        WriteOutcomeUnknown,
+        "an ambiguous reopen was not surfaced",
+    )
+    assert s.world.write_requests() == 1  # never retried by the adapter
+    found = find_by_listing(s.adapter, issue.url)  # the outbox reconciles by reading the state
+    assert found is not None and found.state is IssueState.OPEN
 
 
 # ---- cases: an issue's type and field values (issue.type / issue.fields) --------------------
@@ -1320,6 +1418,10 @@ TRACKER_CASES: tuple[TrackerCase, ...] = (
     TrackerCase("close.round-trip", _close_round_trip),
     TrackerCase("close.ambiguous-not-retried", _close_ambiguous_not_retried),
     TrackerCase("close.duplicate-of-canonical", _close_duplicate_of_canonical),
+    TrackerCase("reopen.refused-when-not-enabled", _reopen_refused_when_not_enabled),
+    TrackerCase("reopen.grant-matches-and-single-use", _reopen_grant_matches_and_single_use),
+    TrackerCase("reopen.round-trip", _reopen_round_trip),
+    TrackerCase("reopen.ambiguous-not-retried", _reopen_ambiguous_not_retried),
     TrackerCase("values.refused-when-not-enabled", _values_refused_when_not_enabled),
     TrackerCase("values.read-gated", _values_read_gated),
     TrackerCase("values.grant-matches-and-single-use", _values_grant_matches_and_single_use),

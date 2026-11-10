@@ -9,12 +9,12 @@ locked thread. So each operation gets a :class:`~beadhive.modules.tracker.contra
 * ``NO`` is definitive: the credential was rejected (``401``) or the repository is invisible
   (``404``); it is archived or disabled; issues are off; no credential was sent (no
   ``permissions`` object); a classic or OAuth token's scopes lack ``repo`` (or ``public_repo`` on
-  a public repository); for ``labels.change`` and ``issue.close``, a role below triage (closing
-  an issue someone else opened needs triage); for ``issue.type`` and ``issue.fields``, a role
-  below write (GitHub silently drops a type or field value from anyone without push), and for
-  ``issue.fields`` a classic token without ``read:org`` (the field ids are the organization's);
-  for ``labels.define``
-  (creating, editing and deleting repository labels), a role below write (``push``).
+  a public repository); for ``labels.change``, ``issue.close`` and ``issue.reopen``, a role below
+  triage (closing or reopening an issue someone else opened needs triage); for ``issue.type`` and
+  ``issue.fields``, a role below write (GitHub silently drops a type or field value from anyone
+  without push), and for ``issue.fields`` a classic token without ``read:org`` (the field ids are
+  the organization's); for ``labels.define`` (creating, editing and deleting repository labels), a
+  role below write (``push``).
 * ``labels.read`` is a read: ``YES`` whenever the repository is readable, archived or not.
 * ``YES`` means only "not refuted": a classic or OAuth token with a sufficient scope and role.
 * ``UNKNOWN``: no ``X-OAuth-Scopes`` header (a fine-grained or App installation token, whose
@@ -98,7 +98,10 @@ def probe_operation(op: Operation, facts: RepositoryFacts) -> tuple[Tri, str]:
         or permissions.get("maintain")
         or permissions.get("admin")
     )
-    if op in (Operation.LABELS_CHANGE, Operation.ISSUE_CLOSE) and not role_ok:
+    if (
+        op in (Operation.LABELS_CHANGE, Operation.ISSUE_CLOSE, Operation.ISSUE_REOPEN)
+        and not role_ok
+    ):
         return Tri.NO, "role on the repository is below triage"
     writer = bool(
         permissions.get("push") or permissions.get("maintain") or permissions.get("admin")

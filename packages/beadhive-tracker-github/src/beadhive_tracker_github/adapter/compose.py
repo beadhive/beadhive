@@ -22,6 +22,7 @@ from .comments import CommentCreate
 from .issue_values import IssueFieldWriting, IssueTyping
 from .label_definitions import LabelDefining
 from .labels import LabelWriting
+from .reopening import IssueReopening
 from .tracker import GitHubTrackerAdapter
 
 __all__ = ["WRITERS", "adapter_class", "new_adapter"]
@@ -32,6 +33,7 @@ WRITERS: tuple[tuple[Operation, type], ...] = (
     (Operation.LABELS_CHANGE, LabelWriting),
     (Operation.LABELS_DEFINE, LabelDefining),
     (Operation.ISSUE_CLOSE, IssueClosing),
+    (Operation.ISSUE_REOPEN, IssueReopening),
     (Operation.ISSUE_TYPE, IssueTyping),
     (Operation.ISSUE_FIELDS, IssueFieldWriting),
 )

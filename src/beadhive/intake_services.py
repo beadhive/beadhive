@@ -120,6 +120,7 @@ from .modules.intake.domain import (  # the composition root may (gap G7)
     OutboxEvent,
     OutboxPolicy,
     ReleaseFact,
+    ReopenOutcome,
     StartFact,
     dupes_touching,
     mint_grant_id,
@@ -1255,6 +1256,7 @@ def outbox_service_for(
     type_enabled: bool = False,
     fields_enabled: bool = False,
     index: Any = None,
+    reopen_enabled: bool = False,
 ) -> IntakeService:
     """The intake service for ``entry`` with the supervised sender bound over the INJECTED
     ``tracker`` (and its ``marker_line`` codec). With ``threads`` (the comment-ingestion policy,
@@ -1262,7 +1264,8 @@ def outbox_service_for(
     also serve the thread operations (:func:`thread_service_for`). ``close_enabled`` is the bound
     adapter's own ``issue.close`` enable (:func:`tracker_wiring`): the sender's close gate, and
     ``type_enabled`` / ``fields_enabled`` its ``issue.type`` / ``issue.fields`` enables, the
-    gates of those two operations; ``triage`` (:func:`triage_binding`) lets the close backfill
+    gates of those two operations, and ``reopen_enabled`` its ``issue.reopen`` enable (the reopen
+    gate); ``triage`` (:func:`triage_binding`) lets the close backfill
     compute a missing reply's text; ``index`` is the outbox id index (default
     :func:`outbox_index` in the hive's private state).
 
@@ -1271,8 +1274,11 @@ def outbox_service_for(
     still never sufficient to post: the adapter's own per-operation enable and an operator
     approval minting a single-use grant are both required. ``sanitizer`` defaults to the shared
     :class:`~beadhive.adapters.intake.ScrubSanitizer`; the store is the OPERATIONAL one only."""
-    policy = with_value_gates(
-        with_close(policy or OutboxPolicy(), close_enabled), type_enabled, fields_enabled
+    policy = with_reopen(
+        with_value_gates(
+            with_close(policy or OutboxPolicy(), close_enabled), type_enabled, fields_enabled
+        ),
+        reopen_enabled,
     )
     store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
     labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
@@ -1342,6 +1348,13 @@ def with_close(policy: OutboxPolicy, close_enabled: Any) -> OutboxPolicy:
     with the outbox on and the tracker plugin's ``write.issue_close.enabled`` resolved true for
     the hive's binding. There is no separate intake key: the adapter switch is the one gate."""
     return replace(policy, close_enabled=policy.enabled and close_enabled is True)
+
+
+def with_reopen(policy: OutboxPolicy, reopen_enabled: Any) -> OutboxPolicy:
+    """``policy`` with the ``issue.reopen`` gate set from the bound adapter's own enable
+    (``write.issue_reopen.enabled``): on only with the outbox on. Like the close, there is no
+    separate intake key (``bh-ih484``)."""
+    return replace(policy, reopen_enabled=policy.enabled and reopen_enabled is True)
 
 
 def with_value_gates(policy: OutboxPolicy, type_enabled: Any, fields_enabled: Any) -> OutboxPolicy:
@@ -1790,6 +1803,8 @@ def tracker_wiring(
         # likewise the issue.type / issue.fields gates (no separate intake keys either)
         "type_enabled": Operation.ISSUE_TYPE in bound.enabled,
         "fields_enabled": Operation.ISSUE_FIELDS in bound.enabled,
+        # and the issue.reopen gate (bh-ih484)
+        "reopen_enabled": Operation.ISSUE_REOPEN in bound.enabled,
     }
 
 
@@ -1851,6 +1866,7 @@ def _outbox_port(
     triage: Any = None,
     type_enabled: bool = False,
     fields_enabled: bool = False,
+    reopen_enabled: bool = False,
 ):
     """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
@@ -1888,6 +1904,7 @@ def _outbox_port(
             triage=triage() if callable(triage) else triage,
             type_enabled=type_enabled,
             fields_enabled=fields_enabled,
+            reopen_enabled=reopen_enabled,
         )
 
     return bind_intake(enabled, build)
@@ -1917,6 +1934,7 @@ def outbox_call(
     triage: Any = None,
     type_enabled: bool = False,
     fields_enabled: bool = False,
+    reopen_enabled: bool = False,
 ) -> OutboxCall:
     """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
     failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
@@ -1950,6 +1968,7 @@ def outbox_call(
             triage=triage,
             type_enabled=type_enabled or wiring.get("type_enabled") is True,
             fields_enabled=fields_enabled or wiring.get("fields_enabled") is True,
+            reopen_enabled=reopen_enabled or wiring.get("reopen_enabled") is True,
         )
         value = run(port)
     except IntakeRefused as exc:
@@ -1968,6 +1987,8 @@ _OUTBOX_KINDS = {
     "labels.change": "labels.change",
     "close": "issue.close",
     "issue.close": "issue.close",
+    "reopen": "issue.reopen",
+    "issue.reopen": "issue.reopen",
     "type": "issue.type",
     "issue.type": "issue.type",
     "fields": "issue.fields",
@@ -1976,9 +1997,9 @@ _OUTBOX_KINDS = {
 
 
 def outbox_kind(text: str) -> Any:
-    """The :class:`OpKind` an operator typed (``comment`` | ``labels`` | ``close`` | ``type`` |
-    ``fields``, or the full operation name), or ``None`` when it names none. An empty string is
-    the default, ``comment.create``."""
+    """The :class:`OpKind` an operator typed (``comment`` | ``labels`` | ``close`` | ``reopen`` |
+    ``type`` | ``fields``, or the full operation name), or ``None`` when it names none. An empty
+    string is the default, ``comment.create``."""
     from .modules.intake.domain import OpKind
 
     name = _OUTBOX_KINDS.get((text or "comment").strip().lower())
@@ -1988,7 +2009,7 @@ def outbox_kind(text: str) -> Any:
 def _bad_kind(text: str) -> OutboxCall:
     return OutboxCall(
         2,
-        f"unknown operation {text!r}: use comment, labels, close, type or fields",
+        f"unknown operation {text!r}: use comment, labels, close, reopen, type or fields",
         "bad_argument",
     )
 
@@ -2161,9 +2182,9 @@ def outbox_send_approved(
     cfg, entry, directory, kind: str, reports: Sequence[str], actor: str, **kwargs
 ) -> OutboxCall:
     """``bh work outbox send-approved [--kind K] [--bead <id>]...``: every approved operation in
-    ONE process and one store session (``bh-pc9rf``), ordered per report comment, labels, close;
-    each still spends its own single-use grant and writes its own receipt. ``kind`` empty means
-    every kind. The value is a :class:`~beadhive.modules.intake.domain.BatchSendOutcome`; a
+    ONE process and one store session (``bh-pc9rf``), ordered per report reopen, comment, labels,
+    close; each still spends its own single-use grant and writes its own receipt. ``kind`` empty
+    means every kind. The value is a :class:`~beadhive.modules.intake.domain.BatchSendOutcome`; a
     refused or unsettled item is reported there and the rest still go."""
     from .modules.intake.domain import BatchSend
 
@@ -2206,6 +2227,31 @@ def outbox_backfill_close(
         directory,
         lambda port: port.backfill_closes(CloseBackfill(actor, dry_run=dry_run)),
         triage=binding,
+        **kwargs,
+    )
+
+
+def outbox_reopen(
+    cfg,
+    entry,
+    directory,
+    report: str,
+    actor: str,
+    text: str = "",
+    dry_run: bool = False,
+    **kwargs,
+) -> OutboxCall:
+    """``bh work outbox reopen <report> [--text T] [--dry-run]``: draft the reopen of ONE report
+    whose bound issue reads closed, on the reply that explains it (``text``, or the template), and
+    never approve or send it (``bh-ih484``). ``dry_run`` makes every check and writes nothing. Off
+    unless the outbox is on and the tracker plugin's ``write.issue_reopen.enabled``."""
+    from .modules.intake.contracts import ReopenRequest
+
+    return outbox_call(
+        cfg,
+        entry,
+        directory,
+        lambda port: port.reopen(ReopenRequest(report, actor, text, dry_run=dry_run)),
         **kwargs,
     )
 
@@ -2910,10 +2956,13 @@ def _compose(
             ids=source,
             identity=outbox["identity"],
             marker_line=outbox["marker_line"],
-            policy=with_value_gates(
-                with_close(policy, outbox.get("close_enabled")),
-                outbox.get("type_enabled"),
-                outbox.get("fields_enabled"),
+            policy=with_reopen(
+                with_value_gates(
+                    with_close(policy, outbox.get("close_enabled")),
+                    outbox.get("type_enabled"),
+                    outbox.get("fields_enabled"),
+                ),
+                outbox.get("reopen_enabled"),
             ),
             leak_policy=leaks,
             sanitizer=scrubber,
@@ -3654,6 +3703,7 @@ __all__ = [
     "IntakeCall",
     "LabelsConfig",
     "LinkageLandedCommits",
+    "ReopenOutcome",
     "TriageChecks",
     "audit_path",
     "intake_message",
