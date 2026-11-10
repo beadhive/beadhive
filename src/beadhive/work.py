@@ -1921,6 +1921,21 @@ def backup(
     )
 
 
+def validation_reindex_cmd(
+    rev: str = typer.Option("", "--rev", help="limit to the tree of this revision"),
+    tree: str = typer.Option("", "--tree", help="limit to this exact tree hash"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="report, write and remove nothing"),
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Rebuild validation verdict pointers from the retained run manifests (recovery after a
+    crash between a green run and its pointer, GitHub #89). A pointer is written only for an
+    identity whose newest run is completed and qualifying-green; every other identity is listed
+    as refused (or revoked, when a pointer it no longer supports is removed), with the reason.
+    Idempotent; `--dry-run` reports without writing."""
+    return validation_ledger.reindex_cli(rev, tree, dry_run, hive, as_json)
+
+
 # ---- show / review (read-only render verbs; bodies live in work_show) -------
 # Registered onto this app from work_show so the rendering surface sits in one file while the
 # command names stay `ws work show` / `ws work review`. Re-bound here (show = …) so existing
@@ -2074,6 +2089,7 @@ CLI_HANDLERS = {
     "work.resume": resume,
     "work.abandon": abandon,
     "work.backup": backup,
+    "work.validation.reindex": validation_reindex_cmd,
     "work.show": _bind_cli_handler(show, as_json="json_out"),
     "work.review": review,
     "work.refine": refine,
@@ -2086,6 +2102,7 @@ CLI_PROJECTION = _project_cli_group(
         "work delivery": "Record delivery milestones for imported external reports.",
         **work_intake_cli.GROUP_HELP,
         "work triage": "Review-gated batch triage: review packets, propose, check, apply.",
+        "work validation": "Validation verdict store: rebuild pointers from run manifests.",
     },
 )
 _CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
@@ -2147,6 +2164,7 @@ merge = _CLI_CALLBACKS["work.merge"]
 resume = _CLI_CALLBACKS["work.resume"]
 abandon = _CLI_CALLBACKS["work.abandon"]
 backup = _CLI_CALLBACKS["work.backup"]
+validation_reindex_cmd = _CLI_CALLBACKS["work.validation.reindex"]
 show = _CLI_CALLBACKS["work.show"]
 review = _CLI_CALLBACKS["work.review"]
 refine = _CLI_CALLBACKS["work.refine"]

@@ -5,7 +5,7 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
-## 0.35.8 → 0.35.9 — escalate messages, submit history budget and landing (bh-69snf)
+## 0.35.8 → 0.35.9 — escalate, submit history budget, landing, verdict self-heal (bh-69snf)
 
 No action required.
 
@@ -37,6 +37,21 @@ No action required.
   bead stuck by the old behaviour unsticks with a plain resubmit, which replaces the PR-less gate.
   Contribution (`kind: external`) hives are unchanged. The `pr-merge` gate that `merge`/`finish`
   open under `work.landing: pr` now carries the PR number too. Fixes GitHub #35 and #50.
+
+- **A lost verdict pointer heals from its green run (bh-0qazu).** A crash, OOM kill or `SIGKILL`
+  after a validation run's manifest completed green but before its verdict pointer was written no
+  longer throws the green away: the next verdict read for the same tree and command rebuilds the
+  pointer from that manifest (when the pointer is missing or still names the previous green) and
+  reuses it instead of re-running the gate. Only a retained completed, qualifying-green, fresh
+  manifest for exactly that tree and command hash can do this; red, none, running, stale and
+  different-identity runs still miss, and `bh release await` still tells a red gate from a missing
+  one. One new verb, part of the fix and published in wire 2.26.0: `bh work validation reindex
+  [--rev REV | --tree TREE] [--dry-run] [--json]` rebuilds pointers from the retained run manifests
+  and lists each identity as `rebuilt`, `unchanged`, `refused` or `revoked`, with the reason; it is
+  idempotent and `--dry-run` writes nothing. Optionally run it once after upgrading (`--dry-run`
+  first) if a crash left greens without pointers; prefer it over `--override-validation`, which
+  records a bypass rather than the green that ran. See [WORKTREES.md](WORKTREES.md). Fixes GitHub
+  #89 and #110.
 
 ### Landing closes a bead whatever its assignee (bh-ikygx)
 
