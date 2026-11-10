@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
-from beadhive.modules.tracker.contracts import ProjectRef, TrackerAdapter
+from beadhive.modules.tracker.contracts import ProjectRef, TrackerAdapter, WaitObserver, WriteGate
 from beadhive_plugins.credentials import TokenSource
 
 from .adapter import build_adapter
@@ -35,10 +35,23 @@ def build(
     *,
     project: ProjectRef,
     sleep: Callable[[float], None],
+    command_scoped: bool = False,
+    write_gate: WriteGate | None = None,
+    observe_wait: WaitObserver | None = None,
 ) -> TrackerAdapter:
-    """Return the GitHub ``TrackerAdapter`` for *project*."""
+    """Return the GitHub ``TrackerAdapter`` for *project*. ``command_scoped``: it lives for one
+    command, so it may reuse one HTTP client and the org field definitions (never a daemon's).
+    ``write_gate`` / ``observe_wait``: the host's outbox write pacer (``bh-eqtxv``), if any."""
     if not isinstance(project, ProjectRef):
         raise TypeError("project must be a ProjectRef")
     if not callable(token_source) or not callable(sleep):
         raise TypeError("token_source and sleep must be callables")
-    return build_adapter(settings, token_source, project=project, sleep=sleep)
+    return build_adapter(
+        settings,
+        token_source,
+        project=project,
+        sleep=sleep,
+        command_scoped=command_scoped,
+        write_gate=write_gate,
+        observe_wait=observe_wait,
+    )

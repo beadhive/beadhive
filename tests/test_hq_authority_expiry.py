@@ -659,3 +659,59 @@ def test_an_explicit_plane_or_clock_is_never_throttled(monkeypatch, ambient):
     expiry.warn_if_expiring(plane)
     expiry.warn_if_expiring(now=NOW)
     assert len(statuses) == 4 and len(ambient.reads) == 2  # `now=` alone still finds the plane
+
+
+def _learned(monkeypatch, ambient, value):
+    """Make the ambient plane read learn ``hq.authority_expiry_recheck_s`` like the real lookup."""
+
+    def frame_plane():
+        ambient.reads.append(1)
+        expiry._learn_recheck({} if value is None else {expiry.RECHECK_KEY: value})
+        return FakeSql(NOW + 2 * 3600)
+
+    monkeypatch.setattr(expiry, "_frame_plane", frame_plane)
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+
+
+def test_the_recheck_interval_defaults_to_the_module_constant(monkeypatch, ambient):
+    _learned(monkeypatch, ambient, None)
+    expiry.warn_if_expiring()
+    ambient.clock.now += expiry.AMBIENT_RECHECK_SECONDS - 1
+    expiry.warn_if_expiring()
+    assert len(ambient.reads) == 1
+    ambient.clock.now += 1
+    expiry.warn_if_expiring()
+    assert len(ambient.reads) == 2
+
+
+def test_a_configured_recheck_interval_overrides_the_default(monkeypatch, ambient):
+    _learned(monkeypatch, ambient, 10)
+    expiry.warn_if_expiring()  # the first read learns the value
+    ambient.clock.now += 9
+    expiry.warn_if_expiring()
+    assert len(ambient.reads) == 1
+    ambient.clock.now += 1
+    expiry.warn_if_expiring()
+    assert len(ambient.reads) == 2
+
+
+def test_a_zero_recheck_interval_reads_every_time(monkeypatch, ambient):
+    _learned(monkeypatch, ambient, 0)
+    for _ in range(3):
+        expiry.warn_if_expiring()
+    assert len(ambient.reads) == 3
+
+
+@pytest.mark.parametrize("bad", [-1, "5", True, None])
+def test_an_invalid_recheck_value_keeps_the_default(bad):
+    expiry._learn_recheck({expiry.RECHECK_KEY: bad})
+    assert expiry._recheck_seconds() == expiry.AMBIENT_RECHECK_SECONDS
+
+
+def test_the_config_schema_rejects_a_negative_recheck_interval():
+    from beadhive.modules.config.contracts import HqConfig
+
+    assert HqConfig().authority_expiry_recheck_s == 300.0
+    assert HqConfig(authority_expiry_recheck_s=0).authority_expiry_recheck_s == 0
+    with pytest.raises(ValueError):
+        HqConfig(authority_expiry_recheck_s=-1)

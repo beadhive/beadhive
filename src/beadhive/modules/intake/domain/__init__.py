@@ -522,6 +522,40 @@ __all__ += [
     "reopen_reply_text",
 ]
 
+# -- the paced write path (bh-eqtxv): the command's stop, the summary and the ledger rule -------
+
+from .pacing import (  # noqa: E402
+    LEDGER_HOUR,
+    LEDGER_MINUTE,
+    MAX_WRITES_PER_HOUR,
+    MAX_WRITES_PER_MINUTE,
+    HourFull,
+    LedgerAnswer,
+    MinuteFull,
+    PacingSummary,
+    SendStop,
+    SendStopped,
+    SlotGranted,
+    StopReason,
+    ledger_step,
+)
+
+__all__ += [
+    "LEDGER_HOUR",
+    "LEDGER_MINUTE",
+    "MAX_WRITES_PER_HOUR",
+    "MAX_WRITES_PER_MINUTE",
+    "HourFull",
+    "LedgerAnswer",
+    "MinuteFull",
+    "PacingSummary",
+    "SendStop",
+    "SendStopped",
+    "SlotGranted",
+    "StopReason",
+    "ledger_step",
+]
+
 # -- the merge and release milestones (I10): facts, policy and fixed public wording -----------
 
 from .milestones import (  # noqa: E402

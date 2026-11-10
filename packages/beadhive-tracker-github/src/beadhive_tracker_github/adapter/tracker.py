@@ -83,6 +83,8 @@ from beadhive.modules.tracker.contracts import (
     TrackerError,
     TrackerIssue,
     Tri,
+    WaitObserver,
+    WriteGate,
 )
 from beadhive_plugins.credentials import TokenSource
 
@@ -91,6 +93,7 @@ from .grants import GrantLedger
 from .identity import RepositoryFacts, probe_operation
 from .label_definitions import LabelDefinitionReading
 from .marker import marker_line
+from .retry import Refusal
 from .transport import DEFAULT_TIMEOUT_SECONDS, Reply, Session, Transport
 from .urls import GitHubLocation, next_link
 
@@ -121,6 +124,15 @@ SUPPORTED_OPERATIONS = frozenset(
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _observer(observe: WaitObserver | None) -> Callable[[Refusal, float], None] | None:
+    """The transport's wait observer for the host's ``observe(error, seconds)`` (``bh-eqtxv``):
+    the host sees the port error the retry decision was made on, never this adapter's
+    :class:`~.retry.Refusal`."""
+    if observe is None:
+        return None
+    return lambda refusal, seconds: observe(refusal.error, seconds)
 
 
 def _next_link(reply: Reply) -> str | None:
@@ -165,6 +177,9 @@ class GitHubTrackerAdapter(LabelDefinitionReading):
         clock: Callable[[], datetime] | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
+        command_scoped: bool = False,
+        write_gate: WriteGate | None = None,
+        observe_wait: WaitObserver | None = None,
     ) -> None:
         self._project = project
         self._location = GitHubLocation.from_project(project, base_url)
@@ -181,7 +196,17 @@ class GitHubTrackerAdapter(LabelDefinitionReading):
             http_cache=http_cache,
             timeout_seconds=timeout_seconds,
             transport=transport,
+            reuse_client=command_scoped,
+            write_gate=write_gate,
+            observe_wait=_observer(observe_wait),
         )
+        #: This adapter lives for ONE command (never a resident process's whole life): it may
+        #: keep one HTTP client and the organization's issue-field definitions until it is
+        #: dropped or :meth:`close` d. Off (the default), every operation builds its own client
+        #: and every ``issue.fields`` write reads the definitions afresh.
+        self._command_scoped = command_scoped
+        #: The memoized ``GET /orgs/{owner}/issue-fields`` answer (``command_scoped`` only).
+        self._field_definitions: Any = None
         #: Write capability refuted by a probe: cached for this process only (never YES/UNKNOWN).
         self._refuted: dict[Operation, str] = {}
         #: Single-use write grants already presented to this instance (every writer spends here).
@@ -189,6 +214,11 @@ class GitHubTrackerAdapter(LabelDefinitionReading):
 
     def __repr__(self) -> str:
         return f"GitHubTrackerAdapter({self._location.locator!r})"
+
+    def close(self) -> None:
+        """Release the command's shared HTTP client and the memoized field definitions."""
+        self._field_definitions = None
+        self._transport.close()
 
     # -- gates and paging plumbing -------------------------------------------------------------
 

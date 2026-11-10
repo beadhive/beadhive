@@ -111,6 +111,7 @@ from beadhive.modules.tracker.contracts import (
     LabelWriter,
     OwnMarker,
     PageCursor,
+    RateLimited,
     TrackerAdapter,
     TrackerComment,
     TrackerError,
@@ -118,7 +119,15 @@ from beadhive.modules.tracker.contracts import (
     join_marker_line,
 )
 
-from ..contracts import BatchLock, IdSource, IntakeLock, OutboxIndex, ReportStore, Sanitizer
+from ..contracts import (
+    BatchLock,
+    IdSource,
+    IntakeLock,
+    OutboxIndex,
+    ReportStore,
+    Sanitizer,
+    SendPacer,
+)
 from ..domain import (
     NOTIFIED_DIM,
     SEND_ORDER,
@@ -166,6 +175,9 @@ from ..domain import (
     ReopenRequest,
     ReplyDraft,
     SendPlan,
+    SendStop,
+    SendStopped,
+    StopReason,
     StorePosture,
     ThreadActor,
     ThreadState,
@@ -214,7 +226,10 @@ class OutboxService:
 
     ``marker_line`` encodes an :class:`OwnMarker` exactly as the bound adapter appends it, so a
     render shows the posted bytes; ``holder`` names this sender in each attempt (host, process);
-    ``posture`` is required, as for thread ingestion, so an unwired service fails closed."""
+    ``posture`` is required, as for thread ingestion, so an unwired service fails closed.
+    ``pacer`` is the command's write pacer (``bh-eqtxv``): the composition root wires one into
+    every ``send`` and ``send-approved``, and the same pacer into the adapter as its write gate;
+    without one (a test's wiring, or a verb that never writes) nothing is paced."""
 
     def __init__(
         self,
@@ -232,6 +247,7 @@ class OutboxService:
         holder: str = "intake",
         completion: Callable[[str, str], bool] | None = None,
         index: OutboxIndex | None = None,
+        pacer: SendPacer | None = None,
     ) -> None:
         self._store = store
         self._tracker = tracker
@@ -246,6 +262,7 @@ class OutboxService:
         self._holder = holder
         self._completion = completion
         self._index = index
+        self._pacer = pacer
 
     # -- reads -------------------------------------------------------------------------------
 
@@ -460,7 +477,25 @@ class OutboxService:
         binding = self._bound_here(report)
         writer = self._writer(kind)
         fresh = self._fresh(binding) if kind is OpKind.LABELS else None
-        return self._send_op(report, binding, outbox_id, kind, writer, fresh, actor)
+        stop = self._begin(None)
+        try:
+            return self._send_op(report, binding, outbox_id, kind, writer, fresh, actor, stop)
+        except SendStopped as exc:  # before the write-ahead: the operation stays approved
+            if isinstance(exc.__cause__, IntakeStoreError):  # the write ledger: a store failure
+                raise exc.__cause__ from None
+            reason = (
+                RefusalReason.HOURLY_BUDGET
+                if exc.reason is StopReason.HOURLY_BUDGET
+                else RefusalReason.TRACKER_ERROR
+            )
+            raise IntakeRefused(reason, exc.detail) from None
+
+    def _begin(self, stop: SendStop | None) -> SendStop:
+        """The command's one stop (the batch's own, or a fresh one), bound to the pacer."""
+        stop = stop if stop is not None else SendStop()
+        if self._pacer is not None:
+            self._pacer.begin(stop)
+        return stop
 
     def _send_op(
         self,
@@ -471,13 +506,14 @@ class OutboxService:
         writer: object,
         fresh: LabelBase | None,
         actor: str,
+        stop: SendStop,
     ) -> OutboxResult:
         """One operation's O9 to O13 under one hold of the binding's lock (``send``): the O7
-        re-check, the write-ahead, the ONE request with the grant, then the receipt or the
-        outcome, each a durable write; the completion policy runs after the hold."""
+        re-check, the pacer's admission, the write-ahead, the ONE request with the grant, then the
+        receipt or the outcome, each a durable write; the completion policy runs after the hold."""
         with held(self._lock, self._store, binding) as epoch:
             sent, outcome = self._send_held(
-                report, binding, outbox_id, kind, writer, fresh, actor, epoch
+                report, binding, outbox_id, kind, writer, fresh, actor, epoch, stop
             )
         return self._completed(report, sent, outcome, actor)
 
@@ -491,10 +527,16 @@ class OutboxService:
         fresh: LabelBase | None,
         actor: str,
         epoch: int,
+        stop: SendStop,
     ) -> tuple[OutboxResult, OutboxApplied | None]:
         """:meth:`_send_op`'s body, run by the caller INSIDE its hold of the binding's lock (one
         operation of ``send``, or one of a report's operations in ``send_approved``): returns the
-        result and the outcome to complete once the hold ends (``None``: nothing was sent)."""
+        result and the outcome to complete once the hold ends (``None``: nothing was sent).
+
+        Right before the write-ahead (after the O7 re-check) it runs :meth:`_before_write`: the
+        command's stop and the pacer's admission (``bh-eqtxv``), which raise
+        :class:`SendStopped` with nothing durable written. An O11 ``RateLimited`` stops the
+        command (the backstop of the adapter's first-wait stop)."""
         doc, expect, rules = self._open(report, epoch, actor)
         record = self._record(doc, outbox_id)
         op = record.op(kind)
@@ -510,6 +552,7 @@ class OutboxService:
                 result = self._result(report, moved, rules, kind)
                 detail = "the render moved since it was approved; approve it again"
                 return dataclasses.replace(result, detail=detail), None
+        self._before_write(record, kind, ctx, stop)
         ahead = machine.begin_send(
             doc,
             outbox_id,
@@ -530,6 +573,12 @@ class OutboxService:
             if translate.send_outcome(exc) is translate.SendOutcome.REFUSED:
                 name = translate.refusal_name(exc)
                 outcome = machine.record_refusal(doc, outbox_id, kind, name, actor=actor)
+                if isinstance(exc, RateLimited):  # the backstop: the adapter's retries are spent
+                    stop.set(
+                        StopReason.RATE_LIMITED,
+                        f"{outbox_id} {kind.value} was refused with a rate limit after its "
+                        "retries; no further operation starts",
+                    )
             else:
                 outcome = machine.record_unknown(
                     doc, outbox_id, kind, actor=actor, detail=type(exc).__name__
@@ -542,6 +591,19 @@ class OutboxService:
         notified, detail = self._notify(report, outbox_id, outcome, actor)
         result = self._result(report, outcome, (*rules, *(s.rule for s in ahead.steps)), kind)
         return dataclasses.replace(result, notified=notified, detail=detail), outcome
+
+    def _before_write(
+        self, record: OutboxRecord, kind: OpKind, ctx: RenderContext, stop: SendStop
+    ) -> None:
+        """The hook before an operation's write-ahead (``bh-eqtxv``): the command's stop, then
+        the pacer's admission of the operation's expected requests, then the stop again. Raises
+        :class:`SendStopped` before anything durable is written."""
+        if stop.is_set():
+            raise SendStopped(stop.reason or StopReason.INTERRUPTED, stop.detail)
+        if self._pacer is not None:
+            self._pacer.admit(_expected_requests(record, kind, ctx))
+        if stop.is_set():
+            raise SendStopped(stop.reason or StopReason.INTERRUPTED, stop.detail)
 
     def _completed(
         self, report: str, result: OutboxResult, outcome: OutboxApplied | None, actor: str
@@ -561,14 +623,21 @@ class OutboxService:
         comment oldest first, then the labels, then the close), and every operation is exactly
         ``send``'s O9 to O13 with its own single-use grant, write-ahead and receipt. A refusal or a
         store failure on one operation is reported in ``failed`` and the rest continue (a close
-        whose comment did not go out is refused by ``close_not_ready``); only a host-level refusal
-        (``not_primary``) stops the batch, since nothing else could be sent either: the outcome
-        so far is returned with ``stopped`` set, so what WAS sent is still reported."""
+        whose comment did not go out is refused by ``close_not_ready``).
+
+        Serial and paced (``bh-eqtxv``): the command has ONE stop (``request.stop``, which the
+        composition root's interrupt handler sets). It stops on a host-level refusal
+        (``not_primary``), on the first rate limit (``rate_limited``), before an operation whose
+        requests do not fit in the hour (``hourly_budget``), on an interrupt (``interrupted``: the
+        operation in flight drains) and on an unexpected error in one operation (``error``). After
+        a stop no write-ahead starts; every operation not started is listed in ``failed`` with the
+        stop reason and stays ``approved`` with its grant, so a re-run continues."""
         self._require_enabled()
         kinds = request.kinds or SEND_ORDER
         for kind in request.kinds:  # a named kind is checked before any tracker request
             machine.require_kind_enabled(kind, self._policy)
         require_private_store(self._posture)
+        stop = self._begin(request.stop)
         if request.reports:
             docs = {r: d for r in request.reports if (d := self._store.read_outbox(r)) is not None}
         else:
@@ -584,14 +653,17 @@ class OutboxService:
         if not due:
             return BatchSendOutcome()
         live = self._listing_or_none() if any(k is OpKind.LABELS for _, _, k in due) else None
+        bindings = self._listed_bindings({report for report, _, _ in due})
         results: list[OutboxResult] = []
         failed: list[BatchSendFailure] = []
-        stopped = ""
         with self._batch():
             for report, group in groupby(due, key=lambda item: item[0]):
                 ops = [(outbox_id, kind) for _, outbox_id, kind in group]
+                if stop.is_set():  # not started: listed with the stop's reason, still approved
+                    failed.extend(_not_started(report, ops, stop))
+                    continue
                 try:
-                    stopped = self._send_report(report, ops, live, request, results, failed)
+                    self._send_report(report, ops, live, bindings, request, results, failed, stop)
                 except (IntakeRefused, IntakeStoreError) as exc:  # its binding or its hold
                     reason = exc.reason.value if isinstance(exc, IntakeRefused) else "store_error"
                     failed.extend(
@@ -600,30 +672,45 @@ class OutboxService:
                         if not _reported(outbox_id, kind, results, failed)
                     )
                     if isinstance(exc, IntakeRefused) and exc.reason is RefusalReason.NOT_PRIMARY:
-                        stopped = exc.detail
-                if stopped:
-                    break
-        return BatchSendOutcome(tuple(results), tuple(failed), stopped)
+                        stop.set(StopReason.NOT_PRIMARY, exc.detail)
+        return BatchSendOutcome(
+            tuple(results),
+            tuple(failed),
+            stop.reason.value if stop.reason is not None else "",
+            stop.detail if stop.reason is not None else "",
+            self._pacer.summary() if self._pacer is not None else None,
+        )
 
     def _send_report(
         self,
         report: str,
         ops: list[tuple[str, OpKind]],
         live: dict[str, TrackerIssue] | None,
+        bindings: dict[str, IssueBinding],
         request: BatchSend,
         results: list[OutboxResult],
         failed: list[BatchSendFailure],
-    ) -> str:
+        stop: SendStop,
+    ) -> None:
         """Every due operation of ONE report, in order, under ONE hold of its binding's lock and
         one store session (``bh-25fvb``): one host check and one read of the report for all of
         them, while each is still :meth:`_send_held`'s own write-ahead, request and receipt with
         its own grant. A refusal or store failure is that operation's and the rest go on; the
-        completion policy runs after the hold. Returns a host-level stop (``not_primary``)."""
-        binding = self._bound_here(report)
+        completion policy runs after the hold. ``bindings`` are the outbox listing's, each used in
+        place of the report's own read.
+
+        A stop (``bh-eqtxv``) ends the report: the operations after it are listed as not started.
+        ``not_primary`` stops it, and so does an unexpected exception from one operation
+        (``error``): that operation is reported with the exception's class (never its text) and
+        left as the failure left it (``sending`` when it came after the write-ahead; a fresh
+        ``_open`` recovers it, O13)."""
+        binding = self._bound_here(report, bindings.get(report))
         sent: list[tuple[OutboxResult, OutboxApplied | None]] = []
-        stopped = ""
         with held(self._lock, self._store, binding) as epoch:
             for outbox_id, kind in ops:
+                if stop.is_set():
+                    failed.extend(_not_started(report, [(outbox_id, kind)], stop))
+                    continue
                 try:
                     machine.require_kind_enabled(kind, self._policy)
                     writer = self._writer(kind)
@@ -633,22 +720,56 @@ class OutboxService:
                         fresh = label_base(issue) if issue is not None else self._fresh(binding)
                     sent.append(
                         self._send_held(
-                            report, binding, outbox_id, kind, writer, fresh, request.actor, epoch
+                            report,
+                            binding,
+                            outbox_id,
+                            kind,
+                            writer,
+                            fresh,
+                            request.actor,
+                            epoch,
+                            stop,
                         )
+                    )
+                except SendStopped as exc:  # before its write-ahead: still approved
+                    failed.append(
+                        BatchSendFailure(report, outbox_id, kind, exc.reason.value, exc.detail)
                     )
                 except IntakeRefused as exc:
                     failed.append(
                         BatchSendFailure(report, outbox_id, kind, exc.reason.value, exc.detail)
                     )
                     if exc.reason is RefusalReason.NOT_PRIMARY:
-                        stopped = exc.detail
-                        break
+                        stop.set(StopReason.NOT_PRIMARY, exc.detail)
                 except IntakeStoreError as exc:
                     failed.append(
                         BatchSendFailure(report, outbox_id, kind, "store_error", exc.detail)
                     )
+                except Exception as exc:  # noqa: BLE001 - one operation's bug stops the batch
+                    detail = (
+                        f"{outbox_id} {kind.value} failed with an unexpected "
+                        f"{type(exc).__name__}; no further operation starts (run `bh work "
+                        "outbox reconcile` if it was left sending)"
+                    )
+                    failed.append(
+                        BatchSendFailure(report, outbox_id, kind, StopReason.ERROR.value, detail)
+                    )
+                    stop.set(StopReason.ERROR, detail)
         results.extend(self._completed(report, r, o, request.actor) for r, o in sent)
-        return stopped
+
+    def _listed_bindings(self, reports: set[str]) -> dict[str, IssueBinding]:
+        """The bindings of ``reports`` the outbox listing carries whole (one listing, no read per
+        report). A row whose listing lacks the binding's project (a store whose list rows carry no
+        metadata) is left out: its binding is read on its own, as ``send`` does."""
+        try:
+            views = self._store.reports_with_outbox()
+        except IntakeStoreError:
+            return {}
+        return {
+            v.id: v.binding
+            for v in views
+            if v.id in reports and v.binding is not None and v.binding.tracker and v.binding.project
+        }
 
     def _listing_or_none(self) -> dict[str, TrackerIssue] | None:
         """The issues by URL from ONE listing, or ``None`` when it cannot be made (each labels
@@ -1311,9 +1432,10 @@ class OutboxService:
             return None
         return CanonicalIssue(canonical.identifier, canonical.url)
 
-    def _bound_here(self, report: str) -> IssueBinding:
-        """The binding, refused unless it names the bound tracker project (no request)."""
-        binding = self._binding(report)
+    def _bound_here(self, report: str, listed: IssueBinding | None = None) -> IssueBinding:
+        """The binding, refused unless it names the bound tracker project (no request). ``listed``
+        is a binding already read whole (a listing's): it spares the report's own read."""
+        binding = listed or self._binding(report)
         project = self._tracker.describe().project
         if (binding.tracker, binding.project) != (project.tracker, project.locator):
             raise IntakeRefused(
@@ -1530,6 +1652,24 @@ def _joined(first: str, second: str) -> str:
 
 def _created(record: OutboxRecord) -> int:
     return record.created_seq
+
+
+def _not_started(
+    report: str, ops: Iterable[tuple[str, OpKind]], stop: SendStop
+) -> list[BatchSendFailure]:
+    """The operations a stopped batch did not start, each with the stop's reason and detail."""
+    reason = (stop.reason or StopReason.INTERRUPTED).value
+    return [BatchSendFailure(report, oid, kind, reason, stop.detail) for oid, kind in ops]
+
+
+def _expected_requests(record: OutboxRecord, kind: OpKind, ctx: RenderContext) -> int:
+    """How many write requests an operation is expected to send (``bh-eqtxv``): one, except a
+    ``labels.change``, which sends one ``POST`` for its additions and one ``DELETE`` per removed
+    label, rendered exactly as ``begin_send`` will (the bytes the approval's digest covers)."""
+    if kind is not OpKind.LABELS:
+        return 1
+    rendered = machine.render(record, kind, ctx)
+    return max(1, (1 if rendered.add else 0) + len(rendered.remove))
 
 
 class StoreOutboxView:

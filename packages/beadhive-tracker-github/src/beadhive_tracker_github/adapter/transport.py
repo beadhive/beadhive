@@ -15,6 +15,11 @@ Three of its defaults are overridden on purpose (port ADR section 1):
 * ``timeout`` is finite (githubkit's default is none at all): a hung connection is a transient
   failure, not a hang.
 
+Pacing (``bh-eqtxv``): a host may inject :attr:`Transport.write_gate`, called before every
+attempt of a write (each rate-limit resend included), and :attr:`Transport.observe_wait`, called
+with the refusal whenever the retry decision returns a wait (``0`` included) before the sleep.
+Neither is set unless the host wires its outbox pacer in; without them nothing changes.
+
 Writes are the exception, not the rule: only an operation opened with ``write=True`` (by a
 writer, after its grant was checked) has :meth:`Session.send`, the ONE write seam every writer
 (``comment.create``, ``labels.change``) sends through. Its client neither caches nor follows a
@@ -33,13 +38,24 @@ The credential: :class:`Transport` holds the injected zero-argument ``TokenSourc
 **once per operation** (:meth:`Transport.operation`) and keeps the value only for that
 operation; nothing is cached, so a rotated token is picked up. Only provenance is ever shown, and
 every upstream text is scrubbed of the resolved value and of any token shape.
+
+The client: by default each operation builds its own githubkit client and closes it (a new
+connection, and a new TLS context, per operation; about 85 ms each on the factory, bh-vy7dx). A
+transport built ``reuse_client=True`` (an adapter that lives for ONE command, ``command_scoped``)
+builds one client per kind (read, write) on first use and keeps it, and its connection pool, until
+:meth:`Transport.close`. The credential contract is unchanged: the token is still resolved once
+per operation, and the shared client's auth reads it per request from a thread-local holder that
+is set when the operation opens and cleared when it ends, so a rotated token is picked up by the
+next operation and no token value outlives its operation. A resident process (the host daemon's
+timer) never sets ``reuse_client``: it builds a fresh client per operation, as before.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -51,6 +67,9 @@ from beadhive.modules.tracker.contracts import (
     RetryBudget,
     TrackerError,
     WriteOutcomeUnknown,
+    observe_begin,
+    observe_call,
+    observe_end,
 )
 from beadhive_plugins.credentials import ResolvedToken, TokenSource
 
@@ -133,6 +152,7 @@ class Session:
 
         transport = self._transport
         write = method != "GET"
+        mark = observe_begin("github_request")  # a no-op unless the host measures (bh-17g6b)
         try:
             response = self._client.request(
                 method,
@@ -161,6 +181,8 @@ class Session:
             if write:
                 return classify_transport_failure(write=True, timeout=False)
             raise
+        finally:
+            observe_end(mark)
         if write and not 200 <= response.status_code < 300:
             # Never followed (a write client does not follow redirects): GitHub did not confirm.
             return Refusal(
@@ -195,8 +217,11 @@ class Session:
     ) -> Reply:
         """Send until a reply, or until the retry decision says stop (then raise its error)."""
         transport = self._transport
+        gate = transport.write_gate if method != "GET" else None
         waited, attempt = 0.0, 0
         while True:
+            if gate is not None:
+                gate(method)  # the host's pacer: every attempt of a write, resends included
             outcome = self._attempt(
                 target, params, method=method, payload=payload, no_content=no_content
             )
@@ -207,6 +232,8 @@ class Session:
             wait = next_wait(outcome, attempt=attempt, waited=waited, budget=transport.budget)
             if wait is None:
                 raise outcome.error from None
+            if transport.observe_wait is not None:
+                transport.observe_wait(outcome, wait)  # any wait, 0 included, before sleeping
             if wait > 0:
                 transport.sleep(wait)
             waited, attempt = waited + wait, attempt + 1
@@ -244,6 +271,39 @@ class Session:
         return self._run(target, None, method=method, payload=payload, no_content=no_content)
 
 
+class _HeldToken:
+    """The token of the operation in flight on THIS thread (a shared client reads it per call)."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def hold(self, token: ResolvedToken | None) -> None:
+        self._local.token = token
+
+    def current(self) -> str | None:
+        token = getattr(self._local, "token", None)
+        return token.value if token is not None else None
+
+
+def _held_auth(held: _HeldToken) -> Any:
+    """A githubkit auth strategy that sets ``Authorization`` from ``held`` on every request (and
+    sends none while nothing is held: an anonymous operation)."""
+    import httpx
+    from githubkit.auth import BaseAuthStrategy
+
+    class Flow(httpx.Auth):
+        def auth_flow(self, request: httpx.Request):
+            if (value := held.current()) is not None:
+                request.headers["Authorization"] = f"token {value}"
+            yield request
+
+    class Strategy(BaseAuthStrategy):
+        def get_auth_flow(self, github: Any) -> httpx.Auth:
+            return Flow()
+
+    return Strategy()
+
+
 @dataclass
 class Transport:
     """The adapter's HTTP seam. ``transport`` is an ``httpx`` transport to send through (tests pass
@@ -257,7 +317,19 @@ class Transport:
     http_cache: bool = False
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     transport: httpx.BaseTransport | None = field(default=None, repr=False)
+    #: Keep one client (and its connection pool) per kind for the life of this transport. Only an
+    #: adapter that lives for one command sets it; see the module docstring.
+    reuse_client: bool = False
+    #: Called with the method before EVERY attempt of a write (a rate-limit resend included):
+    #: the host's write pacer (``bh-eqtxv``). It may block and never refuses. ``None``: no gate.
+    write_gate: Callable[[str], None] | None = field(default=None, repr=False)
+    #: Called with the refusal and the seconds whenever the retry decision returns a wait (``0``
+    #: included), before the sleep: the host's stop on a rate limit (``bh-eqtxv``).
+    observe_wait: Callable[[Refusal, float], None] | None = field(default=None, repr=False)
     _cache_strategy: Any = field(default=None, init=False, repr=False)
+    _held: _HeldToken = field(default_factory=_HeldToken, init=False, repr=False)
+    _shared: dict[bool, Any] = field(default_factory=dict, init=False, repr=False)
+    _open: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # "No timeout" is never a configuration: a hung connection must stay a transient failure.
@@ -282,7 +354,7 @@ class Transport:
             raise AuthenticationFailed("the credential source returned no ResolvedToken")
         return token
 
-    def _client(self, token: ResolvedToken | None, *, write: bool = False) -> Any:
+    def _client(self, token: ResolvedToken | None, *, write: bool = False, auth: Any = None) -> Any:
         from githubkit import GitHub
 
         options: dict[str, Any] = {}
@@ -293,7 +365,7 @@ class Transport:
                 self._cache_strategy = MemCacheStrategy()
             options["cache_strategy"] = self._cache_strategy
         return GitHub(
-            token.value if token is not None else None,
+            auth if auth is not None else (token.value if token is not None else None),
             base_url=self.api_base,
             user_agent=USER_AGENT,
             timeout=self.timeout_seconds,
@@ -310,7 +382,29 @@ class Transport:
     def operation(self, operation: Operation | None, *, write: bool = False) -> Iterator[Session]:
         """Resolve the credential once, open one client, and yield the operation's seam: GETs,
         plus :meth:`Session.send` when ``write`` (a client that neither caches nor redirects)."""
-        token = self._resolve()
-        client = self._client(token, write=write)
-        with client:
+        token = observe_call("github_token", self._resolve)
+        if not self.reuse_client:
+            client = observe_call("github_client", self._client, token, write=write)
+            with client:
+                yield Session(self, token, client, operation, write=write)
+            return
+        self._held.hold(token)  # this operation's token, read per request; gone when it ends
+        try:
+            client = observe_call("github_client", self._shared_client, write)
             yield Session(self, token, client, operation, write=write)
+        finally:
+            self._held.hold(None)
+
+    def _shared_client(self, write: bool) -> Any:
+        """The one client of this kind (read, or write: never caching, never redirecting)."""
+        client = self._shared.get(write)
+        if client is None:
+            client = self._client(None, write=write, auth=_held_auth(self._held))
+            self._open.enter_context(client)
+            self._shared[write] = client
+        return client
+
+    def close(self) -> None:
+        """Close the shared clients and their pools (a no-op unless ``reuse_client``)."""
+        self._shared.clear()
+        self._open.close()

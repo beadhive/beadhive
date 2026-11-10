@@ -859,9 +859,13 @@ def adapter_for(
     tokens=None,
     label_prefixes=None,
     transport=None,
+    command_scoped: bool = False,
+    write_gate=None,
+    observe_wait=None,
 ):
     """A ``GitHubTrackerAdapter`` sending through ``world`` (both reads enabled by default), with
-    the writer of each enabled write operation composed in, exactly as ``build_adapter`` does."""
+    the writer of each enabled write operation composed in, exactly as ``build_adapter`` does.
+    ``write_gate`` / ``observe_wait`` are a host's write pacer seams (``bh-eqtxv``)."""
     base_url = None if world.api == "https://api.github.com" else world.api
     return new_adapter(
         project=ProjectRef("github", f"{world.owner}/{world.repo}"),
@@ -876,6 +880,9 @@ def adapter_for(
         http_cache=http_cache,
         label_prefixes=label_prefixes,
         transport=transport if transport is not None else world.transport(),
+        command_scoped=command_scoped,
+        write_gate=write_gate,
+        observe_wait=observe_wait,
     )
 
 

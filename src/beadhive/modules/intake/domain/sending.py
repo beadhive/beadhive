@@ -9,10 +9,11 @@ library only.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .outbox import CloseReason, OpKind, OpState, OutboxRecord, Rendered
+from .pacing import PacingSummary, SendStop
 
 
 @dataclass(frozen=True)
@@ -127,11 +128,15 @@ class BatchSend:
     """``bh work outbox send-approved``: send every APPROVED operation in one process, ordered
     per report by :data:`SEND_ORDER`. ``kinds`` narrows it to those operations (empty: every
     kind); ``reports`` to those reports (empty: every report with an outbox). Each operation
-    still spends its own single-use grant and writes its own receipt, exactly as ``send``."""
+    still spends its own single-use grant and writes its own receipt, exactly as ``send``.
+    ``stop`` is the command's one stop (``bh-eqtxv``): the composition root's interrupt handler
+    sets it, and the sender checks it before every write-ahead (``None``: the batch makes its
+    own, which only the sender and the pacer can set)."""
 
     actor: str
     kinds: tuple[OpKind, ...] = ()
     reports: tuple[str, ...] = ()
+    stop: SendStop | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -151,12 +156,18 @@ class BatchSendOutcome:
     """``results`` has one :class:`OutboxResult` per operation the batch attempted, in send order
     (``sent``, or ``unknown`` / ``failed`` after its one request, or ``drafted`` when its approval
     was invalidated because the render moved); ``failed`` every operation refused before any
-    request. One item's failure never stops the rest; only a host-level refusal does, and then
-    ``stopped`` says why (the refused item is the last of ``failed``, the rest were not tried)."""
+    request, and (``bh-eqtxv``) every operation the batch did not start once it stopped, with the
+    stop reason. One item's refusal never stops the rest; a stop does, and then ``stopped`` is its
+    reason code (:class:`~.pacing.StopReason`: ``not_primary``, ``rate_limited``,
+    ``hourly_budget``, ``interrupted`` or ``error``) and ``stopped_detail`` its text. Every
+    operation not started stays ``approved`` with its grant, so a re-run continues. ``pacing`` is
+    the write pacer's summary (``None`` when the sender ran unpaced: a test's wiring)."""
 
     results: tuple[OutboxResult, ...] = ()
     failed: tuple[BatchSendFailure, ...] = ()
     stopped: str = ""
+    stopped_detail: str = ""
+    pacing: PacingSummary | None = None
 
     @property
     def sent(self) -> tuple[OutboxResult, ...]:

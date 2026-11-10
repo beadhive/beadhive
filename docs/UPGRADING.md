@@ -5,6 +5,146 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.7 → 0.35.8 — outbox speed (bh-womf3)
+
+One new HOST-only key, `hq.authority_expiry_recheck_s` (default `300`, `0` re-reads on every
+command), sets how often a command re-reads the authority status for the expiry warning. Two new
+outbox keys pace every outbox write (on by default, below), and two new host-level files hold the
+pace's ledger; no record or document changes shape. The changes below make an outbox batch, or a
+single send, cheaper or measurable, and one paces and stops it.
+
+### Every outbox write is paced: 80 a minute, 500 an hour, and a stop on the first rate limit (bh-eqtxv)
+
+**Behaviour change on upgrade, with no config change.** `bh work outbox send` and `send-approved`
+pace every GitHub **write request** they make (not every operation: a `labels.change` is one `POST`
+plus one `DELETE` per removed label, and a rate-limit resend counts again), counted across every
+command and every hive on the host. Design:
+[`intake-outbox-paced-send-design.md`](design/intake-outbox-paced-send-design.md).
+
+- **Every outbox write request is paced at 80 a minute** (GitHub's documented limit of 80
+  content-generating requests a minute), counted in a host-level ledger that records each
+  request as it starts, so at most 80 start in any 60 s on the host (the exact bounds and
+  their exceptions are below). A 270-operation batch
+  that would take about 164 s after this release's other changes takes about 210 s (about 3.5
+  minutes); today's batch, before them, starts far fewer than 80 a minute and is not slowed in
+  practice. Sends stay serial.
+- **A batch stops before an operation whose requests do not fit in 500 an hour**, with
+  `stopped: hourly_budget`; the outcome says when enough of the hour frees
+  (`pacing.budget_frees_at`, and the time in `stopped_detail`). It never waits the hour out.
+- **A batch stops on the first rate limit** GitHub answers (`stopped: rate_limited`), including a
+  `retry-after: 0`; the request that saw it finishes its own retries. Before, the operation was
+  reported and the batch went on.
+- **A batch stops on the first `SIGINT`** after the operation in flight finishes and writes its
+  outcome (`stopped: interrupted`; a second `SIGINT` aborts as before), and **on an unexpected
+  error in one operation** (`stopped: error`, the command exits non-zero; that operation may be
+  left `sending`, which the next run recovers and `bh work outbox reconcile` settles). Before,
+  both aborted the whole batch.
+- **JSON contract change:** `stopped` is now a **reason code** (`not_primary`, `rate_limited`,
+  `hourly_budget`, `interrupted`, `error`) and its text moves to a new `stopped_detail`. Before,
+  `stopped` was the `not_primary` detail text. Scripts that test `stopped` for truthiness keep
+  working; scripts that parse its text do not. The batch JSON also gains
+  `"pacing": {"writes_per_minute", "writes_per_hour", "requests", "waited_seconds",
+  "budget_frees_at"}`, and the `timings` block a `pacer_wait` phase.
+- **Operations not started are now listed in `failed`** with the stop reason (before, a
+  `not_primary` stop left later reports out of the outcome). Every one stays `approved` with its
+  grant, so **re-running `send-approved` continues where the batch stopped**, with no new approval.
+- A single `bh work outbox send` can be refused with a new refusal reason, **`hourly_budget`**,
+  when its request does not fit in the hour.
+- **Two new host-level files**, created on first use: the write ledger
+  `$XDG_STATE_HOME/beadhive/github-writes/<api host>.ledger` (falling back to
+  `~/.local/state/beadhive/github-writes/`; `<api host>` is `api.github.com`, or the GHES host of
+  `plugins.tracker-github.base_url`) and its lock `<api host>.ledger.lock`. Deleting the ledger
+  forgets the last hour; both are safe to delete while no send runs. An unreadable ledger is
+  reported once and counted as a full minute; a ledger that cannot be written stops the batch
+  with `stopped: error` before any further write-ahead (a single `send` fails `store_error`).
+
+**The bounds, exactly** (derived from the code and each pinned by a test):
+
+- **Minute: at most 80 request starts in any 60 s on the host, strictly**, across every command
+  and hive: each request start is one locked ledger step that waits while the last 60 s hold 80.
+  Two exceptions: a **forward step of the wall clock** makes the ledger's entries look older, so
+  in the minute after the step **at most 80 extra (100% over) may start, once per step** (a step
+  back only delays); and a ledger that **stops being writable mid-operation** lets that one
+  operation's remaining requests go unrecorded (at most its own requests, below), then the batch
+  stops with `error`.
+- **Hour: at most 500 request starts in any rolling hour**, except that a request inside an
+  operation is never refused. **One command alone** goes over by at most its in-flight
+  operation's **unexpected** requests (its expected ones are checked before the write-ahead):
+  3 rate-limit resends per request plus, for `issue.fields`, one retry on stale field ids with
+  its own 3 resends, so **at most 7 extra (1.4% over) for `issue.fields`, 3 × (1 + removals) for
+  `labels.change`, 3 (0.6%) for every other kind**. **k commands racing** on the shared ledger
+  can each also start their own in-flight operation's requests past the same last free slot, so
+  **at most the sum of their in-flight operations' requests plus those extras** (two other
+  one-request operations: 2 extra, 0.4%). Every request over the hour is recorded and stops its
+  command with `hourly_budget`.
+
+**The keys** (`intake.external.outbox`, per hive; each command applies its own hive's values to the
+shared host count):
+
+| Key | Default | Allowed |
+|---|---:|---|
+| `send_writes_per_minute` | `80` | `1` to `80` |
+| `send_writes_per_hour` | `500` | `1` to `500` |
+
+These are safety limits, not tuning knobs: a value above GitHub's documented figures is **refused
+at validation** (never clamped), and there is **no unpaced mode** (no `0`). Lower values stay
+configurable (an account shared with heavy web-interface use, a sandbox). The cap covers this
+host's outbox writes only, not other hosts, bh's label-definition writes, `gh` or the web
+interface on the same account; the stop on the first rate limit is the backstop for those.
+
+**Rotation.** The defaults apply as soon as a host runs 0.35.8, with nothing written. Only a hive
+that wants **lower** values sets the keys, and because config sections forbid unknown keys it does
+so only after every host that loads the hive's config runs 0.35.8 (a fleet config write: it needs
+the operator's binding). **Rollback:** lowering the keys is the only knob; downgrading a host below
+0.35.8 restores unpaced sends there (remove the keys first if they were set). No wire change: the
+operation catalog is unchanged, so the wire stays at 2.25.0; the intake outbox document keeps
+schema 1.
+
+### One GitHub client and one field-definitions read per command
+
+- **One HTTP client per command** (bh-vy7dx). A command (`bh work outbox send-approved`,
+  `bh work labels approve --batch`, the other intake verbs) builds one GitHub client and
+  connection pool for the whole command instead of one per operation, which cost about 34 s over
+  a 270-operation batch. The credential is unchanged: the token is still resolved once per
+  operation and sent on each request, so with `credential.per_invocation_cache` off a token
+  rotated or revoked mid-command is still picked up by the next operation. The host daemon's
+  discovery timer keeps its adapters for its whole life and still builds a client per
+  operation.
+- **The org's issue-field definitions are read once per command** (bh-n0h15). An `issue.fields`
+  write used to `GET /orgs/{org}/issue-fields` first every time (135 extra requests, about 47 s,
+  in a 270-operation batch). The answer is now remembered for the command. It is checked, not
+  trusted: a field or option missing from it, or a `404`/`422` from the write, drops it, reads
+  the definitions once more and retries once (on the same single-use grant, since a `4xx` wrote
+  nothing); a second failure is the normal error. The daemon remembers nothing across
+  operations.
+
+### Every batch measures itself (`timings` in `--json`, bh-17g6b)
+
+`bh work labels sync`, `bh work labels approve --batch`, `bh work outbox send-approved` and
+`bh work outbox send` add a measured `timings` object to their `--json` output: process start to
+first work, the config load, the intake lock and host check, the store's reads and writes and
+GitHub's requests (each as a count and a total in milliseconds), in total and per hold of the
+intake lock. It is additive output only: no config key, no state change, and the outbox record and
+receipt shapes are unchanged, so the wire stays at 2.25.0. The shape is documented in
+[CONFIGURATION.md](CONFIGURATION.md#where-a-batch-spends-its-time-the-timings-block-bh-17g6b). The
+`-m perf` model now reads a recorded profile (`tests/fixtures/intake_batch_profile.json`) instead of
+constants in the test.
+
+### The outbox, thread and labels verbs start faster (bh-lwz8a)
+
+`bh work outbox <verb>`, `bh work thread <verb>` and `bh work labels <verb>` no longer import the
+whole command tree: the entry point composes just those groups from the operation catalog, with the
+same root callback (config and identity memos, migrations, warnings, telemetry, setup gate) and the
+same handlers, so flags, output, exit codes and `--help` are unchanged. On the factory this cut the
+per-process floor of one of these commands (wall clock less the verb) from about 4.9 s to about
+3.3 s; `timings.startup` in `--json` shows it per run. Logging is configured as before (`log.level`
+/ `log.format` for every record). Shell completion, `bh --help`, `bh work --help`, a group's own
+`--help` (`bh work outbox --help`) and every other verb still go through the full tree. Commands run
+outside a managed worktree also skip importing the worktree module for the telemetry overlay.
+Nothing to do on upgrade. The single-send target of 3 s is not met yet: the process floor alone is
+still about 3.3 s, before the host check and GitHub's requests (a single send models at about 6.8 s,
+was 7.9 s); bh-wmmfo follows it up.
+
 ## 0.35.6 → 0.35.7 — typer 0.29 supported, the typer cap lifted
 
 `bh hq authority --duration` and `bh hq placement --tenure` no longer use the typer internals that

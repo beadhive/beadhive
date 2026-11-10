@@ -83,6 +83,8 @@ from ..modules.tracker.contracts import (
     OperationNotEnabled,
     ProjectRef,
     TrackerAdapter,
+    WaitObserver,
+    WriteGate,
     WriteGrant,
 )
 
@@ -225,6 +227,13 @@ class TrackerAdapterRequest:
     enabled: frozenset[Operation]
     token_source: TokenSource = field(repr=False, compare=False)
     sleep: Callable[[float], None] = field(repr=False, compare=False)
+    #: The adapter lives for ONE command (never a resident process's whole life), so it may keep
+    #: one HTTP client and per-command memos; the token is still resolved per operation.
+    command_scoped: bool = False
+    #: The outbox's write pacer (``bh-eqtxv``): called before every attempt of a write, and on
+    #: every retry wait. Only the adapters of ``outbox send`` / ``send-approved`` get them.
+    write_gate: WriteGate | None = field(default=None, repr=False, compare=False)
+    observe_wait: WaitObserver | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -245,8 +254,20 @@ class TrackerAdapterProvider:
 def _github_adapter(request: TrackerAdapterRequest) -> object:
     build = import_module("beadhive_tracker_github.factory").build
     return build(
-        request.settings, request.token_source, project=request.project, sleep=request.sleep
+        request.settings,
+        request.token_source,
+        project=request.project,
+        sleep=request.sleep,
+        command_scoped=request.command_scoped,
+        **_pacing(request),
     )
+
+
+def _pacing(request: TrackerAdapterRequest) -> dict[str, Any]:
+    """The pacer's two seams, passed only when the host wired them (a factory built before
+    ``bh-eqtxv`` takes neither)."""
+    seams = {"write_gate": request.write_gate, "observe_wait": request.observe_wait}
+    return {name: seam for name, seam in seams.items() if seam is not None}
 
 
 #: Built-in runtime bindings for manifests that provide ``tracker.adapter``. A row is inert
@@ -769,6 +790,16 @@ class TrackerAdapters:
     mappings or their config models). ``token_source`` is the injected credential port; it is
     handed to the adapter and never called here. Discovery runs once, lazily; each (hive,
     store scope) gets one adapter, cached for this instance's lifetime.
+
+    ``command_scoped`` says this instance lives for ONE command (the default is a resident
+    process: the host daemon keeps its adapters for its whole life). Its adapters then reuse one
+    HTTP client and connection pool and memoize per-command reads (the org's issue-field
+    definitions); each operation still resolves the token through ``token_source``. A resident
+    instance builds a client per operation and memoizes nothing across operations.
+
+    ``write_gate`` and ``observe_wait`` are the outbox's write pacer (``bh-eqtxv``), handed to
+    every adapter this instance builds: only the instance ``outbox send`` / ``send-approved``
+    build for their own command sets them.
     """
 
     def __init__(
@@ -780,7 +811,13 @@ class TrackerAdapters:
         sources: Sequence[ManifestSource] | None = None,
         providers: Sequence[TrackerAdapterProvider] = BUILTIN_TRACKER_PROVIDERS,
         sleep: Callable[[float], None] = time.sleep,
+        command_scoped: bool = False,
+        write_gate: WriteGate | None = None,
+        observe_wait: WaitObserver | None = None,
     ) -> None:
+        self._command_scoped = command_scoped
+        self._write_gate = write_gate
+        self._observe_wait = observe_wait
         self._plugins = plugins
         self._plugin_kernel = plugin_kernel
         self._token_source = token_source
@@ -789,6 +826,17 @@ class TrackerAdapters:
         self._sleep = sleep
         self._composition: TrackerComposition | None = None
         self._bound: dict[tuple[str, str], BoundTrackerAdapter] = {}
+
+    def pace(
+        self, write_gate: WriteGate | None, observe_wait: WaitObserver | None
+    ) -> TrackerAdapters:
+        """Hand every adapter this instance builds from now on the outbox's write pacer
+        (``bh-eqtxv``); the adapters already bound are dropped so the next ``for_store`` builds a
+        paced one. Only the instance ``outbox send`` / ``send-approved`` build for their own
+        command calls it."""
+        self._write_gate, self._observe_wait = write_gate, observe_wait
+        self._bound.clear()
+        return self
 
     @property
     def composition(self) -> TrackerComposition:
@@ -942,6 +990,9 @@ class TrackerAdapters:
             enabled,
             token_source=self._token_source,
             sleep=self._sleep,
+            command_scoped=self._command_scoped,
+            write_gate=self._write_gate,
+            observe_wait=self._observe_wait,
         )
         try:
             adapter = provider.loader(request)

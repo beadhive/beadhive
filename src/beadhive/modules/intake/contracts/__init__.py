@@ -94,6 +94,8 @@ from .ports import (
     ReportSession,
     ReportStore,
     Sanitizer,
+    SendPacer,
+    WriteLedger,
 )
 
 __all__ = [
@@ -160,6 +162,8 @@ __all__ = [
     "ReportRelations",
     "ReportSession",
     "ReportStore",
+    "SendPacer",
+    "WriteLedger",
     "Role",
     "SourceSnapshot",
     "StorePosture",
@@ -220,6 +224,34 @@ __all__ += [
     "mint_outbox_id",
     "outbox_from_document",
     "outbox_to_document",
+]
+
+# -- the paced write path's records (bh-eqtxv) ------------------------------------------------
+
+from ..domain import (  # noqa: E402
+    MAX_WRITES_PER_HOUR,
+    MAX_WRITES_PER_MINUTE,
+    HourFull,
+    MinuteFull,
+    PacingSummary,
+    SendStop,
+    SendStopped,
+    SlotGranted,
+    StopReason,
+    ledger_step,
+)
+
+__all__ += [
+    "MAX_WRITES_PER_HOUR",
+    "MAX_WRITES_PER_MINUTE",
+    "HourFull",
+    "MinuteFull",
+    "PacingSummary",
+    "SendStop",
+    "SendStopped",
+    "SlotGranted",
+    "StopReason",
+    "ledger_step",
 ]
 
 # -- the supervised sender's port records (I9a) -----------------------------------------------

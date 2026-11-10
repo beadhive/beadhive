@@ -28,6 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.test_intake_outbox_wiring import Wired
+from tests.test_phase_timings import assert_batch_timings
 from typer.testing import CliRunner
 
 from beadhive import cli, git_linkage, intake_beads, intake_services, registry, work_intake
@@ -394,6 +395,12 @@ def test_sync_drafts_one_record_per_issue_and_the_batch_is_approved_by_an_operat
     assert len(doc(approved)["grant_ids"]) == 1 and doc(approved)["failed"] == []
     assert rig.world.write_requests() == writes  # approving sends nothing
     assert rig.world.server_labels(issue) >= {"human-bug"}
+
+    # bh-17g6b: sync and approve --batch measure themselves; the other labels verbs do not
+    for measured in (dry, synced, again, approved):
+        assert_batch_timings(doc(measured)["timings"])
+        assert doc(measured)["timings"]["phases"]["config_load"]["count"] == 1
+    assert "timings" not in doc(review)
 
 
 def _with_values(rig: Rig) -> None:

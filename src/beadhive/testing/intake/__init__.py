@@ -14,6 +14,8 @@
   ``OutboxIndex`` for the outbox.
 - :class:`FakeReleaseVerifier` (``release``): a scripted ``ReleaseVerifier`` (tags and ancestry
   as plain data) for the milestone triggers.
+- :class:`MemoryWriteLedger` and :class:`FakePacerClock` (``pacing``): the outbox write pacer's
+  host ledger as a shared list, and its clocks and wait moving only when it waits (``bh-eqtxv``).
 - :class:`FakeRepoFacts` (``repo_facts``): a scripted ``RepoFacts`` (branch ancestry, releases in
   version order and changed paths as plain data) for the proposal checks, and
   :class:`FakeLandedCommits` (``repo_facts``): a scripted ``LandedCommits`` for apply.
@@ -38,6 +40,7 @@ from .cases import (
 from .lock import InProcessIntakeLock, MemoryCheckpointStore, MemoryOutboxView
 from .memory_store import MemoryReportStore
 from .outbox import MemoryOutboxIndex, RecordingSanitizer, SequentialIdSource
+from .pacing import FakePacerClock, MemoryWriteLedger
 from .release import FakeReleaseVerifier
 from .repo_facts import FakeLandedCommits, FakeRepoFacts
 
@@ -46,6 +49,7 @@ __all__ = [
     "SCOPE",
     "URL",
     "FakeLandedCommits",
+    "FakePacerClock",
     "FakeReleaseVerifier",
     "FakeRepoFacts",
     "InProcessIntakeLock",
@@ -53,6 +57,7 @@ __all__ = [
     "MemoryOutboxIndex",
     "MemoryOutboxView",
     "MemoryReportStore",
+    "MemoryWriteLedger",
     "RecordingSanitizer",
     "ReportStoreCase",
     "ReportStoreFactory",

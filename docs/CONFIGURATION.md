@@ -119,6 +119,7 @@ boundaries.
 | `hq.beadyard_id` | HOST-local canonical HQ UUID pin; normal reads never create it. |
 | `hq.authority_anchor` | HOST-local path to the protected operator authority-anchor file. |
 | `hq.authority_mode` | HOST-only, frame-local HQ authority mode: `signed`, `trusted` or `inherit` (default). `inherit` follows the learned fleet default (`hq.default_authority_mode`), which is `signed` until the operator sets it. `trusted` is an opt-in, frame-local waiver (see `BH_HQ_AUTHORITY_MODE`; no signature, expiry or head binding, cordon and content still apply); doctor reports it as one WARN. Never settable at fleet scope. Also read from the `hq` section of the operator settings file. |
+| `hq.authority_expiry_recheck_s` | HOST-only. Seconds (non-negative number, default `300`) that a command reuses its last read of the HQ authority status for the expiry warning. `0` re-reads on every command. The first read of a process uses the default; the value is learned from the host config that read already loads. |
 | `hq.admission_policy` | Currently `manual`; frame admission remains an explicit protected action in a signed fleet. In a trusted fleet (`hq.default_authority_mode: trusted`) registering frames are open-admitted instead (see below). |
 | `hq.default_authority_mode` | FLEET default HQ authority mode for frames whose `hq.authority_mode` is `inherit`: `signed` (default; the key is absent) or `trusted`. Set it only with `bh hq authority mode-trusted` / `mode-signed` (`bh hq authority mode` shows it). Raising it to `trusted` needs the operator key once: frames learn it only from an operator-authorised read (on SQL HQ the authority re-signed against the new config head - the key is frame-relevant, so a key-less edit fences signed frames instead of downgrading them; on Git HQ the operator-signed config commit). Lowering it to `signed` always takes effect. The learned value is kept per host in `$BH_HOME/state/hq-fleet-authority-mode.json`. A trusted fleet also open-admits registering frames: `bh hq authority join` (run automatically on registration where the frame holds HQ authority-write access) records the frame's holder identity, instance and runtime key as an active incarnation with no grant, enrollment or operator key; cordon, drain and retire still apply. A frame pinned `hq.authority_mode: signed` refuses to work in a trusted fleet with an actionable message. **Mixed versions:** 0.23.x rejects the key (strict fleet schema) - upgrade every frame and operator host to 0.24.0 before `mode-trusted`; `mode-signed` removes the key again. **Trust delta:** in a trusted fleet anything that can reach HQ with write access and register can join. |
 | `hq.sql.enabled` | Selects SQL only when true and the reader/trust binding validates. |
@@ -418,7 +419,7 @@ enabling the plugin without the extra refuses naming `beadhive[github]`.
 | `enabled` | `false` | the plugin's own gate; off means no owner, no port and no network |
 | `base_url` | unset (public API) | GitHub Enterprise Server prefix: https, no userinfo, query or fragment |
 | `credential.sources` | `[env, gh]` | credential source names in precedence order; empty means anonymous |
-| `credential.per_invocation_cache` | `false` | keep the first token resolved in memory for the rest of ONE command instead of deriving it again for every GitHub operation (one `gh auth token`, about 70 ms, each; bh-25fvb). Opt-in, and the one exception to the never-cached credential: the token lives only in that command's token source, is never written or logged, and a token rotated or revoked while the command runs is not picked up until the next command. Applies to the intake verbs, `bh plugin tracker-github` probes and the tracker overlap re-pull; never to the host daemon's discovery timer, which keeps its adapters for the daemon's whole life and derives the token per operation whatever this key says. New in 0.35.5 (bh-25fvb): an older host rejects the key, so set it only once every host runs that release (the rotation order in [UPGRADING](UPGRADING.md#0354--0355--outbox-reopen-faster-batches-no-delivery-on-a-duplicate-of)) |
+| `credential.per_invocation_cache` | `false` | keep the first token resolved in memory for the rest of ONE command instead of deriving it again for every GitHub operation (one `gh auth token`, about 70 ms, each; bh-25fvb). Opt-in, and the one exception to the never-cached credential: the token lives only in that command's token source, is never written or logged, and a token rotated or revoked while the command runs is not picked up until the next command. Applies to the intake verbs, `bh plugin tracker-github` probes and the tracker overlap re-pull; never to the host daemon's discovery timer, which keeps its adapters for the daemon's whole life and derives the token per operation whatever this key says. The key governs only the token: a command's GitHub client and connection pool are reused for the whole command whatever this key says (the token is still resolved per operation, and sent per request, when the key is off; the daemon builds a client per operation), and the org's issue-field definitions are read once per command, not once per `issue.fields` write (re-read once when a field or option is missing from them or GitHub answers a `404`/`422`; bh-vy7dx, bh-n0h15). New in 0.35.5 (bh-25fvb): an older host rejects the key, so set it only once every host runs that release (the rotation order in [UPGRADING](UPGRADING.md#0354--0355--outbox-reopen-faster-batches-no-delivery-on-a-duplicate-of)) |
 | `read.issues.enabled` / `read.comments.enabled` | `false` | enable `issues.read` / `comments.read` |
 | `read.labels.enabled` | `false` | enable `labels.read`: read the repository's label definitions (name, color, description). A read, so no grant; new (bh-la587), see the rotation note below |
 | `read.include_closed` | `true` | scope within a read, not a feature switch |
@@ -560,6 +561,8 @@ and no key can enable or pre-approve a tracker write.
 | `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request. Only `approve` and `send` are gated by this flag: `render`, `discard` and `retry --kind labels` are local state moves that make no tracker request, so they are deliberately not blocked. A retried label operation still cannot reach GitHub without a new `approve` and `send`, and both of those are gated |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
 | `outbox.batch_recheck_seconds` | `0` | how long a one-process batch (`bh work outbox send-approved`, `bh work labels approve --batch`) reuses its primary-host check and epoch read before taking them again (bh-pc9rf). `0` (the default) re-checks on every hold of the lock, as a single `send` does; a positive value is an opt-in. Since bh-25fvb a batch takes ONE hold of the per-binding lock per report (not one per operation) and sends or approves that report's operations under it; every operation still spends its own single-use grant and writes its own write-ahead and receipt, and only the host check is shared. The check itself costs about 1.9 s per hold on the factory (13 s before), and `bh work labels sync` drafts inside the same batch scope. The factory sets `300` once every host runs 0.35.3 (an older host rejects the key) |
+| `outbox.send_writes_per_minute` | `80` | the most outbox write requests (`bh work outbox send` and `send-approved`) started in any minute, counted across every command and hive on this host in the host-level write ledger (bh-eqtxv). The unit is one GitHub write request: a `labels.change` is one `POST` plus one `DELETE` per removed label, and a rate-limit resend counts again. `1` to `80`; `80` is GitHub's documented limit of 80 content-generating requests a minute and the hard upper bound (a larger value is refused at validation, never clamped). There is no unpaced mode. See [Outbox write pacing](#outbox-write-pacing-bh-eqtxv) |
+| `outbox.send_writes_per_hour` | `500` | the most outbox write requests started in any rolling hour on this host, on the same terms. A batch whose next operation does not fit stops with `stopped: hourly_budget` (the rest stay approved; re-run once the hour frees), and a single `send` is refused `hourly_budget`. `1` to `500`; `500` is GitHub's documented hourly limit and the hard upper bound |
 | `comments.enabled` | `false` | ingest bound reports' issue comments: `bh work thread ingest` (needs `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`), `thread show` and `thread considered`. Reads only; off refuses naming this key |
 | `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |
 | `comments.purge_deleted_bodies` | `true` | drop a tombstoned comment's latest body (its digest is kept; not erasure) |
@@ -590,6 +593,121 @@ nothing; `--full` re-pulls every issue including closed ones and marks reports w
 `source_missing` in their snapshot (it never deletes or closes a report). The timer needs both
 `enabled` and `discovery.enabled`, a chosen `interval_seconds` and a wired tracker adapter (the
 daemon refuses to start otherwise); it never writes a tracker or the public store.
+
+### Where a batch spends its time: the `timings` block (bh-17g6b)
+
+`bh work labels sync`, `bh work labels approve --batch`, `bh work outbox send-approved` and
+`bh work outbox send` add a `timings` object to their `--json` output (and only there: the human
+output, the stored outbox record and its receipt are unchanged, so no wire shape changes). It is
+measured, not modeled, from one monotonic clock; a run on the factory records its own profile.
+
+```json
+"timings": {
+  "schema": 1,
+  "clock": "monotonic",
+  "startup": {"source": "interpreter", "ms": 3010.2, "interpreter_to_entry_ms": 40.1,
+              "entry_to_first_work_ms": 2970.1},
+  "total_ms": 91234.5,
+  "unaccounted_ms": 812.3,
+  "phases": {"config_load": {"count": 1, "ms": 1403.9}, "...": {"count": 0, "ms": 0.0}},
+  "holds": [{"binding": "github:acme/widget", "ms": 2410.0, "phases": {"host_check": {"count": 1, "ms": 1850.0}}}],
+  "holds_omitted": 0
+}
+```
+
+- `startup`: process start to the verb's first work. `interpreter_to_entry_ms` is the
+  interpreter's age when `bh` entered its CLI (Linux, from the kernel's start time; `null`
+  elsewhere), `entry_to_first_work_ms` the import cost of the command tree up to the verb, and
+  `ms` their sum. `source` is `interpreter` when both are known and `entry` when only the second
+  is; when neither is known (an injected clock) `source` is `entry` and the three `ms` fields are
+  `null`.
+- `total_ms`: the verb's first work to its output. `unaccounted_ms` is `total_ms` less every
+  phase below, the time nothing claims.
+- `phases`: always all of these keys, `count` occurrences and their `ms` total (a phase's time is
+  its own: a phase started inside another is taken out of the outer one, so the phases add up):
+
+  | phase | what it measures |
+  |---|---|
+  | `config_load` | the effective configuration load (the SQL read) |
+  | `wiring` | the plugin binding: the tracker adapter, identity and marker codec, before any request |
+  | `host_check` | the primary-host check and epoch read of an intake-lock hold, when it was evaluated |
+  | `host_check_reused` | holds of a batch that reused an earlier check (`outbox.batch_recheck_seconds`); count only |
+  | `intake_lock` | taking the per-binding `flock` |
+  | `store_open` | choosing and opening the store route (the Beads service session) |
+  | `store_read`, `store_write` | one round trip each to the report store (a `bd` call or a service request); session-cached reads make none |
+  | `github_token` | resolving the credential (`gh auth token`), once per GitHub operation |
+  | `github_client` | building (or, with the per-command client, fetching) the HTTP client: once per GitHub operation, or once per command when the adapter is command-scoped (bh-vy7dx) |
+  | `github_request` | each HTTP request (a retry counts again); the org's issue-field definitions are read once per command (bh-n0h15), so an `issue.fields` write is one request after the first |
+  | `pacer_wait` | the outbox write pacer waiting for its spacing or for a full minute to free (`outbox.send_writes_per_minute`, bh-eqtxv); `outbox send` and `send-approved` only |
+
+- `holds`: one entry per hold of the intake lock, that is per report, not per outbox operation (a
+  batch takes one per report and sends or approves that report's operations under it; a single
+  send is one). A hold that was refused (not the primary host, or busy) is listed too, with what it
+  spent before refusing. Each has the hold's own `ms` and
+  the non-empty phases inside it, so a batch shows what each report cost. At most 500 are listed;
+  `holds_omitted` counts the rest.
+
+The collector is installed for the command and removed with it, and the seams that feed it (the
+intake lock, the report store's routes and the tracker adapter's transport) do nothing when it
+is absent, so a command that is not measuring, and every daemon iteration, pays a context
+lookup at each seam (about four per hold).
+The `-m perf` model (`tests/test_intake_outbox_batch_perf.py`) reads its latencies from the
+recorded profile `tests/fixtures/intake_batch_profile.json`: put a real batch's numbers there.
+
+### Outbox write pacing (bh-eqtxv)
+
+`bh work outbox send` and `send-approved` pace every GitHub **write request** they make, not every
+operation, through one host-level **write ledger** shared by every command and hive on the host:
+at most `outbox.send_writes_per_minute` (default 80) starts in any minute and
+`outbox.send_writes_per_hour` (default 500) in any rolling hour. Pacing is on by default and has
+no off switch; the keys can only lower it. Sends stay serial, one report at a time.
+
+- **The ledger:** `$XDG_STATE_HOME/beadhive/github-writes/<api host>.ledger` (falling back to
+  `~/.local/state/...`; `<api host>` is `api.github.com`, or the GHES host of
+  `plugins.tracker-github.base_url`), one wall-clock entry per request, and its permanent lock file
+  `<api host>.ledger.lock`. Both are created on first use. Deleting the ledger forgets the last
+  hour; both are safe to delete while no send runs. A ledger that cannot be read is reported once
+  on stderr and counted as a full minute (one minute's wait), never as empty.
+- **Before each operation's write-ahead** the batch checks its stop, then the operation's expected
+  requests must fit in the hour (1, or `1 + removals` for a labels change with additions), and it
+  waits for the spacing (about 0.75 s at 80 a minute) and for room in the minute. **Every request
+  is recorded in the ledger as it starts**, so the limits hold for the requests GitHub receives,
+  however long the write-ahead takes. A request is never refused mid-operation: over the hour it
+  is recorded and the batch stops after it. A ledger that cannot be written stops the batch with
+  `error`.
+- **The bounds, exactly** (derived from the code and each pinned by a test):
+
+  - **Minute: at most 80 request starts in any 60 s on the host, strictly**, across every command
+    and hive: each request start is one locked ledger step that waits while the last 60 s hold 80.
+    Two exceptions: a **forward step of the wall clock** makes the ledger's entries look older, so
+    in the minute after the step **at most 80 extra (100% over) may start, once per step** (a step
+    back only delays); and a ledger that **stops being writable mid-operation** lets that one
+    operation's remaining requests go unrecorded (at most its own requests, below), then the batch
+    stops with `error`.
+  - **Hour: at most 500 request starts in any rolling hour**, except that a request inside an
+    operation is never refused. **One command alone** goes over by at most its in-flight
+    operation's **unexpected** requests (its expected ones are checked before the write-ahead):
+    3 rate-limit resends per request plus, for `issue.fields`, one retry on stale field ids with
+    its own 3 resends, so **at most 7 extra (1.4% over) for `issue.fields`, 3 × (1 + removals) for
+    `labels.change`, 3 (0.6%) for every other kind**. **k commands racing** on the shared ledger
+    can each also start their own in-flight operation's requests past the same last free slot, so
+    **at most the sum of their in-flight operations' requests plus those extras** (two other
+    one-request operations: 2 extra, 0.4%). Every request over the hour is recorded and stops its
+    command with `hourly_budget`.
+- **Stops** (`stopped` in the batch JSON is a reason code, its text in `stopped_detail`):
+  `not_primary`; `rate_limited` (the first rate-limit answer GitHub gives, including
+  `retry-after: 0`; the request in flight finishes its own retries); `hourly_budget`;
+  `interrupted` (the first `SIGINT`: the operation in flight finishes and writes its outcome,
+  a second `SIGINT` aborts as before); `error` (an unexpected failure in one operation; the
+  command exits non-zero). Every operation not started is listed in `failed` with the stop
+  reason and stays `approved` with its grant, so re-running `send-approved` continues.
+- **Output:** the batch JSON gains `"pacing": {"writes_per_minute", "writes_per_hour",
+  "requests", "waited_seconds", "budget_frees_at"}` (the last is the epoch second the hour frees
+  enough after an `hourly_budget` stop, else `null`), and the `timings` block a `pacer_wait`
+  phase.
+- **What it does not cover:** other hosts (the ledger is host-local), bh's own non-outbox GitHub
+  writes (label definitions), `gh` and the web interface on the same account. The stop on the
+  first rate limit is the backstop for those.
 
 The milestone and outbox keys only ever **draft**: a merge or a verified release leaves a `drafted`
 record for an operator to render, approve and send; no key sends, approves or mints a grant, and a

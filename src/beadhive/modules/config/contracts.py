@@ -1779,6 +1779,16 @@ class HqConfig(_Section):
             "one is set. BH_HQ_AUTHORITY_MODE, when set, overrides this value."
         ),
     )
+    authority_expiry_recheck_s: float = Field(
+        300.0,
+        ge=0,
+        description=(
+            "HOST-only. Seconds a command reuses its last read of the HQ authority status for "
+            "the expiry warning (default 300). `0` re-reads on every command. The first read "
+            "of a process uses the default; the value is learned from the host config that "
+            "read loads anyway."
+        ),
+    )
     default_authority_mode: Literal["signed", "trusted"] = Field(
         "signed",
         description=(
@@ -3338,6 +3348,13 @@ class IntakeNeedsInfoConfig(_QuietSection):
     )
 
 
+#: GitHub's documented general content-creation limits (80 a minute, 500 an hour): the defaults
+#: and the hard upper bounds of the outbox write pace (``bh-eqtxv``). The intake module's
+#: ``MAX_WRITES_PER_MINUTE`` / ``MAX_WRITES_PER_HOUR`` hold the same figures (a test pins them).
+OUTBOX_MAX_WRITES_PER_MINUTE = 80
+OUTBOX_MAX_WRITES_PER_HOUR = 500
+
+
 class IntakeOutboxConfig(_QuietSection):
     """``intake.external.outbox`` — the per-hive opt-in for communication records.
 
@@ -3347,6 +3364,9 @@ class IntakeOutboxConfig(_QuietSection):
     the ``labels.change`` operation: without it (and ``enabled``) no label operation can be
     approved or sent, whatever the adapter's labels capability allows. ``batch_recheck_seconds``
     bounds how long a one-process batch reuses its host check (``bh-pc9rf``).
+    ``send_writes_per_minute`` / ``send_writes_per_hour`` pace every outbox write request on the
+    host (``bh-eqtxv``): on by default at GitHub's documented content-creation limits, which are
+    also their hard upper bounds (a safety limit: a larger value is refused, never clamped).
     """
 
     enabled: StrictBool = Field(
@@ -3374,6 +3394,43 @@ class IntakeOutboxConfig(_QuietSection):
             "host runs 0.35.3)."
         ),
     )
+    send_writes_per_minute: int = Field(
+        OUTBOX_MAX_WRITES_PER_MINUTE,
+        json_schema_extra={"minimum": 1, "maximum": OUTBOX_MAX_WRITES_PER_MINUTE},
+        description=(
+            "The most outbox write requests (`bh work outbox send` and `send-approved`) started "
+            "in any minute, counted across every command and hive on this host in the host-level "
+            "write ledger. 1 to 80; 80 (the default) is GitHub's documented limit of 80 "
+            "content-generating requests a minute, so a larger value is refused. There is no "
+            "unpaced mode."
+        ),
+    )
+    send_writes_per_hour: int = Field(
+        OUTBOX_MAX_WRITES_PER_HOUR,
+        json_schema_extra={"minimum": 1, "maximum": OUTBOX_MAX_WRITES_PER_HOUR},
+        description=(
+            "The most outbox write requests started in any rolling hour on this host, on the "
+            "same terms; a batch whose next operation does not fit stops with `hourly_budget` "
+            "and a re-run continues once the hour frees. 1 to 500; 500 (the default) is GitHub's "
+            "documented limit of 500 content-generating requests an hour, so a larger value is "
+            "refused."
+        ),
+    )
+
+    @field_validator("send_writes_per_minute", "send_writes_per_hour")
+    @classmethod
+    def _github_write_limit(cls, value, info):
+        per_minute = info.field_name == "send_writes_per_minute"
+        bound = OUTBOX_MAX_WRITES_PER_MINUTE if per_minute else OUTBOX_MAX_WRITES_PER_HOUR
+        window = "a minute" if per_minute else "an hour"
+        if not 1 <= value <= bound:
+            raise ValueError(
+                f"{info.field_name} must be from 1 to {bound}: GitHub documents at most {bound} "
+                f"content-generating requests {window} and warns that writing on while rate "
+                "limited may get the integration banned (a safety limit: never clamped, and there "
+                "is no unpaced mode)"
+            )
+        return value
 
 
 #: The label dimensions the registry-derived projection may name (the registry's own axes).

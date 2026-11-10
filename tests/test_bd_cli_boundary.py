@@ -78,9 +78,10 @@ RAW_BD_INFRASTRUCTURE_SCOPES = {
         # routing through the bd adapter would close that cycle. Scoped to the one runner.
         "_bd",
     },
-    "cli.py": {
-        # Passthrough command-name vocabulary, not a spawned argv; keeping it scoped prevents a
-        # new literal ``bd`` process command elsewhere in the CLI from inheriting an exemption.
+    "cli_root.py": {
+        # Passthrough command-name vocabulary of the root callback (moved from cli.py, bh-lwz8a),
+        # not a spawned argv; keeping it scoped prevents a new literal ``bd`` process command
+        # elsewhere in the CLI root from inheriting an exemption.
         "_resolve_hive_routing_mode",
     },
 }
@@ -232,9 +233,9 @@ def test_bd_callable_and_assignment_aliases_cannot_hide_inline_routes() -> None:
 
 def test_cli_raw_bd_literal_exception_is_function_scoped() -> None:
     source = 'def application():\n    command = ["bd", "ready"]\n'
-    assert _raw_bd_argv(source, "cli.py") == ["cli.py:2"]
+    assert _raw_bd_argv(source, "cli_root.py") == ["cli_root.py:2"]
     vocabulary = 'def _resolve_hive_routing_mode():\n    names = ("bd", "git")\n'
-    assert _raw_bd_argv(vocabulary, "cli.py") == []
+    assert _raw_bd_argv(vocabulary, "cli_root.py") == []
 
 
 def test_generic_package_forwarders_cannot_hide_arbitrary_routes() -> None:

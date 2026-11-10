@@ -596,3 +596,50 @@ def test_a_close_through_the_root_view_needs_a_close_grant():
     )
     assert adapter.canonicals == [None, canonical]  # the canonical passes through the view
     assert not isinstance(tracker_root.narrow(adapter, frozenset()), IssueCloser)
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_the_command_scope_reaches_the_adapter_factory(scoped):
+    """``command_scoped`` is how an adapter learns it may keep one client and per-command memos."""
+    seen: list[bool] = []
+    real = BUILTIN_TRACKER_PROVIDERS[0]
+
+    def loader(request):
+        seen.append(request.command_scoped)
+        return real.loader(request)
+
+    row = tracker_root.TrackerAdapterProvider(
+        real.plugin_id, real.install_hint, loader, requires=real.requires
+    )
+    adapters = TrackerAdapters(
+        plugins={"tracker-github": enabled_plugin()},
+        plugin_kernel=None,
+        token_source=lambda: None,
+        sleep=lambda _s: None,
+        providers=(row,),
+        command_scoped=scoped,
+    )
+    adapters.for_store(entry(), requested=READ)
+
+    assert seen == [scoped]
+
+
+def test_a_root_is_not_command_scoped_unless_told_so():
+    seen: list[bool] = []
+    real = BUILTIN_TRACKER_PROVIDERS[0]
+
+    def loader(request):
+        seen.append(request.command_scoped)
+        return real.loader(request)
+
+    row = tracker_root.TrackerAdapterProvider(
+        real.plugin_id, real.install_hint, loader, requires=real.requires
+    )
+    TrackerAdapters(
+        plugins={"tracker-github": enabled_plugin()},
+        plugin_kernel=None,
+        token_source=lambda: None,
+        providers=(row,),
+    ).for_store(entry(), requested=READ)
+
+    assert seen == [False]  # the safe default is the resident one

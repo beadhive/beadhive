@@ -264,6 +264,14 @@ def add_file_sink(path: str | Any) -> None:
     logging.getLogger().addHandler(handler)
 
 
+def ensure_configured() -> None:
+    """Configure the pipeline unless this process already has: the composition-root seam that
+    makes stdlib records (``httpx`` and kin) render at ``log.level`` / ``log.format`` before any
+    structlog call happens to configure it (bh-lwz8a)."""
+    if not _configured:
+        configure()
+
+
 def get_logger(name: str | None = None) -> Any:
     """Return a structlog bound logger, configuring the pipeline on first use.
 
@@ -271,6 +279,5 @@ def get_logger(name: str | None = None) -> Any:
     means importing ws never forces logging setup, but the first diagnostic call gets a fully
     wired stderr pipeline reflecting current config.
     """
-    if not _configured:
-        configure()
+    ensure_configured()
     return structlog.get_logger(name)

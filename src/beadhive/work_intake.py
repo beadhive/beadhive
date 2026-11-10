@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import typer
 
-from . import identity, intake_services, otel, registry, triage
+from . import identity, intake_services, otel, phase_timings, registry, triage
 from .config_consumer_ports import work_settings as config
 
 
@@ -832,12 +833,25 @@ def _outbox_payload(call, verb: str) -> dict:
         payload["results"] = [_outbox_result_row(r) for r in value.results]
         payload["failed"] = [_batch_failure_row(f) for f in value.failed]
         payload["sent"] = len(value.sent)
-        payload["stopped"] = value.stopped
+        payload["stopped"] = value.stopped  # a reason code (bh-eqtxv), its text apart
+        payload["stopped_detail"] = value.stopped_detail
+        if value.pacing is not None:
+            payload["pacing"] = _pacing_row(value.pacing)
     elif isinstance(value, tuple):
         payload["results"] = [_outbox_result_row(r) for r in value]
     else:
         payload["results"] = [_outbox_result_row(value)]
     return payload
+
+
+def _pacing_row(pacing) -> dict:
+    return {
+        "writes_per_minute": pacing.writes_per_minute,
+        "writes_per_hour": pacing.writes_per_hour,
+        "requests": pacing.requests,
+        "waited_seconds": pacing.waited_seconds,
+        "budget_frees_at": pacing.budget_frees_at,
+    }
 
 
 def _batch_failure_row(failure) -> dict:
@@ -861,7 +875,15 @@ def _batch_send_lines(outcome) -> list[str]:
             f"({failure.reason}): {failure.detail}"
         )
     if outcome.stopped:
-        lines.append(f"✗ stopped, the rest not tried: {outcome.stopped}")
+        lines.append(
+            f"✗ stopped ({outcome.stopped}), the rest not started: {outcome.stopped_detail}"
+        )
+    if outcome.pacing is not None and outcome.pacing.requests:
+        pacing = outcome.pacing
+        lines.append(
+            f"paced: {pacing.requests} write request(s) at {pacing.writes_per_minute} a minute "
+            f"and {pacing.writes_per_hour} an hour, waited {pacing.waited_seconds:.1f}s"
+        )
     if not outcome.results and not outcome.failed:
         lines.append("nothing approved to send")
     else:
@@ -916,12 +938,16 @@ def _stored_lines(stored) -> list[str]:
     return lines
 
 
-def render_outbox(call, verb: str, as_json: bool) -> None:
-    """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal."""
+def render_outbox(call, verb: str, as_json: bool, timings=None) -> None:
+    """Print one ``bh work outbox <verb>`` result (human or ``--json``); non-zero on a refusal.
+    ``timings`` (``--json`` only) adds the measured ``timings`` block (``bh-17g6b``)."""
     value = call.value
     batch_failed = isinstance(value, intake_services.BatchSendOutcome) and not value.ok
     if as_json:
-        typer.echo(json.dumps(_outbox_payload(call, verb), sort_keys=True))
+        payload = _outbox_payload(call, verb)
+        if timings is not None:
+            payload["timings"] = timings.document()
+        typer.echo(json.dumps(payload, sort_keys=True))
         if call.code or batch_failed:
             raise typer.Exit(call.code or 1)
         return
@@ -964,11 +990,21 @@ def render_outbox(call, verb: str, as_json: bool) -> None:
         raise typer.Exit(1)
 
 
-def _outbox(verb: str, hive: str, as_json: bool, run) -> None:
-    cfg = config.load()
+@contextlib.contextmanager
+def _measured(as_json: bool) -> Iterator[phase_timings.Timings | None]:
+    """The measured ``timings`` collector of a batch verb's ``--json`` run (``bh-17g6b``), installed
+    for the command and gone after it; nothing when the output is for a person."""
+    timings = phase_timings.Timings() if as_json else None
+    with phase_timings.recording(timings):
+        yield timings
+
+
+def _outbox(verb: str, hive: str, as_json: bool, run, timings=None) -> None:
+    with phase_timings.phase("config_load"):
+        cfg = config.load()
     entry = _import_entry(cfg, hive)
     call = run(cfg, entry, Path(registry.hive_dir(entry)))
-    render_outbox(call, verb, as_json)
+    render_outbox(call, verb, as_json, timings)
 
 
 def outbox_draft(bead: str, text: str, as_: str = "", hive: str = "", as_json: bool = False):
@@ -1067,15 +1103,17 @@ def outbox_send(
     outbox_id: str, kind: str = "", as_: str = "", hive: str = "", as_json: bool = False
 ):
     """Send one approved operation (write-ahead, receipt)."""
-    actor = identity.resolve_actor(as_)
-    _outbox(
-        "send",
-        hive,
-        as_json,
-        lambda cfg, entry, directory: intake_services.outbox_send(
-            cfg, entry, directory, outbox_id, kind, actor, hive=hive
-        ),
-    )
+    with _measured(as_json) as timings:
+        actor = identity.resolve_actor(as_)
+        _outbox(
+            "send",
+            hive,
+            as_json,
+            lambda cfg, entry, directory: intake_services.outbox_send(
+                cfg, entry, directory, outbox_id, kind, actor, hive=hive
+            ),
+            timings,
+        )
 
 
 def outbox_send_approved(
@@ -1085,16 +1123,53 @@ def outbox_send_approved(
     hive: str = "",
     as_json: bool = False,
 ):
-    """Send every approved operation in one process (``bh-pc9rf``)."""
-    actor = identity.resolve_actor(as_)
-    _outbox(
-        "send-approved",
-        hive,
-        as_json,
-        lambda cfg, entry, directory: intake_services.outbox_send_approved(
-            cfg, entry, directory, kind, beads, actor, hive=hive
-        ),
-    )
+    """Send every approved operation in one process (``bh-pc9rf``), paced; the first ``SIGINT``
+    drains the operation in flight and stops the batch (``bh-eqtxv``)."""
+    with _measured(as_json) as timings, interrupt_stop() as stop:
+        actor = identity.resolve_actor(as_)
+        _outbox(
+            "send-approved",
+            hive,
+            as_json,
+            lambda cfg, entry, directory: intake_services.outbox_send_approved(
+                cfg, entry, directory, kind, beads, actor, hive=hive, stop=stop
+            ),
+            timings,
+        )
+
+
+@contextlib.contextmanager
+def interrupt_stop() -> Iterator[intake_services.SendStop]:
+    """The batch's stop, set by the first ``SIGINT`` (``bh-eqtxv``; the composition root's job:
+    the intake application installs no handler).
+
+    Installed only in the main thread (a signal handler can be set nowhere else). The first
+    ``SIGINT`` sets the stop with ``interrupted`` and puts back ``signal.default_int_handler``, so
+    a second one raises ``KeyboardInterrupt`` as before. On the way out (a normal end, a stop or an
+    exception) the handler that was installed before the call is restored, whatever it was."""
+    import signal
+    import threading
+
+    stop = intake_services.SendStop()
+    if threading.current_thread() is not threading.main_thread():
+        yield stop
+        return
+
+    def first(_signum, _frame) -> None:
+        stop.set(
+            intake_services.StopReason.INTERRUPTED,
+            "interrupted: the operation in flight finished and no further operation started; "
+            "run send-approved again to continue",
+        )
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    previous = signal.signal(signal.SIGINT, first)
+    try:
+        yield stop
+    finally:
+        signal.signal(
+            signal.SIGINT, previous if previous is not None else signal.default_int_handler
+        )
 
 
 def _backfill_row(item) -> dict:
@@ -1752,13 +1827,18 @@ def _label_sync_line(item, dry_run: bool = False) -> str:
     return f"  {item.report}: {'; '.join(parts)}"
 
 
-def _result(verb: str, hive: str, as_json: bool, call, payload, lines, failed=False) -> None:
-    """Print one labels or triage verb (human or ``--json``); non-zero on a refusal or failure."""
+def _result(
+    verb: str, hive: str, as_json: bool, call, payload, lines, failed=False, timings=None
+) -> None:
+    """Print one labels or triage verb (human or ``--json``); non-zero on a refusal or failure.
+    ``timings`` (``--json`` only) adds the measured ``timings`` block (``bh-17g6b``)."""
     if as_json:
         body = _envelope(call, verb)
         if not call.code:
             body.update(payload(call.value))
         body["ok"] = not call.code and not failed
+        if timings is not None:
+            body["timings"] = timings.document()
         _emit(body, call.code or (1 if failed else 0))
         return
     if call.code:
@@ -1770,7 +1850,8 @@ def _result(verb: str, hive: str, as_json: bool, call, payload, lines, failed=Fa
 
 
 def _hive_call(hive: str, run):
-    cfg = config.load()
+    with phase_timings.phase("config_load"):
+        cfg = config.load()
     entry = _import_entry(cfg, hive)
     return cfg, entry, run(cfg, entry, Path(registry.hive_dir(entry)))
 
@@ -1786,6 +1867,23 @@ def labels_sync(
     as_json: bool = False,
 ):
     """``bh work labels sync``: converge the bound issues' owned labels by drafting."""
+    with _measured(as_json) as timings:
+        _labels_sync(
+            report, all_, include_closed, dry_run, prune_unmapped, as_, hive, as_json, timings
+        )
+
+
+def _labels_sync(
+    report: str,
+    all_: bool,
+    include_closed: bool,
+    dry_run: bool,
+    prune_unmapped: bool,
+    as_: str,
+    hive: str,
+    as_json: bool,
+    timings,
+):
     if report and all_:
         typer.echo("✗ pass a <report> or --all, not both", err=True)
         raise typer.Exit(2)
@@ -1829,7 +1927,7 @@ def labels_sync(
     failed = outcome is not None and any(
         not (outcome.dry_run and item.undefined) for item in outcome.errors
     )
-    _result("labels sync", hive, as_json, call, label_sync_row, lines, failed)
+    _result("labels sync", hive, as_json, call, label_sync_row, lines, failed, timings)
 
 
 def labels_define(
@@ -1907,6 +2005,11 @@ def labels_review(hive: str = "", as_json: bool = False):
 
 def labels_approve(batch: str, as_: str = "", hive: str = "", as_json: bool = False):
     """``bh work labels approve --batch <digest>``: one single-use grant per issue."""
+    with _measured(as_json) as timings:
+        _labels_approve(batch, as_, hive, as_json, timings)
+
+
+def _labels_approve(batch: str, as_: str, hive: str, as_json: bool, timings):
     actor = identity.resolve_actor(as_)
     _cfg, _entry, call = _hive_call(
         hive,
@@ -1937,7 +2040,7 @@ def labels_approve(batch: str, as_: str = "", hive: str = "", as_json: bool = Fa
         return out
 
     failed = bool(call.value is not None and call.value.failed)
-    _result("labels approve", hive, as_json, call, label_batch_outcome_row, lines, failed)
+    _result("labels approve", hive, as_json, call, label_batch_outcome_row, lines, failed, timings)
 
 
 # -- review-gated triage -------------------------------------------------------------------------

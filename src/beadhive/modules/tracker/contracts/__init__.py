@@ -22,6 +22,8 @@ from .errors import (
     UrlNotRecognized,
     WriteOutcomeUnknown,
 )
+from .observe import Observer, observe_begin, observe_call, observe_end, observing
+from .pacing import WaitObserver, WriteGate
 from .ports import (
     CommentWriter,
     IssueCloser,
@@ -121,6 +123,7 @@ __all__ = [
     "LabelWriter",
     "MarkerCodec",
     "NotVisible",
+    "Observer",
     "Operation",
     "OperationNotEnabled",
     "OtherProject",
@@ -145,9 +148,15 @@ __all__ = [
     "TransientFailure",
     "Tri",
     "UrlNotRecognized",
+    "WaitObserver",
+    "WriteGate",
     "WriteGrant",
     "WriteOutcomeUnknown",
     "WriteReceipt",
     "check_close",
     "join_marker_line",
+    "observe_begin",
+    "observe_call",
+    "observe_end",
+    "observing",
 ]
