@@ -919,6 +919,59 @@ def test_submit_tolerates_container_refresh_merge(hive, fakebd):
     assert fakebd.states["mr-1.2"]["review"] == "pending"
 
 
+def _child_with_refresh_merge(hive, fakebd, upstream_commits):
+    """A child of a container that resolved divergence by merging the integration branch into
+    itself (bh-sl7w0); main brought `upstream_commits` commits the container base lacks."""
+    _kicked_off_pair(fakebd)
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    wt = _wt_of(hive, "mr-1.1")
+    _commit(wt, "feat: own first", fname="own1.txt")
+    for i in range(upstream_commits):
+        _commit(hive.main, f"fix: upstream {i}", fname=f"up{i}.txt")
+    _git(
+        "merge",
+        "--no-ff",
+        "-q",
+        "-m",
+        "chore(merge): refresh wt/bead/epic/mr-1 from main",
+        "main",
+        cwd=wt,
+    )
+    return wt
+
+
+def test_history_counts_only_first_parent_for_refresh_merge(hive, fakebd):
+    _child_with_refresh_merge(hive, fakebd, upstream_commits=12)
+    entry = registry.resolve_hive(config.load(), "myrepo")
+    branch, base = "wt/bead/issue/mr-1.1", "wt/bead/epic/mr-1"
+    assert worktree.history(entry, branch, base, first_parent=True)[0] == 2  # own + merge
+    assert worktree.history(entry, branch, base)[0] == 2 + 12
+
+
+def test_submit_passes_with_refresh_merge_of_many_upstream_commits(hive, fakebd):
+    wt = _child_with_refresh_merge(hive, fakebd, upstream_commits=12)
+    _commit(wt, "feat: own second", fname="own2.txt")
+    work.submit(bead="mr-1.1", hive="myrepo")  # 12 upstream commits > max_commits=10
+    assert fakebd.states["mr-1.1"]["review"] == "pending"
+
+
+def test_submit_still_rejects_too_many_own_commits_after_refresh(hive, fakebd):
+    wt = _child_with_refresh_merge(hive, fakebd, upstream_commits=3)
+    for i in range(11):
+        _commit(wt, f"feat: own extra {i}", fname=f"extra{i}.txt")
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-1.1", hive="myrepo")
+    assert "review" not in fakebd.states.get("mr-1.1", {})
+
+
+def test_submit_still_rejects_nonconventional_own_commit_after_refresh(hive, fakebd):
+    wt = _child_with_refresh_merge(hive, fakebd, upstream_commits=3)
+    _commit(wt, "wip junk", fname="junk.txt")
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-1.1", hive="myrepo")
+    assert "review" not in fakebd.states.get("mr-1.1", {})
+
+
 def _second_clone(hive, tmp_path):
     """A second clone of the same bare remote — lets a test advance `origin/main` independently
     of `hive.main`'s local `main`, to build a behind or diverged scenario."""

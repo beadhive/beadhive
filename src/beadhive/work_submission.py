@@ -466,9 +466,11 @@ def impl__guard_submit_ready(api, entry, target, branch, bead, cfg, data=None):
     base = api.worktree.integration_base(
         entry, bead, api.config.integration_branch(cfg, entry), data
     )
-    count, subjects = api.worktree.history(entry, branch, base)
-    limit = api.config.max_commits(cfg, entry)
     data = data if data is not None else api.bd.show(bead, api.registry.hive_dir(entry))
+    # Leaf budget counts only the child's own first-parent line (bh-sl7w0); an epic is audited
+    # over its whole reviewed graph by epic_history_policy, so it keeps the full range.
+    count, subjects = api.worktree.history(entry, branch, base, first_parent=not api._is_epic(data))
+    limit = api.config.max_commits(cfg, entry)
     if api._is_epic(data):
         policy = api.work_logic.epic_history_policy(
             entry,
