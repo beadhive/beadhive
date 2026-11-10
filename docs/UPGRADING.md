@@ -8,8 +8,97 @@ exists for the releases where "read the changelog" isn't enough to act on.
 ## 0.35.7 → 0.35.8 — outbox speed (bh-womf3)
 
 One new HOST-only key, `hq.authority_expiry_recheck_s` (default `300`, `0` re-reads on every
-command), sets how often a command re-reads the authority status for the expiry warning; there is
-no state change. The changes below make an outbox batch, or a single send, cheaper or measurable.
+command), sets how often a command re-reads the authority status for the expiry warning. Two new
+outbox keys pace every outbox write (on by default, below), and two new host-level files hold the
+pace's ledger; no record or document changes shape. The changes below make an outbox batch, or a
+single send, cheaper or measurable, and one paces and stops it.
+
+### Every outbox write is paced: 80 a minute, 500 an hour, and a stop on the first rate limit (bh-eqtxv)
+
+**Behaviour change on upgrade, with no config change.** `bh work outbox send` and `send-approved`
+pace every GitHub **write request** they make (not every operation: a `labels.change` is one `POST`
+plus one `DELETE` per removed label, and a rate-limit resend counts again), counted across every
+command and every hive on the host. Design:
+[`intake-outbox-paced-send-design.md`](design/intake-outbox-paced-send-design.md).
+
+- **Every outbox write request is paced at 80 a minute** (GitHub's documented limit of 80
+  content-generating requests a minute), counted in a host-level ledger that records each
+  request as it starts, so at most 80 start in any 60 s on the host (the exact bounds and
+  their exceptions are below). A 270-operation batch
+  that would take about 164 s after this release's other changes takes about 210 s (about 3.5
+  minutes); today's batch, before them, starts far fewer than 80 a minute and is not slowed in
+  practice. Sends stay serial.
+- **A batch stops before an operation whose requests do not fit in 500 an hour**, with
+  `stopped: hourly_budget`; the outcome says when enough of the hour frees
+  (`pacing.budget_frees_at`, and the time in `stopped_detail`). It never waits the hour out.
+- **A batch stops on the first rate limit** GitHub answers (`stopped: rate_limited`), including a
+  `retry-after: 0`; the request that saw it finishes its own retries. Before, the operation was
+  reported and the batch went on.
+- **A batch stops on the first `SIGINT`** after the operation in flight finishes and writes its
+  outcome (`stopped: interrupted`; a second `SIGINT` aborts as before), and **on an unexpected
+  error in one operation** (`stopped: error`, the command exits non-zero; that operation may be
+  left `sending`, which the next run recovers and `bh work outbox reconcile` settles). Before,
+  both aborted the whole batch.
+- **JSON contract change:** `stopped` is now a **reason code** (`not_primary`, `rate_limited`,
+  `hourly_budget`, `interrupted`, `error`) and its text moves to a new `stopped_detail`. Before,
+  `stopped` was the `not_primary` detail text. Scripts that test `stopped` for truthiness keep
+  working; scripts that parse its text do not. The batch JSON also gains
+  `"pacing": {"writes_per_minute", "writes_per_hour", "requests", "waited_seconds",
+  "budget_frees_at"}`, and the `timings` block a `pacer_wait` phase.
+- **Operations not started are now listed in `failed`** with the stop reason (before, a
+  `not_primary` stop left later reports out of the outcome). Every one stays `approved` with its
+  grant, so **re-running `send-approved` continues where the batch stopped**, with no new approval.
+- A single `bh work outbox send` can be refused with a new refusal reason, **`hourly_budget`**,
+  when its request does not fit in the hour.
+- **Two new host-level files**, created on first use: the write ledger
+  `$XDG_STATE_HOME/beadhive/github-writes/<api host>.ledger` (falling back to
+  `~/.local/state/beadhive/github-writes/`; `<api host>` is `api.github.com`, or the GHES host of
+  `plugins.tracker-github.base_url`) and its lock `<api host>.ledger.lock`. Deleting the ledger
+  forgets the last hour; both are safe to delete while no send runs. An unreadable ledger is
+  reported once and counted as a full minute; a ledger that cannot be written stops the batch
+  with `stopped: error` before any further write-ahead (a single `send` fails `store_error`).
+
+**The bounds, exactly** (derived from the code and each pinned by a test):
+
+- **Minute: at most 80 request starts in any 60 s on the host, strictly**, across every command
+  and hive: each request start is one locked ledger step that waits while the last 60 s hold 80.
+  Two exceptions: a **forward step of the wall clock** makes the ledger's entries look older, so
+  in the minute after the step **at most 80 extra (100% over) may start, once per step** (a step
+  back only delays); and a ledger that **stops being writable mid-operation** lets that one
+  operation's remaining requests go unrecorded (at most its own requests, below), then the batch
+  stops with `error`.
+- **Hour: at most 500 request starts in any rolling hour**, except that a request inside an
+  operation is never refused. **One command alone** goes over by at most its in-flight
+  operation's **unexpected** requests (its expected ones are checked before the write-ahead):
+  3 rate-limit resends per request plus, for `issue.fields`, one retry on stale field ids with
+  its own 3 resends, so **at most 7 extra (1.4% over) for `issue.fields`, 3 × (1 + removals) for
+  `labels.change`, 3 (0.6%) for every other kind**. **k commands racing** on the shared ledger
+  can each also start their own in-flight operation's requests past the same last free slot, so
+  **at most the sum of their in-flight operations' requests plus those extras** (two other
+  one-request operations: 2 extra, 0.4%). Every request over the hour is recorded and stops its
+  command with `hourly_budget`.
+
+**The keys** (`intake.external.outbox`, per hive; each command applies its own hive's values to the
+shared host count):
+
+| Key | Default | Allowed |
+|---|---:|---|
+| `send_writes_per_minute` | `80` | `1` to `80` |
+| `send_writes_per_hour` | `500` | `1` to `500` |
+
+These are safety limits, not tuning knobs: a value above GitHub's documented figures is **refused
+at validation** (never clamped), and there is **no unpaced mode** (no `0`). Lower values stay
+configurable (an account shared with heavy web-interface use, a sandbox). The cap covers this
+host's outbox writes only, not other hosts, bh's label-definition writes, `gh` or the web
+interface on the same account; the stop on the first rate limit is the backstop for those.
+
+**Rotation.** The defaults apply as soon as a host runs 0.35.8, with nothing written. Only a hive
+that wants **lower** values sets the keys, and because config sections forbid unknown keys it does
+so only after every host that loads the hive's config runs 0.35.8 (a fleet config write: it needs
+the operator's binding). **Rollback:** lowering the keys is the only knob; downgrading a host below
+0.35.8 restores unpaced sends there (remove the keys first if they were set). No wire change: the
+operation catalog is unchanged, so the wire stays at 2.25.0; the intake outbox document keeps
+schema 1.
 
 ### One GitHub client and one field-definitions read per command
 

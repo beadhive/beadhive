@@ -769,7 +769,13 @@ primary host stops it with `BatchSendOutcome.stopped`, keeping what was sent). I
 hold per report since bh-25fvb; reuse is opt-in). Tests:
 `tests/unit/modules/intake/test_intake_outbox_batch_send.py`,
 `tests/test_intake_outbox_batch_root.py` and the perf check
-`tests/test_intake_outbox_batch_perf.py` (`-m perf`).
+`tests/test_intake_outbox_batch_perf.py` (`-m perf`). Since 0.35.8 (`bh-eqtxv`) every write request
+is paced through the `WritePacer` (`application/pacing.py`) over the host-level `WriteLedger` port
+(the root's `FileWriteLedger`, `adapters/intake/write_ledger.py`): the sender admits each operation
+right before its write-ahead, and the same pacer is the GitHub adapter's transport write gate and
+wait observer. The batch has one `SendStop`, and `stopped` is a reason code (`not_primary`,
+`rate_limited`, `hourly_budget`, `interrupted`, `error`) with `stopped_detail`; the CLI composition
+root alone installs the `SIGINT` handler.
 
 `bh-25fvb` made the per-record cost cheap. The optional `ReportSession` port (`session()` on a
 `ReportStore`; `BdReportStore` implements it for both routes) reads each report once per unit of

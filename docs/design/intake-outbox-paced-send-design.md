@@ -190,11 +190,11 @@ The quotes are exact:
 **What the cap does and does not guarantee.** The pacer counts **write requests** at the one
 method that sends them, so on this host the outbox's own write requests, from every command and
 every hive, stay at or under 80 starts in any minute and 500 in any rolling hour, whether or not
-GitHub counts a type, fields or labels write as content-generating. Two bounded exceptions, both
+GitHub counts a type, fields or labels write as content-generating. The bounded exceptions are
 written to the ledger so the following requests pay for them: a request that is part of an
-operation already past its write-ahead is never refused (an extra field `POST` or a rate-limit
-resend may run up to one minute's spacing early, and may go over the hour), and the stop then
-keeps the next operation from starting. It does **not** cover:
+operation already past its write-ahead is never refused (it may go over the hour, never over the
+minute; see "The bounds, exactly" below), and the stop then keeps the next operation from
+starting. It does **not** cover:
 
 - other writers on the same account: other hosts (a ledger is host-local), bh's own non-outbox
   GitHub writes (label definitions, the projection), `gh` and the web interface. "Content
@@ -228,8 +228,9 @@ the O7 re-check, right before `machine.begin_send`**. It:
 1. checks the command's stop event;
 2. asks the pacer to **admit the operation**: its expected request count `n` (1 for every kind,
    `1 + removals` for a `labels.change` with additions, `removals` without) must fit in the hour
-   (`ledger count + n <= send_writes_per_hour`), and the operation's **first** request slot is
-   taken here, which may wait for the minute spacing;
+   (`ledger count + n <= send_writes_per_hour`), and the hook waits for the minute spacing and
+   for room in the minute, but only **peeks** at the ledger: it records nothing (amended in
+   `bh-eqtxv`'s review: the entry is recorded when the request starts, at the gate below);
 3. checks the stop event again.
 
 A stop, or an hour that cannot fit `n`, raises `SendStopped(reason)` from the hook. That happens
@@ -243,8 +244,11 @@ the batch reports every later operation the same way without opening its report.
 each rate-limit resend included). The composition root wires the outbox pacer into it only for
 the adapter that `send` and `send-approved` use; every other adapter keeps no gate, as today.
 
-- The first request of an operation uses the slot the hook already took (it is recorded in the
-  ledger at that moment), so the common one-request operation never waits after its write-ahead.
+- **Every request, the operation's first included, records its own ledger entry here, as it
+  starts** (amended in `bh-eqtxv`'s review: recording at the hook let the variable time between
+  the hook and the first request, a write-ahead or a definitions read with backoff, put an 81st
+  request start in a minute). The first request was already spaced at the hook, so it waits
+  only if another command filled the minute meanwhile (a wait after the write-ahead, row 6).
 - Every further request (the second `DELETE` of a labels change, the field `POST` retry, a
   rate-limit resend) takes its **own slot**: it may wait for the minute spacing (at most
   `60 / per_minute`, 0.75 s), then is recorded. This wait is after the write-ahead, which is safe:
@@ -253,6 +257,26 @@ the adapter that `send` and `send-approved` use; every other adapter keeps no ga
   operation half-applied. If the hour is already spent, the request is still recorded (an
   overdraft the following admissions pay for) and the command's stop event is set with
   `hourly_budget`, so no further operation starts.
+
+**The bounds, exactly** (added in `bh-eqtxv`'s review) (derived from the code and each pinned by a test):
+
+- **Minute: at most 80 request starts in any 60 s on the host, strictly**, across every command
+  and hive: each request start is one locked ledger step that waits while the last 60 s hold 80.
+  Two exceptions: a **forward step of the wall clock** makes the ledger's entries look older, so
+  in the minute after the step **at most 80 extra (100% over) may start, once per step** (a step
+  back only delays); and a ledger that **stops being writable mid-operation** lets that one
+  operation's remaining requests go unrecorded (at most its own requests, below), then the batch
+  stops with `error`.
+- **Hour: at most 500 request starts in any rolling hour**, except that a request inside an
+  operation is never refused. **One command alone** goes over by at most its in-flight
+  operation's **unexpected** requests (its expected ones are checked before the write-ahead):
+  3 rate-limit resends per request plus, for `issue.fields`, one retry on stale field ids with
+  its own 3 resends, so **at most 7 extra (1.4% over) for `issue.fields`, 3 × (1 + removals) for
+  `labels.change`, 3 (0.6%) for every other kind**. **k commands racing** on the shared ledger
+  can each also start their own in-flight operation's requests past the same last free slot, so
+  **at most the sum of their in-flight operations' requests plus those extras** (two other
+  one-request operations: 2 extra, 0.4%). Every request over the hour is recorded and stops its
+  command with `hourly_budget`.
 
 The hook runs inside the report's hold, so a pacer wait lengthens that hold. The gaps between
 holds stay milliseconds, as today, so other intake verbs on the host see no practical change.
