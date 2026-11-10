@@ -30,7 +30,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import worktree
 from .config_consumer_ports import plugin_settings as config
 
 # The bh-owned overlay locations inside a worktree.  The canonical path is checked first;
@@ -117,6 +116,14 @@ def load_worktree_env(cfg=None) -> None:
     shape through the heal so a stale overlay is regenerated in place rather than honoured forever.
     The check is a substring test on an already-read file — no extra I/O, no import."""
     try:
+        # This runs on every command's startup and the worktree module's import tree costs about
+        # 0.25 s: outside the shadow root there is no overlay, so skip it there (bh-lwz8a).
+        try:
+            Path.cwd().resolve().relative_to(config.worktrees_root(cfg).resolve())
+        except (ValueError, OSError):
+            return
+        from . import worktree
+
         wt_dir = worktree.cwd_worktree_dir(cfg)
         if wt_dir is None:
             return  # main clone or outside the shadow root — no per-worktree overlay

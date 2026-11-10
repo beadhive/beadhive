@@ -434,7 +434,7 @@
       {
         "facade_target": "beadhive.config.process_load_memo",
         "kind": "direct-facade",
-        "line": 200,
+        "line": 216,
         "path": "tests/test_config_process_load_memo.py",
         "target": "beadhive.config.process_load_memo"
       },
@@ -2392,7 +2392,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 91,
+    "production_config_importer_count": 92,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2402,6 +2402,7 @@
       "src/beadhive/bd.py",
       "src/beadhive/checkpoint.py",
       "src/beadhive/cli.py",
+      "src/beadhive/cli_root.py",
       "src/beadhive/complexity_backfill.py",
       "src/beadhive/compose.py",
       "src/beadhive/config_split_migration.py",
@@ -2533,6 +2534,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/cli.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/cli_root.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {

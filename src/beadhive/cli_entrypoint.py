@@ -7,6 +7,7 @@ tree.  In particular, Click's eager root version option does not need that tree 
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import sys
 
 from . import phase_timings as _phase_timings  # noqa: F401 - marks the entry (bh-17g6b)
@@ -51,6 +52,11 @@ def _invoked_verb(argv: list[str]) -> str:
         if not argument.startswith("-"):
             return argument
     return ""
+
+
+def _completing() -> bool:
+    """Whether Click's shell completion drives this process (``_BH_COMPLETE`` and kin)."""
+    return any(key.startswith("_") and key.endswith("_COMPLETE") for key in os.environ)
 
 
 LOCAL_RECLAIM_VERB = "local-reclaim"
@@ -104,6 +110,17 @@ def main() -> None:
     from . import config_store
 
     with config_store.process_load_memo():
+        # The external-report verbs import only their own path (bh-lwz8a): a single outbox send
+        # paid for the whole command tree. Shell completion walks the full tree.
+        if not _completing():
+            from . import cli_fastpath
+
+            fast = cli_fastpath.app_for(argv)
+            if fast is not None:
+                from . import cli_root
+
+                cli_root.run(fast)
+                return
         from . import cli
 
         cli.main()

@@ -9,7 +9,7 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 91,
+    "production_config_importers_after": 92,
     "production_config_schema_importers_before": 8,
     "production_config_schema_importers_after": 5,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
@@ -163,5 +163,9 @@
   "outbox_batch_inventory_update": {
     "bead": "bh-pc9rf",
     "reason": "The live generated ledger now measures 178 test config importers and 339 patch sites after tests/test_config_process_load_memo.py proves the per-invocation config.process_load_memo (it imports the beadhive.config facade and patches its process_load_memo once, for the root callback). The CLI entrypoint enters the memo through beadhive.config_store, so production and schema importer counts are unchanged; the regenerated structural metrics carry the memo's few new config_store functions. Historical extraction evidence, the pinned baseline and earlier full-gate receipts are unchanged."
+  },
+  "cli_root_inventory_update": {
+    "bead": "bh-lwz8a",
+    "reason": "The live generated ledger now measures 92 production config importers after src/beadhive/cli_root.py takes the bh root callback (config/identity memos, migrations, warnings, telemetry, setup gate) out of src/beadhive/cli.py so the import-lazy outbox, thread and labels verbs share it without importing the full command tree; it is enumerated in the dependency ledger under the bh-18hud.5 compatibility owner. Schema importers, test config importers, patch sites, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
   }
 }
