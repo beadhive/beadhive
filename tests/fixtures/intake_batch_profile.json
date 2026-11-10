@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "about": "The recorded profile behind tests/test_intake_outbox_batch_perf.py (-m perf): the latencies its fakes sleep, each with where it was measured. 'measured' is a number read off the real system; 'derived' is computed from measured numbers; 'assumed' has no measurement yet and is the first thing a recorded batch timings block (bh-17g6b: the timings object in the --json of labels sync, labels approve --batch and outbox send-approved/send) replaces. Update a figure here when a real batch measures it, and keep its source.",
+  "figures": {
+    "store_read_s": {
+      "value": 0.0766,
+      "kind": "measured",
+      "source": "bh-25fvb, 2026-11-09: GET issue median over 80 reads on the factory's Beads service, read-only (p90 94 ms)"
+    },
+    "store_listing_s": {
+      "value": 0.845,
+      "kind": "measured",
+      "source": "bh-25fvb, 2026-11-09: the outbox listing of 135 documents on the factory's Beads service"
+    },
+    "scratch_read_s": {
+      "value": 0.041,
+      "kind": "measured",
+      "source": "bh-25fvb: GET issue on a disposable scratch hive (bd init --server + bd serve, bd 1.3.0)"
+    },
+    "scratch_write_s": {
+      "value": 0.066,
+      "kind": "measured",
+      "source": "bh-25fvb: metadata compare-and-set on the scratch hive, 64-68 ms; the factory's own service was never written to"
+    },
+    "store_write_s": {
+      "value": 0.1240,
+      "kind": "derived",
+      "source": "bh-25fvb: scratch_write_s x store_read_s / scratch_read_s (the factory/scratch read ratio), about 124 ms; replaced the 150 ms the bh-pc9rf model assumed"
+    },
+    "cli_write_s": {
+      "value": 0.4,
+      "kind": "assumed",
+      "source": "a bd set-state subprocess; never measured. The first figure a real batch's timings block (phases.store_write) should replace"
+    },
+    "github_request_s": {
+      "value": 0.263,
+      "kind": "measured",
+      "source": "bh-25fvb: GET issue with a reused client 263 ms (348 ms with a fresh client, the pre-0.35.8 default); the per-command client of bh-vy7dx is the default from 0.35.8"
+    },
+    "github_token_s": {
+      "value": 0.07,
+      "kind": "measured",
+      "source": "bh-25fvb: gh auth token, 70 ms per call, once per GitHub operation unless the opt-in per-invocation cache keeps the first"
+    },
+    "host_check_s": {
+      "value": 1.85,
+      "kind": "measured",
+      "source": "bh-25fvb: the intake lock's host check and epoch read in one evaluation, 1.6-1.9 s per hold on the factory (13.5-14.3 s before)"
+    },
+    "process_s": {
+      "value": 4.4,
+      "kind": "measured",
+      "source": "bh-25fvb: bh work outbox show <id> took 5.3 s end to end on the branch (bh-25fvb), with about 1.2 s the verb; the perf model's 4.4 s is that less the verb; about 2.9 s of CLI imports plus 1.4 s for the effective-config SQL load"
+    }
+  },
+  "factory": {
+    "before_0_35_3": {
+      "draft_s": 745.0,
+      "approve_s": 1440.0,
+      "send_s": 1770.0,
+      "single_send_s": 21.0,
+      "source": "bh-25fvb: the factory on 0.35.3, 2026-11-06 (single send: 13 s of host check plus the process)"
+    },
+    "observed_0_35_5": {
+      "labels_sync_135_issues_s": 34.0,
+      "labels_review_1_item_s": 11.0,
+      "single_send_1_labels_change_s": 17.0,
+      "source": "bh-womf3, 2026-11-10: measured on the factory on 0.35.5 (labels sync over 135 issues, a dry run and a real one, 34 s; one send-approved of 1 labels.change 17 s end to end). The model below puts a single send at about 8-9 s, so it is optimistic by about 2x until a real batch's timings block says where the rest goes"
+    }
+  },
+  "target_s": {
+    "draft": 120.0,
+    "approve": 120.0,
+    "send": 240.0,
+    "single send": 3.0
+  },
+  "budget_s": {
+    "draft": 90.0,
+    "approve": 60.0,
+    "send": 200.0,
+    "single send": 9.0,
+    "source": "the modeled totals with headroom at batch_recheck_seconds=300 (about 56 s draft, 46 s approve, 175 s send with the per-command client and field definitions of 0.35.8, 8 s single send): the bar the -m perf run holds; the single send is over its 3 s target and reported on bh-womf3"
+  }
+}

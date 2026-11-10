@@ -1,5 +1,5 @@
-"""Perf check of the factory-shaped intake batches (``bh-pc9rf``, ``bh-25fvb``): drafting,
-approving and sending the issue type and Priority of 135 issues, and one single send.
+"""Perf check of the factory-shaped intake batches (``bh-pc9rf``, ``bh-25fvb``, ``bh-17g6b``):
+drafting, approving and sending the issue type and Priority of 135 issues, and one single send.
 
 ``@pytest.mark.perf``: deselected from every gate lane, run on a quiet host with ``-m perf`` (or
 ``BH_PERF_TESTS=1``); see ``tests/harness/perf_marker.py``. The structural guarantees (one batch
@@ -8,34 +8,24 @@ one pass over the outbox documents) are pinned deterministically by
 ``tests/unit/modules/intake/test_intake_outbox_batch_send.py`` and
 ``tests/test_intake_api_store.py``; this file adds the wall clock.
 
-The fakes sleep latencies MEASURED on 2026-11-09 (bh-25fvb), scaled by :data:`SCALE` so the run
-takes seconds:
-
-* a Beads-service read of one bead, 77 ms (median of 80 ``GET issue`` on the factory's own
-  ``github/beadhive/beadhive`` service, read-only); the outbox listing of 135 documents 0.85 s;
-* a Beads-service metadata compare-and-set, 124 ms: 66 ms measured on a disposable scratch hive
-  (``bd init --server`` + ``bd serve``, bd 1.3.0, 36 writes) scaled by the factory/scratch read
-  ratio (77 / 41 ms). It replaces the 150 ms the bh-pc9rf model ASSUMED; the factory's own
-  service was not written to (its writes would be real bead history);
-* a GitHub request 0.35 s with a fresh client (the adapter opens one per operation), plus 0.07 s
-  of ``gh auth token`` per operation unless the opt-in per-invocation token cache keeps the first;
-  an ``issue.fields`` write is TWO requests (the org's field definitions, then the write);
-* the intake lock's host check and epoch read, now ONE evaluation (``guard.primary_epoch``),
-  1.85 s per hold on the factory (13 s before): once per batch with the factory's opt-in
-  ``batch_recheck_seconds: 300``, once per hold at the default 0 (computed from the hold count);
-* one ``bh`` process before its verb runs, 4.4 s (``bh work outbox show <id>`` took 5.6 s end to
-  end on the factory, 1.2 s of it the verb; 8.5 s before this bead).
-
-Before this bead (factory, 0.35.3, 2026-11-06): labels sync draft 745 s, labels approve --batch
-1440 s and send-approved 1770 s for the 270 type and Priority operations of 135 issues, and about
-13 s of host check in every single send.
+The fakes sleep the latencies RECORDED in ``tests/fixtures/intake_batch_profile.json``, scaled by
+:data:`SCALE` so the run takes seconds. Nothing is assumed in this file: every figure is read from
+that profile, which names for each one whether it was ``measured`` on the factory or a scratch hive,
+``derived`` from measured numbers, or still ``assumed`` (the only one is the ``bd set-state``
+subprocess), and where. A real batch now records where it spent its time itself (the ``timings``
+object in the ``--json`` of ``labels sync``, ``labels approve --batch``, ``outbox send-approved``
+and ``outbox send``, ``bh-17g6b``): put its numbers into the profile and re-run this check, rather
+than editing a constant here. The profile also keeps the factory's end-to-end numbers (before, on
+0.35.3, and observed on 0.35.5) so the printed report shows the model beside what the factory did.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import time
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -65,6 +55,11 @@ from beadhive.modules.tracker.contracts import READ_OPERATIONS, WRITE_OPERATIONS
 from beadhive.testing.intake import SCOPE, MemoryReportStore, RecordingSanitizer, SequentialIdSource
 from beadhive.testing.tracker import MemoryTracker, MemoryWorld, at
 
+PROFILE = json.loads(
+    (Path(__file__).parent / "fixtures" / "intake_batch_profile.json").read_text(encoding="utf-8")
+)
+FIGURES = {name: figure["value"] for name, figure in PROFILE["figures"].items()}
+
 SCALE = 0.05
 _slept: list[float] = []  # every scaled latency slept, so the in-process time is not scaled up
 
@@ -75,28 +70,31 @@ def _sleep(seconds: float) -> None:
     time.sleep(seconds * SCALE)
 
 
-STORE_READ = 0.077
-STORE_LISTING = 0.85
-SCRATCH_READ, SCRATCH_WRITE = 0.041, 0.066  # measured on the disposable scratch hive
-STORE_WRITE = SCRATCH_WRITE * STORE_READ / SCRATCH_READ  # about 124 ms on the factory
-CLI_WRITE = 0.4  # a `bd set-state` subprocess (a CLI-only write)
-GITHUB_REQUEST = 0.35
-GITHUB_TOKEN = 0.07  # one `gh auth token`, per operation unless the per-invocation cache keeps it
-HOST_CHECK = 1.85
-PROCESS = 4.4
+STORE_READ = FIGURES["store_read_s"]
+STORE_LISTING = FIGURES["store_listing_s"]
+STORE_WRITE = FIGURES["store_write_s"]
+CLI_WRITE = FIGURES["cli_write_s"]  # a `bd set-state` subprocess (a CLI-only write)
+GITHUB_REQUEST = FIGURES["github_request_s"]
+GITHUB_TOKEN = FIGURES["github_token_s"]  # per operation unless the per-invocation cache keeps it
+HOST_CHECK = FIGURES["host_check_s"]
+PROCESS = FIGURES["process_s"]
 REPORTS = 135
 OPS = 2 * REPORTS  # the type and the Priority of every issue, as on the factory
 
-BEFORE = {"draft": 745.0, "approve": 1440.0, "send": 1770.0, "single send": 21.0}
-TARGET = {"draft": 120.0, "approve": 120.0, "send": 120.0, "single send": 3.0}
+BEFORE = {
+    "draft": PROFILE["factory"]["before_0_35_3"]["draft_s"],
+    "approve": PROFILE["factory"]["before_0_35_3"]["approve_s"],
+    "send": PROFILE["factory"]["before_0_35_3"]["send_s"],
+    "single send": PROFILE["factory"]["before_0_35_3"]["single_send_s"],
+}
+TARGET = PROFILE["target_s"]
 #: The modeled totals with headroom (the opt-in recheck 300): the bar this check holds. Draft
-#: (about 57 s) and approve (about 46 s) are under their 2-minute target. The send (about 256 s,
-#: 238 s with the token cache) is not: its 270 operations are 405 GitHub requests (an
-#: ``issue.fields`` write reads the org's field definitions first), 142 s at 0.35 s each, and 540
-#: compare-and-set writes (each operation's write-ahead and receipt), 67 s. The single send (about
-#: 8 s) is not under 3 s: 4.4 s of it is the process, 1.85 s the host check. Both remainders are
-#: reported on the bead.
-BUDGET = {"draft": 90.0, "approve": 60.0, "send": 280.0, "single send": 9.0}
+#: (about 56 s), approve (about 46 s) and, with the per-command client and field definitions of
+#: 0.35.8, the send (about 175 s: 270 GitHub requests plus one definitions read, and 540
+#: compare-and-set writes, 67 s) are under their targets. The single send (about 8 s) is not under
+#: 3 s: 4.4 s of it is the process, 1.85 s the host check. The remainder is reported on the bead.
+BUDGET = {k: v for k, v in PROFILE["budget_s"].items() if k != "source"}
+OBSERVED = PROFILE["factory"]["observed_0_35_5"]
 
 LEAKS = LeakPolicy(
     bead_prefixes=frozenset({"acme"}),
@@ -192,6 +190,7 @@ class SlowTracker(MemoryTracker):
 
     slow = False
     token_cache = False
+    defs_read = False  # this command already read the org's field definitions
     calls: Counter[str]
 
     def _wait(self, name: str, requests: int = 1) -> None:
@@ -223,7 +222,10 @@ class SlowTracker(MemoryTracker):
         return super().set_issue_type(issue, issue_type, **kwargs)
 
     def set_issue_fields(self, issue, values, **kwargs):
-        self._wait("set_issue_fields", requests=2)  # the org's field definitions, then the write
+        # the org's field definitions are read once per command (bh-n0h15), then one write each
+        first = not self.defs_read
+        self.defs_read = True
+        self._wait("set_issue_fields", requests=2 if first else 1)
         return super().set_issue_fields(issue, values, **kwargs)
 
 
@@ -308,6 +310,7 @@ class Factory:
         unscaled, plus the in-process time at real speed, plus one process."""
         self.store.calls.clear()
         self.tracker.calls.clear()
+        self.tracker.defs_read = False  # a command remembers them for itself only
         self.store.slow = self.tracker.slow = True
         _slept.clear()
         checks, holds = self.checks, len(self.holds)
@@ -379,7 +382,7 @@ def test_135_issues_draft_approve_and_send_fit_their_budgets(tmp_path, holds, to
     print("\n" + "\n".join(lines))
     assert draft < BUDGET["draft"] <= TARGET["draft"]
     assert approve < BUDGET["approve"] <= TARGET["approve"]
-    assert send < BUDGET["send"] < BEFORE["send"] / 6
+    assert send < BUDGET["send"] <= TARGET["send"]
 
 
 @pytest.mark.perf
@@ -398,6 +401,22 @@ def test_one_send_is_one_process_one_host_check_and_its_requests(tmp_path, holds
     assert f.store.calls["write"] == 2  # the write-ahead and the receipt
     print(
         f"\nsingle send modeled {single:.1f}s ({PROCESS:.1f}s of it the process); "
+        f"observed {OBSERVED['single_send_1_labels_change_s']:.0f}s on the factory (0.35.5); "
         f"target {TARGET['single send']:.0f}s, before {BEFORE['single send']:.0f}s"
     )
     assert single < BUDGET["single send"] < BEFORE["single send"]
+
+
+@pytest.mark.perf
+def test_every_figure_the_model_sleeps_is_recorded_with_its_provenance() -> None:
+    """The model reads the recorded profile, never a constant of its own: each figure names where
+    it was measured, and the ones not measured are listed rather than hidden."""
+    kinds = {"measured", "derived", "assumed"}
+    for name, figure in PROFILE["figures"].items():
+        assert figure["kind"] in kinds and figure["source"], name
+        assert isinstance(figure["value"], int | float) and figure["value"] > 0, name
+    derived = PROFILE["figures"]["store_write_s"]["value"]
+    scratch = FIGURES["scratch_write_s"] * FIGURES["store_read_s"] / FIGURES["scratch_read_s"]
+    assert derived == pytest.approx(
+        scratch, rel=0.01
+    )  # the derived figure still follows its inputs

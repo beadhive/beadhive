@@ -62,7 +62,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from . import bd, bd_cli, intake_beads, registry, store_target, validate
+from . import bd, bd_cli, intake_beads, phase_timings, registry, store_target, validate
 from .adapters.intake import ApiReportStore, BdReportStore, FileCheckpointStore, FileOutboxIndex
 from .modules.intake import (
     ORIGIN_GITHUB,
@@ -172,12 +172,15 @@ def report_store(
     whatever ``work.beads.route`` says, for a read-only diagnostic that must never depend on the
     service it may be diagnosing."""
     if cli_only:
-        return BdReportStore(bd_cli.routes(directory), scope, error_line=bd.err_line)
+        routes = phase_timings.timed_routes(bd_cli.routes(directory))
+        return BdReportStore(routes, scope, error_line=bd.err_line)
     select = intake_beads.ApiSelector(
         directory,
         entry if entry is not None else (lambda: intake_beads.entry_of_directory(directory)),
     )
-    return ApiReportStore(bd_cli.routes(directory), scope, api=select, error_line=bd.err_line)
+    routes = phase_timings.timed_routes(bd_cli.routes(directory))  # bh-17g6b: timed if measuring
+    api = phase_timings.timed_selector(select)
+    return ApiReportStore(routes, scope, api=api, error_line=bd.err_line)
 
 
 def service_for(
@@ -1075,18 +1078,35 @@ class FlockIntakeLock:
 
     @contextlib.contextmanager
     def hold(self, binding_key: str) -> Iterator[int]:
+        timings = phase_timings.current()
+        if timings is None:
+            with self._hold(binding_key) as epoch:
+                yield epoch
+            return
+        with timings.hold(binding_key), self._hold(binding_key) as epoch:  # bh-17g6b
+            yield epoch
+
+    @contextlib.contextmanager
+    def _hold(self, binding_key: str) -> Iterator[int]:
         reused = self._reused()
         taken = self._clock()
         if reused is None:
             if self._admit is not None:
-                reused = self._admit()
+                with phase_timings.phase("host_check"):
+                    reused = self._admit()
                 if self._batch_depth:
                     self._checked = (taken, reused)
             else:
-                self._primary()  # type: ignore[misc]
+                with phase_timings.phase("host_check"):
+                    self._primary()  # type: ignore[misc]
+        else:
+            timings = phase_timings.current()
+            if timings is not None:
+                timings.record("host_check_reused", 0.0)
         with self._path(binding_key).open("a+") as handle:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with phase_timings.phase("intake_lock"):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise IntakeRefused(
                     RefusalReason.INTAKE_BUSY,
@@ -1094,7 +1114,8 @@ class FlockIntakeLock:
                 ) from None
             try:
                 if reused is None:
-                    reused = self._epoch()  # type: ignore[misc]
+                    with phase_timings.phase("host_check"):
+                        reused = self._epoch()  # type: ignore[misc]
                     if self._batch_depth:
                         self._checked = (taken, reused)
                 yield reused
@@ -1974,7 +1995,8 @@ def outbox_call(
     if tracker is not None or not needs_tracker:
         wiring = {}
     elif wiring is None:
-        wiring = outbox_wiring(cfg, entry, directory)
+        with phase_timings.phase("wiring"):
+            wiring = outbox_wiring(cfg, entry, directory)
     try:
         port = _outbox_port(
             cfg,
@@ -3083,7 +3105,8 @@ def _labels_tracker(
     set)."""
     if tracker is not None:
         return tracker, (), None
-    wiring = labels_wiring(cfg, entry, directory, requested=requested)
+    with phase_timings.phase("wiring"):
+        wiring = labels_wiring(cfg, entry, directory, requested=requested)
     if wiring.get("tracker") is None:
         raise wiring.get("refusal") or _no_labels_wiring()
     gates = (wiring.get("type_enabled") is True, wiring.get("fields_enabled") is True)

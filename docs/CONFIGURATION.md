@@ -591,6 +591,65 @@ nothing; `--full` re-pulls every issue including closed ones and marks reports w
 `enabled` and `discovery.enabled`, a chosen `interval_seconds` and a wired tracker adapter (the
 daemon refuses to start otherwise); it never writes a tracker or the public store.
 
+### Where a batch spends its time: the `timings` block (bh-17g6b)
+
+`bh work labels sync`, `bh work labels approve --batch`, `bh work outbox send-approved` and
+`bh work outbox send` add a `timings` object to their `--json` output (and only there: the human
+output, the stored outbox record and its receipt are unchanged, so no wire shape changes). It is
+measured, not modeled, from one monotonic clock; a run on the factory records its own profile.
+
+```json
+"timings": {
+  "schema": 1,
+  "clock": "monotonic",
+  "startup": {"source": "interpreter", "ms": 3010.2, "interpreter_to_entry_ms": 40.1,
+              "entry_to_first_work_ms": 2970.1},
+  "total_ms": 91234.5,
+  "unaccounted_ms": 812.3,
+  "phases": {"config_load": {"count": 1, "ms": 1403.9}, "...": {"count": 0, "ms": 0.0}},
+  "holds": [{"binding": "github:acme/widget", "ms": 2410.0, "phases": {"host_check": {"count": 1, "ms": 1850.0}}}],
+  "holds_omitted": 0
+}
+```
+
+- `startup`: process start to the verb's first work. `interpreter_to_entry_ms` is the
+  interpreter's age when `bh` entered its CLI (Linux, from the kernel's start time; `null`
+  elsewhere), `entry_to_first_work_ms` the import cost of the command tree up to the verb, and
+  `ms` their sum. `source` is `interpreter` when both are known and `entry` when only the second
+  is; when neither is known (an injected clock) `source` is `entry` and the three `ms` fields are
+  `null`.
+- `total_ms`: the verb's first work to its output. `unaccounted_ms` is `total_ms` less every
+  phase below, the time nothing claims.
+- `phases`: always all of these keys, `count` occurrences and their `ms` total (a phase's time is
+  its own: a phase started inside another is taken out of the outer one, so the phases add up):
+
+  | phase | what it measures |
+  |---|---|
+  | `config_load` | the effective configuration load (the SQL read) |
+  | `wiring` | the plugin binding: the tracker adapter, identity and marker codec, before any request |
+  | `host_check` | the primary-host check and epoch read of an intake-lock hold, when it was evaluated |
+  | `host_check_reused` | holds of a batch that reused an earlier check (`outbox.batch_recheck_seconds`); count only |
+  | `intake_lock` | taking the per-binding `flock` |
+  | `store_open` | choosing and opening the store route (the Beads service session) |
+  | `store_read`, `store_write` | one round trip each to the report store (a `bd` call or a service request); session-cached reads make none |
+  | `github_token` | resolving the credential (`gh auth token`), once per GitHub operation |
+  | `github_client` | building (or, with the per-command client, fetching) the HTTP client: once per GitHub operation, or once per command when the adapter is command-scoped (bh-vy7dx) |
+  | `github_request` | each HTTP request (a retry counts again); the org's issue-field definitions are read once per command (bh-n0h15), so an `issue.fields` write is one request after the first |
+
+- `holds`: one entry per hold of the intake lock, that is per report, not per outbox operation (a
+  batch takes one per report and sends or approves that report's operations under it; a single
+  send is one). A hold that was refused (not the primary host, or busy) is listed too, with what it
+  spent before refusing. Each has the hold's own `ms` and
+  the non-empty phases inside it, so a batch shows what each report cost. At most 500 are listed;
+  `holds_omitted` counts the rest.
+
+The collector is installed for the command and removed with it, and the seams that feed it (the
+intake lock, the report store's routes and the tracker adapter's transport) do nothing when it
+is absent, so a command that is not measuring, and every daemon iteration, pays a context
+lookup at each seam (about four per hold).
+The `-m perf` model (`tests/test_intake_outbox_batch_perf.py`) reads its latencies from the
+recorded profile `tests/fixtures/intake_batch_profile.json`: put a real batch's numbers there.
+
 The milestone and outbox keys only ever **draft**: a merge or a verified release leaves a `drafted`
 record for an operator to render, approve and send; no key sends, approves or mints a grant, and a
 tracker write still needs the adapter's own write flag. With every default, merge and release

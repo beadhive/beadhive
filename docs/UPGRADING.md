@@ -5,10 +5,11 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
-## 0.35.7 → 0.35.8 — one GitHub client and one field-definitions read per command
+## 0.35.7 → 0.35.8 — outbox speed (bh-womf3)
 
-Two changes to the GitHub adapter make a long outbox batch cheaper, with no new key and no
-state change:
+No new key and no state change. Three changes make a long outbox batch cheaper or measurable.
+
+### One GitHub client and one field-definitions read per command
 
 - **One HTTP client per command** (bh-vy7dx). A command (`bh work outbox send-approved`,
   `bh work labels approve --batch`, the other intake verbs) builds one GitHub client and
@@ -25,6 +26,18 @@ state change:
   the definitions once more and retries once (on the same single-use grant, since a `4xx` wrote
   nothing); a second failure is the normal error. The daemon remembers nothing across
   operations.
+
+### Every batch measures itself (`timings` in `--json`, bh-17g6b)
+
+`bh work labels sync`, `bh work labels approve --batch`, `bh work outbox send-approved` and
+`bh work outbox send` add a measured `timings` object to their `--json` output: process start to
+first work, the config load, the intake lock and host check, the store's reads and writes and
+GitHub's requests (each as a count and a total in milliseconds), in total and per hold of the
+intake lock. It is additive output only: no config key, no state change, and the outbox record and
+receipt shapes are unchanged, so the wire stays at 2.25.0. The shape is documented in
+[CONFIGURATION.md](CONFIGURATION.md#where-a-batch-spends-its-time-the-timings-block-bh-17g6b). The
+`-m perf` model now reads a recorded profile (`tests/fixtures/intake_batch_profile.json`) instead of
+constants in the test.
 
 ## 0.35.5 → 0.35.6 — a typer cap (fresh installs of 0.35.5 and earlier are broken)
 
