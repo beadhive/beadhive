@@ -650,7 +650,8 @@ def impl__merge_molecule(api, cfg, epic, hive, override_reason="", override_acto
         assignee = str(epic_data.get("assignee") or "").strip()
         api.typer.echo(
             f"✗ landed molecule {epic} ({mol_branch} --no-ff → {base}) but FAILED to "
-            f"close {epic}{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            f"close {epic}{f' (assignee {assignee!r})' if assignee else ''} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {epic}`",
             err=True,
         )
         raise api.typer.Exit(1)
@@ -711,8 +712,12 @@ def impl_land(api, bead, hive):
     ref = api._pr_ref(pr)
     api._resolve_land_pr_merge_gates(bead, main, ref)
     reason = "molecule landed" if api._is_epic(data) else "merged"
-    if api.bd_cli.routes(main).issue_close(bead, reason=reason).returncode != 0:
-        api.typer.echo(f"✗ PR merged but failed to close {bead} — close it manually", err=True)
+    if not api.work_logic.close_merged(bead, main, reason, data=data):
+        api.typer.echo(
+            f"✗ PR merged but failed to close {bead} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {bead}`",
+            err=True,
+        )
         raise api.typer.Exit(1)
     api._clear_review_label(bead, data, main)
     if api._is_epic(data):
@@ -1079,7 +1084,8 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
         assignee = str(bead_data.get("assignee") or "").strip()
         api.typer.echo(
             f"✗ {bead} is ALREADY MERGED ({branch} → {base}) but could not be closed"
-            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually; "
+            f"{f' (assignee {assignee!r})' if assignee else ''} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {bead}`; "
             "the code is on the integration branch, do NOT re-implement it",
             err=True,
         )
@@ -1482,7 +1488,8 @@ def impl__merge_bead(api, cfg, bead, hive, rm, override_reason="", override_acto
         assignee = str(bead_data.get("assignee") or "").strip()
         api.typer.echo(
             f"✗ merged {bead} ({branch} --no-ff → {base}){note} but FAILED to close it"
-            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
+            f"{f' (assignee {assignee!r})' if assignee else ''} — run "
+            f"`{api.config.BINARY_ALIAS} worktree mark-landed {bead}`",
             err=True,
         )
         raise api.typer.Exit(1)

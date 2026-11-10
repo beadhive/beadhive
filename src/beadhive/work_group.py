@@ -854,7 +854,7 @@ def merge_group(cfg, group_arg, hive, rm):
         typer.echo(
             f"✗ merged batch {group} ({len(members)} beads: {', '.join(members)}) "
             f"({branch} --no-ff → {base}) but FAILED to close: {', '.join(failed_close)} — "
-            f"close manually",
+            f"run `{config.BINARY_ALIAS} worktree mark-landed <id>` for each",
             err=True,
         )
         raise typer.Exit(1)
