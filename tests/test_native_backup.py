@@ -891,7 +891,8 @@ def test_cli_verbs_are_catalogued_and_confirm_is_typed():
     group = get_command(app).commands["backup"]
     assert {"snapshot", "list", "verify", "restore"} <= set(group.commands)
     confirm = next(p for p in group.commands["restore"].params if p.name == "confirm")
-    assert confirm.type.name == "text"  # a typed hive name, not a bare flag
+    # a typed hive name, not a bare flag (public Parameter fields: typer 0.29 has no .type)
+    assert not confirm.is_flag and confirm.nargs == 1
 
 
 # ---- the operator verbs ----------------------------------------------------------------------
@@ -972,9 +973,14 @@ def test_cli_failed_snapshot_exits_nonzero_and_says_why(cli, env):
 
 def test_restore_confirm_option_is_typed_not_a_bare_flag():
     from typer.main import get_command
+    from typer.testing import CliRunner
 
     from beadhive.cli import app
 
     restore = get_command(app).commands["backup"].commands["restore"]
     confirm = next(p for p in restore.params if p.name == "confirm")
-    assert confirm.type.name == "text" and not confirm.is_flag
+    assert not confirm.is_flag and not confirm.is_bool_flag and confirm.nargs == 1
+    # Behaviourally too, on every typer: a bare --confirm is a usage error, never a yes.
+    result = CliRunner().invoke(app, ["backup", "restore", "--confirm"])
+    assert result.exit_code == 2
+    assert "Option '--confirm' requires an argument." in " ".join(result.output.split())
