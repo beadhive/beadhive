@@ -5,6 +5,26 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.6 → 0.35.7 — typer 0.29 supported, the typer cap lifted
+
+`bh hq authority --duration` and `bh hq placement --tenure` no longer use the typer internals that
+typer 0.29 removed; they parse `7d` / `36h` / plain seconds through typer's public
+`Option(parser=...)`, so the value on the wire is still whole seconds, `--help` still shows
+`INTEGER`, and a bad value is still a usage error. 0.35.7 therefore allows `typer>=0.12,<0.30`,
+and a fresh install resolves typer 0.29. Nothing else changes: no new keys and no state change.
+From typer 0.28 on, typer itself prints other option types as `<int>`, `<str>` and `<bool>` in
+`--help`; the two duration flags keep the explicit `INTEGER`.
+
+If you repaired a 0.35.5 install with `--with 'typer==0.26.8'`, drop the pin when you upgrade:
+
+```sh
+uv tool install --force 'beadhive[otel,github]==0.35.7'
+```
+
+The repository's own `uv.lock` stays on typer 0.26.8, because its dev-only SDK generator
+(`openapi-python-client`) requires `typer<0.28`. The release extras smoke installs the wheel with
+fresh resolution, so it is the check that runs the newest allowed typer before each publish.
+
 ## 0.35.5 → 0.35.6 — a typer cap (fresh installs of 0.35.5 and earlier are broken)
 
 typer 0.29.0 (released 2026-11-09) removed a private module and an option parameter that `bh hq
@@ -24,8 +44,8 @@ uv tool install --force 'beadhive[otel,github]==0.35.5' --with 'typer==0.26.8'
 
 The release smoke now runs `bh --help`, `bh hq authority --help` and `bh hq placement --help` in
 each install it checks, not only `bh --version` (which answers before the CLI is imported), so a
-dependency release that breaks the CLI fails the release job before publication. Support for typer
-0.29 itself, which lifts the cap, is tracked as bh-q2a2k.
+dependency release that breaks the CLI fails the release job before publication. 0.35.7 supports
+typer 0.29 itself and lifts the cap (bh-q2a2k; see above).
 
 ## 0.35.4 → 0.35.5 — `outbox reopen`, faster batches, no `delivery` on a `duplicate-of`
 
