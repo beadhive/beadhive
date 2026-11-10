@@ -2044,77 +2044,77 @@
       {
         "facade_target": "beadhive.config.work_identity",
         "kind": "direct-facade",
-        "line": 1157,
+        "line": 1210,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_identity"
       },
       {
         "facade_target": "beadhive.config.work_identity",
         "kind": "direct-facade",
-        "line": 1177,
+        "line": 1230,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_identity"
       },
       {
         "facade_target": "beadhive.config.review_gate",
         "kind": "direct-facade",
-        "line": 1682,
+        "line": 1735,
         "path": "tests/test_work.py",
         "target": "beadhive.config.review_gate"
       },
       {
         "facade_target": "beadhive.config.validate_cmd",
         "kind": "direct-facade",
-        "line": 1829,
+        "line": 1882,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validate_cmd"
       },
       {
         "facade_target": "beadhive.config.validate_cmd",
         "kind": "direct-facade",
-        "line": 2195,
+        "line": 2248,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validate_cmd"
       },
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 2273,
+        "line": 2326,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.work_value",
         "kind": "direct-facade",
-        "line": 2701,
+        "line": 2754,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_value"
       },
       {
         "facade_target": "beadhive.config.validate_cmd",
         "kind": "direct-facade",
-        "line": 2856,
+        "line": 2909,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validate_cmd"
       },
       {
         "facade_target": "beadhive.config.work_value",
         "kind": "direct-facade",
-        "line": 2887,
+        "line": 2940,
         "path": "tests/test_work.py",
         "target": "beadhive.config.work_value"
       },
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 6483,
+        "line": 6536,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 7718,
+        "line": 7771,
         "path": "tests/test_work.py",
         "target": "beadhive.config.max_commits"
       },
