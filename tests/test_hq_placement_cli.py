@@ -9,6 +9,7 @@ out, exit 1 on refusal, hidden from help.
 from __future__ import annotations
 
 import json
+import re
 import time
 from types import SimpleNamespace
 
@@ -316,6 +317,31 @@ def test_cli_show_and_place_print_json_and_route_the_settings_path(run):
     assert out["dry_run"] and out["would_place"]["tenure_s"] == 43200.0
     result = run("place", "ah", "--frame", "frame-b", "--expected-revision", REV, "--confirm")
     assert result.exit_code == 0 and json.loads(result.output)["placed"]["epoch"] == 5
+
+
+def _flat(output):
+    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", output).split())
+
+
+@pytest.mark.parametrize(("raw", "seconds"), [("12h", 43_200), ("90m", 5_400), ("600", 600)])
+def test_cli_tenure_accepts_seconds_or_units(run, raw, seconds):
+    """--tenure shares the authority CLI's public parser= seam (bh-qtnn4, bh-q2a2k)."""
+    result = run("place", "ah", "--frame", "frame-b", "--expected-revision", REV, "--tenure", raw)
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["would_place"]["tenure_s"] == seconds
+
+
+def test_cli_bad_tenure_is_a_usage_error(run):
+    result = run("place", "ah", "--frame", "f", "--expected-revision", REV, "--tenure", "soon")
+    assert result.exit_code == 2, result.output
+    flat = _flat(result.output)
+    assert "Invalid value for '--tenure'" in flat and "invalid duration 'soon'" in flat
+
+
+def test_cli_tenure_help_shows_integer_and_its_default(run):
+    flat = _flat(run("--help").output)
+    assert re.search(r"--tenure\s+INTEGER\b", flat), flat
+    assert "[default: 86400]" in flat
 
 
 def test_cli_seed_without_settings_renders_sql_only(run):
