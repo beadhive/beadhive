@@ -22,6 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.test_intake_import_composition import ENABLED, Rig
+from tests.test_phase_timings import assert_batch_timings
 from typer.testing import CliRunner
 
 from beadhive import cli, intake_services, registry, work_intake
@@ -597,6 +598,50 @@ def test_send_approved_sends_every_approved_reply_in_one_process(rig, monkeypatc
 
     again = bh("outbox", "send-approved", "--hive", "widget", "--as", OPERATOR)
     assert again.exit_code == 0 and "nothing approved to send" in again.stdout
+
+
+def _approved_reply(rig) -> str:
+    common = ("--hive", "widget", "--as", OPERATOR, "--json")
+    report = doc(bh("import", rig.issue("A bug").url, "--hive", "widget", "--json"))["report"]
+    oid = doc(bh("outbox", "draft", report, "--text", "Thanks.", *common))["results"][0][
+        "outbox_id"
+    ]
+    (comment,) = doc(bh("outbox", "show", oid, "--hive", "widget", "--json"))["renders"]
+    approved = bh("outbox", "approve", oid, "--op", f"comment:{comment['digest']}", *common)
+    assert approved.exit_code == 0
+    return oid
+
+
+def test_the_batch_and_single_send_json_carry_the_measured_timings(rig, monkeypatch) -> None:
+    """bh-17g6b: a ``timings`` block, in the command output only (the stored record and receipt
+    are unchanged), on exactly the sending verbs."""
+    _close_rig(rig, monkeypatch, close_enabled=False)
+    common = ("--hive", "widget", "--as", OPERATOR)
+    first, second = _approved_reply(rig), _approved_reply(rig)
+
+    single = bh("outbox", "send", first, *common, "--json")
+    batch = bh("outbox", "send-approved", *common, "--json")
+
+    for result in (single, batch):
+        assert result.exit_code == 0, result.output
+        timings = doc(result)["timings"]
+        assert_batch_timings(timings)
+        assert timings["phases"]["config_load"]["count"] == 1  # the verb's own configuration load
+    assert [r["outbox_id"] for r in doc(batch)["results"]] == [second]
+    assert "timings" not in doc(bh("outbox", "show", second, "--hive", "widget", "--json"))
+    shown = bh("outbox", "show", first, "--hive", "widget", "--json")
+    assert "timings" not in json.dumps(doc(shown)["record"])  # nothing stored
+
+
+def test_the_timings_are_json_only_and_a_refusal_carries_them_too(rig) -> None:
+    switch(rig, ENABLED)
+
+    refused = bh("outbox", "send-approved", "--hive", "widget", "--as", OPERATOR, "--json")
+    human = bh("outbox", "send-approved", "--hive", "widget", "--as", OPERATOR)
+
+    assert refused.exit_code == 1 and doc(refused)["reason"] == "outbox_disabled"
+    assert_batch_timings(doc(refused)["timings"])
+    assert "timings" not in human.output and "_ms" not in human.output
 
 
 def test_send_approved_reports_an_unknown_outcome_and_fails_the_batch(rig, monkeypatch) -> None:

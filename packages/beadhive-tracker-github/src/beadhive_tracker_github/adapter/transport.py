@@ -62,6 +62,9 @@ from beadhive.modules.tracker.contracts import (
     RetryBudget,
     TrackerError,
     WriteOutcomeUnknown,
+    observe_begin,
+    observe_call,
+    observe_end,
 )
 from beadhive_plugins.credentials import ResolvedToken, TokenSource
 
@@ -144,6 +147,7 @@ class Session:
 
         transport = self._transport
         write = method != "GET"
+        mark = observe_begin("github_request")  # a no-op unless the host measures (bh-17g6b)
         try:
             response = self._client.request(
                 method,
@@ -172,6 +176,8 @@ class Session:
             if write:
                 return classify_transport_failure(write=True, timeout=False)
             raise
+        finally:
+            observe_end(mark)
         if write and not 200 <= response.status_code < 300:
             # Never followed (a write client does not follow redirects): GitHub did not confirm.
             return Refusal(
@@ -360,15 +366,16 @@ class Transport:
     def operation(self, operation: Operation | None, *, write: bool = False) -> Iterator[Session]:
         """Resolve the credential once, open one client, and yield the operation's seam: GETs,
         plus :meth:`Session.send` when ``write`` (a client that neither caches nor redirects)."""
-        token = self._resolve()
+        token = observe_call("github_token", self._resolve)
         if not self.reuse_client:
-            client = self._client(token, write=write)
+            client = observe_call("github_client", self._client, token, write=write)
             with client:
                 yield Session(self, token, client, operation, write=write)
             return
         self._held.hold(token)  # this operation's token, read per request; gone when it ends
         try:
-            yield Session(self, token, self._shared_client(write), operation, write=write)
+            client = observe_call("github_client", self._shared_client, write)
+            yield Session(self, token, client, operation, write=write)
         finally:
             self._held.hold(None)
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 import importlib.metadata
 import sys
 
+from . import phase_timings as _phase_timings  # noqa: F401 - marks the entry (bh-17g6b)
+
 
 def _requests_root_version(argv: list[str]) -> bool:
     """Whether *argv* selects the eager root version option before a subcommand."""
