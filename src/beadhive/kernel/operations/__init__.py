@@ -318,6 +318,7 @@ work triage propose|bead:string:r,source:string:r,review_of:string:o,as_:string:
 work triage review|pending:boolean:o,batch_size:integer:o,out:string:o,as_:string:o,hive:string:o,as_json:boolean:o
 work start|epic:string:r,as_:string:o,hive:string:o
 work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o,override_validation:string:o,override_as:string:o
+work validation reindex|rev:string:o,tree:string:o,dry_run:boolean:o,hive:string:o,as_json:boolean:o
 work wake|bead:string:o,all_:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree init|path:string:r
@@ -469,6 +470,7 @@ work labels|false|
 work outbox|false|
 work thread|false|
 work triage|false|
+work validation|false|
 worktree|false|Integration plane
 wt|true|
 """.strip()

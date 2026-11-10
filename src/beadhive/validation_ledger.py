@@ -607,6 +607,59 @@ def _migrate_legacy_ledger(entry) -> int:
     return imported
 
 
+def _refusal(latest: dict | None) -> str:
+    """Why the newest retained manifest for an identity cannot back a green pointer."""
+    if latest is None:
+        return "no retained run manifest"
+    lifecycle = latest.get("lifecycle")
+    if lifecycle != "completed":
+        return f"newest run is {lifecycle or 'malformed'}, not completed"
+    verdict = latest.get("verdict")
+    if verdict == "red":
+        return "newest completed run is red"
+    if verdict != "green":
+        reason = latest.get("reason")
+        return f"newest completed run has no verdict ({reason or verdict})"
+    return "newest green run does not qualify (contradictory or infrastructure-failed manifest)"
+
+
+def _pointer_from_runs(tree: str, key: str, runs: list[dict]) -> tuple[dict | None, str]:
+    """The pointer the retained manifests imply for one identity, or why there is none.
+
+    Pure: the manifest snapshot is the only input, so the read-repair in :func:`verdict`, the
+    writer's :func:`_sync_index` and the operator's :func:`reindex` all derive the same bytes.
+    """
+    runs = [run for run in runs if run.get("tree") == tree and run.get("command_hash") == key]
+    latest = max(runs, key=validation_records._run_order_key, default=None)
+    if latest is None or not validation_records.is_qualifying_green(latest):
+        return None, _refusal(latest)
+    at = _run_timestamp(latest)
+    if at is None:
+        return None, "newest green run has no valid completion time"
+    runs = sorted(runs, key=validation_records._run_order_key)
+    shas = []
+    for run_record in runs:
+        if not validation_records.is_qualifying_green(run_record):
+            continue
+        observed = run_record.get("shas", [])
+        candidates = observed if isinstance(observed, list) else []
+        candidates = [*candidates, run_record.get("sha")]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate and candidate not in shas:
+                shas.append(candidate)
+    return {
+        "schema": 1,
+        "run_id": latest["run_id"],
+        "tree": tree,
+        "command_hash": key,
+        "rc": 0,
+        "at": at,
+        "sha": latest.get("sha"),
+        "shas": shas[-_MAX_SHAS:],
+        "host": (latest.get("owner") or {}).get("host"),
+    }, "newest completed run is green"
+
+
 def _sync_index_from_runs(
     tree: str,
     key: str,
@@ -614,44 +667,15 @@ def _sync_index_from_runs(
     validation_root: Path,
 ) -> bool:
     """Commit one pointer from a manifest snapshot protected by the verdict transaction."""
-    runs = [run for run in runs if run.get("tree") == tree and run.get("command_hash") == key]
-    latest = max(runs, key=validation_records._run_order_key, default=None)
     path = _verdict_path_in(validation_root, tree, key)
     if path is None:
         return False
     try:
-        if latest is None or not validation_records.is_qualifying_green(latest):
+        pointer, _reason = _pointer_from_runs(tree, key, runs)
+        if pointer is None:
             path.unlink(missing_ok=True)
-            return True
-        at = _run_timestamp(latest)
-        if at is None:
-            path.unlink(missing_ok=True)
-            return True
-        runs = sorted(runs, key=validation_records._run_order_key)
-        shas = []
-        for run_record in runs:
-            if not validation_records.is_qualifying_green(run_record):
-                continue
-            observed = run_record.get("shas", [])
-            candidates = observed if isinstance(observed, list) else []
-            candidates = [*candidates, run_record.get("sha")]
-            for candidate in candidates:
-                if isinstance(candidate, str) and candidate and candidate not in shas:
-                    shas.append(candidate)
-        _write_index(
-            path,
-            {
-                "schema": 1,
-                "run_id": latest["run_id"],
-                "tree": tree,
-                "command_hash": key,
-                "rc": 0,
-                "at": at,
-                "sha": latest.get("sha"),
-                "shas": shas[-_MAX_SHAS:],
-                "host": (latest.get("owner") or {}).get("host"),
-            },
-        )
+        else:
+            _write_index(path, pointer)
         return True
     except (OSError, KeyError, TypeError):
         return False
@@ -701,6 +725,142 @@ def rebuild_verdict_index(entry) -> int:
             path = _verdict_path_in(root, tree, key)
             rebuilt += bool(path is not None and path.is_file())
         return rebuilt
+
+
+@dataclass(frozen=True)
+class ReindexEntry:
+    """One identity's outcome in a :func:`reindex` pass."""
+
+    tree: str
+    command_hash: str
+    run_id: str | None
+    action: str  # rebuilt | unchanged | refused | revoked | failed
+    reason: str
+
+    def to_json(self) -> dict:
+        return {
+            "tree": self.tree,
+            "command_hash": self.command_hash,
+            "run_id": self.run_id,
+            "action": self.action,
+            "reason": self.reason,
+        }
+
+
+#: Actions that leave a green pointer in place after the pass (or would, under ``dry_run``).
+REINDEX_GREEN_ACTIONS = frozenset({"rebuilt", "unchanged"})
+
+
+def reindex(entry, *, tree: str | None = None, dry_run: bool = False) -> list[ReindexEntry] | None:
+    """Rebuild verdict pointers from retained run manifests and report every identity's outcome.
+
+    The operator recovery path for a pointer lost between a completed-green manifest and its
+    pointer sync (GitHub #89). The manifest is the only authority: a pointer is (re)written only
+    for an identity whose newest retained run is completed and qualifying-green — exactly the
+    rule :func:`record` applies — and every other identity is reported ``refused`` (no pointer)
+    or ``revoked`` (a pointer the manifests no longer support, removed). A pointer already equal
+    to its derivation is ``unchanged``, so a second pass is a no-op. Freshness is deliberately not
+    a reindex criterion: :func:`verdict` enforces ``work.ledger_ttl`` on every read, so a pointer
+    for a stale green still misses.
+
+    ``tree`` limits the pass to one tree hash. ``dry_run`` reports without writing. Returns None
+    when the validation store cannot be locked (nothing was read or written).
+    """
+    hive = registry.hive_dir(entry)
+    git_root = private_paths.git_private_root(hive)
+    root = git_root / "validation" if git_root else None
+    runs_dir = root / "runs" if root else None
+    if root is None or runs_dir is None or not runs_dir.is_dir():
+        return []
+    with validation_records._verdict_transaction(root) as locked:
+        if not locked:
+            return None
+        retained_runs = validation_records._read_run_directory(runs_dir)
+        keys = sorted(
+            {
+                (run["tree"], run["command_hash"])
+                for run in retained_runs
+                if isinstance(run.get("tree"), str)
+                and isinstance(run.get("command_hash"), str)
+                and (tree is None or run["tree"] == tree)
+            }
+        )
+        report: list[ReindexEntry] = []
+        for run_tree, key in keys:
+            path = _verdict_path_in(root, run_tree, key)
+            if path is None:
+                report.append(
+                    ReindexEntry(run_tree, key, None, "refused", "not a safe pointer identity")
+                )
+                continue
+            pointer, reason = _pointer_from_runs(run_tree, key, retained_runs)
+            current = _read_index(path) if path.is_file() else None
+            run_id = pointer["run_id"] if pointer is not None else None
+            if pointer is None:
+                if not path.exists():
+                    report.append(ReindexEntry(run_tree, key, None, "refused", reason))
+                    continue
+                action = "revoked"
+            elif current == pointer:
+                report.append(ReindexEntry(run_tree, key, run_id, "unchanged", reason))
+                continue
+            else:
+                action = "rebuilt"
+            if not dry_run and not _sync_index_from_runs(run_tree, key, retained_runs, root):
+                action, reason = "failed", f"could not write the pointer ({reason})"
+            report.append(ReindexEntry(run_tree, key, run_id, action, reason))
+        return report
+
+
+def reindex_cli(rev: str, tree: str, dry_run: bool, hive: str, as_json: bool) -> None:
+    """``bh work validation reindex``: run :func:`reindex` for one hive and report each identity.
+
+    Exit 0 when every identity was rebuilt, unchanged, refused or revoked as the manifests say;
+    1 when the store could not be locked or a pointer write failed; 2 on a usage error.
+    """
+    if rev and tree:
+        typer.echo("✗ pass at most one of --rev and --tree", err=True)
+        raise typer.Exit(2)
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    if not entry:
+        typer.echo(f"✗ no managed hive for {hive or 'cwd'}", err=True)
+        raise typer.Exit(2)
+    target = tree_of(entry, rev) if rev else (tree or None)
+    report = reindex(entry, tree=target, dry_run=dry_run)
+    if report is None:
+        typer.echo("✗ could not lock the validation store; nothing was read or written", err=True)
+        raise typer.Exit(1)
+    counts = {
+        action: sum(item.action == action for item in report)
+        for action in ("rebuilt", "unchanged", "refused", "revoked", "failed")
+    }
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "dry_run": dry_run,
+                    "tree": target,
+                    "counts": counts,
+                    "entries": [item.to_json() for item in report],
+                },
+                indent=2,
+            )
+        )
+    else:
+        marks = {"rebuilt": "✓", "unchanged": "=", "refused": "•", "revoked": "-", "failed": "✗"}
+        for item in report:
+            run_id = f" {item.run_id}" if item.run_id else ""
+            writes = dry_run and item.action in {"rebuilt", "revoked"}
+            label = f"would be {item.action}" if writes else item.action
+            typer.echo(
+                f"{marks[item.action]} {label:<16} {item.tree[:12]} "
+                f"{item.command_hash[:12]}{run_id} — {item.reason}"
+            )
+        summary = ", ".join(f"{n} {action}" for action, n in counts.items() if n) or "no runs"
+        typer.echo(f"{'dry run: ' if dry_run else ''}{summary}")
+    if counts["failed"]:
+        raise typer.Exit(1)
 
 
 def _is_fresh(e: dict, now: float, ttl: int) -> bool:
@@ -842,18 +1002,72 @@ def verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict
         return None
     if source.get("verdict") != "green":
         return entry_value
-    hit = _read_index(_verdict_path(entry, tree, key))
+    path = _verdict_path(entry, tree, key)
+    hit = _read_index(path)
+    if not _pointer_matches(hit, source, tree, key, entry_value["at"]):
+        # Read-repair (GitHub #89): a crash, OOM kill or SIGKILL between the run manifest's
+        # completed-green write and `record` -> `_sync_index` leaves either no pointer or the
+        # previous green's pointer beside a genuine green. Every predicate above already
+        # established that the newest retained manifest for exactly this tree and command hash
+        # is completed, qualifying-green and fresh, so rebuild the derived pointer from the
+        # manifests — under the transaction manifest writers hold — and re-check it against this
+        # source. Only those two crash shapes heal: a corrupt, tampered or otherwise disagreeing
+        # pointer stays a miss, and red, none, running, stale, non-qualifying and other-identity
+        # manifests returned above and never reach this write.
+        if not _crash_left_pointer(hive, path, hit, source, tree, key):
+            return None
+        if not _sync_index(entry, tree, key):
+            return None
+        hit = _read_index(_verdict_path(entry, tree, key))
+        if not _pointer_matches(hit, source, tree, key, entry_value["at"]):
+            return None
+    assert hit is not None  # narrowed by _pointer_matches
+    return {**entry_value, **hit}
+
+
+def _crash_left_pointer(
+    hive, path: Path | None, hit: dict | None, source: dict, tree: str, key: str
+) -> bool:
+    """Whether a disagreeing pointer is exactly what an interrupted pointer sync leaves behind.
+
+    Either no pointer file at all, or a well-formed pointer naming an OLDER retained
+    qualifying-green run of this same identity (the sync of the newer green never happened).
+    """
+    if path is None:
+        return False
+    if hit is None:
+        return not path.exists()
+    previous = hit.get("run_id")
     if (
-        hit is None
-        or hit.get("schema") != 1
-        or hit.get("run_id") != source.get("run_id")
+        hit.get("schema") != 1
         or hit.get("tree") != tree
         or hit.get("command_hash") != key
         or hit.get("rc") != 0
-        or hit.get("at") != entry_value["at"]
+        or not isinstance(previous, str)
+        or previous == source.get("run_id")
     ):
-        return None
-    return {**entry_value, **hit}
+        return False
+    older = validation_records.read_run(hive, previous)
+    return (
+        older is not None
+        and older.get("tree") == tree
+        and older.get("command_hash") == key
+        and validation_records.is_qualifying_green(older)
+        and validation_records._run_order_key(older) < validation_records._run_order_key(source)
+    )
+
+
+def _pointer_matches(hit: dict | None, source: dict, tree: str, key: str, at: float) -> bool:
+    """Whether a derived pointer names exactly this newest green manifest."""
+    return (
+        hit is not None
+        and hit.get("schema") == 1
+        and hit.get("run_id") == source.get("run_id")
+        and hit.get("tree") == tree
+        and hit.get("command_hash") == key
+        and hit.get("rc") == 0
+        and hit.get("at") == at
+    )
 
 
 def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict | None:
