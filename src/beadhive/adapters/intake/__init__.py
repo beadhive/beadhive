@@ -12,6 +12,8 @@ over local git, read-only, and :class:`GitRepoFacts` the ``RepoFacts`` port the 
 read (ancestry, the computed fix version, changed paths) the same way. :class:`ApiReportStore`
 serves the same port from the supervised Beads service (an injected :class:`ReportApi`), keeping
 the ``bd`` routes only for what the service does not do (gates, ``set-state``, ``find-duplicates``).
+:class:`FileWriteLedger` implements the ``WriteLedger`` port: the host-level count of outbox write
+requests per GitHub API host, in ``$XDG_STATE_HOME/beadhive/github-writes/`` (``bh-eqtxv``).
 """
 
 from .api_store import ApiReportStore, ReportApi, ReportApiError
@@ -22,6 +24,7 @@ from .outbox_index import FileOutboxIndex
 from .release_verifier import GitReleaseVerifier
 from .repo_facts import GitRepoFacts
 from .sanitizer import ScrubSanitizer
+from .write_ledger import FileWriteLedger
 
 __all__ = [
     "SOURCE_KEY",
@@ -30,6 +33,7 @@ __all__ = [
     "BdReportStore",
     "FileCheckpointStore",
     "FileOutboxIndex",
+    "FileWriteLedger",
     "GitReleaseVerifier",
     "GitRepoFacts",
     "ReportApi",

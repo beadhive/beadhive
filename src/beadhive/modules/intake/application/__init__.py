@@ -9,6 +9,7 @@ from .labels import LabelProjection
 from .linker import LinkService
 from .mentions import TrackerProjectIssues
 from .milestones import MilestoneService
+from .pacing import WritePacer, check_pace
 from .paging import collect_snapshot, iterate_pages
 from .proposals import ProposalService, TriageBinding
 from .review import ReviewService
@@ -32,7 +33,9 @@ __all__ = [
     "ThreadService",
     "TrackerProjectIssues",
     "TriageBinding",
+    "WritePacer",
     "bind_intake",
+    "check_pace",
     "checkpoint_key",
     "collect_snapshot",
     "iterate_pages",

@@ -8,7 +8,9 @@ own-message recognition reads of the outbox), :class:`OutboxIndex` (which report
 id),
 :class:`Sanitizer` (the egress secret scan), :class:`IdSource` (the outbox's opaque ids),
 :class:`ReleaseVerifier` (what a tag contains), :class:`RepoFacts` (what the proposal checks
-read of the repository) and :class:`LandedCommits` (the commits that landed a work bead).
+read of the repository), :class:`LandedCommits` (the commits that landed a work bead), and
+(``bh-eqtxv``) :class:`WriteLedger` (the host-level count of outbox write requests) and
+:class:`SendPacer` (one command's write pacer over it).
 No bd argv, label string or store path crosses :class:`IntakePort`. Standard library plus this
 module's domain records.
 """
@@ -51,6 +53,7 @@ from ..domain import (
     LabelDefineRequest,
     LabelSyncOutcome,
     LabelSyncRequest,
+    LedgerAnswer,
     LinkOutcome,
     LinkRequest,
     MergeFact,
@@ -64,6 +67,7 @@ from ..domain import (
     OutboxListing,
     OutboxQuery,
     OutboxResult,
+    PacingSummary,
     PresenceOutcome,
     PresenceRequest,
     Proposal,
@@ -84,6 +88,7 @@ from ..domain import (
     ReviewRequest,
     ReviewRun,
     SanitizerFinding,
+    SendStop,
     SourceSnapshot,
     StartFact,
     StoreScope,
@@ -523,6 +528,50 @@ class OutboxIndex(Protocol):
     def add(self, entries: Mapping[str, str]) -> None: ...  # outbox id -> report, merged
 
     def rebuild(self, entries: Mapping[str, str]) -> None: ...  # a complete scan, replaced
+
+
+@runtime_checkable
+class WriteLedger(Protocol):
+    """The host-level write ledger (``bh-eqtxv``): one wall-clock entry per outbox write request,
+    shared by every command and hive on the host that sends through the outbox.
+
+    ``take`` is ONE atomic step: under the ledger's own lock it reads the entries, prunes those
+    older than the hour, counts the minute and the hour and either appends one entry at ``now`` or
+    says why not, all by :func:`~..domain.pacing.ledger_step`. ``record=False`` only peeks (appends
+    nothing): an entry is recorded when a request actually starts. So two commands on the host grant
+    slots from the same current count, never from a stale copy. The root's implementation is a file
+    per GitHub API host under ``$XDG_STATE_HOME/beadhive/github-writes/`` with a separate, permanent
+    lock file; tests share one memory ledger between pacers."""
+
+    def take(
+        self,
+        now: float,
+        *,
+        per_minute: int,
+        per_hour: int,
+        need: int = 1,
+        overdraw: bool = False,
+        record: bool = True,
+    ) -> LedgerAnswer: ...
+
+
+@runtime_checkable
+class SendPacer(Protocol):
+    """The outbox's write pacer for ONE command (``bh-eqtxv``), the sender's side of it.
+
+    ``begin`` binds the command's one :class:`SendStop` (which the pacer waits on and sets on a
+    rate limit or a spent hour). ``admit`` runs right before an operation's write-ahead with its
+    expected request count: it raises :class:`SendStopped` when the command stopped, the hour
+    cannot fit the requests or the ledger cannot be used, else returns once the minute has room
+    (which may wait for the spacing); it records nothing. The same pacer, wired into the adapter
+    as its write gate, records a slot for EVERY request (the first included) as it starts.
+    ``summary`` is the batch outcome's ``pacing`` block."""
+
+    def begin(self, stop: SendStop) -> None: ...
+
+    def admit(self, requests: int) -> None: ...
+
+    def summary(self) -> PacingSummary: ...
 
 
 @runtime_checkable
