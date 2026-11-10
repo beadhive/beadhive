@@ -24,6 +24,20 @@ No action required.
   with more own commits than `max_commits`, or a non-conventional own subject, is still refused.
   Epic submit is unchanged. Fixes GitHub #88, #27 and #26.
 
+- **`review_gate: gh:pr` submit opens the PR and the gate waits on it (bh-srb1r).** Before,
+  `bh work submit` pushed the branch and opened a `gh:pr` gate with no PR number, so `bd gate check`
+  reported `no PR number specified` forever and `bh work land` refused the bead as not
+  `pr-pending`. Now submit opens the PR for the pushed branch against the bead's integration base,
+  or adopts the PR already open for it (a resubmit never opens a second one); opens the review gate
+  with that PR number (`--await-id`), so `bd gate check` resolves it when the PR merges; and records
+  `landing=pr-pending`, so `bh work land <id>` closes the bead once GitHub reports the PR MERGED (it
+  also resolves the review gate if `bd gate check` has not yet). `gh` must be on PATH and the hive
+  GitHub-backed; otherwise, or when `gh pr create` fails, submit refuses before opening any gate.
+  Agents that opened the PR themselves after submit no longer need to: submit adopts an open PR. A
+  bead stuck by the old behaviour unsticks with a plain resubmit, which replaces the PR-less gate.
+  Contribution (`kind: external`) hives are unchanged. The `pr-merge` gate that `merge`/`finish`
+  open under `work.landing: pr` now carries the PR number too. Fixes GitHub #35 and #50.
+
 ### Landing closes a bead whatever its assignee (bh-ikygx)
 
 `bh work land` closed a bead directly with no actor, so bd's assignee-vs-actor guard refused it
