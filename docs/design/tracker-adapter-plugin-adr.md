@@ -312,7 +312,10 @@ repository was checked and supports it:
   the shared ones; `run._fill_github_token` and `github_projection.ambient_token` become thin
   callers of one provenance-returning resolver (chain order unchanged); the source is
   zero-argument and called once per operation, so a rotated token is picked up and nothing is
-  cached.
+  cached. A one-command process (`TrackerAdapters(command_scoped=True)`) also reuses one HTTP
+  client and its connection pool across those operations (bh-vy7dx); the client's auth reads
+  the operation's token per request, so the credential contract above is unchanged, and a
+  resident process (the host daemon) builds a client per operation and keeps none.
 
 The manifest cannot order credential sources (the kernel stores them sorted, so `GH_TOKEN`
 sorts first) and cannot express `gh auth token`; precedence therefore lives in

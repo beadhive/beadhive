@@ -5,6 +5,27 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.7 → 0.35.8 — one GitHub client and one field-definitions read per command
+
+Two changes to the GitHub adapter make a long outbox batch cheaper, with no new key and no
+state change:
+
+- **One HTTP client per command** (bh-vy7dx). A command (`bh work outbox send-approved`,
+  `bh work labels approve --batch`, the other intake verbs) builds one GitHub client and
+  connection pool for the whole command instead of one per operation, which cost about 34 s over
+  a 270-operation batch. The credential is unchanged: the token is still resolved once per
+  operation and sent on each request, so with `credential.per_invocation_cache` off a token
+  rotated or revoked mid-command is still picked up by the next operation. The host daemon's
+  discovery timer keeps its adapters for its whole life and still builds a client per
+  operation.
+- **The org's issue-field definitions are read once per command** (bh-n0h15). An `issue.fields`
+  write used to `GET /orgs/{org}/issue-fields` first every time (135 extra requests, about 47 s,
+  in a 270-operation batch). The answer is now remembered for the command. It is checked, not
+  trusted: a field or option missing from it, or a `404`/`422` from the write, drops it, reads
+  the definitions once more and retries once (on the same single-use grant, since a `4xx` wrote
+  nothing); a second failure is the normal error. The daemon remembers nothing across
+  operations.
+
 ## 0.35.5 → 0.35.6 — a typer cap (fresh installs of 0.35.5 and earlier are broken)
 
 typer 0.29.0 (released 2026-11-09) removed a private module and an option parameter that `bh hq

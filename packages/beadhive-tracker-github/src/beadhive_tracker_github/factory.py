@@ -35,10 +35,14 @@ def build(
     *,
     project: ProjectRef,
     sleep: Callable[[float], None],
+    command_scoped: bool = False,
 ) -> TrackerAdapter:
-    """Return the GitHub ``TrackerAdapter`` for *project*."""
+    """Return the GitHub ``TrackerAdapter`` for *project*. ``command_scoped``: it lives for one
+    command, so it may reuse one HTTP client and the org field definitions (never a daemon's)."""
     if not isinstance(project, ProjectRef):
         raise TypeError("project must be a ProjectRef")
     if not callable(token_source) or not callable(sleep):
         raise TypeError("token_source and sleep must be callables")
-    return build_adapter(settings, token_source, project=project, sleep=sleep)
+    return build_adapter(
+        settings, token_source, project=project, sleep=sleep, command_scoped=command_scoped
+    )

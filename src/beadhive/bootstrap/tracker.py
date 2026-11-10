@@ -225,6 +225,9 @@ class TrackerAdapterRequest:
     enabled: frozenset[Operation]
     token_source: TokenSource = field(repr=False, compare=False)
     sleep: Callable[[float], None] = field(repr=False, compare=False)
+    #: The adapter lives for ONE command (never a resident process's whole life), so it may keep
+    #: one HTTP client and per-command memos; the token is still resolved per operation.
+    command_scoped: bool = False
 
 
 @dataclass(frozen=True)
@@ -245,7 +248,11 @@ class TrackerAdapterProvider:
 def _github_adapter(request: TrackerAdapterRequest) -> object:
     build = import_module("beadhive_tracker_github.factory").build
     return build(
-        request.settings, request.token_source, project=request.project, sleep=request.sleep
+        request.settings,
+        request.token_source,
+        project=request.project,
+        sleep=request.sleep,
+        command_scoped=request.command_scoped,
     )
 
 
@@ -769,6 +776,12 @@ class TrackerAdapters:
     mappings or their config models). ``token_source`` is the injected credential port; it is
     handed to the adapter and never called here. Discovery runs once, lazily; each (hive,
     store scope) gets one adapter, cached for this instance's lifetime.
+
+    ``command_scoped`` says this instance lives for ONE command (the default is a resident
+    process: the host daemon keeps its adapters for its whole life). Its adapters then reuse one
+    HTTP client and connection pool and memoize per-command reads (the org's issue-field
+    definitions); each operation still resolves the token through ``token_source``. A resident
+    instance builds a client per operation and memoizes nothing across operations.
     """
 
     def __init__(
@@ -780,7 +793,9 @@ class TrackerAdapters:
         sources: Sequence[ManifestSource] | None = None,
         providers: Sequence[TrackerAdapterProvider] = BUILTIN_TRACKER_PROVIDERS,
         sleep: Callable[[float], None] = time.sleep,
+        command_scoped: bool = False,
     ) -> None:
+        self._command_scoped = command_scoped
         self._plugins = plugins
         self._plugin_kernel = plugin_kernel
         self._token_source = token_source
@@ -942,6 +957,7 @@ class TrackerAdapters:
             enabled,
             token_source=self._token_source,
             sleep=self._sleep,
+            command_scoped=self._command_scoped,
         )
         try:
             adapter = provider.loader(request)
