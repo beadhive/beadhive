@@ -462,7 +462,9 @@ def test_losing_the_primary_stops_the_batch_and_reports_what_was_sent() -> None:
         (second, labels2, L, "not_primary"),
         (second, reply2, X, "not_primary"),
     ]
-    assert outcome.stopped == "not the primary" and not outcome.ok
+    # a reason code, its text apart (bh-eqtxv)
+    assert outcome.stopped == "not_primary" and outcome.stopped_detail == "not the primary"
+    assert not outcome.ok
     assert s.world.write_requests() == 3  # nothing after the refusal was tried
 
 

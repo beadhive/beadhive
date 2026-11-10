@@ -833,12 +833,25 @@ def _outbox_payload(call, verb: str) -> dict:
         payload["results"] = [_outbox_result_row(r) for r in value.results]
         payload["failed"] = [_batch_failure_row(f) for f in value.failed]
         payload["sent"] = len(value.sent)
-        payload["stopped"] = value.stopped
+        payload["stopped"] = value.stopped  # a reason code (bh-eqtxv), its text apart
+        payload["stopped_detail"] = value.stopped_detail
+        if value.pacing is not None:
+            payload["pacing"] = _pacing_row(value.pacing)
     elif isinstance(value, tuple):
         payload["results"] = [_outbox_result_row(r) for r in value]
     else:
         payload["results"] = [_outbox_result_row(value)]
     return payload
+
+
+def _pacing_row(pacing) -> dict:
+    return {
+        "writes_per_minute": pacing.writes_per_minute,
+        "writes_per_hour": pacing.writes_per_hour,
+        "requests": pacing.requests,
+        "waited_seconds": pacing.waited_seconds,
+        "budget_frees_at": pacing.budget_frees_at,
+    }
 
 
 def _batch_failure_row(failure) -> dict:
@@ -862,7 +875,15 @@ def _batch_send_lines(outcome) -> list[str]:
             f"({failure.reason}): {failure.detail}"
         )
     if outcome.stopped:
-        lines.append(f"✗ stopped, the rest not tried: {outcome.stopped}")
+        lines.append(
+            f"✗ stopped ({outcome.stopped}), the rest not started: {outcome.stopped_detail}"
+        )
+    if outcome.pacing is not None and outcome.pacing.requests:
+        pacing = outcome.pacing
+        lines.append(
+            f"paced: {pacing.requests} write request(s) at {pacing.writes_per_minute} a minute "
+            f"and {pacing.writes_per_hour} an hour, waited {pacing.waited_seconds:.1f}s"
+        )
     if not outcome.results and not outcome.failed:
         lines.append("nothing approved to send")
     else:
@@ -1102,17 +1123,52 @@ def outbox_send_approved(
     hive: str = "",
     as_json: bool = False,
 ):
-    """Send every approved operation in one process (``bh-pc9rf``)."""
-    with _measured(as_json) as timings:
+    """Send every approved operation in one process (``bh-pc9rf``), paced; the first ``SIGINT``
+    drains the operation in flight and stops the batch (``bh-eqtxv``)."""
+    with _measured(as_json) as timings, interrupt_stop() as stop:
         actor = identity.resolve_actor(as_)
         _outbox(
             "send-approved",
             hive,
             as_json,
             lambda cfg, entry, directory: intake_services.outbox_send_approved(
-                cfg, entry, directory, kind, beads, actor, hive=hive
+                cfg, entry, directory, kind, beads, actor, hive=hive, stop=stop
             ),
             timings,
+        )
+
+
+@contextlib.contextmanager
+def interrupt_stop() -> Iterator[intake_services.SendStop]:
+    """The batch's stop, set by the first ``SIGINT`` (``bh-eqtxv``; the composition root's job:
+    the intake application installs no handler).
+
+    Installed only in the main thread (a signal handler can be set nowhere else). The first
+    ``SIGINT`` sets the stop with ``interrupted`` and puts back ``signal.default_int_handler``, so
+    a second one raises ``KeyboardInterrupt`` as before. On the way out (a normal end, a stop or an
+    exception) the handler that was installed before the call is restored, whatever it was."""
+    import signal
+    import threading
+
+    stop = intake_services.SendStop()
+    if threading.current_thread() is not threading.main_thread():
+        yield stop
+        return
+
+    def first(_signum, _frame) -> None:
+        stop.set(
+            intake_services.StopReason.INTERRUPTED,
+            "interrupted: the operation in flight finished and no further operation started; "
+            "run send-approved again to continue",
+        )
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    previous = signal.signal(signal.SIGINT, first)
+    try:
+        yield stop
+    finally:
+        signal.signal(
+            signal.SIGINT, previous if previous is not None else signal.default_int_handler
         )
 
 

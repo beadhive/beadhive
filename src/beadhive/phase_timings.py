@@ -59,6 +59,7 @@ PHASES: tuple[str, ...] = (
     "github_token",  # resolving the credential (``gh auth token``), once per GitHub operation
     "github_client",  # building the HTTP client, once per GitHub operation
     "github_request",  # one HTTP request, retries counted each
+    "pacer_wait",  # the outbox write pacer waiting for its spacing or the minute (bh-eqtxv)
 )
 
 #: At most this many per-hold entries are listed (the rest are counted in ``holds_omitted``).

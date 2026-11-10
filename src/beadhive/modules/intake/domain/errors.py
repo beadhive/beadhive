@@ -81,6 +81,8 @@ class RefusalReason(StrEnum):
     # the supervised sender (I9a): the store's seq re-check and the host half of IntakeLock
     OUTBOX_MOVED = "outbox_moved"  # the stored intake.outbox seq moved since it was read
     NOT_PRIMARY = "not_primary"  # this host is not the hive's primary writer
+    # the paced write path (bh-eqtxv): the operation's requests do not fit in the rolling hour
+    HOURLY_BUDGET = "hourly_budget"
     # the milestone triggers (I10): the release verb names a tag the repository does not have
     UNKNOWN_TAG = "unknown_tag"
     # waiting for the reporter (bh-61xkc): wake names a report that is not waiting, and asking

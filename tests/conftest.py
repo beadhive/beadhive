@@ -38,6 +38,39 @@ def _outer_broker_environment_removed(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(scope="session")
+def _outbox_state_home(tmp_path_factory: pytest.TempPathFactory):
+    return tmp_path_factory.mktemp("xdg-state")
+
+
+@pytest.fixture(autouse=True)
+def _outbox_pacer_off_the_wall_clock(monkeypatch: pytest.MonkeyPatch, _outbox_state_home) -> None:
+    """The outbox write pacer (bh-eqtxv) never waits on real time or writes the real host-level
+    ledger in a test: ``XDG_STATE_HOME`` points at a scratch directory, and the pacing seam
+    (``beadhive.outbox_pacing``, a standard-library module, so patching it costs nothing) gives
+    fake clocks over a fresh memory ledger, whether or not the composition root is imported yet.
+    A test of the real runtime or of the file ledger uses its own."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(_outbox_state_home))
+    from beadhive import outbox_pacing
+
+    built: list = []  # one fake host per test, shared by its commands
+
+    def fake_runtime():
+        # imported only when a pacer is built, so no test loads the intake module through here
+        if not built:
+            from beadhive.testing.intake.pacing import FakePacerClock, MemoryWriteLedger
+
+            clock, ledger = FakePacerClock(), MemoryWriteLedger()
+            built.append(
+                outbox_pacing.PacingRuntime(
+                    clock.monotonic, clock.wall, clock.wait, lambda _host: ledger
+                )
+            )
+        return built[0]
+
+    monkeypatch.setattr(outbox_pacing, "runtime", fake_runtime)
+
+
 #: The signed-HQ backend fixture (real SSH-signed pre-receive guard, git broker process and frame
 #: sandbox). The process boundary is what its tests prove, so they run in the integration lane
 #: (bh-100df). Matched by defining module, since ``backend`` is also a parametrize name elsewhere;

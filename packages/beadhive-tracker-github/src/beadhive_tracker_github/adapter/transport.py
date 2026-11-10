@@ -15,6 +15,11 @@ Three of its defaults are overridden on purpose (port ADR section 1):
 * ``timeout`` is finite (githubkit's default is none at all): a hung connection is a transient
   failure, not a hang.
 
+Pacing (``bh-eqtxv``): a host may inject :attr:`Transport.write_gate`, called before every
+attempt of a write (each rate-limit resend included), and :attr:`Transport.observe_wait`, called
+with the refusal whenever the retry decision returns a wait (``0`` included) before the sleep.
+Neither is set unless the host wires its outbox pacer in; without them nothing changes.
+
 Writes are the exception, not the rule: only an operation opened with ``write=True`` (by a
 writer, after its grant was checked) has :meth:`Session.send`, the ONE write seam every writer
 (``comment.create``, ``labels.change``) sends through. Its client neither caches nor follows a
@@ -212,8 +217,11 @@ class Session:
     ) -> Reply:
         """Send until a reply, or until the retry decision says stop (then raise its error)."""
         transport = self._transport
+        gate = transport.write_gate if method != "GET" else None
         waited, attempt = 0.0, 0
         while True:
+            if gate is not None:
+                gate(method)  # the host's pacer: every attempt of a write, resends included
             outcome = self._attempt(
                 target, params, method=method, payload=payload, no_content=no_content
             )
@@ -224,6 +232,8 @@ class Session:
             wait = next_wait(outcome, attempt=attempt, waited=waited, budget=transport.budget)
             if wait is None:
                 raise outcome.error from None
+            if transport.observe_wait is not None:
+                transport.observe_wait(outcome, wait)  # any wait, 0 included, before sleeping
             if wait > 0:
                 transport.sleep(wait)
             waited, attempt = waited + wait, attempt + 1
@@ -310,6 +320,12 @@ class Transport:
     #: Keep one client (and its connection pool) per kind for the life of this transport. Only an
     #: adapter that lives for one command sets it; see the module docstring.
     reuse_client: bool = False
+    #: Called with the method before EVERY attempt of a write (a rate-limit resend included):
+    #: the host's write pacer (``bh-eqtxv``). It may block and never refuses. ``None``: no gate.
+    write_gate: Callable[[str], None] | None = field(default=None, repr=False)
+    #: Called with the refusal and the seconds whenever the retry decision returns a wait (``0``
+    #: included), before the sleep: the host's stop on a rate limit (``bh-eqtxv``).
+    observe_wait: Callable[[Refusal, float], None] | None = field(default=None, repr=False)
     _cache_strategy: Any = field(default=None, init=False, repr=False)
     _held: _HeldToken = field(default_factory=_HeldToken, init=False, repr=False)
     _shared: dict[bool, Any] = field(default_factory=dict, init=False, repr=False)

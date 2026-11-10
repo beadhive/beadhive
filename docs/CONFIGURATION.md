@@ -561,6 +561,8 @@ and no key can enable or pre-approve a tracker write.
 | `outbox.labels_enabled` | `false` | allow `labels.change` operations to be approved and sent (`bh work outbox approve --op labels:...` and `send --kind labels`); needs `outbox.enabled` too, and is separate from the comment sender and from the `tracker-github` labels capability (`write.labels`), which must also be on. Off refuses with `labels_disabled` before any tracker request. Only `approve` and `send` are gated by this flag: `render`, `discard` and `retry --kind labels` are local state moves that make no tracker request, so they are deliberately not blocked. A retried label operation still cannot reach GitHub without a new `approve` and `send`, and both of those are gated |
 | `outbox.mode` | `supervised` | the only accepted value: every send needs an operator's per-record approval |
 | `outbox.batch_recheck_seconds` | `0` | how long a one-process batch (`bh work outbox send-approved`, `bh work labels approve --batch`) reuses its primary-host check and epoch read before taking them again (bh-pc9rf). `0` (the default) re-checks on every hold of the lock, as a single `send` does; a positive value is an opt-in. Since bh-25fvb a batch takes ONE hold of the per-binding lock per report (not one per operation) and sends or approves that report's operations under it; every operation still spends its own single-use grant and writes its own write-ahead and receipt, and only the host check is shared. The check itself costs about 1.9 s per hold on the factory (13 s before), and `bh work labels sync` drafts inside the same batch scope. The factory sets `300` once every host runs 0.35.3 (an older host rejects the key) |
+| `outbox.send_writes_per_minute` | `80` | the most outbox write requests (`bh work outbox send` and `send-approved`) started in any minute, counted across every command and hive on this host in the host-level write ledger (bh-eqtxv). The unit is one GitHub write request: a `labels.change` is one `POST` plus one `DELETE` per removed label, and a rate-limit resend counts again. `1` to `80`; `80` is GitHub's documented limit of 80 content-generating requests a minute and the hard upper bound (a larger value is refused at validation, never clamped). There is no unpaced mode. See [Outbox write pacing](#outbox-write-pacing-bh-eqtxv) |
+| `outbox.send_writes_per_hour` | `500` | the most outbox write requests started in any rolling hour on this host, on the same terms. A batch whose next operation does not fit stops with `stopped: hourly_budget` (the rest stay approved; re-run once the hour frees), and a single `send` is refused `hourly_budget`. `1` to `500`; `500` is GitHub's documented hourly limit and the hard upper bound |
 | `comments.enabled` | `false` | ingest bound reports' issue comments: `bh work thread ingest` (needs `plugins.tracker-github.enabled` and `plugins.tracker-github.read.comments.enabled`), `thread show` and `thread considered`. Reads only; off refuses naming this key |
 | `comments.deletion_confirmations` | `2` | complete comment-id snapshots that must agree a comment is gone before it is tombstoned |
 | `comments.purge_deleted_bodies` | `true` | drop a tombstoned comment's latest body (its digest is kept; not erasure) |
@@ -636,6 +638,7 @@ measured, not modeled, from one monotonic clock; a run on the factory records it
   | `github_token` | resolving the credential (`gh auth token`), once per GitHub operation |
   | `github_client` | building (or, with the per-command client, fetching) the HTTP client: once per GitHub operation, or once per command when the adapter is command-scoped (bh-vy7dx) |
   | `github_request` | each HTTP request (a retry counts again); the org's issue-field definitions are read once per command (bh-n0h15), so an `issue.fields` write is one request after the first |
+  | `pacer_wait` | the outbox write pacer waiting for its spacing or for a full minute to free (`outbox.send_writes_per_minute`, bh-eqtxv); `outbox send` and `send-approved` only |
 
 - `holds`: one entry per hold of the intake lock, that is per report, not per outbox operation (a
   batch takes one per report and sends or approves that report's operations under it; a single
@@ -650,6 +653,61 @@ is absent, so a command that is not measuring, and every daemon iteration, pays 
 lookup at each seam (about four per hold).
 The `-m perf` model (`tests/test_intake_outbox_batch_perf.py`) reads its latencies from the
 recorded profile `tests/fixtures/intake_batch_profile.json`: put a real batch's numbers there.
+
+### Outbox write pacing (bh-eqtxv)
+
+`bh work outbox send` and `send-approved` pace every GitHub **write request** they make, not every
+operation, through one host-level **write ledger** shared by every command and hive on the host:
+at most `outbox.send_writes_per_minute` (default 80) starts in any minute and
+`outbox.send_writes_per_hour` (default 500) in any rolling hour. Pacing is on by default and has
+no off switch; the keys can only lower it. Sends stay serial, one report at a time.
+
+- **The ledger:** `$XDG_STATE_HOME/beadhive/github-writes/<api host>.ledger` (falling back to
+  `~/.local/state/...`; `<api host>` is `api.github.com`, or the GHES host of
+  `plugins.tracker-github.base_url`), one wall-clock entry per request, and its permanent lock file
+  `<api host>.ledger.lock`. Both are created on first use. Deleting the ledger forgets the last
+  hour; both are safe to delete while no send runs. A ledger that cannot be read is reported once
+  on stderr and counted as a full minute (one minute's wait), never as empty.
+- **Before each operation's write-ahead** the batch checks its stop, then the operation's expected
+  requests must fit in the hour (1, or `1 + removals` for a labels change with additions), and it
+  waits for the spacing (about 0.75 s at 80 a minute) and for room in the minute. **Every request
+  is recorded in the ledger as it starts**, so the limits hold for the requests GitHub receives,
+  however long the write-ahead takes. A request is never refused mid-operation: over the hour it
+  is recorded and the batch stops after it. A ledger that cannot be written stops the batch with
+  `error`.
+- **The bounds, exactly** (derived from the code and each pinned by a test):
+
+  - **Minute: at most 80 request starts in any 60 s on the host, strictly**, across every command
+    and hive: each request start is one locked ledger step that waits while the last 60 s hold 80.
+    Two exceptions: a **forward step of the wall clock** makes the ledger's entries look older, so
+    in the minute after the step **at most 80 extra (100% over) may start, once per step** (a step
+    back only delays); and a ledger that **stops being writable mid-operation** lets that one
+    operation's remaining requests go unrecorded (at most its own requests, below), then the batch
+    stops with `error`.
+  - **Hour: at most 500 request starts in any rolling hour**, except that a request inside an
+    operation is never refused. **One command alone** goes over by at most its in-flight
+    operation's **unexpected** requests (its expected ones are checked before the write-ahead):
+    3 rate-limit resends per request plus, for `issue.fields`, one retry on stale field ids with
+    its own 3 resends, so **at most 7 extra (1.4% over) for `issue.fields`, 3 × (1 + removals) for
+    `labels.change`, 3 (0.6%) for every other kind**. **k commands racing** on the shared ledger
+    can each also start their own in-flight operation's requests past the same last free slot, so
+    **at most the sum of their in-flight operations' requests plus those extras** (two other
+    one-request operations: 2 extra, 0.4%). Every request over the hour is recorded and stops its
+    command with `hourly_budget`.
+- **Stops** (`stopped` in the batch JSON is a reason code, its text in `stopped_detail`):
+  `not_primary`; `rate_limited` (the first rate-limit answer GitHub gives, including
+  `retry-after: 0`; the request in flight finishes its own retries); `hourly_budget`;
+  `interrupted` (the first `SIGINT`: the operation in flight finishes and writes its outcome,
+  a second `SIGINT` aborts as before); `error` (an unexpected failure in one operation; the
+  command exits non-zero). Every operation not started is listed in `failed` with the stop
+  reason and stays `approved` with its grant, so re-running `send-approved` continues.
+- **Output:** the batch JSON gains `"pacing": {"writes_per_minute", "writes_per_hour",
+  "requests", "waited_seconds", "budget_frees_at"}` (the last is the epoch second the hour frees
+  enough after an `hourly_budget` stop, else `null`), and the `timings` block a `pacer_wait`
+  phase.
+- **What it does not cover:** other hosts (the ledger is host-local), bh's own non-outbox GitHub
+  writes (label definitions), `gh` and the web interface on the same account. The stop on the
+  first rate limit is the backstop for those.
 
 The milestone and outbox keys only ever **draft**: a merge or a verified release leaves a `drafted`
 record for an operator to render, approve and send; no key sends, approves or mints a grant, and a
