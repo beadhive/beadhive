@@ -413,6 +413,11 @@ def migrate_hive_keys_if_needed() -> None:
     _config_policy.migrate_hive_keys_if_needed(_facade())
 
 
+def remembered_effective() -> dict | None:
+    """The effective config this invocation already loaded, while still current (else None)."""
+    return _config_store.remembered_effective(_facade())
+
+
 def warn_stale_schema_version_if_needed() -> None:
     _config_policy.warn_stale_schema_version_if_needed(_facade())
 

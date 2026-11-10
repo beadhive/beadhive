@@ -91,6 +91,7 @@ from .ports import (
     OutboxIndex,
     OutboxView,
     ReleaseVerifier,
+    ReportSession,
     ReportStore,
     Sanitizer,
 )
@@ -157,6 +158,7 @@ __all__ = [
     "RefusalReason",
     "ReportDraft",
     "ReportRelations",
+    "ReportSession",
     "ReportStore",
     "Role",
     "SourceSnapshot",

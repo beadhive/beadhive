@@ -351,9 +351,12 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   is `run.github_token_source(names=plugins.tracker-github.credential.sources)` (default
   `GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token`): composing the adapters and binding a store read
   no credential, the source is called by the adapter once per operation and is never cached,
-  logged or stored. With either switch off it returns `None` and the verb refuses with R0 naming
-  both keys and `stores.public.adapter`; the binding, the plugin and each operation are still
-  decided per store by `TrackerAdapters.for_store`. Nothing is cached across calls: a command, or
+  logged or stored (the one opt-in exception, `credential.per_invocation_cache`, bh-25fvb, keeps the
+  first token in that source's memory for the rest of one command; the host daemon's discovery
+  timer passes `resident=True` and never caches). With either switch off it
+  returns `None` and the verb refuses with R0 naming both keys and `stores.public.adapter`; the
+  binding, the plugin and each operation are still decided per store by
+  `TrackerAdapters.for_store`. Nothing is cached across calls: a command, or
   the daemon's timer, owns one `TrackerAdapters` per configuration snapshot. Tests inject
   `adapters=` or `tracker=`; `tests/test_intake_process_adapters.py` pins the wiring.
 - **Resolver and fallback.** With an `IssueResolver`: `resolve(url)` (pure) gives R3, R4 and the

@@ -13,6 +13,7 @@ import importlib
 import os
 import re
 import sys
+import time
 
 from .hq_authority_ceiling import (
     AUTHORITY_MAX_DURATION_DEFAULT_S,
@@ -26,6 +27,14 @@ WARN_ENV = "BH_HQ_AUTHORITY_WARN_WITHIN"
 MIN_REMAINING_ENV = "BH_HQ_AUTHORITY_MIN_REMAINING"
 DEFAULT_WARN_WITHIN = 24 * 3600.0
 _WARNED: set[str] = set()
+
+#: How long the ambient check (no ``plane``, no ``now``: the one every eligibility check and
+#: write verb makes) reuses its last read of the authority status. One read costs about 1 s on
+#: the factory (bh-25fvb) and an intake batch takes one host check per operation; the warning is
+#: advisory, prints at most once per process anyway, and an authority whose expiry is that close
+#: is still re-read every few minutes.
+AMBIENT_RECHECK_SECONDS = 300.0
+_ambient_checked_at: list[float] = []
 
 
 def parse_duration(value, *, name="duration") -> float:
@@ -223,9 +232,19 @@ def warn_if_expiring(plane=None, *, now=None, stream=None, settings_file=None) -
     """Print at most one WARN line per process when expiry is inside the lead time.
 
     Never raises and never fails the caller: an unreadable authority is simply not warned about
-    here (eligibility checks and `bh doctor` already fail closed on that).
+    here (eligibility checks and `bh doctor` already fail closed on that). The ambient form (no
+    ``plane``, no ``now``) reads the status at most once per :data:`AMBIENT_RECHECK_SECONDS`.
     """
+    ambient = plane is None and now is None
+    if ambient:
+        if _ambient_checked_at and time.monotonic() - _ambient_checked_at[0] < (
+            AMBIENT_RECHECK_SECONDS
+        ):
+            return None
+        _ambient_checked_at[:] = [time.monotonic()]
     try:
+        if _mode() == "trusted":
+            return None  # a trusted frame never warns (below): skip the read (bh-25fvb, ~1 s)
         if plane is None:
             plane = _frame_plane()
             if plane is None:
@@ -248,6 +267,7 @@ def warn_if_expiring(plane=None, *, now=None, stream=None, settings_file=None) -
 
 def _reset_for_tests() -> None:
     _WARNED.clear()
+    _ambient_checked_at.clear()
 
 
 __all__ = [

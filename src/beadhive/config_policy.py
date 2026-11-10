@@ -58,10 +58,17 @@ def warn_stale_schema_version_if_needed(api) -> None:
     except FileNotFoundError:
         cfg = {}
     if "schema_version" not in cfg:
-        try:
-            fleet = api.load_fleet_raw_for_repair()
-        except FileNotFoundError:
-            fleet = {}
+        # The HOST does not carry it, so the effective config's is the fleet's: when this
+        # invocation already loaded (and so qualified) it, read it there instead of fetching the
+        # committed fleet again (bh-25fvb: a second SQL snapshot read, about 0.9 s per command).
+        remembered = getattr(api, "remembered_effective", lambda: None)()
+        if remembered is not None:
+            fleet = {k: remembered[k] for k in ("schema_version",) if k in remembered}
+        else:
+            try:
+                fleet = api.load_fleet_raw_for_repair()
+            except FileNotFoundError:
+                fleet = {}
         if "schema_version" in fleet:
             cfg = fleet
         elif not cfg and not fleet:

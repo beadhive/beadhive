@@ -56,10 +56,12 @@ class Sources:
 
     def __init__(self) -> None:
         self.names: list[tuple[str, ...]] = []
+        self.cached: list[bool] = []
         self.calls = 0
 
-    def __call__(self, environ=None, *, names=("env", "gh"), gh_auth_token=None):
+    def __call__(self, environ=None, *, names=("env", "gh"), gh_auth_token=None, cache=False):
         self.names.append(tuple(names))
+        self.cached.append(cache)
 
         def source():
             self.calls += 1
@@ -140,6 +142,29 @@ def test_the_configured_credential_sources_are_forwarded(sources, configured, ex
 
     assert intake_services.process_adapters(cfg) is not None
     assert sources.names == [expected]
+    assert sources.cached == [False]  # the per-invocation cache is opt-in (bh-25fvb)
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, False), (False, False), (True, True)])
+def test_the_per_invocation_token_cache_is_forwarded_only_when_opted_in(
+    sources, configured, expected
+) -> None:
+    credential = {} if configured is None else {"per_invocation_cache": configured}
+    plugin = {**PLUGIN, "credential": credential}
+    cfg = {**ON_INTAKE, "plugins": {"tracker-github": plugin}}
+
+    assert intake_services.process_adapters(cfg) is not None
+    assert sources.cached == [expected] and sources.calls == 0  # building reads no token
+
+
+@pytest.mark.parametrize("configured", [None, False, True])
+def test_a_resident_process_never_gets_the_token_cache(sources, configured) -> None:
+    credential = {} if configured is None else {"per_invocation_cache": configured}
+    plugin = {**PLUGIN, "credential": credential}
+    cfg = {**ON_INTAKE, "plugins": {"tracker-github": plugin}}
+
+    assert intake_services.process_adapters(cfg, resident=True) is not None
+    assert sources.cached == [False] and sources.calls == 0
 
 
 def test_the_real_token_source_is_the_one_wired_and_is_lazy() -> None:

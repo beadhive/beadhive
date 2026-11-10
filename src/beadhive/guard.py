@@ -28,6 +28,7 @@ allowed, and never reimplements bd behavior.
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar
 
 import typer
 
@@ -525,6 +526,27 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
     writing while HQ is down, and the lease is not renewed. Every other hive takes the lease
     gate below, where ``expires_at`` is advisory (:meth:`HostLease.held_by`) and is still
     renewed best-effort as a liveness hint (never a reason to refuse)."""
+    admitted = _admit_primary(hive, cfg=cfg, verb=verb)
+    scope = _ADMITTED.get()
+    if scope is not None:  # inside primary_epoch: live_epoch answers from this very decision
+        scope[hive] = admitted
+
+
+#: How :func:`_admit_primary` allowed a write: on a cut-over hive's local ``bh_writer``, on the
+#: authoritative (frame) lease, or on the cached legacy lease (``state`` ``None``: no lease model).
+_WRITER, _FRAME, _LEGACY = "writer", "frame", "legacy"
+
+#: The ``state`` of an allow that :func:`_not_primary` made after HEALING the cached lease (an
+#: expired lease re-read from HQ): the state read before the heal is no longer the one in force,
+#: so :func:`_admitted_epoch` hands nothing over and :func:`live_epoch` reads afresh.
+_HEALED = object()
+
+
+def _admit_primary(hive: str = "", *, cfg=None, verb: str = ""):
+    """:func:`guard_primary`'s decision, returning WHAT it allowed on: ``(kind, state)`` (see
+    :data:`_WRITER`), so :func:`primary_epoch` can answer the epoch from the same read instead
+    of evaluating the whole host check a second time (bh-25fvb). Refuses exactly as
+    :func:`guard_primary` documents."""
     try:
         cut_over = writer_state(hive, cfg=cfg)
     except WriterUnreadable as exc:
@@ -535,25 +557,29 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         if refusal:
             typer.echo(refusal, err=True)
             raise typer.Exit(1)
-        return
+        return _WRITER, cut_over
 
     from . import frame_eligibility
 
+    calls = frame_eligibility.intake_calls()
     try:
         frame_decision = frame_eligibility.require_intake(hive, cfg=cfg)
     except frame_eligibility.EligibilityError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
+    # The lease that very ``require_intake`` call read and found held (bh-25fvb), else read it.
     state = (
-        frame_eligibility.authoritative_primary(hive, cfg=cfg)
+        frame_eligibility.admitted_primary(hive, after=calls)
+        or frame_eligibility.authoritative_primary(hive, cfg=cfg)
         if frame_decision is not None
         else primary_state(hive, cfg=cfg)
     )
+    kind = _FRAME if frame_decision is not None else _LEGACY
     if state is None and frame_decision is not None:
         typer.echo("frame ineligible: current_hive_lease_holder", err=True)
         raise typer.Exit(1)
     if state is None:
-        return  # multi-host model not in force here (see `primary_state`)
+        return kind, None  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
     if lease.held_by(this_host):
         # Clock-free since bh-12hev: ``held_by`` names the holder and ``expires_at`` is only a
@@ -564,7 +590,7 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         # renewal can never turn this allow into a refusal. Renews at the un-scaled
         # `host.lease.ttl` baseline (no manifest read on the hot path).
         _renew_liveness_hint(prefix, this_host, cfg)
-        return
+        return kind, state
 
     refusal = _not_primary(
         prefix,
@@ -574,9 +600,48 @@ def guard_primary(hive: str = "", *, cfg=None, verb: str = "") -> None:
         reason="write verb attempted on a hive this host does not hold the host lease for",
     )
     if not refusal:
-        return
+        return kind, _HEALED  # allowed on a re-read lease, not on ``state``
     typer.echo(refusal, err=True)
     raise typer.Exit(1)
+
+
+#: The decisions :func:`guard_primary` made inside the current :func:`primary_epoch`, by hive
+#: (``None`` outside one, so every other caller reads exactly as before).
+_ADMITTED: ContextVar[dict | None] = ContextVar("bh_admitted_primary", default=None)
+
+
+def primary_epoch(hive: str = "", *, cfg=None, verb: str = "") -> int:
+    """:func:`guard_primary`, then :func:`live_epoch`, as ONE evaluation (bh-25fvb).
+
+    The intake lock asks both on every hold, and each re-ran the frame-eligibility reads (about
+    6.5 s apiece on the factory). Inside this call :func:`live_epoch` answers from the state the
+    allow decision was just made on (the local ``bh_writer`` epoch on a cut-over hive, else the
+    lease's, ``0`` with no lease) instead of reading it all again; where the two would read
+    different sources (a legacy host on a SQL fleet, or a frame on a Git one) it reads as it
+    always has, so the answer never changes. Refuses exactly as :func:`guard_primary`."""
+    token = _ADMITTED.set({})
+    try:
+        guard_primary(hive, cfg=cfg, verb=verb)
+        return live_epoch(hive, cfg=cfg)
+    finally:
+        _ADMITTED.reset(token)
+
+
+def _admitted_epoch(hive: str) -> int | None:
+    """The epoch of :func:`guard_primary`'s decision for ``hive`` inside :func:`primary_epoch`
+    (consumed), or ``None`` when there is none, it read another source than this would, or it
+    allowed only after healing the cached lease (:data:`_HEALED`)."""
+    scope = _ADMITTED.get()
+    if scope is None or hive not in scope:
+        return None
+    kind, state = scope.pop(hive)
+    if state is _HEALED:
+        return None  # the allow healed the cache: what was read before it is stale
+    if kind == _WRITER:
+        return state[2].epoch
+    if (kind == _FRAME) != config.fleet_sql_selected():
+        return None
+    return state[2].epoch if state is not None else 0
 
 
 # ---- the claim fencing token (bh-ytbb.10) ---------------------------------------------------
@@ -631,6 +696,9 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
     check remains the early, legible refusal at the bead-write boundary; a stale remote fence
     is independently rejected by that managed preflight. Current bd prevents the reservation
     and data update from being atomic, a limitation doctor exposes."""
+    admitted = _admitted_epoch(hive)
+    if admitted is not None:
+        return admitted  # read by the guard_primary this primary_epoch just ran (bh-25fvb)
     cut_over = writer_state(hive, cfg=cfg)
     if cut_over is not None:
         return cut_over[2].epoch  # clock-free and HQ-free: the writer epoch in data (bh-12hev)

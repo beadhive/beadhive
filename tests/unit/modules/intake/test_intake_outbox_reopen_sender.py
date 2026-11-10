@@ -505,6 +505,29 @@ def test_a_report_closed_afterwards_retires_its_pending_reopen_and_reply() -> No
     assert reopen(s, "A new one is possible once it is retired.").result is not None
 
 
+def test_retiring_takes_one_hold_with_one_store_session(monkeypatch) -> None:
+    """``retire_reopens`` holds the binding's lock through ``threads.held`` (``bh-25fvb``), as
+    every other outbox write does: one hold, with the report read once inside it."""
+    from beadhive.modules.intake.application import sender
+
+    s = Scene()
+    oid = reopen(s, TEXT).result.outbox_id
+    entered: list[tuple[object, object, str]] = []
+    real = sender.held
+
+    def recording(lock, store, binding):
+        entered.append((lock, store, binding.url))
+        return real(lock, store, binding)
+
+    monkeypatch.setattr(sender, "held", recording)
+    holds = len(s.lock.holds)
+
+    assert s.service.retire_reopens(s.report, "closed", "disp/claude") == (oid,)
+
+    assert entered == [(s.lock, s.store, s.issue.url)]
+    assert len(s.lock.holds) - holds == 1
+
+
 def test_retiring_leaves_a_sent_reopen_and_other_records_alone() -> None:
     s = Scene()
     sent = reopen(s, TEXT).result.outbox_id

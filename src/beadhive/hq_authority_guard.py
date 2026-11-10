@@ -40,7 +40,18 @@ def git(*args):
     return result.stdout.strip()
 
 
+#: ``ssh-keygen -lf`` answers, by the exact key text: a fingerprint is a pure function of the key,
+#: and one eligibility check validates the same few frame keys about 200 times (bh-25fvb: 3.6 s of
+#: an intake lock's host check, one ``ssh-keygen`` process each). Only a success is kept, so an
+#: invalid key is refused afresh every time.
+_FINGERPRINTS: dict[str, str] = {}
+
+
 def fingerprint(public):
+    text = public.strip()
+    known = _FINGERPRINTS.get(text)
+    if known is not None:
+        return known
     with tempfile.NamedTemporaryFile(mode="w") as key:
         key.write(public.strip() + "\n")
         key.flush()
@@ -49,7 +60,9 @@ def fingerprint(public):
         )
     if result.returncode:
         raise ValueError("invalid SSH public key")
-    return result.stdout.split()[1]
+    value = result.stdout.split()[1]
+    _FINGERPRINTS[text] = value
+    return value
 
 
 def binding(record):
