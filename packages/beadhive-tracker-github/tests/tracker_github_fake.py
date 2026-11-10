@@ -859,6 +859,7 @@ def adapter_for(
     tokens=None,
     label_prefixes=None,
     transport=None,
+    command_scoped: bool = False,
 ):
     """A ``GitHubTrackerAdapter`` sending through ``world`` (both reads enabled by default), with
     the writer of each enabled write operation composed in, exactly as ``build_adapter`` does."""
@@ -876,6 +877,7 @@ def adapter_for(
         http_cache=http_cache,
         label_prefixes=label_prefixes,
         transport=transport if transport is not None else world.transport(),
+        command_scoped=command_scoped,
     )
 
 

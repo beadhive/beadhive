@@ -135,6 +135,18 @@ def test_the_daemon_timer_never_asks_for_the_token_cache_even_when_the_key_is_on
     assert built_with == [True, False, False]
 
 
+def test_the_daemon_timer_never_keeps_a_client_or_a_memo_across_iterations(monkeypatch) -> None:
+    monkeypatch.setattr(run, "github_token_source", lambda **_kw: lambda: None)
+
+    one_shot = intake_services.process_adapters(CACHE_ON)
+    timer_adapters = intake_services.process_adapters(CACHE_ON, resident=True)
+
+    # a command's adapters reuse one HTTP client and the field definitions (bh-vy7dx, bh-n0h15);
+    # the daemon's, which live for its whole life, build a client per operation and keep nothing
+    assert one_shot._command_scoped is True
+    assert timer_adapters._command_scoped is False
+
+
 def test_a_token_rotated_while_the_daemon_runs_is_seen_by_its_next_operation(monkeypatch) -> None:
     for name in ("GITHUB_TOKEN", "GH_TOKEN"):
         monkeypatch.delenv(name, raising=False)
