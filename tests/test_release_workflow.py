@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
+from types import ModuleType
 
 from ruamel.yaml import YAML
 
@@ -19,6 +21,15 @@ def _workflow() -> dict:
 
 def _uses(step: dict, action: str) -> bool:
     return str(step.get("uses", "")).startswith(f"{action}@")
+
+
+def _extras_smoke() -> ModuleType:
+    path = ROOT / "scripts" / "release-extras-smoke.py"
+    spec = importlib.util.spec_from_file_location("release_extras_smoke", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_build_has_no_oidc_or_publish_capability() -> None:
@@ -165,6 +176,18 @@ def test_build_smokes_the_bare_and_extra_installs_before_publication() -> None:
         i for i, s in enumerate(steps) if _uses(s, "actions/upload-artifact")
     )
     assert workflow["jobs"]["publish"]["needs"] == "build"
+
+
+def test_extras_smoke_runs_commands_that_import_the_full_cli() -> None:
+    """bh-jpaoz: `bh --version` answers before `beadhive.cli` is imported, so typer 0.29.0 broke
+    every other command while the smoke stayed green. Each venv must also run commands that import
+    the whole CLI and render the hq authority/placement duration options built on typer."""
+    commands = _extras_smoke().CLI_COMMANDS
+
+    assert ("--version",) in commands
+    assert ("--help",) in commands
+    assert ("hq", "authority", "--help") in commands
+    assert ("hq", "placement", "--help") in commands
 
 
 def test_attest_job_signs_manifest_on_tags_only_with_least_privilege() -> None:

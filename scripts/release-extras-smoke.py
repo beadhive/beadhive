@@ -13,6 +13,11 @@ workspace or ``tool.uv.sources`` can leak in, and checks in each (bh-lrs9v):
 * ``[xtdb]``: the real ``beadlog.store`` factory builds the store; psycopg and ``beadlog_xtdb``
   import; ``doctor`` no longer reports a missing dependency.
 
+Each venv then runs the installed ``bh`` entry point: ``bh --version`` plus commands that import the
+full ``beadhive.cli`` and build its option types (``bh --help``, ``bh hq authority --help``,
+``bh hq placement --help``), each of which must exit 0. ``--version`` alone never imports the CLI,
+so a dependency release that breaks it (typer 0.29.0, bh-jpaoz) slipped past the old smoke.
+
 Exits non-zero on the first failure, so the release job (and the tag) fails before publication.
 Usage: ``release-extras-smoke.py dist/beadhive-<version>-py3-none-any.whl``.
 """
@@ -109,10 +114,23 @@ assert xtdb_doctor_package_row() == []
 
 SCENARIOS = (("bare", "", BARE), ("github", "[github]", GITHUB), ("xtdb", "[xtdb]", XTDB))
 
+# ``--version`` short-circuits before ``beadhive.cli`` is imported; the rest import the whole CLI
+# and render the hq authority/placement options, whose duration type rides on typer internals.
+CLI_COMMANDS = (
+    ("--version",),
+    ("--help",),
+    ("hq", "authority", "--help"),
+    ("hq", "placement", "--help"),
+)
 
-def run(argv: list[str], *, cwd: Path) -> None:
+
+def run(
+    argv: list[str], *, cwd: Path, env: dict[str, str] | None = None, quiet: bool = False
+) -> None:
+    """Echo and run ``argv``, raising on a non-zero exit; ``quiet`` drops stdout (help text)."""
     print("+", " ".join(argv), flush=True)
-    subprocess.run(argv, cwd=cwd, check=True)
+    stdout = subprocess.DEVNULL if quiet else None
+    subprocess.run(argv, cwd=cwd, check=True, env=env, stdout=stdout)
 
 
 def main(argv: list[str]) -> int:
@@ -145,20 +163,18 @@ def main(argv: list[str]) -> int:
                 ],
                 cwd=work,
             )
+            env = {
+                "BH_SKIP_SETUP_CHECK": "1",
+                "PATH": f"{venv / 'bin'}:/usr/bin:/bin",
+                "HOME": str(work),
+            }
             print(f"-- {name}: checks", flush=True)
-            subprocess.run(
-                [str(python), "-I", "-c", COMMON + check],
-                cwd=work,
-                check=True,
-                env={
-                    "BH_SKIP_SETUP_CHECK": "1",
-                    "PATH": f"{venv / 'bin'}:/usr/bin:/bin",
-                    "HOME": str(work),
-                },
-            )
-            run([str(venv / "bin" / "bh"), "--version"], cwd=work)
+            subprocess.run([str(python), "-I", "-c", COMMON + check], cwd=work, check=True, env=env)
+            print(f"-- {name}: cli", flush=True)
+            for args in CLI_COMMANDS:
+                run([str(venv / "bin" / "bh"), *args], cwd=work, env=env, quiet="--help" in args)
             print(f"== {name}: ok", flush=True)
-    print("extras smoke: bare, [github] and [xtdb] all passed")
+    print("extras smoke: bare, [github] and [xtdb] all passed (checks + full CLI)")
     return 0
 
 
