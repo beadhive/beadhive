@@ -13,6 +13,17 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.9 (2026-11-10)
+
+### Fix
+
+- **validation**: self-heal a lost verdict pointer from its completed-green run manifest (#89)
+- **work**: open or adopt the PR at a gh:pr submit and gate on its number
+- **bd-cli**: pass --await-id through the gate_create route
+- **work**: count only first-parent commits over base in the submit history guard
+- **work**: land and mark-landed close a bead whatever its assignee seat
+- **escalate**: title from the first line, full message as the description, bd errors intact
+
 ## v0.35.8 (2026-11-10)
 
 ### Fix
