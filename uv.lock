@@ -261,7 +261,7 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.47,<2" },
     { name = "structlog", specifier = ">=24" },
     { name = "structlog", marker = "extra == 'otel'", specifier = ">=24" },
-    { name = "typer", specifier = ">=0.12" },
+    { name = "typer", specifier = ">=0.12,<0.29" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
 provides-extras = ["mcp", "otel", "release-verify", "pants", "github", "xtdb"]

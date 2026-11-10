@@ -5,6 +5,28 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.5 → 0.35.6 — a typer cap (fresh installs of 0.35.5 and earlier are broken)
+
+typer 0.29.0 (released 2026-11-09) removed a private module and an option parameter that `bh hq
+authority` and `bh hq placement` build on, and every bh since 0.22.6 allowed any typer from 0.12
+up. A fresh install of any of those versions therefore resolves typer 0.29 and fails on every
+command except `bh --version` with `ImportError: cannot import name 'types' from 'typer._click'`.
+An install made before 2026-11-09 keeps its older typer and works until it is reinstalled or
+upgraded.
+
+0.35.6 requires `typer>=0.12,<0.29` and changes nothing else: no new keys and no state change.
+Upgrade, or repair an existing 0.35.5 install in place by pinning the last typer it was tested
+with, keeping the extras you installed:
+
+```sh
+uv tool install --force 'beadhive[otel,github]==0.35.5' --with 'typer==0.26.8'
+```
+
+The release smoke now runs `bh --help`, `bh hq authority --help` and `bh hq placement --help` in
+each install it checks, not only `bh --version` (which answers before the CLI is imported), so a
+dependency release that breaks the CLI fails the release job before publication. Support for typer
+0.29 itself, which lifts the cap, is tracked as bh-q2a2k.
+
 ## 0.35.4 → 0.35.5 — `outbox reopen`, faster batches, no `delivery` on a `duplicate-of`
 
 ### Reopen a GitHub issue on the operator's say (`outbox reopen`, bh-ih484)
