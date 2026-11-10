@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import cli, cli_entrypoint, hq_sql_config
+from beadhive import cli, cli_entrypoint, cli_root, hq_sql_config
 from beadhive import worktree_local_reclaim as lr
 from harness.tree_templates import worker_templates
 
@@ -461,9 +461,10 @@ print(json.dumps({{"codes": codes, "loaded": sorted(m for m in sys.modules if m 
 @pytest.mark.parametrize("verb", ["prune", "rm", "local-reclaim"])
 def test_typer_help_never_loads_config(monkeypatch, verb):
     calls: list[str] = []
-    monkeypatch.setattr(cli, "_init_telemetry_best_effort", lambda: calls.append("load"))
-    monkeypatch.setattr(cli, "_migrate_hive_keys_best_effort", lambda: calls.append("migrate"))
-    monkeypatch.setattr(cli, "_migrate_home_best_effort", lambda: calls.append("home"))
+    # The root callback lives in cli_root (bh-lwz8a); patch the module whose globals it reads.
+    monkeypatch.setattr(cli_root, "_init_telemetry_best_effort", lambda: calls.append("load"))
+    monkeypatch.setattr(cli_root, "_migrate_hive_keys_best_effort", lambda: calls.append("migrate"))
+    monkeypatch.setattr(cli_root, "_migrate_home_best_effort", lambda: calls.append("home"))
     monkeypatch.setattr(cli.sys, "argv", ["bh", "worktree", verb, "--help"])
 
     result = CliRunner().invoke(cli.app, ["worktree", verb, "--help"])
