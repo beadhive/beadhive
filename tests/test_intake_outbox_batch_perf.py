@@ -91,9 +91,9 @@ TARGET = PROFILE["target_s"]
 #: The modeled totals with headroom (the opt-in recheck 300): the bar this check holds. Draft
 #: (about 56 s), approve (about 46 s) and, with the per-command client and field definitions of
 #: 0.35.8, the send (about 175 s: 270 GitHub requests plus one definitions read, and 540
-#: compare-and-set writes, 67 s) are under their targets. The single send (about 6.5 s) is not under
-#: 3 s: about 3 s of it is the process (4.4 s before the import-lazy intake verbs of bh-lwz8a),
-#: 1.85 s the host check. The remainder is reported on the bead.
+#: compare-and-set writes, 67 s) are under their targets. The single send (about 6.8 s) is not under
+#: 3 s: about 3.3 s of it is the process (4.4 s before the import-lazy intake verbs of bh-lwz8a),
+#: 1.85 s the host check. The 3 s target is followed up on bh-wmmfo.
 BUDGET = {k: v for k, v in PROFILE["budget_s"].items() if k != "source"}
 OBSERVED = PROFILE["factory"]["observed_0_35_5"]
 

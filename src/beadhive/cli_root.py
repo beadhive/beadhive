@@ -359,6 +359,9 @@ def _root(
     # migrations and the config-loading telemetry init are skipped for it.
     help_only = _is_help_invocation(ctx)
     if not help_only:
+        # Logging at log.level / log.format for every record, stdlib ones included. The full
+        # tree's imports already configured it; the import-lazy intake tree did not (bh-lwz8a).
+        log.ensure_configured()
         _migrate_home_best_effort()
         _migrate_hive_keys_best_effort()
     _warn_stale_schema_version_best_effort(ctx)

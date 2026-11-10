@@ -102,6 +102,63 @@ def test_verb_run_process_skips_the_unrelated_tree(tmp_path):
     assert outcome["loaded"] == []
 
 
+_LOGGING_PROBE = """
+import json, logging, sys
+from beadhive import work_intake
+seen = {{}}
+def _at_entry(*args, **kwargs):  # the handler's view, before anything it does configures logging
+    root = logging.getLogger()
+    seen.update(handlers=[type(h).__name__ for h in root.handlers], level=root.level)
+work_intake.outbox_show = _at_entry
+argv = {argv!r}
+sys.argv = ["bh", *argv]
+if {full!r}:
+    from beadhive import cli
+    run = cli.main
+else:
+    from beadhive.cli_entrypoint import main as run
+try:
+    run()
+except SystemExit:
+    pass
+print(json.dumps({{**seen, "full": "beadhive.cli" in sys.modules}}))
+"""
+
+
+def _logging_after(argv: list[str], full: bool, tmp_path: Path) -> dict:
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(ROOT / "src"),
+        "HOME": str(tmp_path),
+        "BH_HOME": str(tmp_path / ".beadhive"),
+        "BH_SKIP_SETUP_CHECK": "1",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", _LOGGING_PROBE.format(argv=argv, full=full)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    lines = result.stdout.strip().splitlines()
+    assert lines, result.stderr
+    return json.loads(lines[-1])
+
+
+def test_both_trees_configure_logging_the_same_way(tmp_path):
+    """The full tree configures logging as it imports; the fast tree's root callback does it, so
+    stdlib records (httpx and kin) render at log.level / log.format on both (bh-lwz8a)."""
+    argv = ["work", "outbox", "show", "--json"]
+    fast = _logging_after(argv, full=False, tmp_path=tmp_path)
+    full = _logging_after(argv, full=True, tmp_path=tmp_path)
+
+    assert (fast["full"], full["full"]) == (False, True)
+    assert fast["handlers"] == full["handlers"] == ["_LiveStderrHandler"]
+    assert fast["level"] == full["level"]
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -140,10 +197,20 @@ def test_selection(argv, selected):
 
 
 def test_shell_completion_never_takes_the_fast_path(monkeypatch):
+    """With Click's completion variable set, ``main`` composes the full tree even for a leaf the
+    fast path would serve: completion walks the whole command tree."""
+    ran: list[str] = []
     monkeypatch.setenv("_BH_COMPLETE", "bash_complete")
-    assert cli_entrypoint._completing() is True
+    monkeypatch.setattr(cli, "main", lambda: ran.append("full"))
+    monkeypatch.setattr(cli_root, "run", lambda app: ran.append("fast"))
+    monkeypatch.setattr(cli_entrypoint.sys, "argv", ["bh", "work", "outbox", "send", "ob1_x"])
+
+    cli_entrypoint.main()
+
+    assert ran == ["full"]
     monkeypatch.delenv("_BH_COMPLETE")
-    assert cli_entrypoint._completing() is False
+    cli_entrypoint.main()
+    assert ran == ["full", "fast"]
 
 
 def _leaves(command, path=()):
@@ -173,6 +240,24 @@ def test_fast_tree_projects_exactly_the_catalog_leaves_of_the_full_tree():
         assert [p.opts for p in leaf.params] == [p.opts for p in twin.params], path
         assert leaf.hidden == twin.hidden, path
         assert inspect.unwrap(leaf.callback) is inspect.unwrap(twin.callback), path
+
+
+def _registered(app, prefix=()):
+    for info in app.registered_commands:
+        yield " ".join((*prefix, info.name)), info.callback
+    for group in app.registered_groups:
+        yield from _registered(group.typer_instance, (*prefix, group.name))
+
+
+def test_every_fast_leaf_is_traced_like_the_full_tree():
+    """Each fast-path leaf is the otel.trace_verb wrapper for its catalog operation, not the
+    bare handler: a verb keeps its span whichever tree carried it."""
+    fast = dict(_registered(cli_fastpath.build_app()))
+    operations = {spec.surfaces["cli"]["path"]: spec.name for spec in cli_fastpath._operations()}
+
+    assert set(fast) == set(operations)
+    for path, callback in fast.items():
+        assert getattr(callback, "__otel_verb__", None) == operations[path], path
 
 
 @pytest.mark.parametrize("path", sorted(cli_fastpath.leaf_paths()))

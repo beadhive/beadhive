@@ -48,9 +48,9 @@
       "source": "bh-25fvb: the intake lock's host check and epoch read in one evaluation, 1.6-1.9 s per hold on the factory (13.5-14.3 s before)"
     },
     "process_s": {
-      "value": 3.0,
-      "kind": "derived",
-      "source": "bh-lwz8a, 2026-11-10: the 4.4 s bh-25fvb measured (bh work outbox show <id> 5.3 s end to end less about 1.2 s of verb; about 2.9 s of CLI imports plus 1.4 s for the effective-config SQL load) scaled by the measured cut of the import-lazy outbox/thread/labels path: on the factory, interleaved runs of the same read-only verb put the process floor (wall clock less the verb) at a median 4.89 s on 0.35.7 and 3.31 s with the fast path (ratio 0.68, host load about 20); the effective-config load and the root callback remain"
+      "value": 3.3,
+      "kind": "measured",
+      "source": "bh-lwz8a, 2026-11-10: the process floor (wall clock less the verb) of the import-lazy outbox/thread/labels path on the factory, median 3.31 s over 5 runs of the read-only bh work outbox show --open --json (3.11-3.62 s, host load about 20), interleaved with 0.35.7 at a median 4.89 s; the effective-config load and the root callback remain. Before: bh-25fvb's 4.4 s (bh work outbox show <id> 5.3 s end to end less about 1.2 s of verb; about 2.9 s of CLI imports plus 1.4 s for the effective-config SQL load)"
     }
   },
   "factory": {
@@ -79,6 +79,6 @@
     "approve": 60.0,
     "send": 200.0,
     "single send": 8.0,
-    "source": "the modeled totals with headroom at batch_recheck_seconds=300 (about 56 s draft, 46 s approve, 175 s send with the per-command client and field definitions of 0.35.8, 6.5 s single send with the import-lazy intake verbs of bh-lwz8a, 7.9 s before): the bar the -m perf run holds; the single send is over its 3 s target and reported on bh-womf3 and bh-lwz8a"
+    "source": "the modeled totals with headroom at batch_recheck_seconds=300 (about 56 s draft, 46 s approve, 175 s send with the per-command client and field definitions of 0.35.8, 6.8 s single send with the import-lazy intake verbs of bh-lwz8a, 7.9 s before): the bar the -m perf run holds; the single send is over its 3 s target and followed up on bh-wmmfo"
   }
 }

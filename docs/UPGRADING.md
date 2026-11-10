@@ -44,14 +44,17 @@ constants in the test.
 ### The outbox, thread and labels verbs start faster (bh-lwz8a)
 
 `bh work outbox <verb>`, `bh work thread <verb>` and `bh work labels <verb>` no longer import the
-whole command tree: the entry point composes just those groups from the operation catalog, with
-the same root callback (config and identity memos, migrations, warnings, telemetry, setup gate)
-and the same handlers, so flags, output, exit codes and `--help` are unchanged. On the factory
-this cut the per-process floor of one of these commands (wall clock less the verb) from about
-4.9 s to about 3.3 s; `timings.startup` in `--json` shows it per run. Shell completion,
-`bh --help`, `bh work --help`, a group's own `--help` (`bh work outbox --help`) and every other
-verb still go through the full tree. Commands run outside a managed worktree also skip importing
-the worktree module for the telemetry overlay. Nothing to do on upgrade.
+whole command tree: the entry point composes just those groups from the operation catalog, with the
+same root callback (config and identity memos, migrations, warnings, telemetry, setup gate) and the
+same handlers, so flags, output, exit codes and `--help` are unchanged. On the factory this cut the
+per-process floor of one of these commands (wall clock less the verb) from about 4.9 s to about
+3.3 s; `timings.startup` in `--json` shows it per run. Logging is configured as before (`log.level`
+/ `log.format` for every record). Shell completion, `bh --help`, `bh work --help`, a group's own
+`--help` (`bh work outbox --help`) and every other verb still go through the full tree. Commands run
+outside a managed worktree also skip importing the worktree module for the telemetry overlay.
+Nothing to do on upgrade. The single-send target of 3 s is not met yet: the process floor alone is
+still about 3.3 s, before the host check and GitHub's requests (a single send models at about 6.8 s,
+was 7.9 s); bh-wmmfo follows it up.
 
 ## 0.35.5 → 0.35.6 — a typer cap (fresh installs of 0.35.5 and earlier are broken)
 
