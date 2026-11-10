@@ -32,8 +32,9 @@ write operations), `comments` (the `comment.create` writer), `labels` (the `labe
 writer), `label_definitions` (the `labels.read` reader and the `labels.define` writer), `closing` (the
 `issue.close` writer), `reopening` (the `issue.reopen` writer), `issue_values` (the `issue.type`
 and `issue.fields` writers), `grants` (the one in-process single-use grant ledger every writer spends from),
-`transport` (githubkit: one credential per operation; writes only through `Session.send`, the one
-write seam of an operation opened for one), `retry` (the adapter-owned retry decision on an
+`transport` (githubkit: one credential per operation; a command-scoped adapter reuses one client and
+its connection pool, a resident one builds a client per operation; writes only through
+`Session.send`, the one write seam of an operation opened for one), `retry` (the adapter-owned retry decision on an
 injected sleep and clock),
 `diagnostics` (the exact scrubbed refusal wording), `identity` (the tri-state probe), `mapping`
 (GitHub JSON to port records), `marker` (the `bh:v1` own-message codec), `urls` (the location and

@@ -353,7 +353,11 @@ Adopted as `bh-mj7cl` section 4, with the `bh-6wj9y` hold folded in:
   no credential, the source is called by the adapter once per operation and is never cached,
   logged or stored (the one opt-in exception, `credential.per_invocation_cache`, bh-25fvb, keeps the
   first token in that source's memory for the rest of one command; the host daemon's discovery
-  timer passes `resident=True` and never caches). With either switch off it
+  timer passes `resident=True` and never caches). A command's adapters also reuse one HTTP
+  client and the org's issue-field definitions for that command (bh-vy7dx, bh-n0h15), so a batch
+  of N writes opens one connection pool and reads the definitions once; the token is still
+  resolved per operation, and a resident process keeps neither across operations. With either
+  switch off it
   returns `None` and the verb refuses with R0 naming both keys and `stores.public.adapter`; the
   binding, the plugin and each operation are still decided per store by
   `TrackerAdapters.for_store`. Nothing is cached across calls: a command, or
