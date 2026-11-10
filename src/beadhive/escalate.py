@@ -48,6 +48,7 @@ smart-target change to this verb, not a rewrite of the write path.
 
 from __future__ import annotations
 
+import re
 import sys
 
 import typer
@@ -145,6 +146,27 @@ def _stamp_extra(label_kv: str, new_id: str, hq_dir, actor: str) -> None:
     )
 
 
+#: Longest title derived from an escalation message. bd rejects a title over 500 characters;
+#: a much shorter one keeps `bh hq intake` / `bh work list` rows readable (bh-3egoy).
+TITLE_MAX = 120
+
+
+def derive_title(message: str, limit: int = TITLE_MAX) -> str:
+    """A short bead title from a free-form escalation message: its first non-blank line, cut at
+    the first sentence end when that fits, else at a word boundary with an ellipsis, never over
+    ``limit`` characters. The full message goes in the description, so nothing is lost."""
+    first = next((ln.strip() for ln in message.splitlines() if ln.strip()), "")
+    if len(first) <= limit:
+        return first
+    for end in re.finditer(r"[.!?](?=\s)", first[:limit]):
+        if end.end() >= 20:
+            return first[: end.end()]
+    cut = first[: limit - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip() + "…"
+
+
 def file_escalation(
     title: str,
     *,
@@ -168,6 +190,11 @@ def file_escalation(
 
     cfg = cfg if cfg is not None else config.load()
 
+    # The message may be long and multi-paragraph: a short title, the full text as the body.
+    message = title
+    title = derive_title(message) or message[:TITLE_MAX]
+    description = message if message.strip() != title else ""
+
     # The actor for the audit trail is the raiser's seat identity.
     actor = seat or _env_actor()
 
@@ -178,7 +205,7 @@ def file_escalation(
         cfg = config.load()  # init_store just registered the HQ — reload to pick it up
         hq_entry = registry.hive_of_kind(cfg, registry.HQ_KIND)
     if hq_entry is None:
-        _print_unfiled(title, tool=tool, actor=actor, role=role_from_seat(seat))
+        _print_unfiled(message, tool=tool, actor=actor, role=role_from_seat(seat))
         return (
             1,
             "escalation NOT filed — no HQ store is registered; "
@@ -196,6 +223,7 @@ def file_escalation(
         actor,
         cfg=cfg,
         origin=ORIGIN_ESCALATION,
+        description=description,
     )
     if error:
         return code, error, new_id
