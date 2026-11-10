@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from typer._click import types as _click_types
 
 from . import (
     config,
@@ -21,19 +20,23 @@ from . import (
     hq_sql_inbox_retention,
 )
 
+DURATION_METAVAR = "INTEGER"
+"""Help type for :func:`duration_seconds` options: the wire value is integer seconds."""
 
-class IntDurationSeconds(_click_types.IntParamType):
-    """Integer seconds on the wire; also accepts `36h` / `7d` and converts to whole seconds."""
 
-    name = "integer"
+def duration_seconds(value) -> int:
+    """Typer ``parser=`` for integer-seconds options that also accept ``36h`` / ``7d``.
 
-    def convert(self, value, param, ctx):
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-        try:
-            return int(hq_authority_ceiling.parse_duration(value))
-        except ValueError as exc:
-            self.fail(str(exc), param, ctx)
+    Public typer API only (bh-q2a2k): ``parser=`` works from typer 0.12 through 0.29+, unlike the
+    vendored ``typer._click.types.IntParamType`` + ``click_type=`` that typer 0.29 removed. A bad
+    value raises :class:`typer.BadParameter`, so Typer reports a usage error naming the option.
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    try:
+        return int(hq_authority_ceiling.parse_duration(value))
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
 
 
 def _operator_mode_scope(command):
@@ -74,7 +77,8 @@ def authority_cmd(
         int | None,
         typer.Option(
             "--duration",
-            click_type=IntDurationSeconds(),
+            parser=duration_seconds,
+            metavar=DURATION_METAVAR,
             help="rebind/renew: opt-in expiry, seconds or e.g. 7d / 36h; omitted, the authority "
             "does not expire",
         ),

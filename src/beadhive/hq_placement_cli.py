@@ -47,7 +47,8 @@ def placement_cmd(
         int,
         typer.Option(
             "--tenure",
-            click_type=hq_authority_cli.IntDurationSeconds(),
+            parser=hq_authority_cli.duration_seconds,
+            metavar=hq_authority_cli.DURATION_METAVAR,
             help="place: lease tenure, seconds or e.g. 12h; at most 24h (expiry is only a hint)",
         ),
     ] = int(DEFAULT_TENURE_S),

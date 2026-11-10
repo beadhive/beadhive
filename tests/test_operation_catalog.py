@@ -10,6 +10,8 @@ import io
 import json
 import re
 import subprocess
+import types
+import typing
 from pathlib import Path
 
 from click import Context
@@ -92,13 +94,35 @@ def _cli_parents(
     return parents
 
 
-def _click_type(parameter) -> str:
-    name = type(parameter.type).__name__.lower()
-    if "bool" in name:
+def _declared_python_type(command, parameter) -> object:
+    """The Python annotation Typer built ``parameter`` from, read off the command callback.
+
+    Public API only (bh-q2a2k): typer 0.29 dropped ``Parameter.type`` (and with ``parser=`` older
+    typers report a ``FuncParamType``), so the handler's own signature is the stable source.
+    """
+    signature = inspect.signature(command.callback, eval_str=True)
+    annotation = signature.parameters[parameter.name].annotation
+    while True:
+        if typing.get_origin(annotation) is typing.Annotated:
+            annotation = typing.get_args(annotation)[0]
+            continue
+        members = [arg for arg in typing.get_args(annotation) if arg is not type(None)]
+        if isinstance(annotation, types.UnionType) or typing.get_origin(annotation) is typing.Union:
+            annotation = members[0]
+            continue
+        if typing.get_origin(annotation) in (list, tuple, set, frozenset) and members:
+            annotation = members[0]
+            continue
+        return annotation
+
+
+def _click_type(command, parameter) -> str:
+    annotation = _declared_python_type(command, parameter)
+    if annotation is bool:
         return "boolean"
-    if "int" in name:
+    if isinstance(annotation, type) and issubclass(annotation, int):
         return "integer"
-    if "float" in name:
+    if annotation is float:
         return "number"
     return "array" if parameter.multiple else "string"
 
@@ -261,7 +285,10 @@ def test_every_cli_leaf_and_signature_is_declared_exactly_once() -> None:
         assert projection["parameters"] == list(actual_parameters)
         for name, parameter in actual_parameters.items():
             canonical_name = projection["parameter_map"].get(name, name)
-            assert declared[canonical_name].schema["type"] == _click_type(parameter), (path, name)
+            assert declared[canonical_name].schema["type"] == _click_type(command, parameter), (
+                path,
+                name,
+            )
             assert declared[canonical_name].required is parameter.required, (path, name)
         assert projection["declared_hidden"] is metadata["declared_hidden"]
         assert projection["effective_hidden"] is metadata["effective_hidden"]

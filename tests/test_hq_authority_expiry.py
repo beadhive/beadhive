@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from beadhive import hq_authority_expiry as expiry
@@ -281,6 +283,74 @@ def test_renew_resolves_ceiling_from_operator_settings(monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert seen["ceiling"].seconds == 7200 and "operator settings" in seen["ceiling"].source
+
+
+def _flat(output):
+    """Help/usage text without Rich box drawing, so wrapped messages read as one line."""
+    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", output).split())
+
+
+def _renew(monkeypatch, *duration):
+    seen = {}
+    plane = FakeSql(NOW + 100, runtime=False)
+    plane.authority_max_duration_s = None
+
+    def renew(**kwargs):
+        seen.update(kwargs)
+        return "newhead"
+
+    plane.renew = renew
+    monkeypatch.setenv("BH_HQ_OPERATOR_SETTINGS", "s.json")
+    monkeypatch.setattr(hq_operator_settings, "operator_plane", lambda p: plane)
+    args = ["hq", "authority", "renew", "--expected-revision", "r", "--operator-key", "k"]
+    result = CliRunner().invoke(app, [*args, *duration, "--confirm"])
+    return result, seen
+
+
+@pytest.mark.parametrize(
+    ("raw", "seconds"),
+    [("36h", 129_600), ("7d", 604_800), ("2w", 1_209_600), ("90m", 5_400), ("3600", 3_600)],
+)
+def test_duration_flag_reaches_the_plane_as_integer_seconds(monkeypatch, raw, seconds):
+    """bh-qtnn4 on the public parser= seam (bh-q2a2k): every spelling lands as an int."""
+    result, seen = _renew(monkeypatch, "--duration", raw)
+    assert result.exit_code == 0, result.output
+    assert seen["duration"] == seconds and type(seen["duration"]) is int
+
+
+def test_omitted_duration_stays_none(monkeypatch):
+    result, seen = _renew(monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert seen["duration"] is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "problem"),
+    [("soon", "invalid duration 'soon'"), ("0", "must be positive"), ("-5h", "invalid duration")],
+)
+def test_bad_duration_is_a_usage_error_naming_the_problem(monkeypatch, raw, problem):
+    result, seen = _renew(monkeypatch, "--duration", raw)
+    assert result.exit_code == 2, result.output
+    assert "Invalid value for '--duration'" in _flat(result.output)
+    assert problem in _flat(result.output)
+    assert seen == {}
+
+
+def test_duration_help_shows_integer_type():
+    result = CliRunner().invoke(app, ["hq", "authority", "--help"])
+    assert result.exit_code == 0, result.output
+    assert re.search(r"--duration\s+INTEGER\b", _flat(result.output)), result.output
+
+
+def test_duration_parser_is_public_and_accepts_its_own_default():
+    from beadhive.hq_authority_cli import duration_seconds
+
+    assert duration_seconds(43_200) == 43_200  # an int default passes through unchanged
+    assert duration_seconds("12h") == 43_200
+    with pytest.raises(typer.BadParameter, match="invalid duration"):
+        duration_seconds("tomorrow")
+    with pytest.raises(typer.BadParameter):
+        duration_seconds(True)
 
 
 def _hint_args(line):

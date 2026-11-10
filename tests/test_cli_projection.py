@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import re
 from copy import deepcopy
 from dataclasses import replace
 from functools import wraps
@@ -62,6 +63,19 @@ def _click_inventory(app: typer.Typer) -> list[dict[str, object]]:
 def _digest(value: object) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+# typer's renderer, not the projection, owns the help's box layout and option-type column: up to
+# 0.27 it prints TEXT / INTEGER and nothing for a flag, from 0.28 <str> / <int> / <bool>, which
+# also re-wraps the description column (bh-q2a2k). The help digest drops both so it pins the help
+# CONTENT (panels, commands, options, descriptions, order) on every typer the range allows.
+_TYPER_TYPE_TOKEN = re.compile(r"(?<!\S)(?:<[a-z_]+>|TEXT|INTEGER|FLOAT|BOOLEAN)(?!\S)")
+_BOX_DRAWING = re.compile(r"[\u2500-\u257f]")
+
+
+def _help_digest(text: str) -> str:
+    text = _TYPER_TYPE_TOKEN.sub(" ", _BOX_DRAWING.sub(" ", text))
+    return hashlib.sha256(" ".join(text.split()).encode()).hexdigest()
 
 
 def _handlers(group: str) -> dict[str, object]:
@@ -168,18 +182,18 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     invocation_env = {"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
     expected_help = {
         # The `backfill` group (bh-xxmb1) joins the Hive panel beside `backfill-complexity`.
-        (): "9252c456cb560e585f93551b32452e5adef4e924b964937bc415d2faae5da8ab",
+        (): "a521a356f2e7e6b93c80510a15dfb553b882d80081c339d361d0a4a822c17048",
         # `work backup` (state/work pairing, bh-cqvj6) joins the command list; the intake verbs
         # and the `delivery` / `outbox` groups (bh-73td2) join after it, then `thread` (bh-o9rep),
         # then `needs-info` and `wake` (bh-61xkc), then `investigate` (bh-u3a53), then the
         # `labels` and `triage` groups (bh-v3fe7).
-        ("work",): "f76208ff421e56f97b5b205d2f2f70baa6bd25ca8367fbc8c89b377153cc9cff",
-        ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
+        ("work",): "c6680c9a7504a4815019c3d1aadf1c596898102d123ee3dfdd45b33ea87ba176",
+        ("plan",): "fbc6d3a66870dbee5175f04e6228acaf4a2c3f80c1e4164649207e5edaf3a0c7",
     }
     for path, digest in expected_help.items():
         result = runner.invoke(cli.app, [*path, "--help"], env=invocation_env)
         assert result.exit_code == 0
-        assert hashlib.sha256(result.stdout.encode()).hexdigest() == digest
+        assert _help_digest(result.stdout) == digest, path
 
 
 def _registered(app: typer.Typer, prefix: tuple[str, ...]):
