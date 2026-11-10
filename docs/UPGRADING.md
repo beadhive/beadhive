@@ -7,7 +7,9 @@ exists for the releases where "read the changelog" isn't enough to act on.
 
 ## 0.35.7 → 0.35.8 — outbox speed (bh-womf3)
 
-No new key and no state change. Three changes make a long outbox batch cheaper or measurable.
+One new HOST-only key, `hq.authority_expiry_recheck_s` (default `300`, `0` re-reads on every
+command), sets how often a command re-reads the authority status for the expiry warning; there is
+no state change. Three changes make a long outbox batch cheaper or measurable.
 
 ### One GitHub client and one field-definitions read per command
 
