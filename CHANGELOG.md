@@ -13,6 +13,26 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.8 (2026-11-10)
+
+### Fix
+
+- **config**: regenerate the config schema, contract inventory and structural metrics for the pace keys
+- **intake**: wire the write pacer per send command, the two pace keys and the SIGINT stop at the composition roots
+- **intake**: pace every outbox write request through a host ledger and stop the batch on a rate limit, the hour, an interrupt or an error
+- **tracker-github**: give the adapter's transport a write gate and a wait observer for the host's pacer
+- **cli**: configure logging in the root callback so the intake fast path renders every record
+- **cli**: run the outbox, thread and labels verbs without importing the full command tree
+- **hq**: make the authority-expiry recheck interval configurable
+- **intake**: report measured per-phase timings in the batch verbs' --json
+- **intake**: take each report's binding from the outbox listing in send-approved
+- **tracker-github**: read the org issue-field definitions once per command
+- **tracker-github**: reuse one HTTP client per command for the outbox sends
+
+### Refactor
+
+- **cli**: move the root callback into cli_root and the intake handlers into work_intake_cli
+
 ## v0.35.7 (2026-11-10)
 
 ### Fix
