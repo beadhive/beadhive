@@ -18,7 +18,9 @@ The same wiring as the comment, label and close sender tests (``OutboxService`` 
 
 from __future__ import annotations
 
+import dataclasses
 from collections import Counter
+from contextlib import contextmanager
 
 import pytest
 
@@ -30,6 +32,7 @@ from beadhive.modules.intake.domain import (
     DraftRequest,
     GrantStatus,
     IntakeRefused,
+    IntakeStoreError,
     IssueBinding,
     IssueStatus,
     LabelBase,
@@ -105,6 +108,33 @@ class CountingStore(MemoryReportStore):
     def reports_with_outbox(self):
         self.calls["reports_with_outbox"] += 1
         return super().reports_with_outbox()
+
+    def get(self, bead):
+        """A report read outside every hold of the binding's lock is a read of its own, apart
+        from the hold's one session (``bh-gjo05``): counted as ``get_unheld``."""
+        lock = getattr(self, "lock", None)
+        self.calls["get_unheld" if lock is not None and not lock.active else "get_held"] += 1
+        return super().get(bead)
+
+
+class ActiveLock(InProcessIntakeLock):
+    """Says whether a hold is open right now (``active``), for the store to tell reads apart."""
+
+    active = 0
+
+    def hold(self, binding_key):
+        inner = super().hold(binding_key)
+
+        @contextmanager
+        def counted():
+            with inner as epoch:
+                self.active += 1
+                try:
+                    yield epoch
+                finally:
+                    self.active -= 1
+
+        return counted()
 
 
 class DemotableLock(InProcessIntakeLock):
@@ -278,6 +308,80 @@ def test_every_approved_op_goes_in_one_batch_comment_then_labels_then_close() ->
     assert s.lock.batches == 1 and len(s.lock.batched) == 2  # one scope, a hold per report
     assert s.store.calls["read_outboxes"] == 1  # one pass over the outbox documents
     assert s.world.read_requests() - reads_before <= 2  # one issue listing (a page or two)
+
+
+def test_the_batch_takes_each_binding_from_the_listing_not_one_read_per_report() -> None:
+    """``bh-gjo05``: the outbox listing's rows carry the binding, so no report is read on its own
+    before its hold; every operation is still sent in order with its own grant and receipt."""
+    s = Scene(lock=ActiveLock())
+    s.store.lock = s.lock
+    reports = [s.closing_report(f"r{n}") for n in range(3)]
+    s.store.calls.clear()
+
+    outcome = s.intake.send_approved(BatchSend("alice"))
+
+    assert outcome.ok and not outcome.failed and len(outcome.results) == 9
+    assert s.store.calls["get_unheld"] == 0  # no per-report binding read
+    # a listing for the bindings (the documents' own pass may list too), never one per report
+    assert s.store.calls["reports_with_outbox"] <= 2
+    assert len(s.lock.batched) == 3  # a hold per report, as before
+    for report, _, reply, labels in reports:
+        assert [(r.outbox_id, r.kind) for r in outcome.results if r.report == report] == [
+            (reply, C),
+            (labels, L),
+            (reply, X),
+        ]
+        assert s.op(report, reply, X).receipt is not None
+
+
+def test_a_listing_without_the_binding_falls_back_to_one_read_per_report() -> None:
+    """A listing whose rows lack the binding's project (a list row without metadata) cannot
+    stand for the binding: that report is read once, before its hold, exactly as ``send`` does."""
+    s = Scene(lock=ActiveLock())
+    s.store.lock = s.lock
+    reports = [s.closing_report(f"r{n}") for n in range(3)]
+    listed = s.store.reports_with_outbox
+
+    def bare():
+        return tuple(
+            dataclasses.replace(v, binding=dataclasses.replace(v.binding, project=""))
+            for v in listed()
+        )
+
+    s.store.reports_with_outbox = bare
+    s.store.calls.clear()
+
+    outcome = s.intake.send_approved(BatchSend("alice"))
+
+    assert outcome.ok and not outcome.failed and len(outcome.results) == 9
+    assert s.store.calls["get_unheld"] == 3  # one binding read per report
+    assert all(s.op(r, reply, X).receipt is not None for r, _, reply, _ in reports)
+
+
+def test_a_failing_listing_falls_back_to_one_read_per_report() -> None:
+    """The bindings listing failing (``IntakeStoreError``) is no failure of the batch: every
+    report's binding is read on its own, as before (``bh-gjo05``)."""
+    s = Scene(lock=ActiveLock())
+    s.store.lock = s.lock
+    reports = [s.closing_report(f"r{n}") for n in range(2)]
+
+    listed = s.store.reports_with_outbox
+    asked = []
+
+    def broken():  # the documents' own pass lists too (the memory store); the bindings' fails
+        asked.append(1)
+        if len(asked) > 1:
+            raise IntakeStoreError("listing unavailable")
+        return listed()
+
+    s.store.reports_with_outbox = broken
+    s.store.calls.clear()
+
+    outcome = s.intake.send_approved(BatchSend("alice"))
+
+    assert outcome.ok and not outcome.failed and len(outcome.results) == 6
+    assert s.store.calls["get_unheld"] == 2
+    assert all(s.op(r, reply, X).receipt is not None for r, _, reply, _ in reports)
 
 
 def test_the_batch_narrows_to_a_kind_and_to_reports() -> None:

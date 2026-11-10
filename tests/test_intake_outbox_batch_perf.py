@@ -370,8 +370,9 @@ def test_135_issues_draft_approve_and_send_fit_their_budgets(tmp_path, holds, to
     assert sent.ok and len(sent.sent) == OPS
     assert all(r.state is OpState.SENT for r in sent.results)
     assert held == REPORTS and checks == 1  # a hold per report, one host check for the batch
-    # per report: its binding, then ONE read under its hold for both operations' four writes
-    assert f.store.calls["read"] == 2 * REPORTS and f.store.calls["write"] == 2 * OPS
+    # per report: ONE read under its hold for both operations' four writes; its binding comes
+    # from the outbox listing, no read of its own (bh-gjo05)
+    assert f.store.calls["read"] == REPORTS and f.store.calls["write"] == 2 * OPS
     assert f.tracker.calls["set_issue_type"] == f.tracker.calls["set_issue_fields"] == REPORTS
     lines.append(_line("send", send, held, checks))
 
