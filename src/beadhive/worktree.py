@@ -1062,9 +1062,9 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
     typer.echo(f"✓ refreshed container {branch} from {upstream} ({behind} commit(s))")
 
 
-def history(entry, branch, base):
+def history(entry, branch, base, first_parent=False):
     """Compatibility facade for ``worktree_git.impl_history``."""
-    return _worktree_git.impl_history(entry, branch, base)
+    return _worktree_git.impl_history(entry, branch, base, first_parent=first_parent)
 
 
 def signature_status(entry, branch, base) -> list[tuple[str, str, str]]:

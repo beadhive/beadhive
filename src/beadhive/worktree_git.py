@@ -221,16 +221,31 @@ def impl__run_git(args, **kw):
     return retry_on_index_lock(run, args, env=env, **kw)
 
 
-def impl_history(entry, branch, base):
+def impl_history(entry, branch, base, first_parent=False):
     """(count, [subjects]) for commits on `branch` not reachable from `base`.
-    (-1, []) when the range can't be computed (e.g. base missing)."""
+    (-1, []) when the range can't be computed (e.g. base missing).
+
+    ``first_parent=True`` (bh-sl7w0, the leaf history budget): a refresh merge of the
+    integration branch brings upstream's already-reviewed commits in via the second parent.
+    Those are not the child's own history, so they count neither against ``max_commits`` nor
+    the conventional-subject check. The merge commit itself sits on the first-parent line and
+    is still counted and subject-checked."""
     main = registry.hive_dir(entry)
     rng = f"{base}..{branch}"
-    cres = _run_git(["git", "-C", str(main), "rev-list", "--count", rng], check=False, capture=True)
+    fp = ["--first-parent"] if first_parent else []
+    cres = _run_git(
+        ["git", "-C", str(main), "rev-list", *fp, "--count", rng],
+        check=False,
+        capture=True,
+    )
     if cres.returncode != 0:
         return -1, []
     count = int((cres.stdout or "0").strip() or "0")
-    lres = _run_git(["git", "-C", str(main), "log", "--format=%s", rng], check=False, capture=True)
+    lres = _run_git(
+        ["git", "-C", str(main), "log", *fp, "--format=%s", rng],
+        check=False,
+        capture=True,
+    )
     subjects = [s for s in (lres.stdout or "").splitlines() if s.strip()]
     return count, subjects
 

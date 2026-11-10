@@ -1010,7 +1010,7 @@ def impl__guard_bead_clean_history(
     Returns True when the branch is ALREADY LANDED, so the caller reconciles bookkeeping instead
     of merging (bh-lvqs); False on the ordinary path. A genuinely empty branch — no commits over
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
-    count, subjects = api.worktree.history(entry, branch, base)
+    count, subjects = api.worktree.history(entry, branch, base, first_parent=True)
     if count == 0 and bead and _landing_attributed(api, entry, base, bead, bead_data, branch):
         return True
     if count == 0 and api.already_landed(entry, branch, base):
