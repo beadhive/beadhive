@@ -5,7 +5,7 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
-## 0.35.9 → 0.35.10 — labels sync, intake fixes (bh-r5dxi)
+## 0.35.9 → 0.35.10 — tracked GitHub reports reply, close and relabel their issue (bh-r5dxi)
 
 No action required.
 
@@ -21,6 +21,28 @@ No action required.
   (GitHub #96). The reply is drafted only, held for review, and carries no close: the work is not
   done, so the issue stays open. `--dry-run` lists the step; a re-run drafts nothing new; a proposal
   without `reporter_text` plans no reply.
+
+- **Completion drafts the reply and the issue close (bh-cir2q).** A report tracked onto work used
+  to close locally when the work merged (or was released) with nothing drafted unless
+  `intake.external.milestones.draft_on_<event>` was on, so its GitHub issue stayed open and the
+  reporter heard nothing. With the outbox on, the milestone that completes a bound report (merged
+  under `close-on-merge`, released under `close-on-release`) now ALWAYS drafts its record,
+  whatever `draft_on_merge` / `draft_on_release` say, and that record carries an `issue.close`
+  (reason completed) on its comment while the tracker enables `issue.close`
+  (`plugins.<id>.write.issue_close.enabled`; without it the record is comment-only). The report
+  closes locally only once that record's comment is sent, abandoned or superseded by a settled
+  record; approve and send it through the outbox as usual. `draft_on_merge` / `draft_on_release`
+  now only choose whether a NON-completion milestone drafts a progress notice (a `merged` notice
+  under `close-on-release`, a `released` notice under `close-on-merge`);
+  `append_release_to_closed` still only lets that `released` notice be drafted, comment only, for
+  a report already closed. Unbound reports and hives with the outbox off close at once, as before.
+  A re-run of `bh work merge` / `bh work delivery release` drafts nothing new, except that an open
+  report that already completed with no completion record gets it. Under `close-on-merge`, a
+  `released` record drafted while the `merged` record's close is unsent supersedes it and inherits
+  its close; the report stays open until the `released` record is sent or abandoned. With
+  `issue.close` disabled on the tracker (`close_enabled` off) the completion record is
+  comment-only and the report closes locally once it is sent, leaving the issue open by operator
+  choice.
 
 ## 0.35.8 → 0.35.9 — escalate, submit history budget, landing, verdict self-heal (bh-69snf)
 

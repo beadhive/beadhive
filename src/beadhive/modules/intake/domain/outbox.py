@@ -2145,7 +2145,8 @@ def close_rule(
     """Whether the report may close (``bh-6wj9y`` R3): its delivery reached the completion
     milestone and, with the outbox on, that milestone's latest record's comment is ``sent``,
     ``abandoned`` or ``superseded`` ("told, or the operator decided not to tell"). With the
-    outbox on and no such record yet, the report waits."""
+    outbox on and no such record yet, the report waits. A comment superseded by a newer record
+    counts only once that record is settled too (:func:`_comment_settled`)."""
     if not delivery_complete(completion, delivery):
         return False
     if not outbox_enabled:
@@ -2155,8 +2156,31 @@ def close_rule(
     if not records:
         return False
     latest = max(records, key=lambda r: r.created_seq)
-    op = latest.op(OpKind.COMMENT)
-    return op is None or op.state in SETTLED
+    return _comment_settled(doc, latest)
+
+
+def _comment_settled(doc: OutboxDocument, record: OutboxRecord) -> bool:
+    """Whether ``record``'s comment is settled for the close rule. A ``superseded`` comment counts
+    only when the record that superseded it (O6, recorded in that record's ``supersedes``) is
+    itself settled, following the chain (bh-cir2q): an automatic supersede (a ``released`` record
+    replacing an unsent ``merged`` one) hands its close to the successor, so the report waits for
+    the successor. With no successor (an operator's deliberate supersede) it is settled."""
+    seen: set[str] = set()
+    while True:
+        op = record.op(OpKind.COMMENT)
+        if op is None:
+            return True
+        if op.state not in SETTLED:
+            return False
+        if op.state is not OpState.SUPERSEDED or record.outbox_id in seen:
+            return True
+        seen.add(record.outbox_id)
+        successor = next(
+            (r for r in doc.records.values() if r.supersedes == record.outbox_id), None
+        )
+        if successor is None:
+            return True
+        record = successor
 
 
 __all__ = [

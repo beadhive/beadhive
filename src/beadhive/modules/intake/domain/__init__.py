@@ -559,6 +559,7 @@ __all__ += [
 # -- the merge and release milestones (I10): facts, policy and fixed public wording -----------
 
 from .milestones import (  # noqa: E402
+    COMPLETION_CLOSE,
     MERGED_MESSAGE,
     RELEASED_MESSAGE,
     MergeFact,
@@ -574,6 +575,7 @@ from .milestones import (  # noqa: E402
 )
 
 __all__ += [
+    "COMPLETION_CLOSE",
     "MERGED_MESSAGE",
     "RELEASED_MESSAGE",
     "MergeFact",

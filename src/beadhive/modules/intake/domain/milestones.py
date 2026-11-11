@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from .delivery import CompletionPolicy, Verdict
 from .models import IssueBinding
 from .outbox import (
+    CloseReason,
     DeliveryFacts,
     DraftRequest,
     MergedFact,
@@ -108,10 +109,13 @@ class NoticeFact:
 class MilestonePolicy:
     """The ``intake.external`` milestone switches. Every draft is off by default.
 
-    ``draft_on_merge`` and ``draft_on_release`` choose which milestones draft a record at all (and
-    only when the outbox is on); ``append_release_to_closed`` lets a ``released`` record be drafted
-    for a report that is already closed (close-on-merge closes it first). ``completion`` is the
-    hive's completion policy."""
+    ``draft_on_merge`` and ``draft_on_release`` choose whether a milestone drafts a PROGRESS notice
+    (with the outbox on). The milestone that COMPLETES a report (``completion``: merged under
+    close-on-merge, released under close-on-release) always drafts its record, with an
+    ``issue.close`` when the tracker enables it, whatever these say (bh-cir2q), so a report is
+    never closed locally with nothing said. ``append_release_to_closed`` lets a ``released``
+    notice be drafted, comment only, for a report that is already closed (close-on-merge closes it
+    first). ``completion`` is the hive's completion policy."""
 
     draft_on_merge: bool = False
     draft_on_release: bool = False
@@ -174,8 +178,17 @@ class MilestoneOutcome:
         return MilestoneOutcome((*self.items, *other.items))
 
 
-def merged_draft(binding: IssueBinding, fact: MergeFact) -> DraftRequest:
-    """The ``merged`` record of ``fact``: keyed on the merge commit, so a re-run drafts nothing."""
+#: The reason a completion milestone's ``issue.close`` carries (bh-cir2q): the report's work
+#: shipped. Shared with the backfill that recovers a report closed locally with its issue open.
+COMPLETION_CLOSE = CloseReason.COMPLETED
+
+
+def merged_draft(
+    binding: IssueBinding, fact: MergeFact, *, close: CloseReason | None = None
+) -> DraftRequest:
+    """The ``merged`` record of ``fact``: keyed on the merge commit, so a re-run drafts nothing.
+    ``close`` (normally :data:`COMPLETION_CLOSE`) adds the ``issue.close`` that rides on the
+    comment when merging completes the report."""
     return DraftRequest(
         binding,
         OutboxEvent.MERGED,
@@ -183,11 +196,15 @@ def merged_draft(binding: IssueBinding, fact: MergeFact) -> DraftRequest:
         fact.actor,
         facts=PublicFacts(),
         message=MERGED_MESSAGE,
+        close=close,
     )
 
 
-def released_draft(binding: IssueBinding, fact: ReleaseFact) -> DraftRequest:
-    """The ``released`` record of ``fact``, keyed on the tag (its one public fact)."""
+def released_draft(
+    binding: IssueBinding, fact: ReleaseFact, *, close: CloseReason | None = None
+) -> DraftRequest:
+    """The ``released`` record of ``fact``, keyed on the tag (its one public fact). ``close`` as
+    for :func:`merged_draft`, when the release completes the report."""
     return DraftRequest(
         binding,
         OutboxEvent.RELEASED,
@@ -195,6 +212,7 @@ def released_draft(binding: IssueBinding, fact: ReleaseFact) -> DraftRequest:
         fact.actor,
         facts=PublicFacts(tag=fact.tag),
         message=RELEASED_MESSAGE,
+        close=close,
     )
 
 
@@ -275,6 +293,7 @@ def released_facts(doc: OutboxDocument, tag: str, commit: str) -> DeliveryFacts:
 
 __all__ = [
     "BLOCKED_LEAD",
+    "COMPLETION_CLOSE",
     "DEPRIORITISED_LEAD",
     "MAX_REASON_CHARS",
     "MERGED_MESSAGE",

@@ -3279,14 +3279,22 @@ class IntakeMilestonesConfig(_QuietSection):
     """
 
     draft_on_merge: StrictBool = Field(
-        False, description="Draft a `merged` record when linked work merges (default off)."
+        False,
+        description=(
+            "Draft a `merged` progress notice when linked work merges (default off); "
+            "the completion milestone drafts its record regardless."
+        ),
     )
     draft_on_release: StrictBool = Field(
-        False, description="Draft a `released` record when a release is verified (default off)."
+        False,
+        description=(
+            "Draft a `released` progress notice when a release is verified (default off); "
+            "the completion milestone drafts its record regardless."
+        ),
     )
     append_release_to_closed: StrictBool = Field(
         False,
-        description="Also draft the `released` record for a report already closed (default off).",
+        description="Also draft the `released` notice (comment only) for a closed report (off).",
     )
     catch_up_on_link: StrictBool = Field(
         False,

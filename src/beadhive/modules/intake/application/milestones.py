@@ -41,8 +41,11 @@ from collections.abc import Callable
 
 from ..contracts import IdSource, IntakeLock, ReleaseVerifier, ReportStore, Sanitizer
 from ..domain import (
+    COMPLETION_CLOSE,
     DELIVERY_DIM,
     BeadView,
+    CloseReason,
+    CompletionPolicy,
     DraftRequest,
     IntakeRefused,
     IntakeStoreError,
@@ -69,6 +72,7 @@ from ..domain import (
     completion_event,
     delivery_after_merge,
     delivery_after_release,
+    delivery_complete,
     delivery_of,
     delivery_unowned,
     fold_facts,
@@ -150,12 +154,27 @@ class MilestoneService:
             current = delivery_of(view.labels)
             new = delivery_after_merge(view.labels)
             if new is None:  # a re-run, an already released report, or never linked
-                closed, failed = self._try_close(view, current, doc, fact.actor)
+                after, drafted, refused = self._catch_up(
+                    doc,
+                    view,
+                    binding,
+                    current,
+                    MERGED,
+                    lambda c: merged_draft(binding, fact, close=c),
+                )
+                if after is not doc:
+                    self._store.write_outbox(report, after, expect_seq=doc.seq, actor=fact.actor)
+                closed, failed = self._try_close(view, current, after, fact.actor)
                 return MilestoneItem(
-                    report, MERGED, closed=closed, note=_unchanged(current), error=failed
+                    report,
+                    MERGED,
+                    drafted=drafted,
+                    closed=closed,
+                    note=_unchanged(current),
+                    error=_joined(refused, failed),
                 )
             after, drafted, refused = self._draft(
-                doc, view, binding, merged_draft(binding, fact), MERGED
+                doc, view, binding, lambda c: merged_draft(binding, fact, close=c), MERGED
             )
             after = fold_facts(doc, after, merged_facts(doc, fact.work, fact.commit))
             if after is not doc:
@@ -220,9 +239,24 @@ class MilestoneService:
             doc = self._store.read_outbox(report) or OutboxDocument()
             current = delivery_of(view.labels)
             if current == RELEASED:
-                closed, failed = self._try_close(view, current, doc, fact.actor)
+                after, drafted, refused = self._catch_up(
+                    doc,
+                    view,
+                    binding,
+                    current,
+                    RELEASED,
+                    lambda c: released_draft(binding, fact, close=c),
+                )
+                if after is not doc:
+                    self._store.write_outbox(report, after, expect_seq=doc.seq, actor=fact.actor)
+                closed, failed = self._try_close(view, current, after, fact.actor)
                 return MilestoneItem(
-                    report, RELEASED, closed=closed, note=_unchanged(current), error=failed
+                    report,
+                    RELEASED,
+                    drafted=drafted,
+                    closed=closed,
+                    note=_unchanged(current),
+                    error=_joined(refused, failed),
                 )
             merged = doc.facts.merged
             if doc.facts.unlinked is not None:
@@ -241,7 +275,12 @@ class MilestoneService:
             after, drafted, refused = doc, "", ""
             if view.status != "closed" or self._ms.append_release_to_closed:
                 after, drafted, refused = self._draft(
-                    doc, view, binding, released_draft(binding, fact), RELEASED
+                    doc,
+                    view,
+                    binding,
+                    lambda c: released_draft(binding, fact, close=c),
+                    RELEASED,
+                    closed=view.status == "closed",
                 )
             after = fold_facts(doc, after, released_facts(doc, fact.tag, fact.commit))
             if after is not doc:
@@ -419,7 +458,7 @@ class MilestoneService:
         draft = request(binding)
         with self._lock.hold(binding_key(binding)):
             doc = self._store.read_outbox(report) or OutboxDocument()
-            after, drafted, refused = self._draft(doc, view, binding, draft, event)
+            after, drafted, refused = self._draft(doc, view, binding, lambda _c: draft, event)
             if after is not doc:
                 self._store.write_outbox(report, after, expect_seq=doc.seq, actor=draft.actor)
         note = "" if drafted or refused else f"a {event} record for this work already exists"
@@ -477,30 +516,83 @@ class MilestoneService:
 
     def _records_expected(self) -> bool:
         """Whether the completion milestone's record is expected to exist (the close rule's
-        ``outbox_enabled``). With the outbox off, or drafting off for that milestone, nothing is
-        ever drafted for it, so the report would wait forever: it completes as with no outbox."""
-        return self._outbox.enabled and self._ms.drafts(completion_event(self._ms.completion))
+        ``outbox_enabled``). With the outbox on the completion milestone ALWAYS drafts its record
+        (bh-cir2q), whatever ``draft_on_<event>`` says for progress notices, so the report waits
+        for it; with the outbox off nothing is drafted and the report completes at once."""
+        return self._outbox.enabled
 
     # -- drafting ------------------------------------------------------------------------------
+
+    def _catch_up(
+        self,
+        doc: OutboxDocument,
+        view: BeadView,
+        binding: IssueBinding,
+        delivery: str | None,
+        event: str,
+        request: Callable[[CloseReason | None], DraftRequest],
+    ) -> tuple[OutboxDocument, str, str]:
+        """A re-run trigger for an OPEN report whose delivery already completed it but whose
+        completion record was never drafted (it completed before the record was drafted for
+        every hive, or a draft was refused): draft it now, so the report is not left open for
+        nothing. A record of the event that exists (any state) is never drafted again."""
+        policy = self._ms.completion
+        if (
+            view.status == "closed"
+            or event != completion_event(policy)
+            or not delivery_complete(policy, delivery)
+            or any(r.event.value == event for r in doc.records.values())
+        ):
+            return doc, "", ""
+        return self._draft(doc, view, binding, request, event)
+
+    def _completion_close(
+        self, doc: OutboxDocument, event: str, *, closed: bool
+    ) -> CloseReason | None:
+        """The close a milestone record carries (bh-cir2q), or ``None``: the record of the
+        completion milestone closes the issue (reason completed) while the report is still open
+        and the tracker enables ``issue.close``. A ``released`` record under close-on-merge also
+        carries it while the ``merged`` record's close is still unsent, since it supersedes that
+        record and the close must not be lost with it."""
+        if closed or not self._outbox.close_enabled:
+            return None
+        policy = self._ms.completion
+        if event == completion_event(policy):
+            return COMPLETION_CLOSE
+        if event == RELEASED and policy is CompletionPolicy.CLOSE_ON_MERGE:
+            for record in doc.records.values():
+                op = record.op(OpKind.CLOSE)
+                if (
+                    record.event.value == MERGED
+                    and op is not None
+                    and op.state not in machine.TERMINAL
+                ):
+                    return COMPLETION_CLOSE
+        return None
 
     def _draft(
         self,
         doc: OutboxDocument,
         view: BeadView,
         binding: IssueBinding,
-        request: DraftRequest,
+        request: Callable[[CloseReason | None], DraftRequest],
         event: str,
+        *,
+        closed: bool = False,
     ) -> tuple[OutboxDocument, str, str]:
-        """O1 for a milestone record when this hive drafts ``event``: ``(document, outbox id of a
-        NEW record or "", refusal text or "")``. A refusal (a published store, a public commit
-        link) leaves the document as it was and is reported; it never stops the dimension."""
-        if not (self._outbox.enabled and self._ms.drafts(event)):
+        """O1 for a milestone record: ``(document, outbox id of a NEW record or "", refusal text
+        or "")``. Drafted when this hive drafts ``event`` as a progress notice, and ALWAYS for the
+        completion milestone (with its close, :meth:`_completion_close`). A refusal (a published
+        store, a public commit link) leaves the document as it was and is reported; it never stops
+        the dimension."""
+        completes = event == completion_event(self._ms.completion) and not closed
+        if not (self._outbox.enabled and (self._ms.drafts(event) or completes)):
             return doc, "", ""
         try:
             require_private_store(self._posture)
             applied = machine.draft(
                 doc,
-                request,
+                request(self._completion_close(doc, event, closed=closed)),
                 outbox_id=self._ids.outbox_id(),
                 policy=self._outbox,
                 ctx=self._ctx(view, binding),
