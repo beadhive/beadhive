@@ -116,6 +116,31 @@ def test_mistyped_attrs_are_rejected(builder, override, attr, problem) -> None: 
     assert caught.value.attr == attr
 
 
+@pytest.mark.parametrize("value", ["2026-02-28", "2024-02-29", "2026-01-02T03:04:05Z", None])
+def test_declared_date_accepts_a_calendar_date_a_timestamp_or_null(value) -> None:  # type: ignore[no-untyped-def]
+    record = ev.design_record(declared_date=value)
+    assert record.attrs["declared_date"] == value  # a day-precision date is kept as written
+    _validator().validate(record.to_json())
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["2026-13-01", "2026-02-30", "2025-02-29", "2026-1-01", "20260101", "Nov 2026", "", 20260101],
+)
+def test_declared_date_refuses_anything_else(value) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ArtifactShapeError, match="calendar date YYYY-MM-DD") as caught:
+        ev.design_record(declared_date=value)
+    assert caught.value.attr == "declared_date"
+
+
+def test_schema_refuses_malformed_dates() -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    line = ev.design_record().to_json()
+    for value in ("2026-13-01", "Nov 2026", "2026-01-01T00:00:00"):
+        with pytest.raises(jsonschema.ValidationError):
+            _validator().validate({**line, "attrs": {**line["attrs"], "declared_date": value}})
+
+
 def test_extra_attrs_and_nullable_attrs_are_allowed() -> None:
     record = ev.design_record(declared_status=None, title_case="Kept", supersedes=["doc:old.md"])
     assert record.attrs["title_case"] == "Kept"
@@ -200,6 +225,11 @@ def test_record_id_pins_the_canonical_bytes() -> None:
     assert artifact_id(record) == record.id == _golden_release_id()
     renamed = ev.release_marker("v0.1.0", reader="git")
     assert renamed.id != record.id
+    # A reader version bump with identical output keeps its ids (the header carries the version).
+    bumped = ev.release_marker("v0.1.0", reader_version="1.0.1")
+    assert bumped.id == record.id
+    assert bumped.to_json()["reader_version"] == "1.0.1"
+    assert loads_evidence(dumps_evidence(ev.corpus(bumped))).artifacts == (bumped,)
     assert ev.change(refs=[ev.ref("bh-1")]).id != ev.change().id
 
 
@@ -208,7 +238,7 @@ def _golden_release_id() -> str:
         '{"attrs":{"commit_range":null,"released_at":"2026-01-01T00:00:00Z","version":"v0.1.0"},'
         '"category":"release-marker","key":"git:tag/v0.1.0","kind":"tag",'
         '"occurred_at":"2026-01-01T00:00:00Z","provenance":"observed","raw_attrs":{},'
-        '"reader":"fixture","reader_version":"1","refs":[],"title":"git:tag/v0.1.0",'
+        '"reader":"fixture","refs":[],"title":"git:tag/v0.1.0",'
         '"type":"artifact"}'
     )
     return "sha256:" + hashlib.sha256(line.encode()).hexdigest()

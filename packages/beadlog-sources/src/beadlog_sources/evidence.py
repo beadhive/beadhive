@@ -22,7 +22,8 @@ part of the BeadLog format: it is an intermediate artifact, like a compiler IR. 
 
 Every line is the RFC 8785 canonical JSON of its object (``beadlog.canonical_json``), so the
 same corpus always has the same bytes, and a record's ``id`` is ``sha256:`` + the SHA-256 of the
-canonical JSON of the record without its ``id`` (content-addressed, stable across runs). The
+canonical JSON of the record without its ``id`` and ``reader_version`` (content-addressed,
+stable across runs and across reader versions that produce the same output). The
 reader refuses a non-canonical line, an out-of-order line or an id that does not match.
 """
 
@@ -30,8 +31,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from enum import StrEnum
 from importlib import resources
 from pathlib import Path
@@ -115,6 +118,21 @@ class AttrType(StrEnum):
     TIMESTAMP = "timestamp"
     OPTIONAL_TIMESTAMP = "timestamp?"
     OPTIONAL_STATUS = "status?"
+    OPTIONAL_DATE = "date?"
+
+
+_CALENDAR_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+
+def _is_calendar_date(value: Any) -> bool:
+    """A real ``YYYY-MM-DD`` calendar date (day precision, no time, no zone)."""
+    if not isinstance(value, str) or _CALENDAR_DATE.fullmatch(value) is None:
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _type_problem(kind: AttrType, value: Any) -> str | None:
@@ -139,6 +157,14 @@ def _type_problem(kind: AttrType, value: Any) -> str | None:
             check_timestamp(value)
         except TimestampError:
             return "must be a canonical BeadLog timestamp (YYYY-MM-DDTHH:MM:SS[.f]Z)"
+        return None
+    if kind is AttrType.OPTIONAL_DATE:
+        if _is_calendar_date(value):
+            return None
+        try:
+            check_timestamp(value)
+        except TimestampError:
+            return "must be a calendar date YYYY-MM-DD, a canonical BeadLog timestamp or null"
         return None
     # OPTIONAL_STATUS
     if value in DECLARED_STATUSES:
@@ -207,7 +233,7 @@ CATEGORY_SHAPES: Mapping[Category, CategoryShape] = MappingProxyType(
         Category.DESIGN_RECORD: _shape(
             Category.DESIGN_RECORD,
             declared_status=AttrType.OPTIONAL_STATUS,
-            declared_date=T0,
+            declared_date=AttrType.OPTIONAL_DATE,
             owner=S0,
             supersedes=SS,
         ),
@@ -385,7 +411,7 @@ class Artifact:
         return artifact_id(self)
 
     def body(self) -> dict[str, Any]:
-        """The record's JSON object without ``id``: what the id hashes."""
+        """The record's JSON object without ``id`` (the id hashes this minus ``reader_version``)."""
         return {
             "type": ARTIFACT,
             "category": self.category.value,
@@ -438,12 +464,16 @@ class Artifact:
 
 
 def artifact_id(artifact: Artifact) -> str:
-    """``sha256:`` + lowercase hex SHA-256 of the canonical JSON of :meth:`Artifact.body`.
+    """``sha256:`` + lowercase hex SHA-256 of the canonical JSON of :meth:`Artifact.body`
+    without ``reader_version``.
 
-    Every member but ``id`` is identity material, ``reader`` and ``reader_version`` included:
-    the same key read by two readers (or two reader versions) is two records.
+    Ids are content addresses for diffing corpora across runs: a reader version bump that emits
+    the same record keeps its id (the header still records the version). ``reader`` is identity
+    material: the same key read by two readers is two records.
     """
-    digest = hashlib.sha256(canonical_json(artifact.body()).encode("utf-8")).hexdigest()
+    identity = artifact.body()
+    del identity["reader_version"]
+    digest = hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
     return "sha256:" + digest
 
 
