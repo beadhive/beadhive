@@ -45,8 +45,9 @@ no shortlisted candidate is NEW without a question (as in reconcile). The judge 
 
 Options (``ExtractRequest.options``): ``docs`` (comma-separated directories; every ``*.md``
 below each, recursively; default ``docs/decisions,docs/design``, whose ``*.md`` children only),
-``top_k`` (shortlist size, default 3), ``id_prefix`` (prefix of minted ids; default the baseline's
-modal prefix), ``new_type`` (bead type of a judged NEW, default ``task``), ``labels`` (extra labels
+``top_k`` (shortlist size, default 3), ``id_prefix``
+(prefix of minted ids; required when a doc would mint a bead, never derived from the baseline),
+``new_type`` (bead type of a judged NEW, default ``task``), ``labels`` (extra labels
 for judged NEW beads, e.g. the hive identity triplet), ``prior`` (an earlier extract ``.bdlg``
 whose recorded verdicts are reused), ``allow_shallow`` and ``git``.
 """
@@ -84,7 +85,6 @@ from ._sources import (
     is_git_repo,
     live_beads,
     mint_bead_id,
-    modal_prefix,
     truthy,
 )
 from .commits import candidate_pattern, derive_namespaces, extract_candidates, require_full_history
@@ -468,7 +468,7 @@ def propose(
     repo = is_git_repo(root, git)
     adds = first_adds(root, (), git) if repo else {}
     stamp_floors = floors(request.baseline, request.group, EXTERNAL_REF)
-    prefix = str(request.options.get("id_prefix") or "") or modal_prefix(live)
+    prefix = str(request.options.get("id_prefix") or "") or None
     new_type = str(request.options.get("new_type", "task"))
     extra_labels = csv(request.options.get("labels", ""))
     report = DocsReport(
@@ -581,8 +581,8 @@ def propose(
             entry.outcome = "new"
             if prefix is None:
                 raise SourceError(
-                    "cannot mint a bead id: the baseline holds no beads to read an id prefix "
-                    "from; pass option id_prefix"
+                    "cannot mint a bead id without an explicit id prefix (prefixes are never "
+                    "derived or guessed); pass option id_prefix"
                 )
             ident = mint_bead_id(prefix, request.group, f"doc:{path}", taken)
             taken.add(ident)

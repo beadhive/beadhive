@@ -302,7 +302,9 @@ def test_docs_with_a_judge_creates_a_new_bead_and_a_second_run_proposes_nothing(
 ) -> None:
     _docs_repo(repo)
     store = FoldStore([_row("wd-1"), _row("wd-9", title="Entirely different matter")])
-    pass_ = source_pass("docs", repo, GROUP.id, options={"labels": "team:core"}, judging=True)
+    pass_ = source_pass(
+        "docs", repo, GROUP.id, options={"labels": "team:core", "id_prefix": "ag"}, judging=True
+    )
     engine = BackfillEngine(groups=[GROUP], passes=[pass_], clock=_clock)
     judge = NewJudge()
 
@@ -333,7 +335,7 @@ def test_docs_with_a_judge_creates_a_new_bead_and_a_second_run_proposes_nothing(
 def test_a_plan_made_with_a_judge_is_refused_by_a_pass_built_without_one(repo: Path) -> None:
     _docs_repo(repo)
     store = FoldStore([_row("wd-1")])
-    judged = source_pass("docs", repo, GROUP.id, judging=True)
+    judged = source_pass("docs", repo, GROUP.id, options={"id_prefix": "ag"}, judging=True)
     plan = BackfillEngine(groups=[GROUP], passes=[judged], clock=_clock).plan(
         judged, store, NewJudge()
     )
@@ -354,7 +356,9 @@ TREE = {
 def test_planning_creates_beads_then_applies_a_later_close_as_drift(repo: Path) -> None:
     _commit(repo, "docs: add the planning tree", TREE)
     store = FoldStore([_row("wd-1")])
-    pass_ = source_pass("planning", repo, GROUP.id, options={"labels": "complexity:MEDIUM"})
+    pass_ = source_pass(
+        "planning", repo, GROUP.id, options={"labels": "complexity:MEDIUM", "id_prefix": "ag"}
+    )
     engine = BackfillEngine(groups=[GROUP], passes=[pass_], clock=_clock)
 
     plan = engine.plan(pass_, store)

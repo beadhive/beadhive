@@ -156,6 +156,7 @@ def _request(root: Path, baseline: Sequence[BeadEvent] = SEED, **options: str) -
 
 
 def _extract(root: Path, baseline: Sequence[BeadEvent] = SEED, **options: str):
+    options.setdefault("id_prefix", "ag-infra")  # prefixes are explicit, never derived
     strategy = PlanningStrategy()
     return strategy, strategy.extract(_request(root, baseline, **options))
 
@@ -273,7 +274,7 @@ def test_the_events_are_deterministic_and_reconcile_as_all_new(tree: Path) -> No
     assert plan.counts() == {"NEW": 7, "PRESENT": 0, "NOISE": 0, "DRIFT": 0}
 
 
-def test_minted_ids_use_the_baseline_prefix_and_never_collide(tree: Path) -> None:
+def test_minted_ids_use_the_given_prefix_and_never_collide(tree: Path) -> None:
     _, events = _extract(tree, [_existing("ag-infra-9", "x"), _existing("ag-infra-10", "y")])
     ids = set(_paths(events))
     assert len(ids) == 7 and all(i.startswith("ag-infra-") for i in ids)
@@ -284,9 +285,10 @@ def test_minted_ids_use_the_baseline_prefix_and_never_collide(tree: Path) -> Non
     assert {i.split("-")[0] for i in _paths(other)} == {"zz"}
 
 
-def test_an_empty_baseline_asks_for_an_id_prefix(tree: Path) -> None:
-    with pytest.raises(ValueError, match="id_prefix"):
-        _extract(tree, [])
+def test_minting_without_an_id_prefix_fails_naming_the_option(tree: Path) -> None:
+    for baseline in ([], SEED):  # a populated baseline is never read for a prefix guess
+        with pytest.raises(ValueError, match="id_prefix"):
+            PlanningStrategy().extract(_request(tree, baseline))
 
 
 def test_extra_labels_and_the_issue_type_are_options(tree: Path) -> None:
@@ -437,6 +439,8 @@ def test_beadlog_extract_planning_writes_a_plan_that_verifies(
             EXTRACTED,
             "--baseline",
             str(baseline),
+            "--option",
+            "id_prefix=ag-infra",
             "-o",
             str(out),
         ],

@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
-from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -29,8 +28,6 @@ from beadlog import (
 _FIELD_SEP = "\x1f"
 _RECORD_SEP = "\x1e"
 _BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
-# ``<prefix>-<slug>(.N)*`` where the prefix may itself carry hyphenated segments (``ag-infra``).
-_ID_SHAPE = re.compile(r"^([a-z][a-z0-9]*(?:-[a-z0-9]+)*)-[a-z0-9]+(?:\.[0-9]+)*$")
 _FRONT = re.compile(r"^---[ \t]*$")
 _TITLE_KEY = re.compile(r"^title:[ \t]*(.*?)[ \t]*$")
 _HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$")
@@ -184,20 +181,6 @@ def floors(baseline: Iterable[BeadEvent], group: str, field: str) -> dict[str, s
     return out
 
 
-def modal_prefix(ids: Iterable[str]) -> str | None:
-    """The most common id prefix (everything before the last hyphen segment, so ``ag-infra-9``
-    is ``ag-infra``), or ``None`` for an empty corpus."""
-    counts: Counter[str] = Counter()
-    for ident in ids:
-        match = _ID_SHAPE.match(ident)
-        if match:
-            counts[match.group(1)] += 1
-    if not counts:
-        return None
-    best = max(counts.values())
-    return sorted(prefix for prefix, count in counts.items() if count == best)[0]
-
-
 def mint_bead_id(prefix: str, group: str, key: str, taken: Iterable[str] = ()) -> str:
     """A deterministic new bead id ``<prefix>-<8 base36>`` from ``(group, key)``; a collision with
     ``taken`` re-hashes with a counter, so the same inputs always give the same id."""
@@ -257,7 +240,6 @@ __all__ = [
     "is_git_repo",
     "live_beads",
     "mint_bead_id",
-    "modal_prefix",
     "split_frontmatter",
     "truthy",
 ]

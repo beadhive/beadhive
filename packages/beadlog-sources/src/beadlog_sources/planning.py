@@ -18,7 +18,7 @@ creates. The mapping:
 
 **Created beads** carry ``origin:backfill`` and ``source:planning`` (and any option ``labels``,
 e.g. the hive identity triplet). Their ids are minted deterministically from ``(group, path)``
-under the baseline's modal id prefix (option ``id_prefix``; required when the baseline is empty).
+under the explicit option ``id_prefix`` (required whenever a doc would mint a bead; never derived).
 
 **Idempotent.** A doc whose path is already some baseline bead's ``external_ref`` is PRESENT and
 proposes nothing, except one thing: when it is not closed yet and its summary now exists, a
@@ -52,7 +52,6 @@ from ._sources import (
     is_git_repo,
     live_beads,
     mint_bead_id,
-    modal_prefix,
     split_frontmatter,
     truthy,
 )
@@ -270,7 +269,7 @@ def propose(
     refs = external_refs(live)
     repo = is_git_repo(root, git)
     adds = first_adds(root, [tree], git) if repo else {}
-    prefix = str(request.options.get("id_prefix") or "") or modal_prefix(live)
+    prefix = str(request.options.get("id_prefix") or "") or None
     plan_type = str(request.options.get("issue_type", "task"))
     labels = tuple(dict.fromkeys([*ORIGIN_LABELS, *csv(request.options.get("labels", ""))]))
     report = PlanningReport(tree)
@@ -296,8 +295,8 @@ def propose(
             return BeadRef(request.group, known[0]), True
         if prefix is None:
             raise SourceError(
-                "cannot mint a bead id: the baseline holds no beads to read an id prefix from; "
-                "pass option id_prefix"
+                "cannot mint a bead id without an explicit id prefix (prefixes are never derived "
+                "or guessed); pass option id_prefix"
             )
         ident = mint_bead_id(prefix, request.group, f"planning:{path}", taken)
         taken.add(ident)

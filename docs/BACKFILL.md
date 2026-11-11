@@ -278,7 +278,8 @@ apply proposes nothing (a summary that appears later proposes only its close). C
 `origin:backfill` and `source:planning`; `bh label validate` also wants one `complexity:<TIER>` on
 every routable bead, which is hive policy: name it through `--option labels=complexity:MEDIUM` or run
 `bh backfill complexity` afterwards. Options: `planning` (the tree, default `.planning`),
-`id_prefix` (required with an empty baseline), `labels`, `issue_type`, `allow_shallow`.
+`id_prefix` (required whenever a doc would mint a bead; `bh backfill` passes the hive's
+configured prefix; never derived), `labels`, `issue_type`, `allow_shallow`.
 
 A plan whose loader reports `erasure.incomplete` is refused; delete and bead-scope tombstones
 are off in the bd loader and are reported as dropped.

@@ -170,6 +170,14 @@ def _target(hive: str) -> tuple[Path, Group]:
     return cwd, hive_group(entry, cwd)
 
 
+def hive_prefix(hive: str) -> str | None:
+    """The hive's configured bead-id prefix (registry ``prefix``), or ``None`` when unset.
+    Never derived or guessed (bh-ear6v)."""
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    return str((entry or {}).get("prefix") or "") or None
+
+
 def store_loader(cwd: Path, *, group: str, pre_state_path: Path | None = None) -> BdStoreLoader:
     """The bd StoreLoader for the hive at ``cwd`` (the seam tests replace with a fake bd)."""
     return bd_store_loader(cwd, group=group, pre_state_path=pre_state_path)
@@ -590,11 +598,15 @@ def _run_source(
             extra: dict[str, Any] = {}
             if since_cursor:
                 extra = {"incremental": True, "cursor": _load_cursor(hive, cwd, name)}
+            options = parse_options(option or ())
+            prefix = hive_prefix(hive) if name in ("docs", "planning") else None
+            if prefix and not options.get("id_prefix"):
+                options["id_prefix"] = prefix
             pass_ = source_pass_for(
                 name,
                 cwd,
                 group,
-                parse_options(option or ()),
+                options,
                 judging=settings.enabled,
                 **extra,
             )
@@ -1193,6 +1205,7 @@ __all__ = [
     "gapfill_settings",
     "gapfill_state_path",
     "hive_group",
+    "hive_prefix",
     "history_inputs",
     "judge_settings",
     "refresh_coverage_after_apply",

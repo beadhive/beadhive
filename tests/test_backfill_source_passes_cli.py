@@ -101,6 +101,7 @@ def hive(cfg_path, monkeypatch, tmp_path):  # noqa: F811 — the imported fixtur
     group = backfill_cli.hive_group(ENTRY, repo)
     refreshed: list[str] = []
     monkeypatch.setattr(backfill_cli, "_target", lambda hive: (repo, group))
+    monkeypatch.setattr(backfill_cli, "hive_prefix", lambda hive: ENTRY["prefix"])
 
     def loader(cwd: Path, *, group: str, pre_state_path: Path | None = None) -> BdStoreLoader:
         return BdStoreLoader(store, group=group, clock=Ticks(), pre_state_path=pre_state_path)
@@ -321,6 +322,8 @@ def test_docs_with_backfill_judge_configured_creates_the_judged_new_bead(
     assert audit["state"] == "applied" and judge.calls == asked  # recorded verdicts only
     created = [row for iid, row in store.rows.items() if iid not in ("ag-infra-1", "ag-infra-2")]
     assert len(created) == 1 and created[0]["external_ref"] == DOC_B
+    minted = [iid for iid in store.rows if iid not in ("ag-infra-1", "ag-infra-2")]
+    assert all(iid.startswith("ag-infra-") for iid in minted)  # the hive's configured prefix
     assert {"origin:backfill", "source:docs", "complexity:MEDIUM", *TRIPLET} <= set(
         created[0]["labels"]
     )
