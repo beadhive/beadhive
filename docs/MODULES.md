@@ -797,8 +797,9 @@ The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.p
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
 `IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on
 every report that tracks the work, open or closed, records `facts.merged` in `intake.outbox`,
-drafts a `merged` record when `intake.external.milestones.draft_on_merge` and
-`outbox.enabled` are on, and applies the completion policy; a release is verified by the new
+drafts a `merged` record when `outbox.enabled` is on and either `draft_on_merge` is on or merging
+completes the report (the completion record always drafts and carries an `issue.close`,
+bh-cir2q), and applies the completion policy; a release is verified by the new
 `ReleaseVerifier` port (`beadhive.adapters.intake.GitReleaseVerifier`: `git rev-parse` and `git
 merge-base --is-ancestor`, read-only; kit fake `FakeReleaseVerifier`) and only a `YES` moves a
 report to `delivery:released`. Milestones only DRAFT: the service holds no tracker, grant or
