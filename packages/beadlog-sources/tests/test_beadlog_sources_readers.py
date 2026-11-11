@@ -82,7 +82,9 @@ def test_duplicate_name_with_different_targets_is_an_error() -> None:
         discover_readers(lambda: [_Point("x", _Reader, "a:A"), _Point("x", _Reader, "b:B")])
     with pytest.raises(DuplicateRegistrationError):  # unknown targets compare by loaded object
         discover_readers(lambda: [_Point("x", _Reader), _Point("x", object)])
-    assert list(discover_readers(lambda: [_Point("x", _Reader), _Point("x", _Reader)])) == ["x"]
+    assert list(
+        discover_readers(lambda: [_Point("x", _Reader), _Point("x", _Reader)], builtin={})
+    ) == ["x"]
 
 
 def test_cli_reports_a_duplicate_as_exit_1() -> None:
