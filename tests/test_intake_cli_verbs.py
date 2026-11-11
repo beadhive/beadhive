@@ -771,3 +771,47 @@ def test_the_reopen_verb_refuses_an_open_issue_and_both_text_sources(
     blank_file = bh("outbox", "reopen", opened, "--reply-file", str(blank), *common)
     assert blank_file.exit_code == 1 and doc(blank_file)["reason"] == "invalid_request"
     assert rig.world.write_requests() == 0
+
+
+# -- work delivery sweep (bh-qwv0t) ------------------------------------------------------------
+
+
+def test_the_delivery_sweep_is_a_dry_run_until_repair_is_passed(rig, monkeypatch) -> None:
+    from beadhive.modules.intake import DeliverySweep, StrayDelivery
+
+    stray = StrayDelivery("w-1", "pending")
+    seen: list[dict] = []
+
+    def sweep(directory, **kwargs):
+        seen.append(kwargs)
+        done = (stray,) if kwargs["repair"] else ()
+        return DeliverySweep((stray,), done)
+
+    monkeypatch.setattr(intake_services, "sweep_delivery", sweep)
+
+    dry = bh("delivery", "sweep", "--json")
+    assert dry.exit_code == 0, dry.output
+    payload = doc(dry)
+    assert payload["dry_run"] is True and payload["cleared"] == []
+    assert payload["found"] == [{"report": "w-1", "delivery": "pending"}]
+    assert seen[-1]["repair"] is False
+
+    human = bh("delivery", "sweep")
+    assert "would clear" in human.output and "--repair" in human.output
+
+    fixed = bh("delivery", "sweep", "--repair", "--json")
+    assert fixed.exit_code == 0 and seen[-1]["repair"] is True
+    assert doc(fixed)["cleared"] == [{"report": "w-1", "delivery": "pending"}]
+
+
+def test_a_failed_clear_fails_the_verb(rig, monkeypatch) -> None:
+    from beadhive.modules.intake import DeliverySweep, StrayDelivery
+
+    stray = StrayDelivery("w-1", "pending")
+    monkeypatch.setattr(
+        intake_services,
+        "sweep_delivery",
+        lambda d, **kw: DeliverySweep((stray,), (), ((stray, "bd refused"),)),
+    )
+    result = bh("delivery", "sweep", "--repair")
+    assert result.exit_code == 1

@@ -203,7 +203,9 @@ def test_the_outbox_is_off_unless_an_enabled_policy_is_passed_and_the_tracker_is
     monkeypatch,
 ):
     store = MemoryReportStore(SCOPE)
-    monkeypatch.setattr(intake_services, "report_store", lambda d, scope, entry=None: store)
+    monkeypatch.setattr(
+        intake_services, "report_store", lambda d, scope, entry=None, cli_only=False: store
+    )
     oid = "ob1_" + "a" * 26
     for policy in (None, OutboxPolicy()):
         service = intake_services.outbox_service_for(
@@ -245,7 +247,9 @@ def test_an_enabled_composition_drafts_approves_and_sends_once_on_the_injected_t
             snapshot=SourceSnapshot("a bug", "", IssueStatus.OPEN, "r1"),
         )
     )
-    monkeypatch.setattr(intake_services, "report_store", lambda d, scope, entry=None: store)
+    monkeypatch.setattr(
+        intake_services, "report_store", lambda d, scope, entry=None, cli_only=False: store
+    )
     monkeypatch.setattr(
         intake_services,
         "store_posture",
@@ -290,7 +294,9 @@ def _label_scene(monkeypatch, *, policy: OutboxPolicy, prefixes=("beadhive:",), 
             snapshot=SourceSnapshot("a bug", "", IssueStatus.OPEN, "r1", labels=labels),
         )
     )
-    monkeypatch.setattr(intake_services, "report_store", lambda d, scope, entry=None: store)
+    monkeypatch.setattr(
+        intake_services, "report_store", lambda d, scope, entry=None, cli_only=False: store
+    )
     monkeypatch.setattr(
         intake_services,
         "store_posture",

@@ -38,6 +38,7 @@ from ..domain import (
     DispositionOutcome,
     DispositionRequest,
     DuplicatePair,
+    EndStateFindings,
     HoldGate,
     HoldSweep,
     HoldSweepRequest,
@@ -191,6 +192,10 @@ class IntakePort(Protocol):
     def reopen(
         self, request: ReopenRequest
     ) -> ReopenOutcome: ...  # O1 for the operator's reopen of one closed issue (bh-ih484)
+
+    def end_states(
+        self, *, check_open: bool = True
+    ) -> EndStateFindings: ...  # bh doctor: closed bound reports that are not at rest, read-only
 
     # the milestone triggers (bh-6wj9y R9; I10). They DRAFT and never send: no grant, no writer, no
     # tracker request. Free under ``NullIntake``; the work layer wraps both so a failure here is

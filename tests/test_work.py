@@ -6865,6 +6865,29 @@ def test_merge_molecule_lands_and_auto_closes_adopted_origin_report(hive, fakebd
     assert fakebd.did("close", "mr-1.rpt", "--reason", "adopted epic mr-1 landed")
 
 
+def test_merge_molecule_never_plain_closes_a_bound_adopted_report(hive, fakebd, capsys):
+    """bh-p28yo: a BOUND report (intake.source) hanging child-of the epic is not closed by the
+    landing's plain `bd close` (that would skip the held close, reply and issue close); an
+    unbound sibling still is. The bound report stays open and the operator is warned."""
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.seed("mr-1.rpt", title="native", parent="mr-1", labels=["intake:promoted"])
+    fakebd.seed(
+        "mr-1.bnd",
+        title="bound",
+        parent="mr-1",
+        labels=["intake:promoted"],
+        metadata={"intake.source": "{}"},
+    )
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)
+
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.rpt"]["status"] == "closed"
+    assert fakebd.beads["mr-1.bnd"]["status"] == "open"
+    assert not fakebd.did("close", "mr-1.bnd", "--reason", "adopted epic mr-1 landed")
+    assert "mr-1.bnd is bound to an external issue" in capsys.readouterr().err
+
+
 # ---- resume ----------------------------------------------------------------
 
 

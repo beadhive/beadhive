@@ -1318,6 +1318,7 @@ def outbox_service_for(
     index: Any = None,
     reopen_enabled: bool = False,
     pacer: Any = None,
+    cli_only: bool = False,
 ) -> IntakeService:
     """The intake service for ``entry`` with the supervised sender bound over the INJECTED
     ``tracker`` (and its ``marker_line`` codec). With ``threads`` (the comment-ingestion policy,
@@ -1342,7 +1343,7 @@ def outbox_service_for(
         ),
         reopen_enabled,
     )
-    store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry)
+    store = report_store(directory, lambda: store_scope(cfg, entry), entry=entry, cli_only=cli_only)
     labels = ValidateLabelPolicy(cfg, str(entry["prefix"]))
     if not policy.enabled:
         return IntakeService(store, labels)
@@ -1931,6 +1932,7 @@ def _outbox_port(
     fields_enabled: bool = False,
     reopen_enabled: bool = False,
     pacer: Any = None,
+    cli_only: bool = False,
 ):
     """The port an outbox verb runs on. Three switches, each a distinct refusal and each decided
     before any store write or tracker request: ``intake.external.enabled`` (``NullIntake``,
@@ -1970,6 +1972,7 @@ def _outbox_port(
             fields_enabled=fields_enabled,
             reopen_enabled=reopen_enabled,
             pacer=pacer,
+            cli_only=cli_only,
         )
 
     return bind_intake(enabled, build)
@@ -2001,6 +2004,7 @@ def outbox_call(
     fields_enabled: bool = False,
     reopen_enabled: bool = False,
     pacer: Any = None,
+    cli_only: bool = False,
 ) -> OutboxCall:
     """Run ``run(port)`` on the outbox port of ``entry``'s hive and fold every refusal and store
     failure into an :class:`OutboxCall`. Off unless ``intake.external.enabled`` AND
@@ -2037,6 +2041,7 @@ def outbox_call(
             fields_enabled=fields_enabled or wiring.get("fields_enabled") is True,
             reopen_enabled=reopen_enabled or wiring.get("reopen_enabled") is True,
             pacer=pacer,
+            cli_only=cli_only,
         )
         value = run(port)
     except IntakeRefused as exc:

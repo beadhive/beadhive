@@ -271,10 +271,52 @@ class CloseBackfillOutcome:
         return tuple(i for i in self.items if i.skipped)
 
 
+@dataclass(frozen=True)
+class ClosedOpenIssue:
+    """A report CLOSED in the store whose bound issue the one listing shows still open
+    (bh-cd03d). ``repair`` names the verb that fixes it: ``backfill-close`` for the shapes it
+    covers, ``outbox draft`` for the rest, or ``outbox send`` when a close is already drafted
+    (``pending`` is that record's id)."""
+
+    report: str
+    issue_url: str
+    repair: str
+    delivery: str = ""
+    pending: str = ""
+
+
+@dataclass(frozen=True)
+class NotificationBehind:
+    """A report closed without its reporter being told the current delivery milestone because
+    the completion comment was abandoned (bh-c0x0i). ``record`` is the latest abandoned record."""
+
+    report: str
+    delivery: str
+    notified: str
+    record: str
+
+
+@dataclass(frozen=True)
+class EndStateFindings:
+    """What the read-only end-state scan found. ``listed`` is true when it made the one issue
+    listing (it makes none when no closed report is bound to the tracker project)."""
+
+    closed_open: tuple[ClosedOpenIssue, ...] = ()
+    behind: tuple[NotificationBehind, ...] = ()
+    listed: bool = False
+
+    @property
+    def clean(self) -> bool:
+        return not self.closed_open and not self.behind
+
+
 __all__ = [
     "CloseBackfill",
     "CloseBackfillItem",
     "CloseBackfillOutcome",
+    "ClosedOpenIssue",
+    "EndStateFindings",
+    "NotificationBehind",
     "OutboxApprove",
     "OutboxEntry",
     "OutboxListing",
