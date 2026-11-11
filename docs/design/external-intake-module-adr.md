@@ -674,6 +674,9 @@ E4):
    `delivery:released` and the `released` record likewise. `notified` is not advanced for
    `abandoned` or `superseded`, so `notification_behind` stays visible.
 
+The valid report states, the end state of every disposition and the invalid states with their
+repairs are collected in [Report lifecycle and end states](../INTAKE-LIFECYCLE.md).
+
 **As built (I3, `bh-eo8br`).**
 
 - **Held create.** `ReportStore.create` opens the hold (`bd gate create --blocks <report> --type

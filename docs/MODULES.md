@@ -507,7 +507,8 @@ provider is the opt-in `beadhive-beadlog-xtdb` plugin package (`beadhive[xtdb]`)
 ### `modules/intake`
 
 Owns **external intake**: the one shared intake queue, the intake and origin vocabulary and, in
-later beads, import, link, the conversation model and the outbox (`external-intake-module-adr.md`).
+later beads, import, link, the conversation model and the outbox (`external-intake-module-adr.md`;
+the report states and end states are in [INTAKE-LIFECYCLE.md](INTAKE-LIFECYCLE.md)).
 The consumer port is `beadhive.modules.intake.contracts.IntakePort`; `IntakeService` is its one
 implementation and `NullIntake` is bound when intake is off (`bind_intake`). Intake's own outbound
 ports are `ReportStore` (the bead store holding report beads), `CheckpointStore` and `LabelPolicy`.
