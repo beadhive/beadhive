@@ -225,7 +225,9 @@ class ReopenOutcome:
 class CloseBackfill:
     """Draft the missing closes (``bh-pr5ll``): for every report already closed in the store
     whose bound issue is still open and whose applied triage outcome ends the thread, an
-    ``issue.close`` on its latest reply record. ``dry_run`` reads and plans and writes nothing."""
+    ``issue.close`` on its latest reply record; and, for a report closed at delivery ``merged`` or
+    ``released`` (bh-iyog8), the completion close on its latest reply or milestone record, or on a
+    completion record drafted for it. ``dry_run`` reads and plans and writes nothing."""
 
     actor: str
     dry_run: bool = False

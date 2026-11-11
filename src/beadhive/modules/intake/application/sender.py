@@ -121,6 +121,7 @@ from beadhive.modules.tracker.contracts import (
 
 from ..contracts import (
     BatchLock,
+    BeadView,
     IdSource,
     IntakeLock,
     OutboxIndex,
@@ -129,6 +130,7 @@ from ..contracts import (
     SendPacer,
 )
 from ..domain import (
+    COMPLETION_CLOSE,
     NOTIFIED_DIM,
     SEND_ORDER,
     ApprovalRequest,
@@ -150,6 +152,7 @@ from ..domain import (
     LabelBatchItem,
     LabelBatchOutcome,
     LeakPolicy,
+    MergeFact,
     Message,
     OpKind,
     OpState,
@@ -169,6 +172,7 @@ from ..domain import (
     Proposal,
     ProposalStatus,
     RefusalReason,
+    ReleaseFact,
     RenderContext,
     RenderedRecord,
     ReopenOutcome,
@@ -183,8 +187,11 @@ from ..domain import (
     ThreadState,
     batch_digest,
     close_reason_for,
+    delivery_of,
     is_outbox_id,
+    merged_draft,
     outbox_view,
+    released_draft,
     reopen_reply_text,
     reply_revision,
     require_private_store,
@@ -1027,8 +1034,9 @@ class OutboxService:
         never got its reply gets one drafted, with the close attached, from ``reply_text(report,
         proposal)`` (the reviewed text, or the template apply would have used); without that
         text it is reported and skipped. A reply that already carries a close is skipped, so a
-        re-run drafts nothing twice. ``dry_run`` makes the same reads and writes nothing; neither
-        approves nor sends anything."""
+        re-run drafts nothing twice. A tracked report closed at delivery merged or released is
+        recovered too (:meth:`_backfill_tracked`, bh-iyog8). ``dry_run`` makes the same reads and
+        writes nothing; neither approves nor sends anything."""
         self._require_enabled()
         machine.require_kind_enabled(OpKind.CLOSE, self._policy)  # before any tracker request
         require_private_store(self._posture)
@@ -1044,7 +1052,17 @@ class OutboxService:
             if (view.binding.tracker, view.binding.project) != (project.tracker, project.locator):
                 continue
             candidates.append((view.id, view.binding, proposal, reason))
-        if not candidates:
+        handled = {report for report, *_ in candidates}
+        tracked = [
+            view
+            for view in self._store.bound_reports()
+            if view.status == "closed"
+            and view.id not in handled
+            and view.binding is not None
+            and (view.binding.tracker, view.binding.project) == (project.tracker, project.locator)
+            and delivery_of(view.labels) is not None
+        ]
+        if not candidates and not tracked:
             return CloseBackfillOutcome((), request.dry_run)
         try:
             live = issue_index(self._tracker, include_closed=True)
@@ -1062,7 +1080,104 @@ class OutboxService:
                 items.append(CloseBackfillItem(report, reason=reason, detail=missing))
                 continue
             items.append(self._backfill_one(report, binding, proposal, reason, request, reply_text))
+        for view in sorted(tracked, key=lambda v: v.id):
+            items.append(self._backfill_tracked(view, live, request))
         return CloseBackfillOutcome(tuple(items), request.dry_run)
+
+    def _backfill_tracked(
+        self, view: BeadView, live: dict, request: CloseBackfill
+    ) -> CloseBackfillItem:
+        """A CLOSED report whose delivery tracked work (bh-iyog8): closed locally at completion
+        before the completion record carried a close, so its issue may still be open. The latest
+        reply or milestone record whose comment is still live (sent or unsent) and carries no
+        close gets the completion close (O1, the comment-sent gate of the close is unchanged);
+        with no such record a completion record is drafted, close attached, in the wording the
+        completion milestone uses. Pending delivery, an unlinked report and an issue that is
+        closed already are skipped with their reason."""
+        report, binding = view.id, view.binding
+        assert binding is not None  # selected as bound
+        reason = COMPLETION_CLOSE
+        delivery = delivery_of(view.labels) or ""
+
+        def skip(detail: str) -> CloseBackfillItem:
+            return CloseBackfillItem(report, reason=reason, detail=detail)
+
+        issue = live.get(binding.url)
+        if issue is None:
+            return skip("the issue is not in the listing")
+        if issue.state.value == "closed":
+            return skip("the issue is closed already")
+        doc = self._store.read_outbox(report) or OutboxDocument()
+        if doc.facts.unlinked is not None:
+            return skip("the report is unlinked from its work")
+        if delivery not in {"merged", "released"}:
+            return skip(f"delivery is {delivery}: the work has not shipped")
+        carriers = sorted(
+            (
+                r
+                for r in doc.records.values()
+                if r.event in _CARRIERS
+                and r.binding.url == binding.url
+                and (c := r.op(OpKind.COMMENT)) is not None
+                and c.state not in _DEAD
+            ),
+            key=_created,
+        )
+        if carriers:
+            carrier = carriers[-1]
+            if carrier.op(OpKind.CLOSE) is not None:
+                return CloseBackfillItem(
+                    report, carrier.outbox_id, reason, detail="its reply already carries a close"
+                )
+            if request.dry_run:
+                return CloseBackfillItem(report, carrier.outbox_id, reason)
+            with held(self._lock, self._store, binding) as epoch:
+                doc, expect, _ = self._open(report, epoch, request.actor)
+                applied = machine.add_close(
+                    doc,
+                    carrier.outbox_id,
+                    reason,
+                    actor=request.actor,
+                    policy=self._policy,
+                    ctx=self._ctx(report, binding, carrier.outbox_id),
+                )
+                self._commit(report, applied, expect, request.actor)
+            return CloseBackfillItem(report, carrier.outbox_id, reason, drafted=applied.changed)
+        request_draft = self._completion_draft(binding, doc, delivery, request.actor)
+        if request_draft is None:
+            return skip("no recorded merge or release to draft the completion record from")
+        text = machine.render_text(request_draft.message, request_draft.facts)
+        if request.dry_run:
+            return CloseBackfillItem(report, reason=reason, reply_text=text)
+        with held(self._lock, self._store, binding) as epoch:
+            doc, expect, _ = self._open(report, epoch, request.actor)
+            oid = self._ids.outbox_id()
+            applied = machine.draft(
+                doc,
+                request_draft,
+                outbox_id=oid,
+                policy=self._policy,
+                ctx=self._ctx(report, binding, oid),
+            )
+            self._commit(report, applied, expect, request.actor)
+        if not applied.changed:
+            return skip("its completion record exists already")
+        return CloseBackfillItem(report, applied.outbox_id, reason, drafted=True, reply_text=text)
+
+    @staticmethod
+    def _completion_draft(
+        binding: IssueBinding, doc: OutboxDocument, delivery: str, actor: str
+    ) -> DraftRequest | None:
+        """The ``released`` (or, without its fact, the ``merged``) record of the report's delivery,
+        close attached, from the facts the milestone triggers kept; ``None`` with neither."""
+        facts = doc.facts
+        if delivery == "released" and facts.released is not None:
+            fact = ReleaseFact(facts.released.tag, facts.released.commit, actor)
+            return released_draft(binding, fact, close=COMPLETION_CLOSE)
+        if facts.merged is not None:
+            merge = MergeFact(facts.merged.work, facts.merged.commit, actor)
+            return merged_draft(binding, merge, close=COMPLETION_CLOSE)
+        return None
 
     def _backfill_one(
         self,
@@ -1648,6 +1763,11 @@ def _reported(
 
 def _joined(first: str, second: str) -> str:
     return "; ".join(part for part in (first, second) if part)
+
+
+#: The records that can carry a completion close, and the comment states that cannot carry one.
+_CARRIERS = frozenset({OutboxEvent.REPLY, OutboxEvent.MERGED, OutboxEvent.RELEASED})
+_DEAD = frozenset({OpState.SUPERSEDED, OpState.ABANDONED, OpState.FAILED})
 
 
 def _created(record: OutboxRecord) -> int:
