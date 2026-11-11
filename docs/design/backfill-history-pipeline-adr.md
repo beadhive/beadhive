@@ -63,6 +63,7 @@ class Ref:            # an un-interpreted reference found in an artifact
 
 @dataclass(frozen=True)
 class Artifact:
+    category: str     # change | review | tracker-item | design-record | plan-item | release-marker
     kind: str         # "commit" | "merge" | "tag" | "release" | "doc" | "plan-item" | "pr" | "issue" | "changelog-entry"
     key: str          # stable source key: "git:commit/<sha>", "doc:docs/design/x.html", "gh:pr/123"
     title: str
@@ -179,7 +180,7 @@ One engine (`beadlog_sources.collate`), input = evidence corpus + baseline BeadL
 ### Phase C: Project + upsert
 
 - **Projector** (neutral) maps units to BeadLog events: `create` (type, title, closed `phase`,
-  occurred_at from B6), `external_ref` = unit source key (`git:pr/123`, `doc:path`), labels
+  occurred_at from B6), `external_ref` = unit source key (`gh:pr/123`, `doc:path`), labels
   `source:<kind>` + the creation label (see D1), `git.commits` appends, `parent-child` to the
   area epic, `metadata.xref.*`, `metadata.lifecycle.*` from B6.
 - **Ids**: `mint_bead_id(prefix, group, unit.key)`. `prefix` must be passed explicitly. The
@@ -248,7 +249,7 @@ For unstructured content the deterministic readers can't shape (status stated in
 deliverables in a design narrative, informal roadmap docs), add a **`semantic` reader adapter**:
 
 - **BAML** (BoundaryML; Apache-2.0, `baml-py` with no listed dependencies, V)
-  declares each category shape (§2 table) as a typed BAML class, and an LLM fills
+  declares each category shape (the Source record categories table) as a typed BAML class, and an LLM fills
   `attrs`/`refs` for one artifact at a time;
 - **Jev** (TypeSafe System One, local plugin MIT v0.6.2, V) sits behind the existing
   `JudgmentPort` and answers narrow typed questions about the extraction ("is this doc's status
