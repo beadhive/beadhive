@@ -143,6 +143,7 @@ from ..domain import (
     CloseBackfillOutcome,
     CloseReason,
     DraftRequest,
+    EndStateFindings,
     IntakeRefused,
     IntakeStoreError,
     IssueBinding,
@@ -199,6 +200,7 @@ from ..domain import (
 from ..domain import outbox as machine
 from ..domain.outbox import TYPE_VALUE, VALUE_KINDS
 from . import outbox as translate
+from .end_states import scan_end_states
 from .labels import issue_index, label_base
 from .paging import iterate_pages
 from .threads import held, thread_actor
@@ -1018,6 +1020,13 @@ class OutboxService:
             self._commit(report, applied, expect, actor)
         result = self._result(report, applied, rules, kind)
         return dataclasses.replace(result, detail="drafted again; render, approve and send anew")
+
+    def end_states(self, *, check_open: bool = True) -> EndStateFindings:
+        """The read-only scan of closed reports (bh-cd03d, bh-c0x0i): see :mod:`.end_states`. One
+        issue listing at most; writes, drafts and sends nothing."""
+        self._require_enabled()
+        require_private_store(self._posture)
+        return scan_end_states(self._store, self._tracker, check_open=check_open)
 
     # -- the close backfill (bh-pr5ll) -------------------------------------------------------
 

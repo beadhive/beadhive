@@ -88,7 +88,7 @@ class Rig:
         self.lock = InProcessIntakeLock()
         self.builds = 0
 
-        def build_store(directory, scope, entry=None):
+        def build_store(directory, scope, entry=None, cli_only=False):
             self.builds += 1
             assert directory == self.hive
             scope()  # a real store resolves its scope on first use: the operational one

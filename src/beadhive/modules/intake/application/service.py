@@ -52,6 +52,7 @@ from ..domain import (
     Disposition,
     DispositionOutcome,
     DispositionRequest,
+    EndStateFindings,
     HoldFinding,
     HoldFindingKind,
     HoldSweep,
@@ -784,6 +785,9 @@ class IntakeService:
             request, reply_text=self._proposals.backfill_reply
         )
 
+    def end_states(self, *, check_open: bool = True) -> EndStateFindings:
+        return self._outbox_service().end_states(check_open=check_open)
+
     def reopen(self, request: ReopenRequest) -> ReopenOutcome:
         return self._outbox_service().reopen(request)
 
@@ -1022,6 +1026,9 @@ class NullIntake:
         raise _disabled()
 
     def backfill_closes(self, request: CloseBackfill) -> CloseBackfillOutcome:
+        raise _disabled()
+
+    def end_states(self, *, check_open: bool = True) -> EndStateFindings:
         raise _disabled()
 
     def reopen(self, request: ReopenRequest) -> ReopenOutcome:
