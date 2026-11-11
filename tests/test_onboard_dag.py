@@ -74,6 +74,7 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
         "prefix",
         "worktree-clean",
         "bd-init",
+        "publish",
         "register",
         "node-id",
         "beads-role",
@@ -90,7 +91,8 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
     assert order("resolve") == 0
     assert order("bd-init") > order("prefix")
     assert order("bd-init") > order("worktree-clean")
-    assert order("register") > order("bd-init")
+    assert order("publish") > order("bd-init")
+    assert order("register") > order("publish")  # bh-buaij: publish before fleet registration
     assert order("node-id") > order("register")
     assert order("beads-role") > order("register")
     assert order("beads-routing") > order("register")
