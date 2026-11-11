@@ -815,7 +815,8 @@ the fallback. Verdicts are recorded in the plan and never asked again at apply t
 | `auto_accept` | `{}` | judgment family (for reconcile, `reconcile.match`) → confidence `0..1` at or above which a judged verdict needs no review; empty means every judged verdict is reviewed |
 | `max_calls_per_run` | `100` | judge calls one run may make; past it the judge abstains |
 
-The standalone `beadlog` CLI (package `beadlog-sources`, no BeadHive needed) takes the same keys
+The `beadlog` CLI (no BeadHive needed; see [BeadLog CLI](BACKFILL.md#beadlog-cli); installed by
+`beadlog-sources` and by the `bh` wheel) takes the same keys
 as `--judge-<key>` flags (`--judge-auto-accept family=threshold,...`) and `BEADLOG_JUDGE_<KEY>`
 env vars; flags win over env, env over defaults. Pointing `command` at another `bh-judge/1`
 speaker, such as Jev, needs no code change. `backfill` is a new section: `BeadhiveConfig` forbids

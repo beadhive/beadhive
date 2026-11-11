@@ -115,7 +115,21 @@ github = ["githubkit>=0.16.1,<1", "hishel<2"]
 # dependency, so the `--no-dev`, extras-free license SBOM (`just sbom`) never carries it.
 xtdb = ["psycopg[binary]>=3.2,<4"]
 
+# The wheel vendors beadlog_sources (see the wheel packages below) but not the separate
+# `beadlog-sources` distribution, so the library's entry points and the `beadlog` command are
+# registered here too: `beadlog extract` / `beadlog read` then find their strategies and readers in
+# a bh install. The static built-in table in beadlog_sources.readers is the fallback when
+# metadata is missing; keep the two in step. Identical targets from both distributions are one
+# registration, never a duplicate.
+[project.entry-points."beadlog.sources"]
+bd = "beadlog_sources.bd:BdBaselineStrategy"
+bd-history = "beadlog_sources.bd_timeline:BdHistoryStrategy"
+docs = "beadlog_sources.docs:DocsStrategy"
+git-commits = "beadlog_sources.commits:GitCommitsStrategy"
+planning = "beadlog_sources.planning:PlanningStrategy"
+
 [project.scripts]
+beadlog = "beadlog_sources.cli:main"
 bh = "beadhive.bootstrap.cli:main"
 bh-mcp = "beadhive.bootstrap.mcp:main"
 bh-host-daemon = "beadhive.bootstrap.host:main"

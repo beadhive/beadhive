@@ -664,12 +664,13 @@ def test_the_cli_hands_the_judge_over_only_when_enabled(
         "-o",
         str(tmp_path / "o.bdlg"),
     ]
-    assert main(argv, entry_points=lambda: [SpyPoint()], environ={}) == 0
+    assert main(argv, entry_points=lambda: [SpyPoint()], builtin_strategies={}, environ={}) == 0
     assert seen[-1].judge is None
     assert (
         main(
             [*argv, "--judge-enabled", "true"],
             entry_points=lambda: [SpyPoint()],
+            builtin_strategies={},
             environ={},
             runner=lambda *a, **k: None,  # type: ignore[arg-type,return-value]
         )

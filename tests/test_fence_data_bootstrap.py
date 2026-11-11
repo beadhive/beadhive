@@ -102,4 +102,6 @@ def test_every_console_script_is_covered():
         "beadhive.bootstrap.mcp:main",
         "beadhive.bootstrap.host:main",
         "beadhive.bootstrap.frame_bridge:main",
+        # The vendored BeadHive-free library's CLI (bh-7br2h): no fenced data to bootstrap.
+        "beadlog_sources.cli:main",
     }

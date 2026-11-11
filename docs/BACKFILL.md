@@ -213,9 +213,31 @@ runs the node ([`bh-cntr0`](spikes/bh-cntr0-xtdb-operational-fit.md)); see the
   names the store and target and counts the reader's notes (what it could not carry back).
   `--history` reads the bd events table and is refused with a non-bd store.
 
-The standalone `beadlog` CLI is the `beadlog-sources` distribution's script (in a checkout,
-`uv run beadlog`); the installed `bh` carries the libraries but not that script or its
-`beadlog.sources` entry points.
+## BeadLog CLI {#beadlog-cli}
+
+`beadlog` is the BeadHive-free command of the `beadlog-sources` library. It is installed by **both**
+the standalone `beadlog-sources` distribution and the `bh` wheel (which vendors the library), so
+`beadlog` and `python -m beadlog_sources` work in a bh install without BeadHive on the path of the
+command's imports.
+
+| Command | Does |
+|---|---|
+| `beadlog extract <name>` | run a source strategy, writing a `.bdlg` archive (`bd`, `bd-history`, `docs`, `git-commits`, `planning`) |
+| `beadlog read <reader>` | run a source reader, writing a `bdlg.evidence/1` JSONL corpus (`--root`, repeatable `--option key=value`, `-o`) |
+| `beadlog merge`, `reconcile`, `inspect`, `verify` | archive operations |
+
+`beadlog extract --help` and `beadlog read --help` list what is registered. No built-in reader
+ships yet; the git, docs, planning and GitHub readers land with the history pipeline's M1.
+
+**Discovery.** Strategies come from the `beadlog.sources` entry-point group and readers from
+`beadlog.readers`. The `bh` wheel registers the strategies in its own metadata, and
+`beadlog_sources.readers` carries a static built-in table (`BUILTIN_STRATEGIES`,
+`BUILTIN_READERS`) merged with the installed entry points, so discovery never depends on which
+distribution is installed. The same name pointing at the same target from several places is one
+registration; the same name with different targets is an error (`beadlog: DuplicateRegistrationError`,
+exit 1). A third-party reader registers under `[project.entry-points."beadlog.readers"]` and
+implements `beadlog_sources.SourceReader` (`name`, `version`, `categories`, and a pure
+`read(ReadRequest) -> Iterable[Artifact]` that never touches a store).
 
 ### `beadlog extract git-commits`
 
