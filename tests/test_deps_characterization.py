@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import subprocess
 import typing
 
 import pytest
@@ -50,7 +51,7 @@ PROBE_TABLE_AS_OF_HSUS = [
     # Added after hsus (bh-x2yy0): `ps` was already a real, undeclared always-dependency — the
     # orphan-seat reap and the pid_start liveness probe both shell out to it. Recorded here for
     # the same reason as the rows above, so a drift on either side fails rather than passes.
-    ("procps", "ps", ["ps", "--version"]),
+    ("procps", "ps", ["ps", "-o", "pid=", "-p", "1"]),
 ]
 
 RUNTIME_PROBES_AS_OF_HSUS = {
@@ -404,7 +405,7 @@ def test_procps_is_probed_and_reports_missing_when_ps_is_absent(monkeypatch):
     """The acceptance criterion: a host without procps is TOLD, before a loop is started rather
     than during one. Nothing probed `ps` before — `bh setup check` came back all-green on a
     container that had none, and `bh work loop` then died as a bare `ExceptionGroup`."""
-    assert ("procps", "ps", ["ps", "--version"]) in [
+    assert ("procps", "ps", ["ps", "-o", "pid=", "-p", "1"]) in [
         (n, b, list(v)) for n, b, v in setup_mod.PROBE_TABLE
     ]
 
@@ -412,7 +413,7 @@ def test_procps_is_probed_and_reports_missing_when_ps_is_absent(monkeypatch):
     monkeypatch.setattr(
         setup_mod.shutil, "which", lambda b, *a, **k: None if b == "ps" else real_which(b)
     )
-    assert setup_mod.probe_one("procps", "ps", ["ps", "--version"]) == {
+    assert setup_mod.probe_one("procps", "ps", ["ps", "-o", "pid=", "-p", "1"]) == {
         "found": False,
         "version": None,
     }
@@ -423,3 +424,21 @@ def test_the_procps_row_names_the_binary_and_the_package_separately():
     two would print "install ps", which is not a package on any distro that matters."""
     dep = deps.by_name("procps")
     assert (dep.binary, dep.required) == ("ps", deps.ALWAYS)
+
+
+def test_the_procps_probe_is_portable_and_shaped_like_the_liveness_probe():
+    """`ps --version` is a procps-ng flag. BSD `ps` (macOS) rejects it with
+    `ps: illegal option -- -` and exit 1, and because `probe_one` did not look at the exit
+    code, `bh setup check` printed `✓ procps  (ps: illegal option -- -)` — a green check with
+    the error as the version string. The probe is now `ps -o pid= -p 1`: the `-o <field>= -p`
+    shape the pid_start liveness probe shells out with (`ps -o lstart= -p <pid>`), which exits 0
+    on procps-ng AND BSD. On BusyBox `ps` (no `-o`/`-p`) it exits non-zero and the row records
+    version=None instead of a bogus version; refusing such a host outright is a separate change."""
+    dep = deps.by_name("procps")
+    assert dep.version_cmd == ("ps", "-o", "pid=", "-p", "1")
+    assert "--version" not in dep.version_cmd
+    if shutil.which("ps") is None:  # pragma: no cover — every CI host ships one
+        pytest.skip("no ps on this host")
+    live = subprocess.run(list(dep.version_cmd), capture_output=True, text=True, check=False)
+    assert live.returncode == 0, live.stderr
+    assert live.stdout.strip() == "1"
