@@ -4,7 +4,8 @@ One engine over **evidence corpus + baseline BeadLog + LedgerDirectory**, pure a
 deterministic: no git, no store, no network, every artifact read once. This module is steps
 B1 and B2 of ``docs/design/backfill-history-pipeline-adr.md``; later steps (B3 cluster, B4 attach
 docs, B5 identify, B6 status/conflicts) extend :class:`Collation` through the members reserved in
-:data:`EXTENSION_MEMBERS`.
+:data:`EXTENSION_MEMBERS`. B3 (``beadlog_sources.cluster``) fills ``units`` with :class:`Unit`
+records; :func:`collate` runs it after B2.
 
 **B1, :func:`build_indexes`.** One pass over the corpus builds :class:`Indexes`, all values
 artifact keys (so they serialize and compare without holding records):
@@ -53,7 +54,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from beadlog import BeadEvent, canonical_json, fold
 
@@ -69,6 +70,9 @@ from .ledger import (
 )
 from .reconcile import corpus_hash
 
+if TYPE_CHECKING:
+    from .cluster import ClusterOptions
+
 COLLATION_SCHEMA = "bdlg.collation/1"
 SCHEMA_RESOURCE = "bdlg-collation-v1.schema.json"
 
@@ -79,6 +83,21 @@ OUTCOMES = (LOCAL, FOREIGN, ARTIFACT, AMBIGUOUS, UNRESOLVED)
 MIN_SHA_PREFIX = 7
 # Members later collate steps fill; B1/B2 write them empty so the schema is stable.
 EXTENSION_MEMBERS = ("units", "verdicts", "conflicts", "residual")
+
+# B3 unit shapes and the rules that form units (``beadlog_sources.cluster``). The claim rules
+# run in :data:`CLAIM_RULES` order by default; ``area`` groups units into epics afterwards.
+EPIC = "epic"
+ISSUE = "issue"
+ATTACH = "attach"
+UNIT_KINDS = (EPIC, ISSUE, ATTACH)
+RULE_PLAN_ITEM = "plan-item"
+RULE_LOCAL_BEAD = "local-bead"
+RULE_REVIEW = "review"
+RULE_MERGE = "merge"
+RULE_COMMIT = "commit"
+RULE_AREA = "area"
+CLAIM_RULES = (RULE_PLAN_ITEM, RULE_LOCAL_BEAD, RULE_REVIEW, RULE_MERGE, RULE_COMMIT)
+UNIT_RULES = (*CLAIM_RULES, RULE_AREA)
 
 _HEX = re.compile(r"^[0-9a-f]+$")
 _FULL_SHA = 40
@@ -420,22 +439,117 @@ def resolve_refs(
     return tuple(out)
 
 
+_UNIT_MEMBERS = (
+    "key",
+    "kind",
+    "rule",
+    "title",
+    "bead",
+    "artifacts",
+    "area",
+    "parent",
+    "children",
+    "depends_on",
+)
+
+
+@dataclass(frozen=True)
+class Unit:
+    """One B3 work unit: a candidate bead, or evidence to attach to an existing local bead.
+
+    - ``key``: the stable source key, later the bead's ``external_ref`` (the anchor artifact's
+      key: ``plan:<item>``, ``gh:pr/<n>``, ``git:commit/<sha>`` of a merge or a commit), or
+      ``bead:<id>`` for an ``attach`` unit and ``area:<name>`` for an area epic.
+    - ``kind``: ``epic`` (has children), ``issue`` (a leaf candidate bead) or ``attach`` (the
+      evidence of an existing local bead ``bead``; never a new bead).
+    - ``rule``: the rule that formed it (:data:`UNIT_RULES`).
+    - ``artifacts``: the artifact keys it claimed (its evidence), anchor first, then members in
+      claim order (commit order for changes). Each artifact belongs to at most one unit. An
+      area epic claims no artifact; a release-window epic cites its release marker.
+    - ``area``: the area a grouped unit falls in (also set when its area is too small to get
+      an epic); ``parent`` / ``children``: unit keys of the parent-child membership (area epics
+      and plan-item structure); ``depends_on``: unit keys a plan item depends on.
+
+    Later steps add members of their own (B4 attached docs, B6 status and dates); B5 verdicts
+    live in the collation's ``verdicts``, keyed by ``key``.
+    """
+
+    key: str
+    kind: str
+    rule: str
+    title: str
+    bead: str | None = None
+    artifacts: tuple[str, ...] = ()
+    area: str | None = None
+    parent: str | None = None
+    children: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise CollationFormatError("unit key must be a non-empty string")
+        if self.kind not in UNIT_KINDS:
+            raise CollationFormatError(f"unit {self.key!r}: unknown kind {self.kind!r}")
+        if self.rule not in UNIT_RULES:
+            raise CollationFormatError(f"unit {self.key!r}: unknown rule {self.rule!r}")
+        if (self.kind == ATTACH) != (self.bead is not None):
+            raise CollationFormatError(f"unit {self.key!r}: bead is set exactly for attach units")
+
+    def to_json(self) -> dict[str, Any]:
+        """The unit as a JSON object."""
+        return {
+            "key": self.key,
+            "kind": self.kind,
+            "rule": self.rule,
+            "title": self.title,
+            "bead": self.bead,
+            "artifacts": list(self.artifacts),
+            "area": self.area,
+            "parent": self.parent,
+            "children": list(self.children),
+            "depends_on": list(self.depends_on),
+        }
+
+    @classmethod
+    def from_json(cls, raw: Any) -> Unit:
+        """Parse a unit object; unknown or missing members are refused."""
+        if not isinstance(raw, dict) or sorted(raw) != sorted(_UNIT_MEMBERS):
+            raise CollationFormatError(f"unit must have exactly {_UNIT_MEMBERS}")
+        return cls(
+            key=raw["key"],
+            kind=raw["kind"],
+            rule=raw["rule"],
+            title=raw["title"],
+            bead=raw["bead"],
+            artifacts=tuple(raw["artifacts"]),
+            area=raw["area"],
+            parent=raw["parent"],
+            children=tuple(raw["children"]),
+            depends_on=tuple(raw["depends_on"]),
+        )
+
+
+def claimed_artifacts(units: Iterable[Unit]) -> dict[str, str]:
+    """Artifact key to the key of the unit that claimed it."""
+    return {artifact: unit.key for unit in units for artifact in unit.artifacts}
+
+
 @dataclass(frozen=True)
 class Collation:
     """The collation of one run (``bdlg.collation/1``).
 
     ``local`` names the ledger being backfilled; ``corpus`` and ``baseline`` fingerprint the
     inputs (``sha256:`` of the corpus bytes, ``beadlog.corpus_hash`` of the baseline). ``refs``
-    is B2. ``units``, ``verdicts``, ``conflicts`` and ``residual`` (:data:`EXTENSION_MEMBERS`)
-    are JSON-valued tuples B3 to B6 fill; B1/B2 leave them empty. ``indexes`` is the in-memory
-    B1 result (derived, never serialized; ``None`` on a loaded collation).
+    is B2, ``units`` B3 (:class:`Unit`, sorted by key). ``verdicts``, ``conflicts`` and
+    ``residual`` are JSON-valued tuples B5 and B6 fill; until then they are empty. ``indexes``
+    is the in-memory B1 result (derived, never serialized; ``None`` on a loaded collation).
     """
 
     local: str
     corpus: str
     baseline: str
     refs: tuple[ResolvedRef, ...] = ()
-    units: tuple[Any, ...] = ()
+    units: tuple[Unit, ...] = ()
     verdicts: tuple[Any, ...] = ()
     conflicts: tuple[Any, ...] = ()
     residual: tuple[Any, ...] = ()
@@ -445,6 +559,10 @@ class Collation:
         """The resolved refs found in artifact ``source``."""
         return tuple(r for r in self.refs if r.source == source)
 
+    def unit(self, key: str) -> Unit | None:
+        """The unit keyed ``key``, or ``None``."""
+        return next((u for u in self.units if u.key == key), None)
+
     def to_json(self) -> dict[str, Any]:
         """The collation as a JSON object."""
         return {
@@ -453,7 +571,7 @@ class Collation:
             "corpus": self.corpus,
             "baseline": self.baseline,
             "refs": [r.to_json() for r in self.refs],
-            "units": list(self.units),
+            "units": [u.to_json() for u in self.units],
             "verdicts": list(self.verdicts),
             "conflicts": list(self.conflicts),
             "residual": list(self.residual),
@@ -466,17 +584,24 @@ def collate(
     directory: LedgerDirectory,
     *,
     local: str,
+    options: ClusterOptions | None = None,
 ) -> Collation:
-    """Run B1 and B2 over ``corpus`` (see the module doc)."""
+    """Run B1, B2 and B3 over ``corpus`` (see the module doc and ``beadlog_sources.cluster``).
+
+    ``options`` configures B3 (default :class:`~beadlog_sources.cluster.ClusterOptions`).
+    """
+    from .cluster import cluster  # B3 builds on this module's records
+
     baseline = tuple(baseline)
     indexes = build_indexes(corpus)
-    return Collation(
+    resolved = Collation(
         local=local,
         corpus="sha256:" + hashlib.sha256(dumps_evidence(corpus)).hexdigest(),
         baseline=corpus_hash(baseline),
         refs=resolve_refs(corpus, indexes, baseline, directory, local=local),
         indexes=indexes,
     )
+    return cluster(resolved, options)
 
 
 def dumps_collation(collation: Collation) -> bytes:
@@ -500,7 +625,8 @@ def loads_collation(data: bytes) -> Collation:
         corpus=raw["corpus"],
         baseline=raw["baseline"],
         refs=tuple(ResolvedRef.from_json(r) for r in raw["refs"]),
-        **{name: tuple(raw[name]) for name in EXTENSION_MEMBERS},
+        units=tuple(Unit.from_json(u) for u in raw["units"]),
+        **{name: tuple(raw[name]) for name in EXTENSION_MEMBERS if name != "units"},
     )
     if dumps_collation(collation) != data:
         raise CollationFormatError("collation is not canonical JSON")
@@ -528,16 +654,30 @@ def collation_schema() -> dict[str, Any]:
 
 __all__ = [
     "ARTIFACT",
+    "ATTACH",
+    "CLAIM_RULES",
     "COLLATION_SCHEMA",
+    "EPIC",
     "EXTENSION_MEMBERS",
+    "ISSUE",
     "MIN_SHA_PREFIX",
     "OUTCOMES",
+    "RULE_AREA",
+    "RULE_COMMIT",
+    "RULE_LOCAL_BEAD",
+    "RULE_MERGE",
+    "RULE_PLAN_ITEM",
+    "RULE_REVIEW",
+    "UNIT_KINDS",
+    "UNIT_RULES",
     "Collation",
     "CollationFormatError",
     "Indexes",
     "ResolvedRef",
+    "Unit",
     "baseline_ids",
     "build_indexes",
+    "claimed_artifacts",
     "collate",
     "collation_schema",
     "dumps_collation",
