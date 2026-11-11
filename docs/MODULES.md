@@ -676,7 +676,9 @@ is `sent`. `reconcile` reads the issue's state back. Apply drafts a reply before
 `duplicate-of` gets one only while an outbox is bound (`ProposalService(replies=)`).
 `IntakePort.backfill_closes` (`bh work outbox backfill-close`) adds the close to the latest reply of
 every report closed in the store whose issue is still open, and drafts the reply a report never
-got from its applied proposal (`ProposalService.backfill_reply`). Tests:
+got from its applied proposal (`ProposalService.backfill_reply`). It also recovers a tracked report
+closed at delivery `merged`/`released` with its issue open: the completion close attaches to its
+latest live reply or milestone record, else a completion record is drafted (bh-iyog8). Tests:
 `tests/unit/modules/intake/test_intake_outbox_close_sender.py`.
 
 The sender carries `issue.reopen` (`bh-ih484`) as a fourth gate, the inverse of a close:
