@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:schema:bdlg-collation:1",
+  "title": "bdlg.collation/1 collation",
+  "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units, verdicts, conflicts and residual are filled by later collate steps (B3 to B6) and are empty arrays after B2. Implemented by beadlog_sources.collate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual"],
+  "properties": {
+    "schema": {"const": "bdlg.collation/1"},
+    "local": {"type": "string", "minLength": 1, "description": "The ledger being backfilled."},
+    "corpus": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "baseline": {"type": "string", "minLength": 1},
+    "refs": {"type": "array", "items": {"$ref": "#/$defs/resolved_ref"}},
+    "units": {"type": "array"},
+    "verdicts": {"type": "array"},
+    "conflicts": {"type": "array"},
+    "residual": {"type": "array"}
+  },
+  "$defs": {
+    "resolved_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "ref", "outcome", "ledger", "candidates", "targets"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1, "description": "Key of the artifact the ref was found in."},
+        "ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "raw", "where"],
+          "properties": {
+            "kind": {"type": "string", "minLength": 1},
+            "raw": {"type": "string", "minLength": 1},
+            "where": {"type": "string", "minLength": 1}
+          }
+        },
+        "outcome": {"enum": ["local", "foreign", "artifact", "ambiguous", "unresolved"]},
+        "ledger": {"type": ["string", "null"], "description": "Owning ledger for local and foreign."},
+        "candidates": {"type": "array", "items": {"type": "string"}, "description": "Competing ledgers (ambiguous) or the foreign shadow of a local hit."},
+        "targets": {"type": "array", "items": {"type": "string"}, "description": "Artifact keys for artifact, or the competing artifacts of an ambiguous sha."}
+      }
+    }
+  }
+}

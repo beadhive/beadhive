@@ -18,6 +18,14 @@ never imports `beadhive`.
   ([schema](src/beadlog_sources/schemas/bdlg-evidence-v1.schema.json), copied to
   `docs/schemas/beadlog/bdlg-evidence-v1.schema.json`). Not part of the BeadLog format. The
   fixtures kit `beadlog_sources.testing.evidence` builds one artifact of any category per call.
+- **Collate B1+B2** (`beadlog_sources.collate`): `collate(corpus, baseline, directory, *, local)`
+  builds the B1 `Indexes` (sha, merge children, tag range, PR commits, path to changes, doc add
+  commit, key) and resolves every `Ref` into a `ResolvedRef`: bead tokens local (the baseline's
+  ids) then foreign (`LedgerDirectory`, exact membership, never a prefix) else unresolved;
+  sha/pr/issue/path/tag to artifacts. Output `bdlg.collation/1`
+  ([schema](src/beadlog_sources/schemas/bdlg-collation-v1.schema.json), copied to
+  `docs/schemas/beadlog/`), canonical bytes; `units`/`verdicts`/`conflicts`/`residual` are
+  reserved for B3 to B6.
 - **`bd` baseline strategy** (`beadlog_sources.bd`, entry point `bd`): one `bd -C <root> export
   --all` read (never a `bd history` loop) turned into current-state events per issue row — a
   `create` snapshot, a `phase` when not open, `label_add` / `edge_add` per label and dependency,

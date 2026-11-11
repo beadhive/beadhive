@@ -93,6 +93,27 @@ from .bd_timeline import (
     source_family,
     suppress_artifacts,
 )
+
+# --- collate B1+B2 (bh-8vppn) ---
+from .collate import (  # noqa: E402, I001
+    ARTIFACT as REF_ARTIFACT,
+)
+from .collate import (
+    COLLATION_SCHEMA,
+    Collation,
+    CollationFormatError,
+    Indexes,
+    ResolvedRef,
+    baseline_ids,
+    build_indexes,
+    collate,
+    collation_schema,
+    dumps_collation,
+    loads_collation,
+    read_collation,
+    resolve_refs,
+    write_collation,
+)
 from .commits import (
     GitCommitsStrategy,
     ShallowCloneError,
@@ -189,6 +210,8 @@ from .reconcile import (
     write_plan,
 )
 from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
+
+# --- end collate B1+B2 ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -321,4 +344,21 @@ __all__ = [
     "subprocess_runner",
     "suppress_artifacts",
     "write_plan",
+    # --- collate B1+B2 (bh-8vppn) ---
+    "COLLATION_SCHEMA",
+    "REF_ARTIFACT",
+    "Collation",
+    "CollationFormatError",
+    "Indexes",
+    "ResolvedRef",
+    "baseline_ids",
+    "build_indexes",
+    "collate",
+    "collation_schema",
+    "dumps_collation",
+    "loads_collation",
+    "read_collation",
+    "resolve_refs",
+    "write_collation",
+    # --- end collate B1+B2 ---
 ]
