@@ -24,9 +24,10 @@ docs = "beadlog_sources.docs:DocsStrategy"
 git-commits = "beadlog_sources.commits:GitCommitsStrategy"
 planning = "beadlog_sources.planning:PlanningStrategy"
 
-# Source readers will register under `[project.entry-points."beadlog.readers"]` (each is a
-# `beadlog read <name>` subcommand), mirrored in the built-in table of beadlog_sources.readers;
-# none ship yet (M1).
+# Source readers register under `beadlog.readers` (each is a `beadlog read <name>` subcommand),
+# mirrored in the built-in table of beadlog_sources.readers.
+[project.entry-points."beadlog.readers"]
+git = "beadlog_sources.git_reader:GitReader"
 
 [project.scripts]
 beadlog = "beadlog_sources.cli:main"

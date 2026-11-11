@@ -128,6 +128,9 @@ docs = "beadlog_sources.docs:DocsStrategy"
 git-commits = "beadlog_sources.commits:GitCommitsStrategy"
 planning = "beadlog_sources.planning:PlanningStrategy"
 
+[project.entry-points."beadlog.readers"]
+git = "beadlog_sources.git_reader:GitReader"
+
 [project.scripts]
 beadlog = "beadlog_sources.cli:main"
 bh = "beadhive.bootstrap.cli:main"
