@@ -885,7 +885,9 @@ ready`; `bh work claim`, `assign` and `claim --group` refuse it; a plain close i
 `ReportStore.close` is the held close (`bd close --force` through `issue_close_held`, then resolve
 the hold, so there is no ready window). A born-native `bh report` item is never held. `bh doctor`
 reports the `intake_holds` findings (a missing, unresolved or orphaned hold) for hives whose public
-store binds a tracker adapter, and `IntakeService.sweep_holds(repair=True)` repairs them.
+store binds a tracker adapter, and `IntakeService.sweep_holds(repair=True)` repairs them. Its `intake_reports`
+section adds the end states of a closed report (`IntakeService.end_states`: issue still open, abandoned
+completion notice) and a stray `delivery` on a rejected one (`sweep_delivery`, `bh work delivery sweep`).
 
 Consumers test against `beadhive.testing.intake.MemoryReportStore`, and every `ReportStore` must
 pass `beadhive.testing.intake.REPORT_STORE_CASES`: `BdReportStore` passes them on an in-process

@@ -75,6 +75,8 @@ def test_port_names_match_the_adr() -> None:
         "retry",
         "backfill_closes",
         "reopen",
+        # the read-only end-state scan (bh-cd03d, bh-c0x0i), additive
+        "end_states",
         "on_work_merged",
         "on_release",
         # waiting for the reporter (bh-61xkc), additive

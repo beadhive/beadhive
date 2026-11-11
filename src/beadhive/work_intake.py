@@ -587,6 +587,52 @@ def delivery_release(tag: str, as_: str = "", hive: str = "", as_json: bool = Fa
     render_delivery_release(result, tag, as_json)
 
 
+def render_delivery_sweep(sweep, repair: bool, as_json: bool) -> None:
+    """Print one ``bh work delivery sweep`` (human or ``--json``); non-zero on a failed clear."""
+
+    def row(item) -> dict:
+        return {"report": item.report, "delivery": item.delivery}
+
+    if as_json:
+        payload = {
+            "ok": not sweep.failed,
+            "dry_run": not repair,
+            "found": [row(i) for i in sweep.findings],
+            "cleared": [row(i) for i in sweep.cleared],
+            "failed": [{**row(i), "error": why} for i, why in sweep.failed],
+        }
+        typer.echo(json.dumps(payload, sort_keys=True))
+    else:
+        if sweep.clean:
+            typer.echo("no rejected report carries a delivery value")
+        cleared = {i.report for i in sweep.cleared}
+        for item in sweep.findings:
+            verb = "cleared" if item.report in cleared else "would clear" if not repair else "found"
+            typer.echo(f"- {item.report}: delivery:{item.delivery} on a rejected report ({verb})")
+        for item, why in sweep.failed:
+            typer.echo(f"✗ {item.report}: could not clear delivery: {why}", err=True)
+        if sweep.findings and not repair:
+            typer.echo(
+                "  → dry run; clear them with `bh work delivery sweep --repair`, then draft the "
+                "label removal on each issue with `bh work labels sync --include-closed`"
+            )
+    if sweep.failed:
+        raise typer.Exit(1)
+
+
+def delivery_sweep(repair: bool = False, as_: str = "", hive: str = "", as_json: bool = False):
+    """``bh work delivery sweep [--repair]``: list the rejected reports that still carry a
+    ``delivery`` value and, with ``--repair``, clear it. A dry run by default; writes only the
+    bead store and never contacts the tracker."""
+    cfg = config.load()
+    entry = _import_entry(cfg, hive)
+    actor = identity.resolve_actor(as_)
+    sweep = intake_services.sweep_delivery(
+        Path(registry.hive_dir(entry)), repair=repair, actor=actor, entry=entry
+    )
+    render_delivery_sweep(sweep, repair, as_json)
+
+
 # -- the progress milestones (bh-dev42): they draft, they never send ---------------------------
 
 

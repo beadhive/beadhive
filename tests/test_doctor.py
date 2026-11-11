@@ -1349,6 +1349,7 @@ _DOCTOR_SECTIONS = {
     "harness_plugin",
     "seats",
     "intake_holds",
+    "intake_reports",
     "install",
     "observability",
     "build_verify",
@@ -3338,3 +3339,93 @@ def test_an_unbound_fleet_renders_nothing_and_the_payload_section_is_empty(
 
     assert capsys.readouterr().out == ""
     assert doctor.doctor_payload()["intake_holds"] == []
+
+
+# ---- intake report end states (bh-cd03d, bh-c0x0i, bh-qwv0t) --------------------------------
+
+
+def _end_state_patches(monkeypatch, *, strays=(), call=None):
+    from beadhive import intake_services
+    from beadhive.modules.intake import DeliverySweep
+
+    calls: list[dict] = []
+
+    def outbox_call(cfg, entry, directory, run, **kwargs):
+        calls.append(kwargs)
+        return call if call is not None else intake_services.OutboxCall(1, "off", "outbox_disabled")
+
+    monkeypatch.setattr(intake_services, "sweep_delivery", lambda d, **kw: DeliverySweep(strays))
+    monkeypatch.setattr(intake_services, "outbox_call", outbox_call)
+    monkeypatch.setattr(doctor.registry, "hive_dir", lambda entry: Path(entry["path"]))
+    return calls
+
+
+def test_end_state_findings_are_quiet_when_the_outbox_or_tracker_is_off(
+    monkeypatch, tmp_path
+) -> None:
+    calls = _end_state_patches(monkeypatch)
+
+    assert doctor._data_intake_reports(_hold_cfg(tmp_path)) == []
+    assert doctor._data_intake_reports(_hold_cfg(tmp_path / "unbound", adapter=None)) == []
+    assert len(calls) == 1  # an unbound hive makes no call at all
+    assert calls[0]["cli_only"] is True
+
+
+def test_end_state_findings_name_each_state_and_its_repair(monkeypatch, tmp_path, capsys) -> None:
+    from beadhive import intake_services
+    from beadhive.modules.intake import (
+        ClosedOpenIssue,
+        EndStateFindings,
+        NotificationBehind,
+        StrayDelivery,
+    )
+
+    found = EndStateFindings(
+        closed_open=(
+            ClosedOpenIssue("w-1", "https://x/1", "backfill-close", "released"),
+            ClosedOpenIssue("w-2", "https://x/2", "outbox draft"),
+            ClosedOpenIssue("w-3", "https://x/3", "outbox send", pending="ob-1"),
+        ),
+        behind=(NotificationBehind("w-4", "merged", "", "ob-9"),),
+        listed=True,
+    )
+    _end_state_patches(
+        monkeypatch,
+        strays=(StrayDelivery("w-5", "pending"),),
+        call=intake_services.OutboxCall(0, value=found),
+    )
+
+    rows = doctor._data_intake_reports(_hold_cfg(tmp_path))
+    doctor._render_intake_reports(rows)
+
+    assert [(r["kind"], r["report"]) for r in rows] == [
+        ("stray_delivery", "w-5"),
+        ("closed_open_issue", "w-1"),
+        ("closed_open_issue", "w-2"),
+        ("closed_open_issue", "w-3"),
+        ("notification_behind", "w-4"),
+    ]
+    fixes = {r["report"]: r["remediation"] for r in rows}
+    assert "work delivery sweep --repair" in fixes["w-5"]
+    assert "backfill-close --dry-run" in fixes["w-1"]
+    assert "work outbox draft w-2" in fixes["w-2"]
+    assert "ob-1" in fixes["w-3"]
+    assert "ob-9" in rows[-1]["detail"] and rows[-1]["notified"] == ""
+    out = capsys.readouterr().out
+    assert "# Intake report end states (5)" in out and "fix: " in out
+
+
+def test_a_failed_issue_listing_is_one_row_never_a_guess(monkeypatch, tmp_path) -> None:
+    from beadhive import intake_services
+
+    _end_state_patches(
+        monkeypatch,
+        call=intake_services.OutboxCall(1, "the issue listing failed: X", "tracker_error"),
+    )
+    (row,) = doctor._data_intake_reports(_hold_cfg(tmp_path))
+    assert row["kind"] == "issue_listing_failed"
+
+
+def test_the_payload_end_state_section_is_empty_for_an_unbound_fleet(hive, fakebd) -> None:  # noqa: F811
+    doctor._render_intake_reports([])
+    assert doctor.doctor_payload()["intake_reports"] == []

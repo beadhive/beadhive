@@ -943,6 +943,134 @@ def _render_intake_holds(findings: list[dict]) -> None:
         typer.echo(f"    fix: {f['remediation']}")
 
 
+# ---- intake report end states section (bh-cd03d, bh-c0x0i, bh-qwv0t) ------------------------
+# The invalid report states docs/INTAKE-LIFECYCLE.md lists beyond the hold: a closed bound report
+# whose issue is still open (`closed_open_issue`), a report closed while its completion comment
+# was abandoned so the reporter was never told (`notification_behind`), and a rejected report that
+# still carries a `delivery` value (`stray_delivery`). Read-only. The stray reads only the bead
+# store; the other two need the outbox and a wired tracker plugin, so they are silent when either
+# is off. A hive with a closed bound report costs at most ONE issue listing for the whole run, and
+# a hive with none costs no tracker request. The remediation line is the exact command.
+
+
+def _end_state_row(hive_id: str, kind: str, report: str, detail: str, fix: str, **extra) -> dict:
+    return {
+        "hive": hive_id,
+        "kind": kind,
+        "report": report,
+        "detail": detail,
+        "remediation": fix,
+        **extra,
+    }
+
+
+def _stray_rows(hive_id: str, path) -> list[dict]:
+    from . import intake_services
+
+    bh = f"{config.BINARY_ALIAS} -r {hive_id}"
+    fix = f"{bh} work delivery sweep --repair  (a bare `sweep` is the dry run)"
+    return [
+        _end_state_row(
+            hive_id,
+            "stray_delivery",
+            f.report,
+            f"{f.report} is rejected but carries delivery:{f.delivery}",
+            fix,
+            delivery=f.delivery,
+        )
+        for f in intake_services.sweep_delivery(path, cli_only=True).findings
+    ]
+
+
+def _closed_open_fix(hive_id: str, f) -> str:
+    bh = f"{config.BINARY_ALIAS} -r {hive_id}"
+    if f.repair == "backfill-close":
+        return f"{bh} work outbox backfill-close --dry-run, then without --dry-run"
+    if f.repair == "outbox send":
+        return f"approve and send the drafted close {f.pending}: {bh} work outbox show {f.pending}"
+    return f"{bh} work outbox draft {f.report} --text '<reply>' (backfill-close does not cover it)"
+
+
+def _outbox_end_state_rows(cfg, e, hive_id: str, path) -> list[dict]:
+    from . import intake_services
+
+    call = intake_services.outbox_call(
+        cfg, e, path, lambda port: port.end_states(), hive=hive_id, cli_only=True
+    )
+    if call.code:
+        if call.reason == "tracker_error":  # the one listing failed: say so, never guess
+            return [
+                _end_state_row(
+                    hive_id,
+                    "issue_listing_failed",
+                    "",
+                    call.error,
+                    "retry `bh doctor`; no closed report was checked against its issue",
+                )
+            ]
+        return []  # intake, outbox or the tracker plugin is off: quiet
+    found = call.value
+    if found is None:
+        return []
+    bh = f"{config.BINARY_ALIAS} -r {hive_id}"
+    rows = [
+        _end_state_row(
+            hive_id,
+            "closed_open_issue",
+            f.report,
+            f"{f.report} is closed but its issue {f.issue_url} is still open"
+            + (f" (delivery:{f.delivery})" if f.delivery else ""),
+            _closed_open_fix(hive_id, f),
+            issue=f.issue_url,
+            repair=f.repair,
+            delivery=f.delivery,
+            pending=f.pending,
+        )
+        for f in found.closed_open
+    ]
+    rows += [
+        _end_state_row(
+            hive_id,
+            "notification_behind",
+            f.report,
+            f"{f.report} closed at delivery:{f.delivery} with notified:{f.notified or 'none'}; "
+            f"its completion comment {f.record} was abandoned, so the reporter was never told",
+            f"{bh} work outbox draft {f.report} --text '<reply>', then backfill-close; "
+            "or leave it if the silence was deliberate",
+            delivery=f.delivery,
+            notified=f.notified,
+            record=f.record,
+        )
+        for f in found.behind
+    ]
+    return rows
+
+
+def _data_intake_reports(cfg) -> list[dict]:
+    """One row per finding across the hives whose public store binds a tracker adapter and that
+    have a local checkout. Reads on the ``bd`` CLI whatever ``work.beads.route`` says (bh-9o12j)."""
+    from .bootstrap.tracker_readiness import has_binding
+
+    rows: list[dict] = []
+    for e in registry.hives(cfg):
+        path = registry.hive_dir(e)
+        if not has_binding([e]) or not path.is_dir():
+            continue
+        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
+        rows += _stray_rows(hive_id, path)
+        rows += _outbox_end_state_rows(cfg, e, hive_id, path)
+    return rows
+
+
+def _render_intake_reports(rows: list[dict]) -> None:
+    if not rows:  # silent when unused
+        return
+    typer.echo(f"\n# Intake report end states ({len(rows)})")
+    for r in rows:
+        typer.echo(f"  ⚠ {r['hive']}: {r['kind']} — {r['detail']}")
+        typer.echo(f"    fix: {r['remediation']}")
+
+
 # ---- bead stores section (bh-lniwf.7) -------------------------------------------
 # Partitioned hives (managed_repos[*].stores, docs/design/two-store-scope-adr.md) show EACH store:
 # scope, local root, prefix, transport, authority, sync direction and honest health. Health never
@@ -3433,6 +3561,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
         "intake_holds": _timed(timings, "intake_holds", _data_intake_holds, cfg),
+        "intake_reports": _timed(timings, "intake_reports", _data_intake_reports, cfg),
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
@@ -3561,7 +3690,7 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``hq_remotes``, ``node_id``, ``beads_role``, ``beads_routing``,
     ``stores``, ``group_auth``, ``mcp``, ``harness_plugin``,
-    ``seats``, ``intake_holds``,
+    ``seats``, ``intake_holds``, ``intake_reports``,
     ``install``, ``observability``, ``build_verify``, ``tracker_adapters``, ``link_coverage``,
     ``writer_fence``,
     ``forward``, ``warnings``), plus
@@ -3574,7 +3703,10 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``full_seats=True`` for the complete per-seat breakdown; the cheap default still says
     explicitly that per-seat detail was skipped. ``intake_holds`` (bh-eo8br) is ``[]`` unless a hive
     whose public store binds a tracker adapter has a bound report out of step with its
-    ``intake-hold:`` gate. Exposed as the
+    ``intake-hold:`` gate. ``intake_reports`` (bh-cd03d, bh-c0x0i, bh-qwv0t) is ``[]`` unless such
+    a hive
+    has a closed report whose issue is open, one closed with an abandoned completion comment, or a
+    rejected report holding a ``delivery`` value. Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
 
@@ -3677,6 +3809,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])
     _render_intake_holds(data.get("intake_holds") or [])
+    _render_intake_reports(data.get("intake_reports") or [])
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_build_verify(data["build_verify"])

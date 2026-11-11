@@ -272,6 +272,7 @@ work claim|bead:string:o,as_:string:o,group:string:o,collapse:string:o,hive:stri
 work delivery blocked|work:string:r,reason:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work delivery deprioritised|work:string:r,reason:string:r,as_:string:o,hive:string:o,as_json:boolean:o
 work delivery release|tag:string:r,as_:string:o,hive:string:o,as_json:boolean:o
+work delivery sweep|repair:boolean:o,as_:string:o,hive:string:o,as_json:boolean:o
 work discover|hive:string:o,full:boolean:o,as_json:boolean:o,as_:string:o
 work finish|epic:string:r,hive:string:o,override_validation:string:o,override_as:string:o
 work import|url:string:r,hive:string:o,dry_run:boolean:o,as_json:boolean:o,as_:string:o

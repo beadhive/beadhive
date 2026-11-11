@@ -99,8 +99,8 @@ def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     # then the `labels` (4) and `triage` (4) groups (bh-v3fe7, wire 2.22.0), then
     # `work outbox backfill-close` (bh-pr5ll, wire 2.23.0), then `work outbox send-approved`
     # (bh-pc9rf, wire 2.24.0), then `work outbox reopen` (bh-ih484, wire 2.25.0), then
-    # `work validation reindex` (bh-0qazu, wire 2.26.0)
-    assert len(declarations) == 296
+    # `work validation reindex` (bh-0qazu, wire 2.26.0), then `work delivery sweep` (bh-qwv0t)
+    assert len(declarations) == 297
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",
@@ -245,7 +245,12 @@ def test_three_token_paths_mount_on_nested_groups_without_changing_two_token_lea
     }
     nested = get_command(work.app)
     assert {"delivery", "outbox"} <= set(nested.commands)
-    assert set(nested.commands["delivery"].commands) == {"blocked", "deprioritised", "release"}
+    assert set(nested.commands["delivery"].commands) == {
+        "blocked",
+        "deprioritised",
+        "release",
+        "sweep",
+    }
     # a two-token leaf stays directly under its group; a scratch regeneration agrees
     scratch = typer.Typer(no_args_is_help=True)
     report = project_cli_group(scratch, "work", _handlers("work"))
