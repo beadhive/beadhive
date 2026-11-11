@@ -60,25 +60,57 @@ def _load_config():
         return None
 
 
-def measure_conformance(cfg=_UNSET) -> list[dict]:
+def _local_caps() -> dict | None:
+    """This frame's committed capabilities from the local manifest, or ``None`` when unreadable."""
+    try:
+        manifest = hosts.load(config.hq_dir(), host.host_id())
+        return manifest.capabilities.model_dump() if manifest.capabilities else None
+    except Exception:
+        return None
+
+
+def _excluded_here(entry: dict, caps: dict | None) -> bool:
+    """Whether the hive's ``frame_policy.requires`` rules this frame out (same matcher as leasing).
+
+    Unknown capabilities or a hive without a policy never exclude: the hive stays required.
+    """
+    policy = entry.get("frame_policy")
+    if caps is None or not isinstance(policy, dict):
+        return False
+    from .hq_authority_guard import requirements
+
+    try:
+        requirements(policy.get("requires", {}), caps)
+    except ValueError:
+        return True
+    return False
+
+
+def measure_conformance(cfg=_UNSET, caps=_UNSET) -> list[dict]:
     """The slow host-local conformance checks (:data:`heartbeat_conformance.CACHED_CHECK_IDS`).
 
-    Reads no authority, so the conformance job can run it on its own timer.
+    Reads no authority, so the conformance job can run it on its own timer. Hives whose
+    ``frame_policy`` excludes this frame (by ``caps``, default the local manifest) are skipped
+    and named in the ``hives-ready`` evidence rather than required ready.
     """
     config_check = _check("host-config-partition", config_valid)
     if cfg is _UNSET:
         cfg = _load_config()
-    return [
-        config_check,
-        _check(
-            "hives-ready",
-            lambda: (
-                cfg is not None
-                and bool(registry.hives(cfg))
-                and all(hive_ready(entry) for entry in registry.hives(cfg))
-            ),
-        ),
-    ]
+    if caps is _UNSET:
+        caps = _local_caps()
+    hives = registry.hives(cfg) if cfg is not None else []
+    skipped = [e for e in hives if _excluded_here(e, caps)]
+    required = [e for e in hives if e not in skipped]
+    ready = _check(
+        "hives-ready",
+        lambda: cfg is not None and bool(hives) and all(hive_ready(e) for e in required),
+    )
+    if skipped and ready["status"] == "pass":
+        names = ", ".join(str(e.get("prefix", "?")) for e in skipped)
+        ready["evidence"] = (
+            f"measured check passed; skipped (frame_policy excludes this frame): {names}"
+        )
+    return [config_check, ready]
 
 
 def refresh_conformance():
@@ -238,7 +270,12 @@ def generate(
                 stored[heartbeat_conformance.AGE_CHECK_ID],
             ]
         else:
-            measured_checks = {item["id"]: item for item in measure_conformance(cfg)}
+            measured_checks = {
+                item["id"]: item
+                for item in measure_conformance(
+                    cfg, manifest.capabilities.model_dump() if manifest.capabilities else None
+                )
+            }
             checks = [
                 _check("installed-release", lambda: True),
                 measured_checks["host-config-partition"],

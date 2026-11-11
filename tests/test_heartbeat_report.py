@@ -640,3 +640,40 @@ def test_exact_pin_manifest_must_equal_the_grant(plane):
     _set_manifest_release(plane, {"id": "0.21.2", "digest": "sha256:" + "c" * 64})
     with pytest.raises(HeartbeatError):
         report.generate(plane)
+
+
+def _hives_ready(monkeypatch, entries, caps, ready_prefixes):
+    monkeypatch.setattr(report, "config_valid", lambda: True)
+    seen = []
+
+    def ready(entry):
+        seen.append(entry["prefix"])
+        return entry["prefix"] in ready_prefixes
+
+    monkeypatch.setattr(report, "hive_ready", ready)
+    checks = {c["id"]: c for c in report.measure_conformance({"managed_repos": entries}, caps)}
+    return checks["hives-ready"], seen
+
+
+_ARM = {"prefix": "arm", "frame_policy": {"requires": {"arch": "arm64"}}}
+_X86 = {"prefix": "x86", "frame_policy": {"requires": {"arch": "x86_64"}}}
+
+
+def test_hives_ready_skips_hive_whose_frame_policy_excludes_this_frame(monkeypatch):
+    caps = {"arch": "x86_64", "harnesses": [], "max_sessions": 1}
+    check, seen = _hives_ready(monkeypatch, [_ARM, _X86], caps, {"x86"})
+    assert check["status"] == "pass"
+    assert seen == ["x86"]
+    assert "skipped" in check["evidence"] and "arm" in check["evidence"]
+
+
+def test_hives_ready_still_requires_hive_whose_frame_policy_matches(monkeypatch):
+    caps = {"arch": "arm64", "harnesses": [], "max_sessions": 1}
+    check, seen = _hives_ready(monkeypatch, [_ARM], caps, set())
+    assert check["status"] == "fail"
+    assert seen == ["arm"]
+
+
+def test_hives_ready_requires_all_when_caps_unknown(monkeypatch):
+    check, seen = _hives_ready(monkeypatch, [_ARM], None, set())
+    assert check["status"] == "fail" and seen == ["arm"]
