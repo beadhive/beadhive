@@ -249,7 +249,8 @@ For unstructured content the deterministic readers can't shape (status stated in
 deliverables in a design narrative, informal roadmap docs), add a **`semantic` reader adapter**:
 
 - **BAML** (BoundaryML; Apache-2.0, `baml-py` with no listed dependencies, V)
-  declares each category shape (the Source record categories table) as a typed BAML class, and an LLM fills
+  declares each category shape (the Source record categories table) as a typed BAML class, and
+  an LLM fills
   `attrs`/`refs` for one artifact at a time;
 - **Jev** (TypeSafe System One, local plugin MIT v0.6.2, V) sits behind the existing
   `JudgmentPort` and answers narrow typed questions about the extraction ("is this doc's status
