@@ -11,7 +11,13 @@ Subcommands:
 - ``beadlog extract <name> ...`` — one subcommand per source strategy registered in the
   ``beadlog.sources`` entry-point group (discovered at run time); the ``--judge-*`` flags are
   accepted on each and used only by strategies that judge a residual (``docs``), judge off by
-  default.
+  default;
+- ``beadlog read <reader> ...`` — one subcommand per source reader (entry-point group
+  ``beadlog.readers`` plus the static built-in table), each writing a ``bdlg.evidence/1`` corpus.
+
+Strategy and reader discovery merges installed entry points with a static built-in table
+(:mod:`beadlog_sources.readers`), so it does not depend on which distribution (``beadlog-sources``
+or the ``beadhive`` wheel that vendors it) is installed.
 
 Exit codes: 0 success, 1 a failed verification or operation, 2 usage errors.
 """
@@ -23,7 +29,6 @@ import json
 import os
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from importlib import metadata
 from pathlib import Path
 from typing import IO, Any
 
@@ -40,8 +45,16 @@ from beadlog import (
     write_archive,
 )
 
-from .contracts import ENTRY_POINT_GROUP, ExtractRequest, SourceStrategy
+from .contracts import ExtractRequest, SourceStrategy
+from .evidence import ReaderHeader, build_corpus, write_evidence
 from .judges import JudgeSettings, Runner, build_judge, parse_auto_accept, parse_bool, settings_from
+from .readers import (
+    DuplicateRegistrationError,
+    ReadRequest,
+    discover_readers,
+    discover_strategies,
+    load_reader,
+)
 from .reconcile import PLAN_ANNOTATION, prior_verdicts, read_plan, reconcile, write_plan
 
 VERSION = "0.1.0"
@@ -50,18 +63,6 @@ GENERATOR = Generator("beadlog-sources", VERSION)
 
 class CliError(Exception):
     """An operation failure reported as ``beadlog: <message>`` with exit status 1."""
-
-
-def discover_strategies(
-    entry_points: Callable[[], Iterable[Any]] | None = None,
-) -> dict[str, Any]:
-    """Entry points of the ``beadlog.sources`` group by name (not loaded yet)."""
-    if entry_points is None:
-
-        def entry_points() -> Iterable[Any]:
-            return metadata.entry_points(group=ENTRY_POINT_GROUP)
-
-    return {point.name: point for point in sorted(entry_points(), key=lambda p: p.name)}
 
 
 def _load_strategy(point: Any) -> SourceStrategy:
@@ -199,6 +200,31 @@ def _cmd_verify(args: argparse.Namespace, out: IO[str], **_: Any) -> int:
     return 0
 
 
+def _options(items: Iterable[str] | None) -> dict[str, str]:
+    options: dict[str, str] = {}
+    for item in items or ():
+        key, separator, value = item.partition("=")
+        if not separator or not key:
+            raise CliError(f"--option {item!r} is not key=value")
+        options[key] = value
+    return options
+
+
+def _cmd_read(
+    args: argparse.Namespace, out: IO[str], *, readers: Mapping[str, Any], **_: Any
+) -> int:
+    try:
+        reader = load_reader(readers[args.reader])
+    except TypeError as exc:
+        raise CliError(str(exc)) from exc
+    options = _options(args.option)
+    artifacts = list(reader.read(ReadRequest(root=Path(args.root), options=options)))
+    corpus = build_corpus(artifacts, [ReaderHeader(reader.name, reader.version, options)])
+    write_evidence(corpus, Path(args.output))
+    print(f"read {len(artifacts)} artifacts with {reader.name} {reader.version}", file=out)
+    return 0
+
+
 def _cmd_extract(
     args: argparse.Namespace,
     out: IO[str],
@@ -212,12 +238,7 @@ def _cmd_extract(
     baseline: tuple[BeadEvent, ...] = ()
     if args.baseline:
         _, baseline = _read(args.baseline)
-    options: dict[str, str] = {}
-    for item in args.option or ():
-        key, separator, value = item.partition("=")
-        if not separator or not key:
-            raise CliError(f"--option {item!r} is not key=value")
-        options[key] = value
+    options = _options(args.option)
     # The judge is handed over only when it is enabled (default off): a strategy that resolves a
     # fuzzy residual (`docs`) then leaves it to a human, and every other strategy ignores it.
     settings = _settings(args, environ)
@@ -268,7 +289,9 @@ def _judge_flags(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--judge-max-calls-per-run", type=int, default=None, metavar="N")
 
 
-def build_parser(strategies: Mapping[str, Any]) -> argparse.ArgumentParser:
+def build_parser(
+    strategies: Mapping[str, Any], readers: Mapping[str, Any] | None = None
+) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="beadlog", description="Build, merge, reconcile and check BeadLog (.bdlg) archives."
     )
@@ -316,6 +339,19 @@ def build_parser(strategies: Mapping[str, Any]) -> argparse.ArgumentParser:
         sub.add_argument("-o", "--output", required=True, help="archive to write")
         _judge_flags(sub)
     extract.set_defaults(handler=_cmd_extract)
+
+    read = commands.add_parser(
+        "read",
+        help="run a source reader into an evidence corpus (entry-point group beadlog.readers)",
+        description="Registered readers: " + (", ".join(readers or {}) or "none"),
+    )
+    reader_names = read.add_subparsers(dest="reader", required=True, metavar="READER")
+    for name in readers or {}:
+        sub = reader_names.add_parser(name, help=f"read with the {name} reader")
+        sub.add_argument("--root", default=".", help="repository to read")
+        sub.add_argument("--option", action="append", help="reader option key=value")
+        sub.add_argument("-o", "--output", required=True, help="evidence corpus (.jsonl) to write")
+    read.set_defaults(handler=_cmd_read)
     return parser
 
 
@@ -326,13 +362,20 @@ def main(
     stderr: IO[str] | None = None,
     environ: Mapping[str, str] | None = None,
     entry_points: Callable[[], Iterable[Any]] | None = None,
+    reader_entry_points: Callable[[], Iterable[Any]] | None = None,
+    builtin_strategies: Mapping[str, str] | None = None,
     runner: Runner | None = None,
 ) -> int:
     """Console entry point of ``beadlog``."""
     out = stdout or sys.stdout
     err = stderr or sys.stderr
-    strategies = discover_strategies(entry_points)
-    parser = build_parser(strategies)
+    try:
+        strategies = discover_strategies(entry_points, builtin_strategies)
+        readers = discover_readers(reader_entry_points)
+    except DuplicateRegistrationError as exc:
+        print(f"beadlog: {type(exc).__name__}: {exc}", file=err)
+        return 1
+    parser = build_parser(strategies, readers)
     args = parser.parse_args(argv)
     try:
         return int(
@@ -342,6 +385,7 @@ def main(
                 environ=os.environ if environ is None else environ,
                 runner=runner,
                 strategies=strategies,
+                readers=readers,
             )
         )
     except (CliError, ArchiveError, ManifestError, IdCollisionError, OSError, ValueError) as exc:

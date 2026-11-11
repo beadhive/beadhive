@@ -271,11 +271,12 @@ def test_beadlog_extract_bd_writes_a_baseline_archive(tmp_path: Path) -> None:
             str(out),
         ],
         entry_points=lambda: [_Point()],
+        builtin_strategies={},
     )
     assert code == 0
     _, events = beadlog.read_archive(out)
     assert {event.bead.id for event in events} == {"pr-a1", "pr-b1"}
-    assert "bd" in discover_strategies(lambda: [_Point()])
+    assert "bd" in discover_strategies(lambda: [_Point()], {})
 
 
 def test_entry_point_is_declared() -> None:

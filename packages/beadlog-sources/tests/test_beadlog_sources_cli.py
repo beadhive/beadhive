@@ -256,7 +256,15 @@ class _EntryPoint:
 
 def test_extract_subcommands_come_from_the_entry_point_group(tmp_path: Path) -> None:
     points = [_EntryPoint("one-commit", _OneCommit), _EntryPoint("broken", object())]
-    assert list(discover_strategies(lambda: points)) == ["broken", "one-commit"]
+    assert list(discover_strategies(lambda: points)) == [
+        "bd",
+        "bd-history",
+        "broken",
+        "docs",
+        "git-commits",
+        "one-commit",
+        "planning",
+    ]
     out = tmp_path / "extracted.bdlg"
     code, text, _ = _cli(
         "extract",
@@ -294,7 +302,6 @@ def test_extract_subcommands_come_from_the_entry_point_group(tmp_path: Path) -> 
 
 
 def test_real_discovery_reads_the_installed_group() -> None:
-    # No strategy is registered yet; discovery still runs against importlib.metadata.
     assert isinstance(discover_strategies(), dict)
 
 
