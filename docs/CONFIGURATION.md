@@ -458,7 +458,13 @@ as `not_planned`, `duplicate-of` as `duplicate`; `needs-info` never closes), is 
 close`, and only after that record's comment and every other comment of the report are settled
 and the report's latest labels record is sent (`close_not_ready` otherwise, before any request).
 `bh work outbox backfill-close [--dry-run]` drafts the close for reports already closed whose
-issue is still open, drafting the missing reply too when the report never got one. The probe reports
+issue is still open, drafting the missing reply too when the report never got one. A report closed
+at completion with delivery `merged` or `released` (it tracked work) whose issue is still open is
+recovered too (bh-iyog8): the close (reason `completed`) is attached to its latest reply or
+milestone record that carries a live comment and no close, whether that comment is already sent or
+not, and with no such record the completion record (the `merged` or `released` wording) is drafted
+with the close. A report with delivery `pending`, an unlinked report and a closed issue are skipped
+with a reason; a re-run drafts nothing twice, and nothing is approved or sent. The probe reports
 `issue.close` as `no` below the triage role. A `duplicate-of` close also names the canonical
 report's issue (bh-iamru): the PATCH adds `duplicate_issue_id` (the canonical's numeric issue id,
 read with one GET before the write), and the close's digest shows `duplicate_of: <url>`. It needs

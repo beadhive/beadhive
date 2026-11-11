@@ -44,6 +44,19 @@ No action required.
   comment-only and the report closes locally once it is sent, leaving the issue open by operator
   choice.
 
+- **`outbox backfill-close` recovers tracked reports closed with their issue open (bh-iyog8).**
+  Reports completed before this release (the 0.35.9 reports among them) were closed locally at
+  `delivery:merged` / `delivery:released` with nothing public drafted, or with a comment-only
+  reply, so their GitHub issues are still open. `bh work outbox backfill-close [--dry-run]` now
+  also considers a closed bound report with that delivery whose issue the run's one listing shows
+  open: it attaches an `issue.close` (reason completed) to the latest reply or milestone record
+  that has a live comment and no close, even if that comment was already sent (the close then
+  approves and sends on its own), and otherwise drafts the completion record (the `released` or
+  `merged` wording) with the close. Delivery `pending`, an unlinked report and an issue that is
+  closed already are skipped with a reason; a re-run drafts nothing twice. Drafts only: approve
+  each close with `outbox approve --op close:<digest>` and send it as usual. Needs the outbox and
+  `plugins.<id>.write.issue_close.enabled`, as before.
+
 ## 0.35.8 → 0.35.9 — escalate, submit history budget, landing, verdict self-heal (bh-69snf)
 
 No action required.
