@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:wire-schema:bh.hive-status:1",
+  "title": "bh hive status --json v1",
+  "type": "object",
+  "required": ["candidates", "collisions", "violations", "hives"],
+  "additionalProperties": true,
+  "properties": {
+    "candidates": {"type": "array", "items": {"type": "string"}},
+    "collisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["prefix", "hives"],
+        "additionalProperties": true,
+        "properties": {
+          "prefix": {"type": "string"},
+          "hives": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "violations": {"type": "array", "items": {"type": "string"}},
+    "hives": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["provider", "org", "repo", "prefix", "kind"],
+        "additionalProperties": true,
+        "properties": {
+          "provider": {"type": "string"},
+          "org": {"type": "string"},
+          "repo": {"type": "string"},
+          "prefix": {"type": "string"},
+          "kind": {"type": "string"},
+          "upstream": {"type": "string"}
+        }
+      }
+    }
+  }
+}
