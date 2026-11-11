@@ -1128,6 +1128,15 @@ anyway) or when validation cost dominates (expensive integration-test setup amor
 Stay with singletons when beads are independent and cheap-to-validate — parallel wall-time
 is then the dominant win and per-bead isolation makes failures cheap.
 
+## Intake and the outbox
+
+Imported GitHub reports are triaged with `bh work intake|accept|reject|reroute|promote` and
+`bh work triage`, and told about their outcome through the supervised outbox (`bh work outbox`,
+`bh work labels`; nothing is sent without an operator's approval). A report's dimensions, its valid
+states, how each disposition ends (when the report closes, which reply is required, which reason
+the GitHub issue closes with) and the invalid states with their repairs are in
+[Report lifecycle and end states](INTAKE-LIFECYCLE.md).
+
 ## Exclusive primary — which host may run a write verb
 
 On a multi-host factory the write verbs are gated by `guard_primary()`
