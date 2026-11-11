@@ -569,6 +569,24 @@ def delivery_release_cmd(
     return work_intake.delivery_release(tag, as_, hive, as_json)
 
 
+def delivery_sweep_cmd(
+    repair: bool = typer.Option(
+        False,
+        "--repair",
+        help="clear each stray `delivery` value (the default only lists them: a dry run)",
+    ),
+    as_: str = _AS,
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit one JSON document"),
+):
+    """Find the rejected reports (a `duplicate-of` ends in a reject too) that still carry a
+    `delivery` value they never owned, and with `--repair` clear it. Without `--repair` it only
+    lists them. Writes only the local bead store and never contacts the tracker: run `bh work
+    labels sync --include-closed` afterwards to draft the label removal on the issue. `bh doctor`
+    reports the same reports."""
+    return work_intake.delivery_sweep(repair, as_, hive, as_json)
+
+
 _NOTICE_WORK = typer.Argument(..., metavar="<work>", help="the work bead the reports track")
 _NOTICE_REASON = typer.Option(
     ...,
@@ -2067,6 +2085,7 @@ CLI_HANDLERS = {
     "work.delivery.blocked": delivery_blocked_cmd,
     "work.delivery.deprioritised": delivery_deprioritised_cmd,
     "work.delivery.release": delivery_release_cmd,
+    "work.delivery.sweep": delivery_sweep_cmd,
     **work_intake_cli.CLI_HANDLERS,
     "work.triage.apply": triage_apply_cmd,
     "work.triage.check": triage_check_cmd,
@@ -2129,6 +2148,7 @@ wake_cmd = _CLI_CALLBACKS["work.wake"]
 delivery_blocked_cmd = _CLI_CALLBACKS["work.delivery.blocked"]
 delivery_deprioritised_cmd = _CLI_CALLBACKS["work.delivery.deprioritised"]
 delivery_release_cmd = _CLI_CALLBACKS["work.delivery.release"]
+delivery_sweep_cmd = _CLI_CALLBACKS["work.delivery.sweep"]
 outbox_approve_cmd = _CLI_CALLBACKS["work.outbox.approve"]
 outbox_backfill_close_cmd = _CLI_CALLBACKS["work.outbox.backfill-close"]
 outbox_discard_cmd = _CLI_CALLBACKS["work.outbox.discard"]
