@@ -15,6 +15,13 @@ No action required.
   stale `bh:delivery/pending` / `bh:progress/started` labels. A closed report whose issue is also
   closed still needs `--include-closed`. Still one issue listing per run; drafts only.
 
+- **`triage apply` drafts the reply of a tracked or new proposal (bh-ac6tz).** A `tracked`,
+  `partially-fixed` or `new` proposal that carries `reporter_text` now plans a `draft reply` step
+  after its accept, on a bound report with an outbox, instead of silently dropping the verified text
+  (GitHub #96). The reply is drafted only, held for review, and carries no close: the work is not
+  done, so the issue stays open. `--dry-run` lists the step; a re-run drafts nothing new; a proposal
+  without `reporter_text` plans no reply.
+
 ## 0.35.8 → 0.35.9 — escalate, submit history budget, landing, verdict self-heal (bh-69snf)
 
 No action required.

@@ -349,3 +349,22 @@ def test_a_close_reason_is_cut_to_what_beads_stores() -> None:
 )
 def test_only_an_open_report_on_intake_rejected_is_half_rejected(status, labels, half) -> None:
     assert half_rejected(status, labels) is half
+
+
+def test_a_tracked_or_new_proposal_with_reporter_text_drafts_its_reply_after_the_accept() -> None:
+    owner = (ProposalTarget("w-1"),)
+    tracked = _plan(D.TRACKED, targets=owner, reporter_text="We track this.")
+    assert tracked == ApplyPlan(
+        (ApplyStep.ACCEPT_WORK, ApplyStep.DRAFT_REPLY), work="w-1", reason="We track this."
+    )
+    assert tracked.close is None  # the work is not done
+    new = _plan(D.NEW, reporter_text="We track this.")
+    assert new.steps == (ApplyStep.ACCEPT_NEW_WORK, ApplyStep.DRAFT_REPLY) and new.close is None
+    # no text, an unbound report or no outbox: no reply step
+    assert _plan(D.TRACKED, targets=owner) == ApplyPlan((ApplyStep.ACCEPT_WORK,), work="w-1")
+    assert ApplyStep.DRAFT_REPLY not in _plan(D.NEW).steps
+    assert plan_apply(new_proposal(D.NEW, reporter_text="x"), bound=False) == ApplyPlan(
+        (ApplyStep.ACCEPT,)
+    )
+    silent = plan_apply(new_proposal(D.NEW, reporter_text="x"), bound=True, replies=False)
+    assert isinstance(silent, ApplyPlan) and ApplyStep.DRAFT_REPLY not in silent.steps
