@@ -5,6 +5,16 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.9 → 0.35.10 — labels sync, intake fixes (bh-r5dxi)
+
+No action required.
+
+- **Labels sync covers closed reports with open issues (bh-vojht).** `bh work labels sync` (without
+  `--include-closed`) now also drafts for a closed bound report whose issue the run's single issue
+  listing shows open, so a report closed at completion no longer leaves its live GitHub issue with
+  stale `bh:delivery/pending` / `bh:progress/started` labels. A closed report whose issue is also
+  closed still needs `--include-closed`. Still one issue listing per run; drafts only.
+
 ## 0.35.8 → 0.35.9 — escalate, submit history budget, landing, verdict self-heal (bh-69snf)
 
 No action required.
