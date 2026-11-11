@@ -14,6 +14,9 @@
   `bh-9wpd.8` is carried forward as deferred source strategies.
 - **Amends:** [`docs/MODULES.md`](../MODULES.md) principle 9 and the landed `packages/*`
   section, each with a dated note pointing back here.
+- **Amended 2026-11-11:** the history pipeline (parse, collate, upsert; record categories;
+  evidence corpus) is specified in
+  [`backfill-history-pipeline-adr.md`](backfill-history-pipeline-adr.md).
 - **Research:** [`beadlog-store-landscape-research.md`](beadlog-store-landscape-research.md)
   (store survey, measurements, and every source consulted).
 
