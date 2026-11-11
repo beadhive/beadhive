@@ -33,8 +33,10 @@ def _module_path(module: str) -> Path:
 
 def test_installed_transport_entrypoints_are_thin_bootstrap_modules() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    # `beadlog` is the vendored BeadHive-free library's own CLI (bh-7br2h), not a transport root.
     assert project["project"]["scripts"] == {
-        script: target for script, target in (spec for spec in ROOTS.values())
+        **{script: target for script, target in (spec for spec in ROOTS.values())},
+        "beadlog": "beadlog_sources.cli:main",
     }
 
     for _surface, (_script, target) in ROOTS.items():
