@@ -2812,7 +2812,7 @@
       "properties": {
         "append_release_to_closed": {
           "default": false,
-          "description": "Also draft the `released` record for a report already closed (default off).",
+          "description": "Also draft the `released` notice (comment only) for a closed report (off).",
           "title": "Append Release To Closed",
           "type": "boolean"
         },
@@ -2836,13 +2836,13 @@
         },
         "draft_on_merge": {
           "default": false,
-          "description": "Draft a `merged` record when linked work merges (default off).",
+          "description": "Draft a `merged` progress notice when linked work merges (default off); the completion milestone drafts its record regardless.",
           "title": "Draft On Merge",
           "type": "boolean"
         },
         "draft_on_release": {
           "default": false,
-          "description": "Draft a `released` record when a release is verified (default off).",
+          "description": "Draft a `released` progress notice when a release is verified (default off); the completion milestone drafts its record regardless.",
           "title": "Draft On Release",
           "type": "boolean"
         },
