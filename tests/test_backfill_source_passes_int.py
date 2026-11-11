@@ -59,6 +59,7 @@ def hive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     init_embedded(root, "ag-infra")
     group = backfill_cli.hive_group(ENTRY, root)
     monkeypatch.setattr(backfill_cli, "_target", lambda hive: (root, group))
+    monkeypatch.setattr(backfill_cli, "hive_prefix", lambda hive: ENTRY["prefix"])
 
     def loader(cwd: Path, *, group: str, pre_state_path: Path | None = None) -> BdStoreLoader:
         port = BdCliPort(cwd, actor="dev/loader")
