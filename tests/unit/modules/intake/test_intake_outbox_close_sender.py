@@ -32,6 +32,7 @@ from beadhive.modules.intake.domain import (
     LabelBase,
     LabelIntent,
     LeakPolicy,
+    MergedFact,
     OpKind,
     OpState,
     OutboxApprove,
@@ -42,11 +43,13 @@ from beadhive.modules.intake.domain import (
     ProposalDisposition,
     ProposalStatus,
     RefusalReason,
+    ReleasedFact,
     RenderContext,
     ReplyDraft,
     ReportDraft,
     SourceSnapshot,
     StorePosture,
+    UnlinkedFact,
     labels_revision,
 )
 from beadhive.modules.intake.domain import outbox as machine
@@ -558,3 +561,135 @@ def test_the_backfill_names_the_canonical_of_a_duplicate() -> None:
     for item in done.drafted:
         close = s.op(item.outbox_id, X, item.report)
         assert close.duplicate_of == CanonicalIssue(canonical_issue.identifier, canonical_issue.url)
+
+
+# -- tracked reports closed locally at delivery with the issue still open (bh-iyog8) -----------
+
+
+def _closed_at(s: Scene, report: str, delivery: str, **facts) -> None:
+    """A tracked report closed locally at ``delivery`` before completion carried a close."""
+    s.store.set_state(report, "delivery", delivery, reason="work shipped", actor="alice")
+    doc = s.store.read_outbox(report) or OutboxDocument()
+    kept = dataclasses.replace(
+        doc.facts,
+        merged=MergedFact("bh-w1", "c0ffee0123456789"),
+        released=ReleasedFact("v1.2.3", "c0ffee0123456789", True)
+        if delivery == "released"
+        else None,
+        **facts,
+    )
+    s.store.write_outbox(
+        report,
+        dataclasses.replace(doc, seq=doc.seq + 1, facts=kept),
+        expect_seq=doc.seq,
+        actor="alice",
+    )
+    s.store.close(report, reason=f"delivery complete ({delivery})", actor="alice")
+
+
+def test_backfill_attaches_the_close_to_the_latest_sent_reply_of_a_tracked_report() -> None:
+    s = Scene()
+    oid = _sent_reply(s, s.report)
+    _closed_at(s, s.report, "released")
+    writes = s.world.write_requests()
+
+    (planned,) = s.intake.backfill_closes(CloseBackfill("alice", dry_run=True)).planned
+    assert planned.outbox_id == oid and planned.reason is CloseReason.COMPLETED
+    assert s.op(oid, X) is None  # a dry run writes nothing
+
+    (item,) = s.intake.backfill_closes(CloseBackfill("alice")).drafted
+    assert item.outbox_id == oid
+    close = s.op(oid, X)
+    assert close.state is OpState.DRAFTED and close.close is CloseReason.COMPLETED
+    assert s.world.write_requests() == writes  # drafted only
+
+    # the comment is already sent: the close approves and sends on its own
+    s.approve(oid, X)
+    assert s.send(oid, X).state is OpState.SENT
+    assert s.issue_state() is IssueState.CLOSED
+
+
+def test_backfill_drafts_the_completion_record_when_a_tracked_report_has_none() -> None:
+    s = Scene()
+    released, released_issue = s.report, s.issue
+    merged, _ = s.new_report("merged only")
+    _closed_at(s, released, "released")
+    _closed_at(s, merged, "merged")
+
+    planned = s.intake.backfill_closes(CloseBackfill("alice", dry_run=True))
+    texts = {i.report: i.reply_text for i in planned.planned}
+    assert "v1.2.3" in texts[released] and "v1.2.3" not in texts[merged]
+    assert s.store.read_outbox(released).records == {}
+
+    done = s.intake.backfill_closes(CloseBackfill("alice"))
+
+    assert {i.report for i in done.drafted} == {released, merged}
+    for item in done.drafted:
+        (record,) = s.store.read_outbox(item.report).records.values()
+        expected = OutboxEvent.RELEASED if item.report == released else OutboxEvent.MERGED
+        assert record.event is expected
+        assert record.op(C).state is OpState.DRAFTED  # the comment still needs its approval
+        assert record.op(X).close is CloseReason.COMPLETED and record.op(X).state is OpState.DRAFTED
+    assert s.issue_state(released_issue) is IssueState.OPEN
+
+
+def test_backfill_of_tracked_reports_skips_with_a_reason() -> None:
+    s = Scene()
+    pending, _ = s.new_report("still pending")
+    unlinked, _ = s.new_report("unlinked")
+    shut, shut_issue = s.new_report("issue closed already")
+    carrying, _ = s.new_report("reply carries a close")
+    _closed_at(s, pending, "pending")
+    _closed_at(s, unlinked, "merged", unlinked=UnlinkedFact("bh-w1"))
+    _closed_at(s, shut, "released")
+    s.world.update_issue(shut_issue, at=at(3), state=IssueState.CLOSED)
+    s.reply(close=CloseReason.COMPLETED, report=carrying)
+    _closed_at(s, carrying, "released")
+    s.store.close(s.report, reason="never tracked", actor="alice")  # no delivery: not a candidate
+
+    done = s.intake.backfill_closes(CloseBackfill("alice"))
+
+    assert done.drafted == ()
+    reasons = {i.report: i.detail for i in done.skipped}
+    assert reasons == {
+        pending: "delivery is pending: the work has not shipped",
+        unlinked: "the report is unlinked from its work",
+        shut: "the issue is closed already",
+        carrying: "its reply already carries a close",
+    }
+
+
+def test_backfill_of_tracked_reports_is_idempotent() -> None:
+    s = Scene()
+    replied, _ = s.new_report("has a sent reply")
+    silent, _ = s.new_report("has none")
+    _sent_reply(s, replied)
+    _closed_at(s, replied, "released")
+    _closed_at(s, silent, "merged")
+
+    first = s.intake.backfill_closes(CloseBackfill("alice"))
+    again = s.intake.backfill_closes(CloseBackfill("alice"))
+    dry = s.intake.backfill_closes(CloseBackfill("alice", dry_run=True))
+
+    assert {i.report for i in first.drafted} == {replied, silent}
+    assert again.drafted == () and dry.drafted == () and dry.planned == ()
+    assert len(s.store.read_outbox(replied).records) == 1
+    assert len(s.store.read_outbox(silent).records) == 1
+
+
+def test_backfill_carries_the_close_on_the_latest_reply_record_only() -> None:
+    s = Scene()
+    first = _sent_reply(s, s.report)
+    later = s.intake.draft_reply(
+        ReplyDraft(s.report, "A later manual reply.", "alice", close=None)
+    ).outbox_id
+    s.intake.discard(later, reason="not wanted", actor="alice")
+    newest = s.intake.draft_reply(
+        ReplyDraft(s.report, "The newest reply.", "alice", close=None)
+    ).outbox_id
+    _closed_at(s, s.report, "released")
+
+    (item,) = s.intake.backfill_closes(CloseBackfill("alice")).drafted
+
+    assert item.outbox_id == newest  # the discarded one is never a carrier
+    assert s.op(first, X) is None and s.op(later, X) is None
