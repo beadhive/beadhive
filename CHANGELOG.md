@@ -13,6 +13,15 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.10 (2026-11-11)
+
+### Fix
+
+- **intake**: backfill-close recovers tracked reports closed locally while their issue is open
+- **intake**: completion drafts the milestone reply with an issue close before a bound report closes
+- **intake**: triage apply drafts the reply of a tracked or new proposal
+- **intake**: labels sync includes closed reports whose issue is still open
+
 ## v0.35.9 (2026-11-10)
 
 ### Fix
