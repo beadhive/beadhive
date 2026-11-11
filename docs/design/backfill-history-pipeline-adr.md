@@ -29,7 +29,7 @@ split the work into three phases with a typed hand-off between them.
 
 ## Decision
 
-```
+```text
  Phase A: PARSE (per source, independent, parallel, pure)
    git ─┐  docs(md/html) ─┐  planning(GSD/roadmap) ─┐  github snapshot ─┐  changelog… ─┐
         ▼                 ▼                          ▼                   ▼              ▼
@@ -275,40 +275,50 @@ the workstream lands; not filed now.
 
 ## Decomposition (workstream)
 
-Shaped as sub-epics under a parent epic, each landing on main. Critical path: **M0 → (M1 ∥ M2 ∥ M4) → M3 → M5**.
+Shaped as sub-epics under a parent epic, each landing on main.
+Critical path: **M0 → (M1 ∥ M2 ∥ M4) → M3 → M5**.
 M2 can build against synthetic evidence fixtures as soon as M0 lands, without waiting for M1.
 
-**M0: Contracts and discovery** (small; unblocks everything; land first)
+### M0: Contracts and discovery (small; unblocks everything; land first)
+
 - Artifact/Ref/SourceReader/ReadRequest + `bdlg.evidence/1` schema, JSONL I/O, fixtures kit
 - `LedgerDirectory` port + in-memory fake
 - Entry-point registration in the bh wheel + static registry fallback; `beadlog` console script; docs
 - Explicit-prefix requirement: drop the `modal_prefix` fallback, with hive wiring passing the prefix
 
-**M1: Readers** (parallel beads, each independent after M0)
+### M1: Readers (parallel beads, each independent after M0)
+
 - M1a git reader (commits, merges, tags/releases, CC parse)
-- M1b docs reader: `DocFormat` port, markdown adapter (port), html adapter, metadata normalization, layout presets
+- M1b docs reader: `DocFormat` port, markdown adapter (port), html adapter, metadata
+  normalization, layout presets
 - M1c planning reader: `PlanningFormat` port, gsd adapter (port), roadmap adapter
 - M1d github snapshot fetch + reader (tracker-github plugin)
 - M1e LedgerDirectory adapters: bd routes, HQ hive registry
 
-**M2: Collation engine** (sequential-ish beads in one package)
+### M2: Collation engine (sequential-ish beads in one package)
+
 - B1+B2 index + resolve (local / foreign / unresolved)
 - B3 clustering rules + area grouping + per-hive override
 - B4 doc attachment
 - B5 identity: bridges → judge → threshold → residual; auto-prior resume; cost preview
 - B6 status/date derivation + conflict detection
 
-**M3: Projection and upsert** (blocked by M2; create bead blocked by bh-l1m3p per D1)
+### M3: Projection and upsert (blocked by M2; create bead blocked by bh-l1m3p per D1)
+
 - Projector units → events; external_ref keys; xref/lifecycle/conflict metadata
 - `create = propose` mode wired through reconcile/engine; empty-hive allowed in this mode
 - `bh backfill history` / `collate` / `inspect` CLI + config models + CONFIGURATION.md
 - Gapfill `on_created`
 
-**M4: Judge ergonomics** (parallel with M2)
-- `bh backfill judge setup` (secret-store key, probe), cost-per-call config, `inspect` verdict view (NEW/PRESENT/NOISE)
+### M4: Judge ergonomics (parallel with M2)
 
-**M5: Convergence and release**
-- Rewire `commits/docs/planning` passes onto readers, with golden equivalence against current outputs
+- `bh backfill judge setup` (secret-store key, probe), cost-per-call config, `inspect` verdict
+  view (NEW/PRESENT/NOISE)
+
+### M5: Convergence and release
+
+- Rewire `commits/docs/planning` passes onto readers, with golden equivalence against current
+  outputs
 - Skills repo: `bh:backfill` calls `bh backfill history`; delete `reconcile.sh`
 - End-to-end trials on three fixture hives mirroring the reports: commit-only (expect ≈ epics +
   feat issues), docs-heavy judge-off (threshold > 0 NEW), HTML-documented (11 docs found).
@@ -316,7 +326,8 @@ M2 can build against synthetic evidence fixtures as soon as M0 lands, without wa
 
 ## Consequences
 
-- New code concentrates in Phase A (readers) and Phase B (collate); the Phase C safety envelope is reused unchanged.
+- New code concentrates in Phase A (readers) and Phase B (collate); the Phase C safety
+  envelope is reused unchanged.
 - New sources need only a reader emitting an existing category; no new collate or projection code.
 - The evidence corpus (`bdlg.evidence/1`) is an intermediate artifact, so the BeadLog format stays stable.
 - Existing `commits|docs|planning` passes keep working until the M5 convergence step (D4).
