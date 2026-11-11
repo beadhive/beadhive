@@ -151,11 +151,11 @@ looks for it today.
 | Open bound report without an open hold (`missing`) | `bh doctor` section `intake_holds` | the exact `bh -r <hive> bd gate create --blocks <report> ...` command the finding prints; `IntakeService.sweep_holds(repair=True)` does the same |
 | Open hold on a closed report (`unresolved`) | `bh doctor` `intake_holds` | the printed `bh -r <hive> bd gate resolve <gate>` |
 | Hold that blocks no bound report (`orphaned`) | `bh doctor` `intake_holds` | inspect with the printed `bd show <gate>`, resolve by hand if nothing needs it |
-| Closed report with an open issue and no drafted close, at delivery `merged` / `released` (the 0.35.9 gap, bh-cir2q, closed by bh-iyog8) | `bh work outbox backfill-close --dry-run` lists it; no `doctor` check | `bh work outbox backfill-close`: attaches the completion close (`completed`) to the latest live reply or milestone record, or drafts the completion record with the close; then approve and send |
-| Closed report (`reject`, `duplicate-of`, `fixed` no owner, applied proposal) with an open issue and no drafted close | `bh work outbox backfill-close --dry-run` | `bh work outbox backfill-close`; drafts the missing reply too from the reviewed text |
-| Closed report with the issue still open because the operator abandoned or discarded the completion comment (`notification_behind`) | no check: `notification_behind` is a domain predicate no verb or `doctor` section surfaces | draft the reply yourself (`bh work outbox draft`), then send; `backfill-close` also attaches a close to a live reply |
+| Closed report with an open issue and no drafted close, at delivery `merged` / `released` (the 0.35.9 gap, bh-cir2q, closed by bh-iyog8) | `bh doctor` section `intake_reports` (`closed_open_issue`, bh-cd03d); `bh work outbox backfill-close --dry-run` lists it too | `bh work outbox backfill-close`: attaches the completion close (`completed`) to the latest live reply or milestone record, or drafts the completion record with the close; then approve and send |
+| Closed report (`reject`, `duplicate-of`, `fixed` no owner, applied proposal) with an open issue and no drafted close | `bh doctor` `intake_reports` (`closed_open_issue`); `bh work outbox backfill-close --dry-run` | `bh work outbox backfill-close`; drafts the missing reply too from the reviewed text |
+| Closed report with the issue still open because the operator abandoned or discarded the completion comment (`notification_behind`) | `bh doctor` `intake_reports` (`notification_behind`, bh-c0x0i): lists the report with its delivery, notified and the abandoned record id; a report whose issue a SENT close closed (told by hand) is not listed | draft the reply yourself (`bh work outbox draft`), then send; `backfill-close` also attaches a close to a live reply; or leave it when the silence was deliberate |
 | Closed report whose issue carries stale `delivery` / `progress` labels | `bh work labels sync --dry-run` | `bh work labels sync` (closed reports whose issue is still open are included without `--include-closed`, bh-vojht; a closed issue still needs `--include-closed`) |
-| Rejected report that still carries a `delivery` value (a stray) | the service-level `stray_deliveries` sweep; no CLI verb or `doctor` section | `DeliverySweepRequest(repair=True)` through the intake service; no verb |
+| Rejected report that still carries a `delivery` value (a stray) | `bh doctor` `intake_reports` (`stray_delivery`, bh-qwv0t); `bh work delivery sweep` (a dry run) | `bh work delivery sweep --repair` (bead store only, nothing sent), then `bh work labels sync --include-closed` drafts the label removal on the issue |
 | Report left open on `intake:rejected` by a failed close | the next `triage apply` or `bh work reject` | those verbs finish the close |
 | Closed report with `delivery:pending`, or tracked work that never shipped | none (the work is simply unfinished) | not a bug: finish or unlink the work |
 | Reply drafted for a `fixed`-with-owner proposal | none (it is dropped, bh-1hkjm) | file/apply once bh-1hkjm lands; until then draft the reply with `bh work outbox draft` |
@@ -172,8 +172,12 @@ looks for it today.
   work. Operator decision (2026-11-11): its reply is drafted without a close after the accept, and
   the completion path (above) drafts the closing record once the owning work has merged or
   released. Planned; not implemented.
-- **No `doctor` check for "closed report, open issue".** `backfill-close --dry-run` is the only
-  finder; `bh doctor` reports holds only. `bh work triage check` is unrelated: it runs the
+- **`bh doctor` reads end states, not intent.** Section `intake_reports` lists a closed report whose
+  issue is still open, a closed report whose completion comment was abandoned, and a stray
+  `delivery` on a rejected report, all read-only (one issue listing per run, none when no closed
+  report is bound; silent while intake, the outbox or the tracker plugin is off). A closed report
+  whose close is merely drafted or approved is listed too, naming `outbox send`: it is the valid
+  window of invariant 3 until the close goes out. `bh work triage check` is unrelated: it runs the
   deterministic pre-apply checks of open proposals (targets, fix claims, families, field
   consistency, reporter text, mentions, staleness) and never inspects a report's end state.
 - **No timeout for `needs-info`.** A report waiting for its reporter stays open and held until a

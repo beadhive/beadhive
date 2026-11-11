@@ -7,11 +7,30 @@ exists for the releases where "read the changelog" isn't enough to act on.
 
 ## 0.35.10 → 0.35.11 — patch fixes
 
-No action required.
+No action required. The new `bh doctor` findings are read-only: the two outbox ones are silent
+while intake, the outbox or the tracker plugin is off, and the stray-delivery one reads only the
+bead store.
 
 - **Epic landing never plain-closes a bound report (bh-p28yo).** A report bound to an external
   issue is tracked, not adopted, by the planner; if one still carries a child-of edge,
   `bh work finish` leaves it open and warns instead of closing it past the intake close path.
+- **Closed report, open issue (bh-cd03d).** `bh doctor` gains section `intake_reports` (also the
+  `intake_reports` key of `bh doctor --json` and the `beadhive://doctor` resource). Its
+  `closed_open_issue` rows list a closed bound report whose issue the run's single issue listing
+  shows open, and name the repair: `bh work outbox backfill-close`, `bh work outbox draft` for the
+  shapes backfill does not cover, or `outbox send` when a close is already drafted. No listing is
+  made when no closed report is bound to the tracker project; a failed listing is one
+  `issue_listing_failed` row.
+- **Abandoned completion notice (bh-c0x0i).** `notification_behind` rows list a closed report
+  whose completion comment was abandoned (delivery, notified and the abandoned record id). A
+  report whose issue a sent close closed counts as told and is not listed, so reports you replied
+  to by hand and closed with `backfill-close` stay quiet. Repair: draft the reply with
+  `bh work outbox draft` plus `backfill-close`, or leave it when the silence was deliberate.
+- **Stray delivery on a rejected report (bh-qwv0t).** `stray_delivery` rows list a rejected report
+  that still carries `delivery:`, and the new `bh work delivery sweep [--repair]` clears it. It is a
+  dry run unless `--repair` is passed, writes only the bead store and never contacts the tracker;
+  follow it with `bh work labels sync --include-closed` to draft the label removal on the issue.
+  The wire catalog gains the `work delivery sweep` operation.
 
 ## 0.35.9 → 0.35.10 — tracked GitHub reports reply, close and relabel their issue (bh-r5dxi)
 
