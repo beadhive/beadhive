@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import tomllib
 from collections.abc import Iterable
 from importlib import metadata
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 import pytest
 
 from beadlog_sources import (
+    BUILTIN_READERS,
     BUILTIN_STRATEGIES,
     Artifact,
     Category,
@@ -138,3 +140,20 @@ def test_read_help_lists_registered_readers(capsys: pytest.CaptureFixture[str]) 
     with pytest.raises(SystemExit):
         main(["read", "--help"], reader_entry_points=lambda: [_Point("fake", _Reader, "p:F")])
     assert "fake" in capsys.readouterr().out
+
+
+def _entry_points(pyproject: Path, group: str) -> dict[str, str]:
+    data = tomllib.loads(pyproject.read_text())
+    return dict(data["project"].get("entry-points", {}).get(group, {}))
+
+
+def test_pyproject_entry_points_equal_the_builtin_tables() -> None:
+    package = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    root = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    if not root.is_file():
+        pytest.skip("repository root pyproject.toml not reachable")
+    for pyproject in (root, package):
+        assert _entry_points(pyproject, "beadlog.sources") == dict(BUILTIN_STRATEGIES), pyproject
+        readers = _entry_points(pyproject, "beadlog.readers")
+        if readers:
+            assert readers == dict(BUILTIN_READERS), pyproject
