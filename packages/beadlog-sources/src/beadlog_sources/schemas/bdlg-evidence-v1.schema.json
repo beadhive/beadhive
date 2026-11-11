@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:schema:bdlg-evidence:1",
+  "title": "bdlg.evidence/1 evidence corpus line",
+  "description": "One line of a bdlg.evidence/1 JSONL corpus (the backfill evidence IR; not part of the BeadLog format). A corpus is one header line per reader (sorted by name), then one artifact line per record (sorted by key, reader, id). Every line is RFC 8785 canonical JSON; an artifact id is sha256: + the SHA-256 of the canonical JSON of the line without id. Each category requires its normalized attrs; attrs beyond those are allowed. Implemented by beadlog_sources.evidence.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/header"
+    },
+    {
+      "$ref": "#/$defs/artifact"
+    }
+  ],
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{0,8}[1-9])?Z$"
+    },
+    "timestamp_or_null": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "string_or_null": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status_or_null": {
+      "enum": [
+        "proposed",
+        "draft",
+        "accepted",
+        "delivered",
+        "superseded",
+        "rejected",
+        "deprecated",
+        null
+      ]
+    },
+    "header": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "schema",
+        "name",
+        "version",
+        "options",
+        "cursor"
+      ],
+      "properties": {
+        "type": {
+          "const": "header"
+        },
+        "schema": {
+          "const": "bdlg.evidence/1"
+        },
+        "name": {
+          "$ref": "#/$defs/text"
+        },
+        "version": {
+          "$ref": "#/$defs/text"
+        },
+        "options": {
+          "type": "object"
+        },
+        "cursor": {}
+      }
+    },
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "raw",
+        "where"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/text"
+        },
+        "raw": {
+          "$ref": "#/$defs/text"
+        },
+        "where": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "attrs_change": {
+      "type": "object",
+      "required": [
+        "sha",
+        "parents",
+        "author",
+        "committed_at",
+        "cc_type",
+        "cc_scope",
+        "paths",
+        "trailers"
+      ],
+      "properties": {
+        "sha": {
+          "type": "string"
+        },
+        "parents": {
+          "$ref": "#/$defs/strings"
+        },
+        "author": {
+          "type": "string"
+        },
+        "committed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "cc_type": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "cc_scope": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "paths": {
+          "$ref": "#/$defs/strings"
+        },
+        "trailers": {
+          "type": "object"
+        }
+      }
+    },
+    "attrs_review": {
+      "type": "object",
+      "required": [
+        "number",
+        "state",
+        "opened_at",
+        "merged_at",
+        "commits",
+        "closes"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "state": {
+          "type": "string"
+        },
+        "opened_at": {
+          "$ref": "#/$defs/timestamp_or_null"
+        },
+        "merged_at": {
+          "$ref": "#/$defs/timestamp_or_null"
+        },
+        "commits": {
+          "$ref": "#/$defs/strings"
+        },
+        "closes": {
+          "$ref": "#/$defs/strings"
+        }
+      }
+    },
+    "attrs_tracker_item": {
+      "type": "object",
+      "required": [
+        "id",
+        "state",
+        "labels",
+        "assignee",
+        "opened_at",
+        "closed_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "labels": {
+          "$ref": "#/$defs/strings"
+        },
+        "assignee": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "opened_at": {
+          "$ref": "#/$defs/timestamp_or_null"
+        },
+        "closed_at": {
+          "$ref": "#/$defs/timestamp_or_null"
+        }
+      }
+    },
+    "attrs_design_record": {
+      "type": "object",
+      "required": [
+        "declared_status",
+        "declared_date",
+        "owner",
+        "supersedes"
+      ],
+      "properties": {
+        "declared_status": {
+          "$ref": "#/$defs/status_or_null"
+        },
+        "declared_date": {
+          "$ref": "#/$defs/timestamp_or_null"
+        },
+        "owner": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "supersedes": {
+          "$ref": "#/$defs/strings"
+        }
+      }
+    },
+    "attrs_plan_item": {
+      "type": "object",
+      "required": [
+        "parent",
+        "depends_on",
+        "done_marker",
+        "order"
+      ],
+      "properties": {
+        "parent": {
+          "$ref": "#/$defs/string_or_null"
+        },
+        "depends_on": {
+          "$ref": "#/$defs/strings"
+        },
+        "done_marker": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "integer"
+        }
+      }
+    },
+    "attrs_release_marker": {
+      "type": "object",
+      "required": [
+        "version",
+        "released_at",
+        "commit_range"
+      ],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "released_at": {
+          "$ref": "#/$defs/timestamp_or_null"
+        },
+        "commit_range": {
+          "$ref": "#/$defs/string_or_null"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "category",
+        "kind",
+        "key",
+        "title",
+        "occurred_at",
+        "attrs",
+        "raw_attrs",
+        "refs",
+        "provenance",
+        "reader",
+        "reader_version"
+      ],
+      "properties": {
+        "type": {
+          "const": "artifact"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "category": {
+          "enum": [
+            "change",
+            "review",
+            "tracker-item",
+            "design-record",
+            "plan-item",
+            "release-marker"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/text"
+        },
+        "key": {
+          "$ref": "#/$defs/text"
+        },
+        "title": {
+          "type": "string"
+        },
+        "occurred_at": {
+          "$ref": "#/$defs/timestamp_or_null"
+        },
+        "attrs": {
+          "type": "object"
+        },
+        "raw_attrs": {
+          "type": "object"
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          }
+        },
+        "provenance": {
+          "enum": [
+            "observed",
+            "derived"
+          ]
+        },
+        "reader": {
+          "$ref": "#/$defs/text"
+        },
+        "reader_version": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "change"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attrs": {
+                "$ref": "#/$defs/attrs_change"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "review"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attrs": {
+                "$ref": "#/$defs/attrs_review"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "tracker-item"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attrs": {
+                "$ref": "#/$defs/attrs_tracker_item"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "design-record"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attrs": {
+                "$ref": "#/$defs/attrs_design_record"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "plan-item"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attrs": {
+                "$ref": "#/$defs/attrs_plan_item"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "release-marker"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attrs": {
+                "$ref": "#/$defs/attrs_release_marker"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

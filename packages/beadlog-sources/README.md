@@ -8,6 +8,16 @@ never imports `beadhive`.
 - **Contracts** (`beadlog_sources.contracts`): `SourceStrategy` and `ExtractRequest` (producers
   registered in the `beadlog.sources` entry-point group); `JudgmentPort` with `ChoiceQuery`,
   `ScoreQuery`, `Judgment` and `Fallback`, shaped like Jev's Choice/Score primitives.
+- **Evidence IR** (`beadlog_sources.evidence`): source records as frozen `Artifact`s carrying
+  un-interpreted `Ref`s, typed by the closed `Category` set (`change`, `review`,
+  `tracker-item`, `design-record`, `plan-item`, `release-marker`), each with a required-attrs
+  shape validated at construction (`ArtifactShapeError` names the key, category and attr). An
+  `EvidenceCorpus` is written as `bdlg.evidence/1` JSONL: one header per reader (name, version,
+  options, cursor), then records sorted by key, every line RFC 8785 canonical JSON and every
+  record id content-addressed, so a round trip is byte-identical
+  ([schema](src/beadlog_sources/schemas/bdlg-evidence-v1.schema.json), copied to
+  `docs/schemas/beadlog/bdlg-evidence-v1.schema.json`). Not part of the BeadLog format. The
+  fixtures kit `beadlog_sources.testing.evidence` builds one artifact of any category per call.
 - **`bd` baseline strategy** (`beadlog_sources.bd`, entry point `bd`): one `bd -C <root> export
   --all` read (never a `bd history` loop) turned into current-state events per issue row — a
   `create` snapshot, a `phase` when not open, `label_add` / `edge_add` per label and dependency,
