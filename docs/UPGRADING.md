@@ -5,6 +5,14 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.35.10 → 0.35.11 — patch fixes
+
+No action required.
+
+- **Epic landing never plain-closes a bound report (bh-p28yo).** A report bound to an external
+  issue is tracked, not adopted, by the planner; if one still carries a child-of edge,
+  `bh work finish` leaves it open and warns instead of closing it past the intake close path.
+
 ## 0.35.9 → 0.35.10 — tracked GitHub reports reply, close and relabel their issue (bh-r5dxi)
 
 No action required.

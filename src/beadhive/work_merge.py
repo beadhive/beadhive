@@ -435,13 +435,37 @@ def impl__postland_revalidate_molecule(
         )
 
 
+def _plain_closeable_reports(api, reports):
+    """Ids of still-open origin reports an epic landing may close with a plain bead close.
+
+    A BOUND report (it carries the intake ``intake.source`` document, i.e. it was imported from an
+    external issue) is never one of them (bh-p28yo): its close is the intake close path's (the
+    held close, the reply, the issue close, the completion record), and a plain `bd close` would
+    skip all of it. The planner never adopts a bound report child-of an epic (it links `tracks`),
+    so this only fires on a hand-made or legacy child-of edge; the report stays open and is warned
+    about so it can be closed through `bh work` intake."""
+    ids = []
+    for r in reports:
+        if str(r.get("status", "")) == "closed":
+            continue
+        if api.adopt.is_bound_report(r):
+            api.typer.echo(
+                f"⚠ origin report {r.get('id')} is bound to an external issue — not closed by the "
+                "epic landing; close it through the intake close path",
+                err=True,
+            )
+            continue
+        ids.append(str(r.get("id")))
+    return ids
+
+
 def impl__close_molecule_origin_reports(api, origin_reports, epic, main):
     """Auto-close any adopted origin report now that its epic has landed: the report is
     provenance that rides the epic to completion, so it closes WITH the molecule rather than
     lingering open forever. Best-effort — a close failure only warns, never unwinds a completed
     land. Batched into ONE `bd close` for every still-open report (`bd close` accepts multiple
     ids) instead of a subprocess-per-report loop."""
-    ids = [str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"]
+    ids = _plain_closeable_reports(api, origin_reports)
     if not ids:
         return
     if (
@@ -796,11 +820,14 @@ def impl__close_land_origin_reports(api, bead, main):
     detached bead invisible to the guard yet still CLOSED by the land, which is worse than fixing
     neither."""
     children = api.bd.children(bead, main)
-    ids = [
-        str(r.get("id"))
-        for r in (children if isinstance(children, list) else [])
-        if api.adopt.is_origin_report(r.get("labels")) and str(r.get("status", "")) != "closed"
-    ]
+    ids = _plain_closeable_reports(
+        api,
+        [
+            r
+            for r in (children if isinstance(children, list) else [])
+            if api.adopt.is_origin_report(r.get("labels"))
+        ],
+    )
     if not ids:
         return
     if (

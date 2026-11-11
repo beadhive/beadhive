@@ -180,3 +180,12 @@ def test_mixed_reports_split_between_adopts_and_tracks_and_provenance_comes_from
 def test_a_frame_without_bound_reports_has_no_tracks_key():
     assert "tracks" not in adopt.frame_from_beads([_report("rep-1", "t")])["epic"]
     assert adopt.tracks_of({}) == []
+
+
+def test_a_bound_report_is_never_adopted_child_of_so_landing_cannot_plain_close_it():
+    """bh-p28yo reachability: promote + planner adoption routes a bound report to ``tracks``
+    (report to epic, non-blocking), never ``adopts`` (the child-of edge the landing closes)."""
+    frame = adopt.frame_from_beads([_bound("rep-1", "t"), _report("rep-2", "t")])
+    epic = frame["epic"]
+    assert "rep-1" not in adopt.adopts_of(epic)
+    assert adopt.tracks_of(epic) == ["rep-1"]

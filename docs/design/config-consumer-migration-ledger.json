@@ -2114,7 +2114,7 @@
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 7778,
+        "line": 7801,
         "path": "tests/test_work.py",
         "target": "beadhive.config.max_commits"
       },
