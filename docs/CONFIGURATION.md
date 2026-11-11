@@ -458,7 +458,13 @@ as `not_planned`, `duplicate-of` as `duplicate`; `needs-info` never closes), is 
 close`, and only after that record's comment and every other comment of the report are settled
 and the report's latest labels record is sent (`close_not_ready` otherwise, before any request).
 `bh work outbox backfill-close [--dry-run]` drafts the close for reports already closed whose
-issue is still open, drafting the missing reply too when the report never got one. The probe reports
+issue is still open, drafting the missing reply too when the report never got one. A report closed
+at completion with delivery `merged` or `released` (it tracked work) whose issue is still open is
+recovered too (bh-iyog8): the close (reason `completed`) is attached to its latest reply or
+milestone record that carries a live comment and no close, whether that comment is already sent or
+not, and with no such record the completion record (the `merged` or `released` wording) is drafted
+with the close. A report with delivery `pending`, an unlinked report and a closed issue are skipped
+with a reason; a re-run drafts nothing twice, and nothing is approved or sent. The probe reports
 `issue.close` as `no` below the triage role. A `duplicate-of` close also names the canonical
 report's issue (bh-iamru): the PATCH adds `duplicate_issue_id` (the canonical's numeric issue id,
 read with one GET before the write), and the close's digest shows `duplicate_of: <url>`. It needs
@@ -542,6 +548,9 @@ the extra refuses naming `beadhive[xtdb]`.
 No key binds a tracker (the store binding does that), holds a credential, a grant or an approval,
 and no key can enable or pre-approve a tracker write.
 
+What the keys below produce for a report, from import to the close of its issue, is in
+[Report lifecycle and end states](INTAKE-LIFECYCLE.md).
+
 | Key (under `intake.external`) | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | enable `bh work import <issue-url>` and `bh work discover`; off means the intake port is the null one and they refuse with `intake_disabled`. They also need `plugins.tracker-github.enabled` (and the hive's `stores.public.adapter` binding and `plugins.tracker-github.read.issues.enabled`): without the plugin on no tracker adapter is built and they refuse naming it. The token comes from `plugins.tracker-github.credential.sources`, read per operation and never stored (unless `credential.per_invocation_cache` opts into keeping it in memory for one command) |
@@ -550,9 +559,9 @@ and no key can enable or pre-approve a tracker write.
 | `discovery.interval_seconds` | unset | seconds between timer runs; **required** when `discovery.enabled` is true (there is no default cadence) |
 | `discovery.full_reconcile_every` | `24` | every Nth timer run is a full pass (all issues including closed, then the id reconcile); the rest resume from the checkpoint |
 | `completion_policy` | `close-on-merge` | which milestone completes a linked report: `close-on-merge`, or `close-on-release` (the report stays open and held, `delivery:merged`, until a release is verified) |
-| `milestones.draft_on_merge` | `false` | draft a `merged` outbox record when linked work merges |
-| `milestones.draft_on_release` | `false` | draft a `released` outbox record when `bh work delivery release <tag>` verifies a release |
-| `milestones.append_release_to_closed` | `false` | also draft the `released` record for a report that is already closed |
+| `milestones.draft_on_merge` | `false` | draft a `merged` progress notice when linked work merges; the completion milestone always drafts its record (with an `issue.close`) regardless |
+| `milestones.draft_on_release` | `false` | draft a `released` progress notice when `bh work delivery release <tag>` verifies a release; the completion milestone always drafts its record (with an `issue.close`) regardless |
+| `milestones.append_release_to_closed` | `false` | also draft the `released` notice (comment only) for a report that is already closed |
 | `milestones.catch_up_on_link` | `false` | when `bh work link` (or `accept --work`) links a report to work that already merged (never a `duplicate-of`, whose delivery is its canonical report's), give it the milestones it missed from the merge (and verified release) another tracking report recorded: `delivery:merged` / `released`, a record where drafting is on, then the completion policy. Off, such a report stays `delivery:pending` |
 | `milestones.draft_on_start` | `false` | draft a `started` record for every report that tracks work (still `delivery:pending`) when that work is claimed for the first time (`bh work claim`, `claim --group`, `start`, `next`). Keyed on the work: a re-claim, a resume after a bounce or a claim after an abandon drafts nothing. A failure only warns; the claim never fails, and off the claim reads nothing extra |
 | `milestones.draft_on_blocked` | `false` | allow `bh work delivery blocked <work> --reason <public text>` to draft a `blocked` record (fixed wording plus the reason) for every report that tracks the work and is still `delivery:pending`. Off refuses naming this key |

@@ -278,19 +278,25 @@ def plan_apply(
     with no reply and no close, exactly as before closes existed; a ``fixed`` or ``reject`` reply
     still needs it (its draft refuses first, so nothing is written).
 
-    A reply is drafted BEFORE any other verb, so a draft that refuses leaves the report untouched;
-    drafting the same text again is O2 (no write), so a rerun after a later failure is safe."""
+    A tracked or new proposal with reporter text drafts that reply AFTER its accept (bh-ac6tz).
+    A reject's reply is drafted BEFORE any other verb, so a draft that refuses leaves the report
+    untouched; drafting the same text again is O2 (no write), so a rerun after a later failure is
+    safe."""
     d = proposal.disposition
     owner = owner_of(proposal)
     text = proposal.reporter_text
     reply = (ApplyStep.DRAFT_REPLY,) if bound else ()
     close = close_reason_for(d) if bound else None  # a close rides on the drafted reply
+    # a tracked or new report keeps its issue open (the work is not done), so its reply is drafted
+    # AFTER the accept and carries no close; with no reporter text, or no outbox, nothing drafts
+    told = (ApplyStep.DRAFT_REPLY,) if bound and text and replies else ()
     if d is ProposalDisposition.DECISION:
         return "a decision is listed for the operator and never applied"
     if d is ProposalDisposition.NEW or (d is ProposalDisposition.PARTIALLY_FIXED and not owner):
-        return ApplyPlan((ApplyStep.ACCEPT_NEW_WORK,) if bound else (ApplyStep.ACCEPT,))
+        accept = ApplyStep.ACCEPT_NEW_WORK if bound else ApplyStep.ACCEPT
+        return ApplyPlan((accept, *told), reason=text if told else "")
     if d in (ProposalDisposition.TRACKED, ProposalDisposition.PARTIALLY_FIXED):
-        return ApplyPlan((ApplyStep.ACCEPT_WORK,), work=owner)
+        return ApplyPlan((ApplyStep.ACCEPT_WORK, *told), work=owner, reason=text if told else "")
     if d is ProposalDisposition.FIXED:
         if owner:
             return ApplyPlan((ApplyStep.ACCEPT_WORK,), work=owner)

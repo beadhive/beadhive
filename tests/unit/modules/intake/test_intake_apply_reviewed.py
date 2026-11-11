@@ -1343,3 +1343,68 @@ def test_apply_never_drafts_a_reopen_even_for_a_closed_issue_with_the_gate_on() 
     assert done.status is ApplyStatus.APPLIED and done.drafted == ()
     assert not [r for r in hive.records(report) if r.op(OpKind.REOPEN) is not None]
     assert hive.world.write_requests() == 0
+
+
+# -- a tracked or new proposal's reporter text is drafted after the accept (bh-ac6tz) ----------
+
+
+def _tracked(hive: Hive, text: str | None, *, disposition: str = "tracked") -> str:
+    report = hive.report("a crash")
+    document: dict = {"disposition": disposition}
+    if disposition == "tracked":
+        document["targets"] = [hive.work("the fix")]
+    if text is not None:
+        document["reporter_text"] = text
+    hive.propose(report, document)
+    hive.review(report, {"verdict": "confirmed"})
+    return report
+
+
+@pytest.mark.parametrize("disposition", ["tracked", "new"])
+def test_a_dry_run_lists_the_reply_after_the_accept(disposition: str) -> None:
+    hive = Hive()
+    report = _tracked(hive, "Thanks, we are tracking this.", disposition=disposition)
+    before = hive.writes()
+
+    planned = item(hive.apply(dry_run=True), report)
+
+    accept = ApplyStep.ACCEPT_WORK if disposition == "tracked" else ApplyStep.ACCEPT_NEW_WORK
+    assert planned.status is ApplyStatus.PLANNED
+    assert planned.steps == (accept, ApplyStep.DRAFT_REPLY)
+    assert hive.writes() == before
+
+
+@pytest.mark.parametrize("disposition", ["tracked", "new"])
+def test_apply_drafts_exactly_one_reply_with_no_close_and_a_rerun_adds_none(
+    disposition: str,
+) -> None:
+    hive = Hive(outbox=CLOSING)
+    report = _tracked(hive, "Thanks, we are tracking this.", disposition=disposition)
+
+    done = item(hive.apply(), report)
+
+    assert done.status is ApplyStatus.APPLIED and len(done.drafted) == 1
+    assert done.steps[-1] is ApplyStep.DRAFT_REPLY
+    record, close = _close_of(hive, report)
+    assert close is None and record.op(OpKind.COMMENT) is not None  # the work is not done
+    assert hive.store.get(report).status != "closed"
+    before = hive.writes()
+
+    again = hive.apply()
+
+    assert again.applied == () and again.drafted == ()
+    assert len(hive.records(report)) == 1 and hive.writes() == before
+    assert hive.world.write_requests() == 0  # drafted, never sent
+
+
+@pytest.mark.parametrize("disposition", ["tracked", "new"])
+def test_no_reply_step_without_reporter_text(disposition: str) -> None:
+    hive = Hive()
+    report = _tracked(hive, None, disposition=disposition)
+
+    planned = item(hive.apply(dry_run=True), report)
+    done = item(hive.apply(), report)
+
+    assert ApplyStep.DRAFT_REPLY not in planned.steps
+    assert done.status is ApplyStatus.APPLIED and done.drafted == ()
+    assert hive.records(report) == []

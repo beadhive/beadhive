@@ -507,7 +507,8 @@ provider is the opt-in `beadhive-beadlog-xtdb` plugin package (`beadhive[xtdb]`)
 ### `modules/intake`
 
 Owns **external intake**: the one shared intake queue, the intake and origin vocabulary and, in
-later beads, import, link, the conversation model and the outbox (`external-intake-module-adr.md`).
+later beads, import, link, the conversation model and the outbox (`external-intake-module-adr.md`;
+the report states and end states are in [INTAKE-LIFECYCLE.md](INTAKE-LIFECYCLE.md)).
 The consumer port is `beadhive.modules.intake.contracts.IntakePort`; `IntakeService` is its one
 implementation and `NullIntake` is bound when intake is off (`bind_intake`). Intake's own outbound
 ports are `ReportStore` (the bead store holding report beads), `CheckpointStore` and `LabelPolicy`.
@@ -676,7 +677,9 @@ is `sent`. `reconcile` reads the issue's state back. Apply drafts a reply before
 `duplicate-of` gets one only while an outbox is bound (`ProposalService(replies=)`).
 `IntakePort.backfill_closes` (`bh work outbox backfill-close`) adds the close to the latest reply of
 every report closed in the store whose issue is still open, and drafts the reply a report never
-got from its applied proposal (`ProposalService.backfill_reply`). Tests:
+got from its applied proposal (`ProposalService.backfill_reply`). It also recovers a tracked report
+closed at delivery `merged`/`released` with its issue open: the completion close attaches to its
+latest live reply or milestone record, else a completion record is drafted (bh-iyog8). Tests:
 `tests/unit/modules/intake/test_intake_outbox_close_sender.py`.
 
 The sender carries `issue.reopen` (`bh-ih484`) as a fourth gate, the inverse of a close:
@@ -797,8 +800,9 @@ The merge and release milestones (I10, `bh-56s4l`) are `application/milestones.p
 `MilestoneService` behind the new `IntakePort.on_work_merged(MergeFact)` and
 `IntakePort.on_release(ReleaseFact)` (free under `NullIntake`). A merge sets `delivery:merged` on
 every report that tracks the work, open or closed, records `facts.merged` in `intake.outbox`,
-drafts a `merged` record when `intake.external.milestones.draft_on_merge` and
-`outbox.enabled` are on, and applies the completion policy; a release is verified by the new
+drafts a `merged` record when `outbox.enabled` is on and either `draft_on_merge` is on or merging
+completes the report (the completion record always drafts and carries an `issue.close`,
+bh-cir2q), and applies the completion policy; a release is verified by the new
 `ReleaseVerifier` port (`beadhive.adapters.intake.GitReleaseVerifier`: `git rev-parse` and `git
 merge-base --is-ancestor`, read-only; kit fake `FakeReleaseVerifier`) and only a `YES` moves a
 report to `delivery:released`. Milestones only DRAFT: the service holds no tracker, grant or

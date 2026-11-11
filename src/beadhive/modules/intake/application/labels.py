@@ -221,11 +221,21 @@ class LabelProjection:
             machine.require_kind_enabled(OpKind.LABELS, self._outbox)
             require_private_store(self._posture)
         selected, skipped = self._select(request)
+        live: Mapping[str, TrackerIssue] = {}
+        if selected:
+            live = self._listing(include_closed=request.include_closed)
+            if not request.include_closed and not request.reports:
+                # A closed report stays in scope only while its issue is OPEN (the one listing
+                # holds open issues only): labels on a live issue must be current.
+                selected = [
+                    v
+                    for v in selected
+                    if v.status != "closed" or (v.binding and v.binding.url in live)
+                ]
         facts = {view.id: self._facts(view) for view in selected}
         catalog = LabelCatalog.build(self._registry, self._settings, _observed(facts.values()))
         items = list(skipped)
         if selected:
-            live = self._listing(include_closed=request.include_closed)
             defined = self._defined()
             with self._batch():  # one process: the lock may reuse its host check (bh-25fvb)
                 for view in selected:
@@ -375,11 +385,8 @@ class LabelProjection:
                 else:
                     views.append(view)
         else:
-            views = [
-                v
-                for v in self._store.bound_reports()
-                if request.include_closed or v.status != "closed"
-            ]
+            # closed reports are kept here; sync() drops those whose issue is not open
+            views = list(self._store.bound_reports())
         for view in views:
             binding = view.binding
             assert binding is not None
