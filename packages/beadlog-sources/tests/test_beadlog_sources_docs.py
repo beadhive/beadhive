@@ -129,6 +129,7 @@ def _statuses(strategy: DocsStrategy) -> dict[str, str]:
 
 
 def _extract(repo: Path, baseline: Sequence[BeadEvent], judge: Any = None, **options: str):
+    options.setdefault("id_prefix", "bh")  # prefixes are explicit, never derived
     strategy = DocsStrategy()
     events = strategy.extract(_request(repo, baseline, judge, **options))
     return strategy, events
@@ -513,7 +514,7 @@ def test_a_judge_outcome_that_was_not_offered_is_refused(repo: Path) -> None:
 
 def test_the_deterministic_judge_is_a_judge_when_handed_over(repo: Path) -> None:
     baseline = _judged_repo(repo)
-    strategy, events = _extract(repo, baseline, judge=DeterministicJudge())
+    strategy, events = _extract(repo, baseline, judge=DeterministicJudge(), id_prefix="bh")
     report = strategy.report()
     assert report is not None and report["judge"]["engine"] == "deterministic-lexical"
     # "Search index rebuild" is the bead's exact title; the fuzzier titles stay residual
@@ -521,10 +522,11 @@ def test_the_deterministic_judge_is_a_judge_when_handed_over(repo: Path) -> None
     assert report["judge_calls"] == 4
 
 
-def test_a_judged_new_with_no_bead_to_read_a_prefix_from_asks_for_one(repo: Path) -> None:
+def test_a_judged_new_without_an_explicit_prefix_asks_for_one(repo: Path) -> None:
     _write(repo, DOC, "# Anything\n")
-    with pytest.raises(ValueError, match="id_prefix"):
-        _extract(repo, [], judge=FakeJudge())
+    for baseline in ([], [_create("bh-1", "Some bead")]):  # never guessed from the baseline
+        with pytest.raises(ValueError, match="id_prefix"):
+            DocsStrategy().extract(_request(repo, baseline, FakeJudge()))
     _, events = _extract(repo, [], judge=FakeJudge(), id_prefix="zz")
     assert {e.bead.id.split("-")[0] for e in events} == {"zz"}
 
@@ -657,15 +659,18 @@ def test_the_cli_hands_the_judge_over_only_when_enabled(
         EXTRACTED,
         "--baseline",
         str(baseline_path),
+        "--option",
+        "id_prefix=bh",
         "-o",
         str(tmp_path / "o.bdlg"),
     ]
-    assert main(argv, entry_points=lambda: [SpyPoint()], environ={}) == 0
+    assert main(argv, entry_points=lambda: [SpyPoint()], builtin_strategies={}, environ={}) == 0
     assert seen[-1].judge is None
     assert (
         main(
             [*argv, "--judge-enabled", "true"],
             entry_points=lambda: [SpyPoint()],
+            builtin_strategies={},
             environ={},
             runner=lambda *a, **k: None,  # type: ignore[arg-type,return-value]
         )

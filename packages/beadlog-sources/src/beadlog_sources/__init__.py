@@ -27,6 +27,16 @@ never imports ``beadhive``. It owns:
 - the opt-in, bounded ``dolt_history_issues`` gap fill (:mod:`beadlog_sources.bd_gapfill`):
   snapshot-level history for beads with no ``created`` event, read in chunked ``SELECT`` batches
   with a resumable cursor and emitted as derived, commit-dated, reduced-confidence events;
+- the evidence IR (:mod:`beadlog_sources.evidence`): :class:`Artifact` and :class:`Ref` source
+  records typed by the closed :class:`Category` set (each with a validated required-attrs
+  shape) and the ``bdlg.evidence/1`` JSONL corpus (:class:`EvidenceCorpus`), content-addressed
+  and byte-stable; synthetic corpora come from :mod:`beadlog_sources.testing.evidence`;
+- the reader port and discovery (:mod:`beadlog_sources.readers`): :class:`SourceReader`,
+  :class:`ReadRequest`, the ``beadlog.readers``/``beadlog.sources`` entry-point groups merged with
+  a static built-in table so discovery never depends on the installed distribution;
+- the ledger directory port (:mod:`beadlog_sources.ledger`): which registered ledger owns a
+  bead-id token, by exact id-set membership only (never a prefix guess), local / foreign /
+  ambiguous / unresolved; test fake in :mod:`beadlog_sources.testing.ledger`;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
@@ -105,6 +115,29 @@ from .contracts import (
     SourceStrategy,
 )
 from .docs import DocsStrategy
+from .evidence import (
+    CATEGORY_SHAPES,
+    DECLARED_STATUSES,
+    EVIDENCE_SCHEMA,
+    READER_PROVENANCES,
+    REF_KINDS,
+    Artifact,
+    ArtifactShapeError,
+    AttrType,
+    Category,
+    CategoryShape,
+    EvidenceCorpus,
+    EvidenceFormatError,
+    ReaderHeader,
+    Ref,
+    artifact_id,
+    build_corpus,
+    dumps_evidence,
+    evidence_schema,
+    loads_evidence,
+    read_evidence,
+    write_evidence,
+)
 from .git_dates import CommitDate, CommitDates, GitReadError, commit_dates
 from .judges import (
     CommandJudge,
@@ -117,7 +150,32 @@ from .judges import (
     judge_schema,
     settings_from,
 )
+from .ledger import (
+    AMBIGUOUS,
+    FOREIGN,
+    LOCAL,
+    RESOLUTION_KINDS,
+    UNRESOLVED,
+    CachedLedgerDirectory,
+    LedgerDirectory,
+    LedgerError,
+    Resolution,
+    resolve,
+    resolve_ref,
+)
 from .planning import PlanningStrategy
+from .readers import (
+    BUILTIN_READERS,
+    BUILTIN_STRATEGIES,
+    READERS_GROUP,
+    DuplicateRegistrationError,
+    ReadRequest,
+    Registration,
+    SourceReader,
+    discover_readers,
+    discover_strategies,
+    load_reader,
+)
 from .reconcile import (
     PlanEntry,
     ReconcileClass,
@@ -141,7 +199,49 @@ def distribution_name() -> str:
 
 
 __all__ = [
+    "BUILTIN_READERS",
+    "BUILTIN_STRATEGIES",
+    "READERS_GROUP",
+    "DuplicateRegistrationError",
+    "ReadRequest",
+    "Registration",
+    "SourceReader",
+    "discover_readers",
+    "discover_strategies",
+    "load_reader",
+    "AMBIGUOUS",
+    "FOREIGN",
+    "LOCAL",
+    "RESOLUTION_KINDS",
+    "UNRESOLVED",
+    "CachedLedgerDirectory",
+    "LedgerDirectory",
+    "LedgerError",
+    "Resolution",
+    "resolve",
+    "resolve_ref",
     "ABSTAIN",
+    "CATEGORY_SHAPES",
+    "DECLARED_STATUSES",
+    "EVIDENCE_SCHEMA",
+    "READER_PROVENANCES",
+    "REF_KINDS",
+    "Artifact",
+    "ArtifactShapeError",
+    "AttrType",
+    "Category",
+    "CategoryShape",
+    "EvidenceCorpus",
+    "EvidenceFormatError",
+    "ReaderHeader",
+    "Ref",
+    "artifact_id",
+    "build_corpus",
+    "dumps_evidence",
+    "evidence_schema",
+    "loads_evidence",
+    "read_evidence",
+    "write_evidence",
     "BdBaselineStrategy",
     "BdGapfillError",
     "BdHistoryError",

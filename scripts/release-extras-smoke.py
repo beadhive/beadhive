@@ -13,6 +13,9 @@ workspace or ``tool.uv.sources`` can leak in, and checks in each (bh-lrs9v):
 * ``[xtdb]``: the real ``beadlog.store`` factory builds the store; psycopg and ``beadlog_xtdb``
   import; ``doctor`` no longer reports a missing dependency.
 
+Each venv also runs the installed ``beadlog extract --help`` (every strategy listed from the wheel's
+own entry points) and ``beadlog read --help`` (bh-7br2h).
+
 Each venv then runs the installed ``bh`` entry point: ``bh --version`` plus commands that import the
 full ``beadhive.cli`` and build its option types (``bh --help``, ``bh hq authority --help``,
 ``bh hq placement --help``), each of which must exit 0. ``--version`` alone never imports the CLI,
@@ -173,6 +176,19 @@ def main(argv: list[str]) -> int:
             print(f"-- {name}: cli", flush=True)
             for args in CLI_COMMANDS:
                 run([str(venv / "bin" / "bh"), *args], cwd=work, env=env, quiet="--help" in args)
+            # The wheel vendors beadlog_sources and must register its own entry points and the
+            # `beadlog` script (bh-7br2h): extract lists every strategy, no other dist installed.
+            help_text = subprocess.run(
+                [str(venv / "bin" / "beadlog"), "extract", "--help"],
+                cwd=work,
+                check=True,
+                env=env,
+                capture_output=True,
+                text=True,
+            ).stdout
+            for strategy in ("bd", "bd-history", "docs", "git-commits", "planning"):
+                assert f"extract with the {strategy} strategy" in help_text, strategy
+            run([str(venv / "bin" / "beadlog"), "read", "--help"], cwd=work, env=env, quiet=True)
             print(f"== {name}: ok", flush=True)
     print("extras smoke: bare, [github] and [xtdb] all passed (checks + full CLI)")
     return 0

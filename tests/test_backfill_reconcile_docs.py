@@ -65,6 +65,7 @@ def _repo(
 def _request(
     repo: Path, baseline: Sequence[Any], judge: Any = None, **options: str
 ) -> ExtractRequest:
+    options.setdefault("id_prefix", "ag-infra")  # prefixes are explicit, never derived
     return ExtractRequest(
         root=repo,
         group=GROUP,
