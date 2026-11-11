@@ -219,7 +219,9 @@ def _cmd_read(
         raise CliError(str(exc)) from exc
     options = _options(args.option)
     artifacts = list(reader.read(ReadRequest(root=Path(args.root), options=options)))
-    corpus = build_corpus(artifacts, [ReaderHeader(reader.name, reader.version, options)])
+    hook = getattr(reader, "header_options", None)
+    recorded = hook(options) if callable(hook) else options
+    corpus = build_corpus(artifacts, [ReaderHeader(reader.name, reader.version, recorded)])
     write_evidence(corpus, Path(args.output))
     print(f"read {len(artifacts)} artifacts with {reader.name} {reader.version}", file=out)
     return 0

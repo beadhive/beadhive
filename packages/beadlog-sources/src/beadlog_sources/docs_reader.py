@@ -13,8 +13,9 @@ Options (``ReadRequest.options``; every value may be a string, lists are comma-s
 - ``files``: explicit files of any extension, routed by ``DocFormat.detect`` (no format detects
   one: an error).
 - ``formats``: enabled format names (default ``markdown``).
-- ``namespaces``: bead id prefixes that make a token bead-looking (``bh,hq``); default a generic
-  shape (``<prefix>-<id>`` where the id has a digit).
+- ``namespaces``: bead id prefixes that make a token bead-looking (``bh,hq``), see
+  :mod:`beadlog_sources.tokens`; without them a generic shape is used (it misses digit-free ids).
+  The run header records ``token_mode`` (``namespaces`` or ``generic``).
 - ``first_add``: record the first-add commit time (default true); ``git``: the git executable.
 
 ``occurred_at`` is the committer time of the commit that first added the file, ``None`` when git
@@ -31,10 +32,10 @@ from types import MappingProxyType
 from typing import Any
 
 from ._sources import SourceError, csv, first_adds, is_git_repo, truthy
-from .commits import candidate_pattern
 from .doc_formats import BUILTIN_FORMATS, DocFormat, ParsedDoc
 from .evidence import Artifact, Category, Ref
 from .readers import ReadRequest
+from .tokens import bead_token_pattern, find_bead_tokens, token_mode
 
 READER_NAME = "docs"
 READER_VERSION = "0.1.0"
@@ -51,12 +52,6 @@ LAYOUT_PRESETS: Mapping[str, str] = MappingProxyType(
     }
 )
 
-# Generic bead-looking token: a short lowercase prefix, a hyphen, an id segment holding a digit.
-GENERIC_BEAD_TOKEN = re.compile(
-    r"(?<![0-9A-Za-z_-])[a-z][a-z0-9]{1,11}-(?=[0-9a-z]*[0-9])[0-9a-z]+(?:[.-][0-9a-z]+)*"
-    r"(?![0-9A-Za-z_])",
-    re.IGNORECASE,
-)
 _BEADS_KEY = re.compile(r"^\s*-?\s*beads?:", re.IGNORECASE)
 _GLOB_CHARS = re.compile(r"[*?\[]")
 
@@ -116,8 +111,12 @@ class DocsReader:
 
     @staticmethod
     def _pattern(options: Mapping[str, Any]) -> re.Pattern[str]:
-        namespaces = csv(options.get("namespaces", ""))
-        return candidate_pattern(namespaces) if namespaces else GENERIC_BEAD_TOKEN
+        return bead_token_pattern(csv(options.get("namespaces", "")))
+
+    @staticmethod
+    def header_options(options: Mapping[str, Any]) -> dict[str, Any]:
+        """The options recorded in the run's ReaderHeader: the given ones plus ``token_mode``."""
+        return {**options, "token_mode": token_mode(csv(options.get("namespaces", "")))}
 
     @staticmethod
     def _discover(
@@ -204,8 +203,7 @@ class DocsReader:
         seen: set[tuple[str, str]] = set()
 
         def collect(text: str, where: str) -> None:
-            for match in pattern.finditer(text):
-                token = match.group(0).lower()
+            for token in find_bead_tokens(text, pattern):
                 if (where, token) not in seen:
                     seen.add((where, token))
                     refs.append(Ref("bead-token", token, where))

@@ -236,6 +236,12 @@ otherwise, with identical results). Options (`--option key=value`): `layouts` (p
 `design`, `adr`, `architecture`; `none`), `globs`, `files` (any extension a format detects),
 `formats`, `namespaces`, `first_add`, `git`.
 
+Bead-token recognition is shared (`beadlog_sources.tokens`). With `namespaces` (id prefixes, for
+example `bh,hq`) every `<ns>-<id>` is a token. Without them a generic shape is used (a short
+prefix, a hyphen and an id segment containing a digit), which **misses digit-free ids such as
+`bh-art`**; the run header records `token_mode` (`namespaces` or `generic`) so a corpus says which
+applied. `bh backfill` will pass `namespaces` from the registered ledgers.
+
 **Discovery.** Strategies come from the `beadlog.sources` entry-point group and readers from
 `beadlog.readers`. The `bh` wheel registers the strategies in its own metadata, and
 `beadlog_sources.readers` carries a static built-in table (`BUILTIN_STRATEGIES`,

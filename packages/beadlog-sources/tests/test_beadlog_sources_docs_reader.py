@@ -25,9 +25,9 @@ from beadlog_sources.cli import main
 from beadlog_sources.commits import candidate_pattern
 from beadlog_sources.doc_formats import markdown_it_available, parse_frontmatter
 from beadlog_sources.docs import discover_docs, frontmatter_candidate
-from beadlog_sources.docs_reader import GENERIC_BEAD_TOKEN
 from beadlog_sources.evidence import Category, read_evidence
 from beadlog_sources.readers import load_reader
+from beadlog_sources.tokens import GENERIC_BEAD_TOKEN
 
 HAS_MD = markdown_it_available()
 needs_md = pytest.mark.skipif(not HAS_MD, reason="markdown-it-py ([md] extra) not installed")
@@ -303,6 +303,9 @@ def test_beadlog_read_docs_writes_an_evidence_corpus(tree: Path, tmp_path: Path)
     assert main(["read", "docs", "--root", str(tree), "--output", str(out)]) == 0
     corpus = read_evidence(out)
     assert len(corpus.artifacts) == 6
+    assert corpus.headers[0].options["token_mode"] == "generic"
+    main(["read", "docs", "--root", str(tree), "--output", str(out), "--option", "namespaces=bh"])
+    assert read_evidence(out).headers[0].options["token_mode"] == "namespaces"
     assert load_reader(discover_readers()["docs"]).name == "docs"
 
 
