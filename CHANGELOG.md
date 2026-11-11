@@ -13,6 +13,15 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.35.11 (2026-11-11)
+
+### Fix
+
+- **intake**: add work delivery sweep to find and clear a stray delivery value
+- **doctor**: report closed-report end states and stray deliveries in intake_reports
+- **intake**: scan closed reports for an open issue and an abandoned completion notice
+- **work**: epic landing never plain-closes a bound adopted report
+
 ## v0.35.10 (2026-11-11)
 
 ### Fix
