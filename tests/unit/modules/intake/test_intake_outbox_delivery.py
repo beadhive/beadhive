@@ -8,6 +8,8 @@ they make, with no writer anywhere (``write_requests() == 0``).
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from beadhive.modules.intake.domain import (
@@ -166,15 +168,37 @@ def test_x16_an_abandoned_completion_comment_closes_with_notification_behind(pol
     assert notification_behind(event.value, notified_of(()))
 
 
-def test_x16_a_superseded_merged_record_settles_close_on_merge() -> None:
+def test_x16_an_operator_superseded_merged_record_settles_close_on_merge() -> None:
     ids = SequentialIdSource()
     b = binding(1)
     doc, merged = milestone(OutboxDocument(), b, OutboxEvent.MERGED, "c1", ids)
-    doc, _ = milestone(doc, b, OutboxEvent.RELEASED, "v1@c1", ids)
-    assert doc.record(merged).op(C).state is OpState.SUPERSEDED
-    assert ob.close_rule(
-        doc, delivery="released", completion=CompletionPolicy.CLOSE_ON_MERGE, outbox_enabled=True
+    record = doc.record(merged)
+    retired = tuple(
+        dataclasses.replace(o, state=OpState.SUPERSEDED) if o.kind is C else o
+        for o in record.operations
     )
+    doc = dataclasses.replace(
+        doc, records={merged: dataclasses.replace(record, operations=retired)}
+    )  # no successor record: a deliberate decision not to tell
+    assert ob.close_rule(
+        doc, delivery="merged", completion=CompletionPolicy.CLOSE_ON_MERGE, outbox_enabled=True
+    )
+
+
+@pytest.mark.parametrize("how", ["sent", "abandoned"])
+def test_x16_an_automatically_superseded_merged_record_waits_for_its_successor(how) -> None:
+    ids = SequentialIdSource()
+    b = binding(1)
+    merge = CompletionPolicy.CLOSE_ON_MERGE
+    doc, merged = milestone(OutboxDocument(), b, OutboxEvent.MERGED, "c1", ids)
+    doc, released = milestone(doc, b, OutboxEvent.RELEASED, "v1@c1", ids)
+    assert doc.record(merged).op(C).state is OpState.SUPERSEDED
+    assert doc.record(released).supersedes == merged
+    assert not ob.close_rule(doc, delivery="released", completion=merge, outbox_enabled=True)
+
+    doc, _ = settle(doc, b, released, how, ids)
+
+    assert ob.close_rule(doc, delivery="released", completion=merge, outbox_enabled=True)
 
 
 def test_close_rule_with_the_outbox_off_closes_at_the_milestone() -> None:

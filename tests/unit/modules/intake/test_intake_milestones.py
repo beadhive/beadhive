@@ -285,7 +285,12 @@ def test_the_outbox_off_records_the_fact_and_the_dimension_but_drafts_no_record(
 
 
 def test_each_milestone_drafts_only_when_its_own_switch_is_on() -> None:
-    s = Scene(milestones=MilestonePolicy(draft_on_release=True))  # merge drafting off
+    # merge drafting off and the merge is not the completion milestone: no notice
+    s = Scene(
+        milestones=MilestonePolicy(
+            draft_on_release=True, completion=CompletionPolicy.CLOSE_ON_RELEASE
+        )
+    )
     report = s.report()
 
     outcome = s.merge()
@@ -396,13 +401,14 @@ def test_close_on_merge_with_the_outbox_on_waits_for_the_merged_record_to_settle
     assert report not in s.store.ready_ids()
 
 
-def test_an_outbox_that_will_never_draft_the_completion_milestone_does_not_strand_the_report():
-    s = Scene(milestones=MilestonePolicy(draft_on_release=True))  # merge drafting off
+def test_the_completion_milestone_drafts_whatever_its_progress_switch_says():
+    s = Scene(milestones=MilestonePolicy(draft_on_release=True))  # merge drafting off (bh-cir2q)
     report = s.report()
 
     outcome = s.merge()
 
-    assert outcome.items[0].closed and s.status(report) == "closed"  # no record can ever come
+    assert outcome.items[0].drafted and not outcome.items[0].closed
+    assert s.state(report, OutboxEvent.MERGED) is OpState.DRAFTED and s.status(report) == "open"
 
 
 def test_an_untriaged_or_unlinked_report_is_never_closed_by_a_milestone() -> None:
@@ -485,12 +491,13 @@ def test_a_release_re_run_changes_nothing_and_drafts_nothing_more() -> None:
     s.release()
     writes = s.store.writes
 
-    # the superseded merged draft settled the close-on-merge rule, so the report closed at release
-    assert s.status(report) == "closed"
+    # the merged draft was superseded by the unsent released one, which now carries the close
+    assert s.status(report) == "open"
 
-    again = s.release()  # a closed, released report is no candidate any more
+    again = s.release()  # an open released report is re-evaluated, never drafted again
 
-    assert again.items == () and len(s.records(report, OutboxEvent.RELEASED)) == 1
+    assert all(not i.drafted and not i.closed for i in again.items)
+    assert len(s.records(report, OutboxEvent.RELEASED)) == 1 and s.status(report) == "open"
     assert s.store.writes == writes
 
 
@@ -549,8 +556,8 @@ def test_append_release_to_closed_drafts_for_a_report_that_closed_at_merge() -> 
         verifier=verifier(MERGE_SHA),
     )
     report = s.report()
-    s.merge()  # merge drafting is off, so close-on-merge completes and closes the report
-    assert s.status(report) == "closed"
+    s.merge()  # the completion record is drafted whatever draft_on_merge says (bh-cir2q)
+    s.store.close(report, reason="closed by hand", actor=ACTOR)
 
     s.release()
 

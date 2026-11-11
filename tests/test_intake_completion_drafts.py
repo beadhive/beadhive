@@ -190,13 +190,26 @@ def test_a_rerun_release_drafts_nothing_new() -> None:
     assert len(rig.records(report, "released")) == 1
 
 
-def test_the_released_record_inherits_the_close_of_the_unsent_merged_record() -> None:
+def test_the_released_record_inherits_the_close_and_the_report_waits_for_it() -> None:
     rig = Rig(draft_on_release=True)
     report = rig.report()
     rig.merge()
     rig.release()
     assert_comment_and_close(rig, report, "released")
-    # the superseded merged record settles close-on-merge (X16); the close lives on the released one
+    assert (
+        rig.status(report) == "open"
+    )  # the merged record is superseded; the released one is unsent
+    rig.settle(report, "released", OpState.SENT)
+    assert rig.status(report) == "closed"
+
+
+def test_the_report_closes_when_the_inheriting_released_record_is_abandoned() -> None:
+    rig = Rig(draft_on_release=True)
+    report = rig.report()
+    rig.merge()
+    rig.release()
+    assert rig.status(report) == "open"
+    rig.settle(report, "released", OpState.ABANDONED)
     assert rig.status(report) == "closed"
 
 
