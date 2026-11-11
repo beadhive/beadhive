@@ -378,6 +378,28 @@ def test_include_closed_converges_open_and_closed_fixtures_in_one_pass() -> None
     assert hive.sync(include_closed=True).drafted == ()
 
 
+def test_a_closed_report_with_an_open_issue_is_synced_by_default() -> None:
+    hive = Hive()
+    open_report, _ = hive.report("open on open")
+    live_report, live_issue = hive.report("closed on open")
+    hive.store.close(live_report, reason="done", actor="alice")
+    dead_report, _ = hive.report("closed on closed", state=IssueState.CLOSED)
+    hive.store.close(dead_report, reason="done", actor="alice")
+    hive.define()
+
+    hive.tracker.calls.clear()
+    default = {i.report: i for i in hive.sync(dry_run=True).items}
+    assert hive.tracker.calls["list_issues"] == 1  # still one listing per run
+    assert default[live_report].changed and open_report in default
+    assert dead_report not in default  # closed report + closed issue needs include_closed
+
+    assert dead_report in {i.report for i in hive.sync(dry_run=True, include_closed=True).items}
+    outcome = hive.sync()
+    assert {i.report for i in outcome.items if i.drafted} == {open_report, live_report}
+    hive.send(hive.approve())
+    assert {"bh:intake/accepted", "bh:type/bug"} <= hive.labels(live_issue)
+
+
 def test_sync_drafts_the_removal_of_a_closed_duplicates_stale_delivery_label() -> None:
     """bh-0d5th / #75: closed as a duplicate, still ``delivery:pending``, and the label already
     published. Syncing it with ``--include-closed`` drafts that one removal; a send converges."""
