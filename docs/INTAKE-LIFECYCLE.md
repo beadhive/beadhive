@@ -118,7 +118,7 @@ projection leaves on the issue (`bh work labels sync`, `labels.on_transition`).
 | `needs-info` | never; the report waits, held, `intake:needs-info` | the question, drafted as a supervised reply | never | `intake:needs-info` |
 | `reroute --to <hive>` | at once, `intake:rerouted`, after the report is re-filed in the target hive | **none**; the verb does not touch the bound issue | none | `intake:rerouted` |
 | `reroute --super <seat>` | never; reassigned, stays untriaged in the fleet inbox | none | none | `intake:untriaged` |
-| `promote` | never at promote; the report waits for the planner (`intake:promoted`) and is closed, once adopted under an epic, by the epic's landing (`bh work finish`) as a plain bead close | **none**; no reply or close is drafted at promotion or at the epic's landing | none | `intake:promoted` |
+| `promote` | never at promote; the report waits for the planner (`intake:promoted`) and is closed, once adopted under an epic, by the epic's landing (`bh work finish`) as a plain bead close. A BOUND report is never adopted child-of (the planner links it `tracks`), and the landing refuses to plain-close one that carries a child-of edge anyway (bh-p28yo); it closes only through the intake close path | **none**; no reply or close is drafted at promotion or at the epic's landing | none | `intake:promoted` |
 | `decision` | listed, never applied | none | none | unchanged |
 | a needs-info report that never gets a reply | never closes by itself; there is **no timeout** | none | none | `intake:needs-info` |
 | `accept` (plain, no work) | not by intake: the report stays open and held as a backlog item; nothing closes it at accept | none | none | `intake:accepted` |
