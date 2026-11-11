@@ -442,18 +442,304 @@ and merge governance while a Gas City runtime executes selected bead work.
   owns a controller lifecycle, while Beadhive's Frame Bridge exposes a limited projection and
   refresh command rather than a general process/runtime port.
 
-### Recommended spike molecules (filed; kickoff remains pending)
+### Spike molecules (researched 2026-09-28; decisions pending)
 
-Each epic has one research task and one dependent decision task. The evidence task is blocked by a
-human kickoff gate; no implementation work has been approved or filed ahead of these verdicts.
+Each epic has one research task and one dependent decision task. Kickoff was approved and the three
+research tasks were run on 2026-09-28. Each decision task stays open until the operator reviews the
+spike document, and no implementation work has been filed ahead of those decisions.
 
-| Spike | Epic / swarm IDs | Evidence / decision beads | Question |
+| Spike | Epic / swarm IDs | Evidence / decision beads | Question | Spike verdict |
+|---|---|---|---|---|
+| **Gas City execution integration** | Epic `bh-kp64s` · swarm `bh-wyaf6` | `bh-kp64s.1` · `bh-kp64s.2` | Should Beadhive keep its loop and use GC for session hosting, or delegate a molecule to GC's formula controller? Can either mode preserve the Beadhive role-binary contract with one dispatch/lifecycle owner, safe cancellation/recovery, and clear worktree ownership? What must `bh plugin gc` and host provisioning add? | Session hosting only: **NO-GO**, because GC's session reconciler becomes a second reconciler over the seat process. Delegated molecule: **conditional GO**, which requires GC beads to track Beadhive beads. `docs/spikes/bh-kp64s.1-gc-runtime-adapter.md` |
+| **Shared Beads safety** | Epic `bh-iaubc` · swarm `bh-19q3a` | `bh-iaubc.1` · `bh-iaubc.2` | Can GC v1.4.2 / Beads 1.3.0 safely operate on Beadhive's managed per-hive database, gates, leases, and writer controls, or must it use a separate store? | **NO-GO**. GC must run as a separate city with its own Dolt server. Its default Orders compact history, reset foreign claims, and resolve `gh:pr` gates across every database they can reach. `docs/spikes/bh-iaubc.1-gc-beads-safety.md` |
+| **Beadflow AGF pack** | Epic `bh-lko4x` · swarm `bh-i3wg6` | `bh-lko4x.1` · `bh-lko4x.2` | How do Beadhive roles, skills, and lifecycle conventions map to a versioned Gas City pack, and which functions stay with Beadhive or require a `bh plugin` adapter? | **GO** for a thin pack whose agents call `bh` for every lifecycle write. Lifecycle as formulas or dispatching Orders is NO-GO for now. `docs/spikes/bh-lko4x.1-beadflow-gc-pack.md` |
+
+Read together, the verdicts constrain one another. Because shared state is NO-GO, the delegated-molecule
+GO must work across two stores, and `gc sling` refuses cross-store routes
+(`gascity@v1.4.2:docs/guides/understanding-formulas.md:139-145`). The pack is the part of the
+investigation that does not depend on either runtime question. §15 summarizes what the three
+spikes and the role comparison show about the two systems.
+
+---
+
+## 15. Role alignment: a stronger execution engine, a weaker governance model
+
+*Added 2026-09-28 after the three spikes in §14. Upstream citations are to `gascity@v1.4.2` and to
+the first-party pack catalog `gastownhall/gascity-packs@bc0d35423058` (cited `packs:`).*
+
+The short version: **Gas City is a stronger execution engine than Beadhive and a much weaker
+governance model.** Its controller reconciles sessions, sizes worker pools, retries failed steps and
+supervises crashes better than anything Beadhive runs today. Its first-party build pack even ships
+a full planning-to-publish pipeline (§15.2). However, approval in that pipeline is a session
+prompt rather than a durable gate owned by a named seat. Gas City also has no serialized local
+integration, and no idea of work that is filed now but should not run for weeks. A pack can *hold*
+every Beadhive seat, because a Gas City agent is just a prompt plus a scope. It cannot give any of
+those seats their *authority*.
+
+*Corrected 2026-09-28 (`bh-lko4x.6`).* The first version of this section said Gas City has no
+planning stage and that formula human gates are inert. Both statements were too strong. §15.2 and
+§15.3 now describe the first-party planning formulas and what a formula gate actually does.
+
+### 15.1 Gastown-pack roles against Beadhive seats
+
+Gas City itself hardcodes zero roles
+(`gascity@v1.4.2:docs/getting-started/how-gas-city-works.md:13-17`). The roles people compare
+against are the ones the `gastown` pack defines, and they read as follows:
+
+| Gastown-pack role | What its prompt makes it do | Closest Beadhive seat | Fit under Beadhive authority |
 |---|---|---|---|
-| **Gas City execution integration** | Epic `bh-kp64s` · swarm `bh-wyaf6` | `bh-kp64s.1` · `bh-kp64s.2` | Should Beadhive keep its loop and use GC for session hosting, or delegate a molecule to GC's formula controller? Can either mode preserve the Beadhive role-binary contract with one dispatch/lifecycle owner, safe cancellation/recovery, and clear worktree ownership? What must `bh plugin gc` and host provisioning add? |
-| **Shared Beads safety** | Epic `bh-iaubc` · swarm `bh-19q3a` | `bh-iaubc.1` · `bh-iaubc.2` | Can GC v1.4.2 / Beads 1.3.0 safely operate on Beadhive's managed per-hive database, gates, leases, and writer controls, or must it use a separate store? |
-| **Beadflow AGF pack** | Epic `bh-lko4x` · swarm `bh-i3wg6` | `bh-lko4x.1` · `bh-lko4x.2` | How do Beadhive roles, skills, and lifecycle conventions map to a versioned Gas City pack, and which functions stay with Beadhive or require a `bh plugin` adapter? |
+| **polecat** (pool worker) | Picks up routed beads and implements them | `developer` | **Fits** as a hosted session that calls `bh work` for claim, submit and resume |
+| **mayor** (city scope, one session) | Files beads and slings them immediately. Coordinates epics, wakes and suspends rigs, handles escalations, makes "strategic decisions". Edits code itself "when it's the fastest path" (`packs:gastown/agents/mayor/prompt.template.md:14-39,210-216`) | `director` + `dispatcher`, with some of `planner` | **Poor.** It merges three Beadhive planes into one prompt and has no gate between filing and dispatch |
+| **deacon** (city scope) | "The controller's judgment layer". **Closes gates** (timer, gh, gh:pr, bead), checks convoys, converts satisfied cross-rig `blocks` into `related`, dispatches maintenance formulas (`packs:gastown/agents/deacon/prompt.template.md:13-24`) | `controller` / `supervisor` | **Conflicts.** Closing gates is exactly what Beadhive reserves for `bh plan approve`, `bh work approve` and `bh work land` |
+| **witness** (per rig) | Recovers orphaned beads, detects stuck workers, never writes code (`packs:gastown/agents/witness/prompt.template.md:13-28`) | `bh doctor`, plus seat stall detection (`bh-c6dk.17`, `bh-htqbn`) | **Overlaps**, but its orphan recovery competes with Beadhive's own reclaim |
+| **refinery** (per rig) | Merge queue. "You are the decision maker" on conflicts. Merges `direct` or opens a PR (`mr`), then closes the bead. `merge_strategy=local` is "not implemented" and escalates to the mayor (`packs:gastown/agents/refinery/prompt.template.md:13-40`; `packs:gastown/formulas/mol-refinery-patrol.toml:549,1255-1266`) | `merger` | **Conflicts** with the merge slot, the `--no-ff` container ladder and `finish` |
 
-The first two spikes settle whether Gas City is a viable Beadhive execution option and which system
-owns each dispatch scope. The pack spike can proceed independently as a config-mapping study, with
-coordination against `ah-fo7r`. Deeper formula/dispatcher automation and UI integration stay out of
-scope until these boundaries are understood.
+Under the one integration mode the runtime spike left open (a delegated molecule), the split is:
+
+- **Gas City** would own scheduling (which member runs when, concurrency, retry) and session
+  reconciliation, from kickoff to submit.
+- **Beadhive** would keep claim, worktree, SeatRun capture, submit, review, bounce, merge and close.
+  The command Gas City launches is a `bh role` wrapper, not a Gas City-native developer.
+
+Review and merge never move to Gas City, and a bounce ends the delegation for that bead. Every
+supervisory seat (planner, supervisor, director, custodian, controller, reviewer, merger, warden)
+could ship in the Beadflow pack only as a prompt that calls `bh`. The pack spike classifies their
+gates, lease fence, merge slot, seat-typed claim and setup as not representable in Gas City.
+
+### 15.2 How Gas City slings, monitors and plans
+
+**Slinging.** `gc sling <target> <bead|formula>` creates and routes work in one step
+(`understanding-formulas.md:107-110`):
+
+- **Routing** is a metadata stamp, `gc.routed_to=<agent>`, with the assignee left empty. The mayor
+  prompt warns that setting an assignee hides the bead from pool demand
+  (`packs:gastown/agents/mayor/prompt.template.md:26-29`).
+- **Pickup.** A pool's default `work_query` takes, in order: in-progress work assigned to the
+  session, ready work assigned to it, and ready work routed to the pool
+  (`docs/reference/config.md:113-114`). The worker claims a bead by setting the assignee.
+- **Ordering** comes only from blocking dependency edges. A bead with an open blocker is invisible
+  to agents, "which is how ordering happens with no central scheduler"
+  (`how-gas-city-works.md:78-81`).
+- **Formulas (v2)** turn a written method into step beads when applied. The controller fans out
+  ready steps and adds check, retry, drain and tally control beads. A **convoy** is a bead that
+  *tracks* a batch of work without owning it (§15.4).
+
+**Monitoring.** Health patrol runs inside the controller on a 30-second tick
+(`engdocs/architecture/health-patrol.md`):
+
+- **Reconciliation:** it compares the desired agents in config with the running sessions. It
+  starts missing ones, stops orphans, and restarts any agent whose config fingerprint has drifted.
+- **Crash-loop quarantine:** too many restarts within `restart_window` quarantines an agent. The
+  count is in memory only, so a controller restart clears it.
+- **Idle timeout:** kills an agent with no recent activity. `max_session_age` recycles
+  long-running sessions.
+- **Zombie capture:** saves a dead agent's pane output before restarting it.
+- **Order dispatch:** fires due Orders on the same tick.
+- **Pool sizing:** each tick, a `scale_check` query sizes pools to routed demand, between the
+  configured minimum and maximum session counts.
+
+Judgment-based patrol (the witness and deacon agents) sits on top, as prompts. Resource control
+is mostly pool bounds, session caps, timeouts, and the mayor suspending idle rigs.
+
+**Planning.** The Gas City *platform* has no planning stage: the core docs describe no planning,
+design, spec, kickoff, review-gate, release or intake workflow (`bh-d75bi`, 2026-08-11 correction).
+Planning lives in packs, as formulas and skills:
+
+- **The first-party `gascity` build pack** is "the base pack for running full software-delivery
+  workflows". Its `build-basic` formula walks "requirements → plan → plan review → decompose →
+  parallel implementation → a three-lane starter review … → finalize", with optional publish
+  (`packs:gascity/README.md:3,56`). The `build-from-*` entry points start the same pipeline at a
+  later stage.
+- **`build-base` is a template that only names the stages.** The methodology packs (`bmad`,
+  `compound-engineering`, `superpowers`, `gstack`) override individual stages, so the same
+  engine runs any of those methodologies.
+- **The `gc.mayor` skill** is "a user-facing planner that gathers requirements, writes plans,
+  creates approved beads/convoys, and launches the right formula" (`packs:gascity/README.md:11`).
+- **The Gastown pack** has its own `mol-idea-to-plan` formula ("vague idea to reviewed,
+  beads-ready implementation plan").
+
+The difference from Beadflow is **how a plan is approved, and what gets filed**:
+
+- **Approval is a step, not a gate.** `planning-base`'s "Approve implementation plan" step is
+  worked by an agent, `gc.review-synthesizer`
+  (`packs:gascity/formulas/planning-base.formula.toml:77-81`). A human approves only if
+  `interaction_mode` is `interactive`, which is the default. That mode "keeps blocking questions
+  and approval menus", while `autonomous` "decides and records evidence" and `headless` "never
+  prompts" (`packs:gascity/README.md:142`).
+- **Plans are files first.** Requirements and plans are markdown artifacts. Beads appear only at
+  decompose, as an implementation convoy.
+- **Beadflow does the reverse.** The planner files the plan itself as a checked molecule. The
+  kickoff approval is a `bd gate --type=human` that only `bh plan approve` resolves.
+- **Methodology packs make approval optional.** They put their approval steps in prompts that
+  default to `autonomous` (`docs/spikes/bh-lko4x.1-beadflow-gc-pack.md`, evidence B2).
+
+### 15.3 Two assumptions that do not match Beadflow
+
+**1. A bead is an immediate decision, not a node in a long roadmap.** Gas City's defaults assume
+filed work runs now:
+
+- **The mayor's workflow.** The mayor is told to "file -> assign -> grind", that "no backlog
+  accumulates", and that filing beads "for later" is "the anti-pattern"
+  (`packs:gastown/agents/mayor/prompt.template.md:35-38`).
+- **Formulas.** A formula materializes its whole run at apply time and drives it to completion.
+- **Wisps.** Wisps are ephemeral by design, with a TTL cleanup Order (`wisp-compact`), and the
+  reaper deletes closed wisps after 7 days (`docs/spikes/bh-iaubc.1-gc-beads-safety.md`).
+- **Cross-rig dependencies.** The deacon turns a satisfied cross-rig `blocks` edge into `related`,
+  so the dependency record does not survive once it has served its scheduling purpose.
+- **Housekeeping.** The default `dolt` pack flattens Dolt commit history every 2 hours
+  (`examples/bd/dolt/orders/mol-dog-compactor.toml`).
+
+Beadflow uses beads the opposite way:
+
+- **Beads are the roadmap.** A molecule is filed as a staggered dependency DAG that may wait weeks
+  behind a kickoff gate, another epic or a human decision. The spike-then-decide pairs in §14 are
+  an example.
+- **Filing is not dispatching.** The planning plane files. The integration plane dispatches only
+  after kickoff is approved.
+- **History is kept.** Bead version history is the audit record of when each lifecycle stage
+  happened, which is why Beadhive forbids `bd compact` and `bd flatten` (see `CLAUDE.md`).
+
+**2. Gates and integration terminate in GitHub PRs.** Gas City's integration path ends on the
+remote:
+
+- **Pushes and PRs.** The refinery's strategies are `direct` (push) and `mr`/`pr` (pull request).
+  `local` is unimplemented. The base `gascity` pack's publish stage ends at `push` / `open_pr`
+  (`packs:gascity/README.md:146`).
+- **Gate closing.** The gates that actually get closed are GitHub and timer gates. The `core`
+  pack's `gate-sweep` Order resolves `gh` gates every 30 seconds, and the deacon closes
+  `gh`/`gh:pr` gates by judgment.
+- **Human gates.** A formula `[steps.gate]` does create a real gate bead, and it blocks its step
+  until the gate is closed, "manually or by an external watcher". What is inert is the gate
+  *type*: `gh:run`, `gh:pr`, `timer`, `human` and `mail` are never validated, "no bundled watcher
+  acts on them", and "zero bundled formulas use `gate`"
+  (`docs/reference/specs/formula-spec-v2.md:914-919`). So a formula human gate works only if
+  someone closes it, and nothing ties who may close it to a seat.
+
+Beadflow deliberately avoids PR-driven integration:
+
+- **Local merges.** Beads merge locally, `--no-ff`, into a container branch under the merge slot.
+  A molecule lands as one bubble with `bh work finish`.
+- **Beads are the source of truth.** Review, kickoff and human gates are Beads gates resolved by a
+  named seat. A `gh:pr` gate appears only on the optional PR-governed landing path, where
+  `bh work land` resolves it and writes a squash-proof close reason.
+
+### 15.4 Convoys against Beadhive's groupings
+
+A convoy is a `convoy` bead whose membership is `tracks` edges to each member. "Tracking is pure
+grouping: it changes no parent and blocks nothing" (`docs/tutorials/06-beads.md:287-288`).
+
+- **Membership is loose.** Members keep their own identity and status. Work can be added
+  mid-sprint with `gc convoy add`, and one bead can be tracked by several convoys.
+- **Completion.** A convoy closes itself when its last member closes, unless it is **owned**
+  (`--owned`). An owned convoy must be landed explicitly with `gc convoy land`.
+- **Metadata** records `convoy.owner`, `convoy.notify`, `convoy.merge` (`direct`, `mr`, `local`),
+  and a **`target` branch inherited by child beads** (`06-beads.md:366-373`).
+- **Convoys are the execution unit.** Decompose produces an *implementation convoy*, and
+  `implement` / `drain` consume one.
+
+| Gas City use of a convoy | Closest Beadhive construct | Difference |
+|---|---|---|
+| Owned convoy with `--target integration/x`, then `gc convoy land` | Epic container `wt/bead/epic/<id>`, then `bh work finish` | The closest match. Beadhive's is structural: parent–child membership, kickoff gates on the roots, and a real branch the work merges into |
+| Implementation convoy (output of decompose, input to `implement`) | The molecule that `bh plan file` files | A flat tracked set against a checked DAG with gates and conventions |
+| Convoy auto-created on sling to track a batch | The `bd swarm` molecule over an epic (for example `bh-19q3a`) | Both are tracking beads over a unit of work |
+| Drain: scatter a convoy into one unit per member | Fanout: one developer per bead | `context = "shared"` (one lane, one item at a time) is roughly collapsed `dispatcher @ batch` |
+| Ad-hoc sprint or deploy grouping, possibly across rigs | Nothing exact. `batch:<group>` labels and workstreams are both built on the hierarchy | Theirs is looser; a bead can sit in several convoys |
+
+**A convoy is flexible because membership means little. A Beadhive molecule is rigid because
+membership *is* authority:** the container branch is where work integrates, gates hang off the
+roots, and conventions are checked on every dispatch. The rigidity has a cost. Adding a docs task
+to the already-running `bh-lko4x` molecule on 2026-09-28 needed a hand fix: `bh bd create
+--parent` copied the epic's `complexity:`, `kickoff:` and `tag:` labels onto the child, and the new
+root had to be chained behind a closed sibling to satisfy the kickoff-gate check.
+
+**A workstream is the nearest thing to a convoy of convoys.** A Beadhive workstream is an epic whose
+children are epics; each tier lands onto its parent's container, and the workstream lands on `main`
+(the dispatcher skill's `references/workstream-tier.md`). Gas City has no nested convoy: `target`
+is inherited one level, and a drain scatters members rather than recursing into sub-convoys. An
+owned convoy whose members were owned convoys, each landing on the parent's target, would be the
+Gas City shape of a workstream.
+
+### 15.5 Where each side keeps its fixed logic
+
+The two systems put their fixed logic in opposite places:
+
+- **Gas City fixes the *process*.** A formula is a reusable step recipe re-applied to every job.
+  Judgment and approval happen inside the agent session that works each step.
+- **Beadhive fixes the *lifecycle*.** `bh` verbs own every state change and check which seat may
+  make it. The planner writes each job's DAG instead of re-applying a template.
+
+| Stage | Gas City fixed logic | Gas City judgment | Beadhive fixed logic | Beadhive judgment |
+|---|---|---|---|---|
+| Intake | `github-issue-triage` formula | Triage agent | `bh work intake` / `accept` / `reject` / `reroute` / `promote` | Dispatcher, director |
+| Requirements → plan | `planning-base`, `build-from-requirements`, `mol-idea-to-plan` (fixed stage order; markdown outputs) | `gc.mayor` skill, planning agents | `bh plan` staged flow, `bh plan check` / `verify`, spike template | Planner, analyst |
+| Plan approval | A formula step: `gc.review-synthesizer` plus an approval menu in `interactive` mode | Agent, or whoever answers the prompt | `bd gate --type=human` kickoff, resolved by `bh plan approve` | Operator |
+| Decompose | `decomposition-base` produces an implementation convoy | Agent | `bh plan file`: epic, children, DAG, gates, swarm, convention validator | Planner |
+| Schedule / dispatch | Controller drain, `scale_check`, sling, v2 control beads | — | `bh work schedule`, `work.dispatch.mode`, the local loop | Dispatcher |
+| Implement | `do-work`, `do-work-item`, `mol-polecat-work` (context, preflight tests, implement, commit, hand off) | Polecat | `bh work claim` / `refine` / `check` / `submit` (validation lanes, history guard) | Developer |
+| Review | `mol-review-quorum`, `build-basic-review` (three lanes feeding a fix loop), `review_mode` | Reviewer lanes | Review gate, `bh work approve` / `bounce` | Reviewer |
+| Merge / land | `mol-refinery-patrol` (push or PR), `publish` (push / open PR), `gc convoy land` | Refinery ("the decision maker") | `bh work merge` / `finish`, merge slot, `--no-ff` | Merger |
+| Supervision | Health patrol (Go), `core` exec Orders, patrol formulas re-poured as one-iteration wisps (deacon, witness, boot) | Deacon, witness | `bh doctor`, lease TTL and reclaim, loop orphan reaping | Controller |
+
+**What the comparison shows:**
+
+- **Gas City's methodology is swappable and its authority is weak.** Whichever agent runs a step
+  makes that step's call.
+- **Beadhive's methodology is mostly fixed and its authority is strong.** AGF is one process. Its
+  variation points are settings (dispatch mode, validation mode, review gate, routing tiers), not
+  swappable stages.
+- **Beadhive already chose not to template its own internal workflows.** The formula spike
+  `bh-gj0v9` found that a beads formula for onboarding would be "a downstream copy of a decision
+  Python has already made", because every runtime-dependent step had to be resolved before `cook`
+  (`docs/spikes/bh-gj0v9.1-formula-vs-python-hybrid.md`). Fixed operational workflows use Guide
+  instead (`docs/spikes/bh-gj0v9.3-guide-vs-formula-boundary.md`).
+
+**Formulas are already DAGs, but template DAGs.** A v2 formula compiles to "a flattened, validated
+list of steps and dependency edges" (`docs/reference/specs/formula-spec-v2.md:46-66`). Its shape
+is fixed when the formula is written, and loops expand at compile time. A Beadflow molecule is an
+*instance* DAG: the planner writes a new shape for every job. Gas City already has one bridge
+between the two: a drain over a convoy "materialize[s] members in dependency order", and
+dependencies on beads outside the convoy "represent genuine waits" (`engdocs/drain-fanout.md:117-122`).
+That makes drain a runtime executor for someone else's DAG, which is why it is the delegation seam
+in `bh-kp64s.1`.
+
+### 15.6 Where each side could go further
+
+None of these is filed or approved. Each is a small change on one side that would widen the
+overlap without either system giving up its model.
+
+**If Gas City changed upstream:**
+
+| Change | What it would unlock for Beadhive |
+|---|---|
+| **Convoy-driven worktree and branch layout.** Let an owned convoy's `target` define a container branch, have member worktrees fork from it, and land members onto it in order | Gas City could reproduce the `wt/bead/epic/<id>` container and `integration_base` climb. Today `mol-scoped-work` forks each worktree from `origin/<base_branch>` (`internal/bootstrap/packs/core/formulas/mol-scoped-work.toml:99-104`) and the refinery can only push or open a PR |
+| **Nested owned convoys that land tier by tier.** Let a drain recurse into member convoys, with each tier landing onto its parent's target | A native workstream tier. Today `target` is inherited one level and drain does not recurse |
+| **Implement `merge_strategy = local`** in the Gastown refinery, as a serialized `--no-ff` merge onto the convoy target | Local integration without a PR. It is already in the `convoy.merge` vocabulary but escalates as unimplemented |
+| **A pluggable gate resolver.** Let a gate `type` name an exec watcher, so `human` gates could be resolved by an external authority | `bh` could be the watcher for a delegated molecule's gates. Gate types are inert today, so the hook would slot in without breaking anything |
+| **Per-city opt-out of `core` housekeeping Orders**, or scoping them to Gas City-owned beads (`orphan-sweep`, `gate-sweep`, `reaper`) | Removes the main blockers in `bh-iaubc.1` for any shared or bridged store. Today these run in every city |
+| **Formula inputs that take a DAG, not only a convoy.** Let a v2 formula accept a molecule (parent–child plus `blocks` edges) as its drain manifest and keep the edges as they are | Gas City could run a Beadflow molecule directly, instead of Beadhive flattening it into a convoy first |
+
+**If Beadhive changed here:**
+
+| Change | What it would unlock |
+|---|---|
+| **A tracking-only group.** A convoy-like bead with `tracks` edges that owns no branch and blocks nothing: for cross-molecule sprints, cross-hive rollups, or "what shipped this week" | The loose grouping Beadhive lacks, without weakening molecule authority |
+| **Mid-flight additions as a first-class verb.** For example `bh plan add <epic>`: set labels deliberately instead of copying them from the epic, and gate or chain the new bead by rule | Removes the hand fix described in §15.4. Planned molecules still grow during execution |
+| **Present a molecule as a convoy.** A read-only projection of an approved molecule as a Gas City implementation convoy, through the explicit copy or the exec beads provider | Gas City's drain could run the molecule, which is the delegation path left open in `bh-kp64s.2` |
+| **Molecule templates for repeated shapes.** The three §14 spikes were filed with identical shapes: a research task, a decision task, kickoff state changes and a swarm. A template would file that in one step, with the DAG still editable after filing | The useful part of formulas, without handing the lifecycle to a template engine. `bh-gj0v9` rejected formulas for *internal* workflows, not planner templates |
+| **An optional stage template for the planning flow.** Let the planner's staged flow be a named, swappable sequence, the way `build-base` is | Methodology packs could supply alternative planning stages while `bh plan approve` stays the only way to kick off |
+| **A Beadflow `build-base` override in the pack.** Each stage calls `bh`: planning → `bh plan`, decompose → `bh plan file`, implement → `bh role`, land → `bh work finish` | Gas City users could run a Beadflow-shaped build while `bh` keeps the gates. The pack spike deferred formulas as a second lifecycle owner; this variant keeps every stage as a thin call into `bh`, but it is untested |
+
+### 15.7 What this means for Beadhive
+
+- **Use Gas City where execution matters most.** That means running an already-approved molecule,
+  pending `bh-kp64s.2`, and packaging seat prompts and skills as a registry pack (`bh-lko4x.2`).
+- **Keep governance in `bh`.** Planning, kickoff, review, merge, release and setup stay out of Gas
+  City. The `bh-d75bi` blocker of two reconcilers over one bead store now has evidence at both the
+  session layer (`bh-kp64s.1`) and the database layer (`bh-iaubc.1`).
+- **Never point a default Gas City city at a hive.** The always-imported `core`, `bd` and `dolt`
+  packs carry the jobs that damage a hive: claim resets, `gh:pr` gate resolution and history
+  flattening. The immediate-decision and PR-landing habits described in §15.3 come from the
+  `gastown` and `gascity` packs, which are optional imports.
+- **Harvest the execution patterns instead.** Borrow Gas City's execution ideas into Beadhive's own
+  loop, as `bh-d75bi` already proposed: desired-versus-running reconciliation (`bh-7ig9k`), seat
+  health derived from the tracker (`bh-htqbn`), and a seat-level substrate seam (`bh-e7rju`).
