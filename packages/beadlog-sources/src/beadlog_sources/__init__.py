@@ -34,6 +34,9 @@ never imports ``beadhive``. It owns:
 - the reader port and discovery (:mod:`beadlog_sources.readers`): :class:`SourceReader`,
   :class:`ReadRequest`, the ``beadlog.readers``/``beadlog.sources`` entry-point groups merged with
   a static built-in table so discovery never depends on the installed distribution;
+- the ledger directory port (:mod:`beadlog_sources.ledger`): which registered ledger owns a
+  bead-id token, by exact id-set membership only (never a prefix guess), local / foreign /
+  ambiguous / unresolved; test fake in :mod:`beadlog_sources.testing.ledger`;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
@@ -147,6 +150,19 @@ from .judges import (
     judge_schema,
     settings_from,
 )
+from .ledger import (
+    AMBIGUOUS,
+    FOREIGN,
+    LOCAL,
+    RESOLUTION_KINDS,
+    UNRESOLVED,
+    CachedLedgerDirectory,
+    LedgerDirectory,
+    LedgerError,
+    Resolution,
+    resolve,
+    resolve_ref,
+)
 from .planning import PlanningStrategy
 from .readers import (
     BUILTIN_READERS,
@@ -193,6 +209,17 @@ __all__ = [
     "discover_readers",
     "discover_strategies",
     "load_reader",
+    "AMBIGUOUS",
+    "FOREIGN",
+    "LOCAL",
+    "RESOLUTION_KINDS",
+    "UNRESOLVED",
+    "CachedLedgerDirectory",
+    "LedgerDirectory",
+    "LedgerError",
+    "Resolution",
+    "resolve",
+    "resolve_ref",
     "ABSTAIN",
     "CATEGORY_SHAPES",
     "DECLARED_STATUSES",
