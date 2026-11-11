@@ -27,6 +27,10 @@ never imports ``beadhive``. It owns:
 - the opt-in, bounded ``dolt_history_issues`` gap fill (:mod:`beadlog_sources.bd_gapfill`):
   snapshot-level history for beads with no ``created`` event, read in chunked ``SELECT`` batches
   with a resumable cursor and emitted as derived, commit-dated, reduced-confidence events;
+- the evidence IR (:mod:`beadlog_sources.evidence`): :class:`Artifact` and :class:`Ref` source
+  records typed by the closed :class:`Category` set (each with a validated required-attrs
+  shape) and the ``bdlg.evidence/1`` JSONL corpus (:class:`EvidenceCorpus`), content-addressed
+  and byte-stable; synthetic corpora come from :mod:`beadlog_sources.testing.evidence`;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
@@ -105,6 +109,29 @@ from .contracts import (
     SourceStrategy,
 )
 from .docs import DocsStrategy
+from .evidence import (
+    CATEGORY_SHAPES,
+    DECLARED_STATUSES,
+    EVIDENCE_SCHEMA,
+    READER_PROVENANCES,
+    REF_KINDS,
+    Artifact,
+    ArtifactShapeError,
+    AttrType,
+    Category,
+    CategoryShape,
+    EvidenceCorpus,
+    EvidenceFormatError,
+    ReaderHeader,
+    Ref,
+    artifact_id,
+    build_corpus,
+    dumps_evidence,
+    evidence_schema,
+    loads_evidence,
+    read_evidence,
+    write_evidence,
+)
 from .git_dates import CommitDate, CommitDates, GitReadError, commit_dates
 from .judges import (
     CommandJudge,
@@ -142,6 +169,27 @@ def distribution_name() -> str:
 
 __all__ = [
     "ABSTAIN",
+    "CATEGORY_SHAPES",
+    "DECLARED_STATUSES",
+    "EVIDENCE_SCHEMA",
+    "READER_PROVENANCES",
+    "REF_KINDS",
+    "Artifact",
+    "ArtifactShapeError",
+    "AttrType",
+    "Category",
+    "CategoryShape",
+    "EvidenceCorpus",
+    "EvidenceFormatError",
+    "ReaderHeader",
+    "Ref",
+    "artifact_id",
+    "build_corpus",
+    "dumps_evidence",
+    "evidence_schema",
+    "loads_evidence",
+    "read_evidence",
+    "write_evidence",
     "BdBaselineStrategy",
     "BdGapfillError",
     "BdHistoryError",
