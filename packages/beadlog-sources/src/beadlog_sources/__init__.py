@@ -222,6 +222,9 @@ from .reconcile import (
 )
 from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
 
+# --- end docs reader ---
+from .tokens import bead_token_pattern, find_bead_tokens, token_mode
+
 DISTRIBUTION = "beadlog-sources"
 
 
@@ -258,6 +261,9 @@ __all__ = [
     # --- end doc metadata normalization ---
     "BUILTIN_READERS",
     "BUILTIN_STRATEGIES",
+    "bead_token_pattern",
+    "find_bead_tokens",
+    "token_mode",
     "READERS_GROUP",
     "DuplicateRegistrationError",
     "GitRead",

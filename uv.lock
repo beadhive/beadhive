@@ -418,6 +418,7 @@ version = "0.1.0"
 source = { editable = "packages/beadhive-tracker-github" }
 dependencies = [
     { name = "beadhive" },
+    { name = "beadlog-sources" },
     { name = "githubkit" },
     { name = "hishel" },
 ]
@@ -425,6 +426,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "beadhive", editable = "." },
+    { name = "beadlog-sources", editable = "packages/beadlog-sources" },
     { name = "githubkit", specifier = ">=0.16.1,<1" },
     { name = "hishel", specifier = "<2" },
 ]
