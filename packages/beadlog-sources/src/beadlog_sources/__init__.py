@@ -39,6 +39,9 @@ never imports ``beadhive``. It owns:
   ambiguous / unresolved; test fake in :mod:`beadlog_sources.testing.ledger`;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
+- collate B5 (:mod:`beadlog_sources.identify`): work units identified against the baseline
+  (bridges, lexical, opt-in judge, opt-in NEW threshold, residual), resumable by query hash,
+  with a cost preview before any judge call;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -224,6 +227,21 @@ from .attach import ATTACH_TIERS, AttachOptions, AttachOptionsError, attach
 from .collate import ATTACH_REASONS, Attachment
 
 # --- end collate B4 ---
+# isort: split
+# --- collate B5 (bh-h8vxt) ---
+from .identify import (
+    CostPreview,
+    IdentifyConfirmationRequired,
+    IdentifyOptions,
+    IdentifyOptionsError,
+    IdentifyResult,
+    IdentifyRun,
+    identify,
+    identify_units,
+)
+from .identify import prior_verdicts as identify_prior_verdicts
+
+# --- end collate B5 ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -391,4 +409,15 @@ __all__ = [
     "Attachment",
     "attach",
     # --- end collate B4 ---
+    # --- collate B5 (bh-h8vxt) ---
+    "CostPreview",
+    "IdentifyConfirmationRequired",
+    "IdentifyOptions",
+    "IdentifyOptionsError",
+    "IdentifyResult",
+    "IdentifyRun",
+    "identify",
+    "identify_prior_verdicts",
+    "identify_units",
+    # --- end collate B5 ---
 ]
