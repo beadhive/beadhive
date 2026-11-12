@@ -31,6 +31,7 @@ bh backfill planning     (the same options as commits, without --since-cursor)
 bh backfill coverage     [--hive H] [--refresh] [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--store bd|xtdb] [--json]
 bh backfill inspect      F.bdlg [--json]
+bh backfill verdicts     F.bdlg|COLLATION.json [--class C]... [--engine E] [--min-confidence X] [--max-confidence X] [--json]
 bh backfill verify       F.bdlg [--json]
 bh backfill apply        PLAN.bdlg [--hive H] [--dry-run] [--pre-state F] [--audit F] [--store bd|xtdb] [--json]
 bh backfill-complexity   (the flat alias of `bh backfill complexity`; published wire surface)
@@ -170,6 +171,32 @@ Prints an archive's manifest: format version, generator, groups, capabilities an
 counts by kind. For a plan it adds the pass, schema version, corpus and plan hashes, the judge
 identity, the reconcile classes (NEW / PRESENT / NOISE / DRIFT), how many entries need review,
 the engine totals and a summary of the recorded verdicts by engine and outcome.
+
+### `bh backfill verdicts`
+
+Lists the recorded judge verdicts, grouped by class (NEW, PRESENT, NOISE, DRIFT, then `abstain`,
+`residual`, `other`), each
+with its confidence, engine and model, and the fallback reason when the configured judge did not
+answer. `--class` (repeatable, case-insensitive), `--engine` (an engine or model name),
+`--min-confidence` and `--max-confidence` filter it. It is read-only: it never writes a plan or a
+bead.
+
+It reads a `.bdlg` plan or extract archive (the `bdlg.reconcile` entries and the pass's
+judgments, both `beadlog_sources` verdict records) or a `bdlg.collation/1` JSON file's
+`verdicts` array. That array is filled by the B5 identify step; until then it is read
+defensively (missing or empty gives an empty view). A collation item is a bare verdict record or
+`{"class": ..., "verdict": {...}}`; the shape is provisional, see
+`tests/fixtures/backfill/collation-verdicts.json`.
+
+With `backfill.judge.cost_per_call_usd` set, the view adds the judge calls recorded (a verdict
+from a model engine, or a fallback after a failed attempt; verdicts answered by the lexical
+engine, replayed from a prior plan or skipped by the call budget are not calls) times that cost.
+`--json` emits schema `beadhive.backfill.verdicts/1`: `path`, `input` (`archive` or
+`collation`), `filters`, `totals` (`recorded`, `shown`, `without_verdict`, `by_class`,
+`by_engine`, `fallbacks`), `cost` (`calls`, `cost_per_call_usd`, `estimated_usd`) and `groups`,
+a map of class to items (`source`, `class`, `bead`, `match`, `covered_by`, `review`, `outcome`,
+`confidence`, `engine`, `engine_version`, `model`, `fallback`, `family`, `query_hash`,
+`rationale`, `note`).
 
 ### `bh backfill verify`
 
