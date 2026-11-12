@@ -15,6 +15,7 @@ from beadlog_sources import (
     AttachOptionsError,
     ClusterOptions,
     CollationFormatError,
+    IdentifyOptions,
     StatusOptions,
     attach,
     claimed_artifacts,
@@ -289,6 +290,7 @@ def test_options_section_round_trip() -> None:
     assert default.options == {
         "cluster": ClusterOptions().to_json(),
         "attach": AttachOptions().to_json(),
+        "identify": IdentifyOptions().to_json(),
         "status": StatusOptions().to_json(),
     }
     variants = [

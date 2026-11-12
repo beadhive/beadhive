@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:beadhive:schema:bdlg-collation:1",
   "title": "bdlg.collation/1 collation",
-  "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units are the B3 work units (candidate beads, attachments to existing local beads, area epics), sorted by key; verdicts, conflicts and residual are filled by later collate steps (B5, B6) and are empty arrays until then. Implemented by beadlog_sources.collate.",
+  "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units are the B3 work units (candidate beads, attachments to existing local beads, area epics), sorted by key; verdicts and residual are the B5 identification against the baseline; conflicts is filled by B6 and is an empty array until then. Implemented by beadlog_sources.collate.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual", "attachments", "lifecycle", "options"],
@@ -13,20 +13,80 @@
     "baseline": {"type": "string", "minLength": 1},
     "refs": {"type": "array", "items": {"$ref": "#/$defs/resolved_ref"}},
     "units": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
-    "verdicts": {"type": "array"},
+    "verdicts": {"type": "array", "items": {"$ref": "#/$defs/identify_verdict"}, "description": "B5: one record per identify step that answered for a unit, sorted by unit then step; a unit's decision is its record with a non-null class."},
     "conflicts": {"type": "array", "items": {"$ref": "#/$defs/conflict"}, "description": "B6: status conflicts, sorted by unit, rule and artifacts; none is ever resolved."},
-    "residual": {"type": "array"},
+    "residual": {"type": "array", "items": {"$ref": "#/$defs/identify_residual"}, "description": "B5: one record per unit no identify step decided, sorted by unit."},
     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}, "description": "B4: one record per design record, sorted by doc."},
     "lifecycle": {"type": "array", "items": {"$ref": "#/$defs/lifecycle"}, "description": "B6: one record per unit, sorted by unit."},
     "options": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cluster", "attach", "status"],
+      "required": ["cluster", "attach", "identify", "status"],
       "description": "The effective options of the collate steps that ran, one sub-object per step (later steps add siblings): a collation made under other options has other bytes.",
-      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}, "attach": {"$ref": "#/$defs/attach_options"}, "status": {"$ref": "#/$defs/status_options"}}
+      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}, "attach": {"$ref": "#/$defs/attach_options"}, "identify": {"$ref": "#/$defs/identify_options"}, "status": {"$ref": "#/$defs/status_options"}}
     }
   },
   "$defs": {
+    "identify_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["new_threshold", "max_candidates"],
+      "description": "B5 IdentifyOptions (beadlog_sources.identify).",
+      "properties": {
+        "new_threshold": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "description": "Percent: a unit nothing else decided whose fuzzy score is below it is NEW (inferred); null turns the threshold step off."},
+        "max_candidates": {"type": "integer", "minimum": 1, "description": "Baseline beads (and, separately, epics) offered by the match query."}
+      }
+    },
+    "identify_verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "step", "class", "bead", "provenance", "review", "score", "family", "query_hash", "outcome", "probabilities_permille", "confidence_permille", "option_count", "rationale", "engine", "engine_version", "model", "fallback"],
+      "description": "One B5 verdict: the answer of one identify step for one unit.",
+      "properties": {
+        "unit": {"type": "string", "minLength": 1, "description": "Key of the unit."},
+        "step": {"enum": ["external-ref", "explicit-id", "lexical", "judge", "threshold"]},
+        "class": {"enum": ["NEW", "PRESENT", "NOISE", null], "description": "The identification; null for a judge abstention (the unit goes on to the threshold or the residual)."},
+        "bead": {"type": ["string", "null"], "description": "The matched baseline bead (PRESENT) or covering epic (NOISE)."},
+        "provenance": {"enum": ["derived", "inferred"], "description": "derived for bridges and the lexical engine; inferred for the judge and the threshold."},
+        "review": {"enum": ["none", "auto", "required"]},
+        "score": {"type": ["integer", "null"], "minimum": 0, "maximum": 100, "description": "Fuzzy score in percent: the best title-token Jaccard against the baseline (null for bridges)."},
+        "family": {"type": ["string", "null"], "description": "Judgment family of the query (collate.identify), null without a query."},
+        "query_hash": {"type": ["string", "null"], "description": "Identity of the match query; a judge verdict is reused by it on resume."},
+        "outcome": {"type": ["string", "null"], "description": "The chosen option key (present:N, noise:N, new; the bead id for a bridge), null to abstain."},
+        "probabilities_permille": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 1000}},
+        "confidence_permille": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "option_count": {"type": "integer", "minimum": 0},
+        "rationale": {"type": "string"},
+        "engine": {"type": "string", "minLength": 1},
+        "engine_version": {"type": "string", "minLength": 1},
+        "model": {"type": ["string", "null"]},
+        "fallback": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["engine", "reason", "detail"],
+              "properties": {"engine": {"type": "string"}, "reason": {"type": "string"}, "detail": {"type": "string"}}
+            }
+          ],
+          "description": "Why the configured engine did not answer (timeout, exit, malformed, ...)."
+        }
+      }
+    },
+    "identify_residual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "reason", "score", "query_hash", "candidates"],
+      "description": "One B5 residual record: a unit left for a human (or for the next run).",
+      "properties": {
+        "unit": {"type": "string", "minLength": 1},
+        "reason": {"enum": ["no-match", "judge-abstained", "judge-failed", "judge-budget"], "description": "judge-budget: the call cap stopped the run before this unit; the next run continues."},
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "query_hash": {"type": ["string", "null"]},
+        "candidates": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "The baseline bead ids the match query offered, best first."}
+      }
+    },
     "cluster_options": {
       "type": "object",
       "additionalProperties": false,

@@ -415,7 +415,7 @@ def test_options_are_recorded() -> None:
     arts = _history()
     default = run(*arts)
     assert default.options["cluster"] == ClusterOptions().to_json()
-    assert set(default.options) == {"cluster", "attach", "status"}
+    assert set(default.options) == {"cluster", "attach", "identify", "status"}
     variants = [
         run(*arts, include_types=["feat", "fix"]),
         run(*arts, areas={"hq": "core"}),
