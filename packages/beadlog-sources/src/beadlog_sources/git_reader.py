@@ -36,16 +36,13 @@ cursor when nothing is new).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+import subprocess
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ._sources import commit_time, csv, truthy
-from .commits import (
-    SHALLOW_REMEDIATION,
-    ShallowCloneError,
-)
 from .evidence import Artifact, Category, Ref
 from .git_dates import GitReadError
 from .readers import ReadRequest
@@ -54,6 +51,10 @@ from .tokens import bead_token_pattern, find_bead_tokens, token_mode
 
 READER_NAME = "git"
 READER_VERSION = "0.1.0"
+SHALLOW_REMEDIATION = (
+    "run `git fetch --unshallow` to fetch the full history "
+    "(or pass option allow_shallow=true to extract from the truncated history)"
+)
 
 _RS, _US = "\x1e", "\x1f"
 _LOG_FORMAT = _RS + _US.join(["%H", "%P", "%an <%ae>", "%cI", "%B"])
@@ -281,6 +282,130 @@ def _release(
     return artifact, name
 
 
+# -- history errors and the raw message log ------------------------------------------------
+
+
+class CommitsSourceError(ValueError):
+    """The git history cannot be read or the baseline cannot resolve bead ids (a ``ValueError``,
+    so the ``beadlog`` CLI reports it as a failed operation)."""
+
+
+class ShallowCloneError(CommitsSourceError):
+    """The repository is a shallow clone, so its history is truncated."""
+
+
+@dataclass(frozen=True)
+class Commit:
+    """One commit: ``message`` is subject AND body; ``date`` the committer date (ISO 8601)."""
+
+    sha: str
+    parents: int
+    subject: str
+    message: str
+    date: str
+
+
+def _git(
+    root: Path | str, args: Sequence[str], git: str = "git"
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            [git, "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise CommitsSourceError(f"cannot run {git}: {exc}") from exc
+
+
+def _git_out(root: Path | str, args: Sequence[str], git: str = "git") -> str:
+    result = _git(root, args, git)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        raise CommitsSourceError(
+            f"git {' '.join(args[:2])} failed in {root} ({result.returncode}): "
+            f"{detail[-1] if detail else ''}"
+        )
+    return result.stdout
+
+
+def is_shallow(root: Path | str, git: str = "git") -> bool:
+    """Whether the repository at ``root`` is a shallow clone (asks git; see also
+    :func:`is_shallow_repo`, which reads the ``shallow`` file without a process)."""
+    return _git_out(root, ["rev-parse", "--is-shallow-repository"], git).strip() == "true"
+
+
+def require_full_history(root: Path | str, git: str = "git") -> None:
+    """Refuse a shallow clone with the remediation text."""
+    if is_shallow(root, git):
+        raise ShallowCloneError(
+            f"{root} is a shallow clone: its history is truncated, so beads whose commits "
+            f"predate the cut would be missed; {SHALLOW_REMEDIATION}"
+        )
+
+
+def resolve_commit(root: Path | str, rev: str, git: str = "git") -> str | None:
+    """The full sha ``rev`` names when it is a commit, else ``None``."""
+    probe = _git(root, ["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], git)
+    if probe.returncode != 0:
+        return None
+    return probe.stdout.strip() or None
+
+
+def read_commits(
+    root: Path | str,
+    rev: str = "HEAD",
+    *,
+    since: str | None = None,
+    limit: int | None = None,
+    git: str = "git",
+) -> list[Commit]:
+    """The raw message log: walk ``rev`` backwards, newest first, keeping each full message.
+
+    For consumers that need a commit's message text as written (coverage hashes it, the
+    correlation scripts re-scan it); the artifacts of :func:`read_git` keep the parsed subject,
+    trailers and references instead. ``since`` narrows the walk: a commit (anything ``git``
+    resolves to one) means only the commits after it, ``since..rev``; any other value is a date
+    for ``git log --since``.
+    """
+    fmt = _US.join(["%H", "%P", "%cI", "%s", "%B"]) + _RS
+    args = ["log", f"--pretty=format:{fmt}", "--no-color"]
+    if since:
+        if resolve_commit(root, since, git) is not None:
+            args.append(f"{since}..{rev}")
+        else:
+            args += [f"--since={since}", rev]
+    else:
+        args.append(rev)
+    if limit:
+        args.append(f"-n{limit}")
+    raw = _git_out(root, args, git)
+    commits: list[Commit] = []
+    for chunk in raw.split(_RS):
+        chunk = chunk.strip("\n")
+        if not chunk.strip():
+            continue
+        parts = chunk.split(_US)
+        if len(parts) < 5:
+            continue
+        sha, parents, date, subject, body = parts[:5]
+        commits.append(
+            Commit(
+                sha=sha,
+                parents=len(parents.split()),
+                subject=subject,
+                # %B already holds subject + body; both stay explicit so "subject AND body"
+                # is visible rather than implied.
+                message=f"{subject}\n{body}",
+                date=date,
+            )
+        )
+    return commits
+
+
 def _git_dir(root: Path) -> Path | None:
     dot = root / ".git"
     if dot.is_dir():
@@ -392,11 +517,19 @@ class GitReader:
 __all__ = [
     "READER_NAME",
     "READER_VERSION",
+    "SHALLOW_REMEDIATION",
+    "Commit",
+    "CommitsSourceError",
     "ConventionalSubject",
     "GitRead",
     "GitReader",
+    "ShallowCloneError",
+    "is_shallow",
     "is_shallow_repo",
     "parse_conventional",
     "parse_trailers",
+    "read_commits",
     "read_git",
+    "require_full_history",
+    "resolve_commit",
 ]

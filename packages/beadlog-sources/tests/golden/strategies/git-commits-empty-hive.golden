@@ -1,0 +1,1 @@
+{"error":"CommitsSourceError","message":"the baseline holds no beads of group 'urn:uuid:00000000-0000-4000-8000-0000000000f1' to resolve commit messages against: export the hive first and pass it as the baseline"}
