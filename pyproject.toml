@@ -130,6 +130,7 @@ planning = "beadlog_sources.planning:PlanningStrategy"
 
 [project.entry-points."beadlog.readers"]
 docs = "beadlog_sources.docs_reader:DocsReader"
+git = "beadlog_sources.git_reader:GitReader"
 
 [project.scripts]
 beadlog = "beadlog_sources.cli:main"

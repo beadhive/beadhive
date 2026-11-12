@@ -37,6 +37,9 @@ never imports ``beadhive``. It owns:
 - the ledger directory port (:mod:`beadlog_sources.ledger`): which registered ledger owns a
   bead-id token, by exact id-set membership only (never a prefix guess), local / foreign /
   ambiguous / unresolved; test fake in :mod:`beadlog_sources.testing.ledger`;
+- the ``git`` reader (:mod:`beadlog_sources.git_reader`): commits, merges and tags as ``change`` /
+  ``release-marker`` artifacts from two ``git`` calls per read, with a hand-written Conventional
+  Commits and trailer parse and un-resolved refs;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
@@ -143,6 +146,7 @@ from .evidence import (
     write_evidence,
 )
 from .git_dates import CommitDate, CommitDates, GitReadError, commit_dates
+from .git_reader import GitRead, GitReader, parse_conventional, parse_trailers, read_git
 from .judges import (
     CommandJudge,
     CommandResult,
@@ -217,11 +221,16 @@ __all__ = [
     "BUILTIN_STRATEGIES",
     "READERS_GROUP",
     "DuplicateRegistrationError",
+    "GitRead",
+    "GitReader",
     "ReadRequest",
     "Registration",
     "SourceReader",
     "discover_readers",
     "discover_strategies",
+    "parse_conventional",
+    "parse_trailers",
+    "read_git",
     "load_reader",
     "AMBIGUOUS",
     "FOREIGN",

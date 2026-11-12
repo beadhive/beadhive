@@ -41,6 +41,7 @@ STRATEGIES_GROUP = "beadlog.sources"
 BUILTIN_READERS: Mapping[str, str] = MappingProxyType(
     {
         "docs": "beadlog_sources.docs_reader:DocsReader",
+        "git": "beadlog_sources.git_reader:GitReader",
     }
 )
 BUILTIN_STRATEGIES: Mapping[str, str] = MappingProxyType(
@@ -85,6 +86,11 @@ class SourceReader(Protocol):
     def read(self, request: ReadRequest) -> Iterable[Artifact]:
         """Yield the artifacts of the source named by ``request``."""
         ...
+
+    # Optional (not part of the runtime protocol check): a reader may define
+    # ``header_options(options) -> Mapping[str, Any]`` returning the options to record in its
+    # ``ReaderHeader`` (the given ones plus derived facts such as ``token_mode``); ``beadlog read``
+    # uses it when present.
 
 
 @dataclass(frozen=True)
