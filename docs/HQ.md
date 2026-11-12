@@ -965,6 +965,19 @@ authority sequence; see docs/HQ.md#restore-floor-recovery
 
 Rollback and fork refusals name both heads and both sequences in the same way.
 
+**Re-provisioning a frame at the same sequence.** Stamp-trigger provisioning is additive only.
+It never removes or rewrites another incarnation's triggers. A frame re-joined with changed
+authority fields (for example `config_revision` or `instance_ref`) at the same epoch gets a new
+SQL principal, and its provisioning may only add that principal's pair. On 2026-11-11 a
+re-provisioning commit also swapped out the earlier, never-admitted incarnation's triggers. That
+head kept the restore floor's sequence, so every frame refused it and the fleet was fenced until
+the authority was republished (bh-14h9r). Since then `provision_incarnation` checks the pending
+`dolt_schemas` change before it writes and again before it commits. If any existing fragment would
+be removed or rewritten (for example, triggers dropped with their tables), it refuses with nothing
+committed, names the fragments, and points here. Either restore them and retry (re-create any
+dropped incarnation table, then `CALL DOLT_CHECKOUT('dolt_schemas')`), or, if retiring them is
+intended, commit the change and publish the authority again as in step 3 below.
+
 **Recovering natively.** The floor is never edited by hand: it is the reader's proof against
 replay.
 
