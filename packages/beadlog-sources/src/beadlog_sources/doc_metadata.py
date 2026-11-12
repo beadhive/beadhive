@@ -12,13 +12,15 @@ a ``Status:`` line in the body.
 - **status** is normalized through the table-driven :data:`STATUS_SYNONYMS` onto
   :data:`~beadlog_sources.evidence.DECLARED_STATUSES`. An unrecognised value is ``None`` here and
   stays only in ``raw``; it is never coerced. ``Superseded by ADR-12`` is ``superseded`` plus the
-  supersedes entry ``ADR-12``.
+  ``superseded_by`` entry ``ADR-12`` (the replacing doc; it is NOT a ``supersedes`` entry).
 - **date** is ``declared_date`` (``date?``): a day-only input stays ``YYYY-MM-DD`` (never padded
   with a time); an input with a time AND a zone becomes a canonical BeadLog timestamp; anything
   else (including a time without a zone, which would need a guessed zone) is ``None``.
 - **owner** is the first of :data:`OWNER_KEYS`, as written.
-- **supersedes** are strings as written (doc paths or ids) plus ``bead-token`` refs
-  (``where="supersedes"``) for the ones that look like bead tokens.
+- **supersedes** is only what this doc replaces (``supersedes`` / ``replaces`` keys): strings as
+  written (doc paths or ids) plus ``bead-token`` refs (``where="supersedes"``). **superseded_by**
+  (an extra attr) is what replaces this doc, from a ``Superseded by X`` status, with
+  ``where="superseded-by"`` refs.
 
 ``raw`` keeps what was read for every field that had a value, whether or not it normalized.
 """
@@ -70,7 +72,7 @@ STATUS_SYNONYMS: Mapping[str, str] = MappingProxyType(
 STATUS_KEYS = ("status",)
 DATE_KEYS = ("date", "created", "decided")
 OWNER_KEYS = ("owner", "author", "authors", "deciders", "decision-makers")
-SUPERSEDES_KEYS = ("supersedes",)
+SUPERSEDES_KEYS = ("supersedes", "replaces")
 
 _SUPERSEDED_BY = re.compile(r"^(?:superseded|replaced|obsoleted)\s+by\s+(.+)$", re.IGNORECASE)
 _STATUS_LINE = re.compile(
@@ -121,6 +123,7 @@ class DocMetadata:
     declared_date: str | None = None
     owner: str | None = None
     supersedes: tuple[str, ...] = ()
+    superseded_by: tuple[str, ...] = ()
     refs: tuple[Ref, ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
@@ -131,6 +134,7 @@ class DocMetadata:
             "declared_date": self.declared_date,
             "owner": self.owner,
             "supersedes": list(self.supersedes),
+            "superseded_by": list(self.superseded_by),
         }
 
 
@@ -169,7 +173,7 @@ def _split_refs(text: str) -> list[str]:
 
 
 def normalize_status(raw: str) -> tuple[str | None, tuple[str, ...]]:
-    """``(declared_status, supersedes)`` of a raw status text; ``(None, ())`` when unknown.
+    """``(declared_status, superseded_by)`` of a raw status text; ``(None, ())`` when unknown.
 
     The leading phrase decides (``Accepted (2026-01-02)``, ``Implemented - shipped in 1.2``);
     ``Superseded by X`` also yields ``X``.
@@ -267,6 +271,7 @@ def normalize_doc_metadata(
     metadata = parsed.metadata
     raw: dict[str, Any] = {}
     supersedes: list[str] = []
+    superseded_by: list[str] = []
 
     status_raw, source = _first(metadata, STATUS_KEYS), "frontmatter"
     if status_raw is None:
@@ -277,7 +282,7 @@ def normalize_doc_metadata(
     if status_raw is not None:
         raw["status"] = {"raw": status_raw, "source": source}
         status, by = normalize_status(status_raw)
-        supersedes.extend(by)
+        superseded_by.extend(by)
 
     date_raw = _first(metadata, DATE_KEYS)
     date = None
@@ -297,11 +302,13 @@ def normalize_doc_metadata(
         supersedes.extend(_split_refs(declared))
 
     unique = tuple(dict.fromkeys(supersedes))
+    by = tuple(dict.fromkeys(superseded_by))
     refs = tuple(
-        Ref("bead-token", token, "supersedes")
-        for token in find_bead_tokens("\n".join(unique), pattern)
+        Ref("bead-token", token, where)
+        for where, items in (("supersedes", unique), ("superseded-by", by))
+        for token in find_bead_tokens("\n".join(items), pattern)
     )
-    return DocMetadata(status, date, owner, unique, refs, MappingProxyType(raw))
+    return DocMetadata(status, date, owner, unique, by, refs, MappingProxyType(raw))
 
 
 __all__ = [

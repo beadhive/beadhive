@@ -112,6 +112,7 @@ def test_frontmatter_fields_and_raw() -> None:
         "declared_date": "2026-01-02",
         "owner": "Ada Lovelace",
         "supersedes": ["docs/old.md", "bh-ab12"],
+        "superseded_by": [],
     }
     assert [(r.kind, r.raw, r.where) for r in meta.refs] == [
         ("bead-token", "bh-ab12", "supersedes")
@@ -134,7 +135,8 @@ def test_nygard_status_section() -> None:
 
 def test_nygard_superseded_section() -> None:
     meta = _meta("# T\n\n## Status\n\nSuperseded by [ADR 12](0012.md)\n\n## Context\n")
-    assert (meta.declared_status, meta.supersedes) == ("superseded", ("0012.md",))
+    assert (meta.declared_status, meta.supersedes) == ("superseded", ())
+    assert meta.superseded_by == ("0012.md",)
 
 
 def test_madr_bullet_status_and_bold_lines() -> None:
@@ -172,6 +174,7 @@ def test_no_metadata_is_empty() -> None:
         "declared_date": None,
         "owner": None,
         "supersedes": [],
+        "superseded_by": [],
     }
     assert meta.raw == {} and meta.refs == ()
 
@@ -188,6 +191,7 @@ def test_html_meta_and_visible_status_line() -> None:
         "declared_date": "2026-01-02T10:30:00Z",
         "owner": "Ada",
         "supersedes": [],
+        "superseded_by": [],
     }
     assert _meta("<h1>T</h1><p>Status: proposed</p>", HTML).declared_status == "proposed"
     sect = _meta("<h1>T</h1><h2>Status</h2><p>Accepted</p><h2>Context</h2>", HTML)
@@ -201,7 +205,21 @@ def test_markdown_and_html_normalize_identically() -> None:
         '<meta name="owner" content="Ada"><h1>T</h1>'
     )
     assert _meta(md).attrs() == _meta(html, HTML).attrs()
-    assert _meta(md).attrs()["supersedes"] == ["ADR-12"]
+    assert _meta(md).attrs()["supersedes"] == []
+    assert _meta(md).attrs()["superseded_by"] == ["ADR-12"]
+
+
+def test_superseded_by_is_not_supersedes() -> None:
+    old = _meta("---\nstatus: Superseded by bh-b1\n---\n# A\n")
+    assert (old.declared_status, old.supersedes, old.superseded_by) == (
+        "superseded",
+        (),
+        ("bh-b1",),
+    )
+    assert [(r.raw, r.where) for r in old.refs] == [("bh-b1", "superseded-by")]
+    new = _meta("---\nstatus: accepted\nreplaces: A\n---\n# B\n")
+    assert (new.supersedes, new.superseded_by) == (("A",), ())
+    assert _meta("---\nsupersedes: A\n---\n").supersedes == ("A",)
 
 
 def test_namespace_pattern_limits_supersedes_refs() -> None:

@@ -210,6 +210,7 @@ def test_artifact_shape_refs_and_raw_attrs(tree: Path) -> None:
         "declared_date": "2026-01-02",
         "owner": None,
         "supersedes": (),
+        "superseded_by": (),
     }
     assert record.raw_attrs["frontmatter"]["status"] == "accepted"
     assert {(r.kind, r.raw, r.where) for r in record.refs} == {
