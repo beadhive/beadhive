@@ -9,12 +9,12 @@ from typer.testing import CliRunner
 from beadhive import backfill_cli, backfill_history, cli
 from beadhive.modules.config.contracts import BackfillConfig, BeadhiveConfig
 from beadlog_sources import (
+    BUILTIN_READERS,
     AttachOptions,
     ClusterOptions,
     IdentifyOptions,
     StatusOptions,
 )
-from beadlog_sources.readers import BUILTIN_READERS
 
 ENV = {"COLUMNS": "200", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
 

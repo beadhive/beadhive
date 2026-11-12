@@ -21,7 +21,13 @@ from typer.testing import CliRunner
 
 from beadhive import backfill_cli, backfill_history, cli
 from beadhive.backfill_bd import BdStoreLoader
-from beadlog_sources.testing.ledger import InMemoryLedgerDirectory
+from beadlog_sources import CachedLedgerDirectory
+
+
+def InMemoryLedgerDirectory(ledgers):  # noqa: N802 - reads like the class it stands in for
+    """A fixed-id ledger directory (the library's own fake is not a public import)."""
+    return CachedLedgerDirectory({n: (lambda ids=tuple(i): ids) for n, i in ledgers.items()})
+
 
 ENV = {"COLUMNS": "200", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
 ENTRY = {"provider": "github", "org": "agentguides", "repo": "infra", "prefix": "ag-infra"}
