@@ -53,7 +53,9 @@ def _database(rows: dict) -> sqlite3.Connection:
         if not items:
             continue
         columns = list(items[0])
-        db.execute(f"CREATE TABLE {table} ({','.join(columns)})")
+        # Quoted: hq_release_catalog has a `commit` column, an SQLite keyword.
+        quoted = ",".join('"' + column + '"' for column in columns)
+        db.execute(f"CREATE TABLE {table} ({quoted})")
         db.executemany(
             f"INSERT INTO {table} VALUES ({','.join('?' * len(columns))})",
             [tuple(item[c] for c in columns) for item in items],
