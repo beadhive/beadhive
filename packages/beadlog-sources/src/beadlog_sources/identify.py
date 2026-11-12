@@ -16,8 +16,15 @@ unit, in key order, goes through these steps; the first that decides wins:
    candidate is never sent (there is nothing to choose between).
 5. ``threshold``: when :attr:`IdentifyOptions.new_threshold` is set, a unit whose fuzzy score (the
    best title-token Jaccard against the baseline, in percent) is below it is NEW, provenance
-   ``inferred``, confidence ``1 - score``, labelled :data:`THRESHOLD_LABEL` and always reviewed.
+   ``inferred``, confidence ``1 - score``, always reviewed. B5 mints no labels: label policy for
+   created beads belongs to Phase C (``origin:backfill`` + ``source:<kind>``, D1); step, score,
+   provenance and confidence carry what it needs.
 6. otherwise the unit goes to ``residual`` for a human.
+
+With the defaults (judge off, no threshold) the bridges and the lexical engine can still decide
+PRESENT, but nothing is ever NEW: every other unit is residual. Lexical NOISE effectively never
+fires: a matching epic is offered both as ``present:N`` and ``noise:M`` with the same score, and
+the deterministic engine abstains on that tie (only a judge picks NOISE).
 
 Every decision, and every judge answer (abstentions included), is a verdict record
 (:data:`VERDICT_MEMBERS`) in the collation's ``verdicts``, sorted by unit then step: a judge
@@ -46,7 +53,7 @@ call. With the judge off nothing is previewed and nothing is ever sent anywhere.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -107,7 +114,6 @@ RESIDUAL_REASONS = (
     REASON_JUDGE_BUDGET,
 )
 
-THRESHOLD_LABEL = "identify:inferred-new"
 THRESHOLD_ENGINE = "identify-threshold"
 BRIDGE_ENGINE = "identify-bridge"
 ENGINE_VERSION = "1"
@@ -298,7 +304,6 @@ VERDICT_MEMBERS = (
     "bead",
     "provenance",
     "review",
-    "labels",
     "score",
     "family",
     "query_hash",
@@ -330,7 +335,6 @@ def _verdict_json(
     provenance: str,
     review: Review,
     score: int | None,
-    labels: Sequence[str] = (),
     query: str | None = None,
     family: str | None = None,
 ) -> dict[str, Any]:
@@ -342,7 +346,6 @@ def _verdict_json(
         "bead": bead,
         "provenance": provenance,
         "review": str(review),
-        "labels": list(labels),
         "score": score,
         "family": family,
         "query_hash": query,
@@ -394,8 +397,6 @@ def check_verdict(raw: Any) -> dict[str, Any]:
         for v in probabilities.values()
     ):
         raise _bad(f"verdict {raw['unit']!r}: probabilities_permille must map to 0..1000")
-    if not isinstance(raw["labels"], list) or not all(isinstance(x, str) for x in raw["labels"]):
-        raise _bad(f"verdict {raw['unit']!r}: labels must be strings")
     return raw
 
 
@@ -711,7 +712,6 @@ def identify_units(
                     provenance="inferred",
                     review=Review.REQUIRED,
                     score=item.score,
-                    labels=(THRESHOLD_LABEL,),
                 ),
             )
             continue
@@ -757,7 +757,6 @@ __all__ = [
     "RESIDUAL_MEMBERS",
     "RESIDUAL_REASONS",
     "STEPS",
-    "THRESHOLD_LABEL",
     "VERDICT_MEMBERS",
     "CostPreview",
     "IdentifyConfirmationRequired",

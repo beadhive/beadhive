@@ -33,7 +33,6 @@ from beadlog_sources import (
 from beadlog_sources.identify import (
     FAMILY,
     RESIDUAL_MEMBERS,
-    THRESHOLD_LABEL,
     VERDICT_MEMBERS,
 )
 from beadlog_sources.testing import evidence as ev
@@ -202,7 +201,7 @@ def test_threshold_over_197_docs_yields_inferred_new() -> None:
     for verdict in new:
         assert verdict["step"] == "threshold" and verdict["provenance"] == "inferred"
         assert 0 < verdict["confidence_permille"] <= 1000
-        assert verdict["labels"] == [THRESHOLD_LABEL] and verdict["review"] == "required"
+        assert verdict["review"] == "required" and "labels" not in verdict
         assert verdict["score"] < 40
     # "Archive writer N" scores 67% against bh-1: above the threshold, left for a human.
     assert {r["unit"] for r in col.residual} == {f"doc:docs/design/x{i}.md" for i in range(3)}
