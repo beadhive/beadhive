@@ -2,22 +2,60 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:beadhive:schema:bdlg-collation:1",
   "title": "bdlg.collation/1 collation",
-  "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units, verdicts, conflicts and residual are filled by later collate steps (B3 to B6) and are empty arrays after B2. Implemented by beadlog_sources.collate.",
+  "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units are the B3 work units (candidate beads, attachments to existing local beads, area epics), sorted by key; verdicts, conflicts and residual are filled by later collate steps (B5, B6) and are empty arrays until then. Implemented by beadlog_sources.collate.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual"],
+  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual", "options"],
   "properties": {
     "schema": {"const": "bdlg.collation/1"},
     "local": {"type": "string", "minLength": 1, "description": "The ledger being backfilled."},
     "corpus": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "baseline": {"type": "string", "minLength": 1},
     "refs": {"type": "array", "items": {"$ref": "#/$defs/resolved_ref"}},
-    "units": {"type": "array"},
+    "units": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
     "verdicts": {"type": "array"},
     "conflicts": {"type": "array"},
-    "residual": {"type": "array"}
+    "residual": {"type": "array"},
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cluster"],
+      "description": "The effective options of the collate steps that ran, one sub-object per step (later steps add siblings): a collation made under other options has other bytes.",
+      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}}
+    }
   },
   "$defs": {
+    "cluster_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules", "include_types", "epics", "areas", "path_depth", "min_epic_units"],
+      "description": "B3 ClusterOptions (beadlog_sources.cluster).",
+      "properties": {
+        "rules": {"type": "array", "uniqueItems": true, "items": {"enum": ["plan-item", "local-bead", "review", "merge", "commit"]}, "description": "The claim rules run, in order."},
+        "include_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "cc_type values the commit rule makes units of; * matches any."},
+        "epics": {"type": "boolean", "description": "Whether the area rule grouped units into area epics."},
+        "areas": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}, "description": "Override map: a key with / is a path prefix, any other key renames a derived area."},
+        "path_depth": {"type": "integer", "minimum": 1},
+        "min_epic_units": {"type": "integer", "minimum": 1}
+      }
+    },
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "kind", "rule", "title", "bead", "artifacts", "area", "parent", "children", "depends_on"],
+      "properties": {
+        "key": {"type": "string", "minLength": 1, "description": "Stable source key, later the bead's external_ref: the anchor artifact's key (plan:<item>, gh:pr/<n>, git:commit/<sha>), bead:<id> for an attach unit, area:<name> for an area epic."},
+        "kind": {"enum": ["epic", "issue", "attach"], "description": "epic has children; issue is a leaf candidate bead; attach is evidence for the existing local bead named by bead."},
+        "rule": {"enum": ["plan-item", "local-bead", "review", "merge", "commit", "area"], "description": "The B3 rule that formed the unit."},
+        "title": {"type": "string"},
+        "bead": {"type": ["string", "null"], "description": "The existing local bead id of an attach unit; null otherwise."},
+        "artifacts": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Artifact keys the unit claimed (its evidence), anchor first. An artifact is claimed by at most one unit."},
+        "area": {"type": ["string", "null"], "description": "The area a grouped unit falls in."},
+        "parent": {"type": ["string", "null"], "description": "Key of the parent unit (area epic or parent plan item)."},
+        "children": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Keys of the child units, sorted."},
+        "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Keys of the units a plan item depends on, sorted."}
+      }
+    },
     "resolved_ref": {
       "type": "object",
       "additionalProperties": false,

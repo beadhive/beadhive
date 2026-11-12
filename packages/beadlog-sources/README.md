@@ -24,8 +24,17 @@ never imports `beadhive`.
   ids) then foreign (`LedgerDirectory`, exact membership, never a prefix) else unresolved;
   sha/pr/issue/path/tag to artifacts. Output `bdlg.collation/1`
   ([schema](src/beadlog_sources/schemas/bdlg-collation-v1.schema.json), copied to
-  `docs/schemas/beadlog/`), canonical bytes; `units`/`verdicts`/`conflicts`/`residual` are
-  reserved for B3 to B6.
+  `docs/schemas/beadlog/`), canonical bytes; `verdicts`/`conflicts`/`residual` are reserved
+  for B5 and B6.
+- **Collate B3** (`beadlog_sources.cluster`, run by `collate(..., options=ClusterOptions())`):
+  ordered claim rules, the first claim wins: plan item, explicit local bead id (an `attach`
+  unit), PR, first-parent merge, then one unit per leftover commit whose type is in
+  `include_types` (default `feat`). `review`/`merge`/`commit` units are grouped into area epics
+  by path-prefix override, else majority CC scope, else top-level directory, else release
+  window, with the `areas` override map. Each `Unit` keeps its key (the later `external_ref`),
+  rule and claimed artifact keys; release markers never make units.
+  The collation's `options.cluster` records the effective `ClusterOptions`, so other options
+  give other bytes.
 - **`bd` baseline strategy** (`beadlog_sources.bd`, entry point `bd`): one `bd -C <root> export
   --all` read (never a `bd history` loop) turned into current-state events per issue row — a
   `create` snapshot, a `phase` when not open, `label_add` / `edge_add` per label and dependency,

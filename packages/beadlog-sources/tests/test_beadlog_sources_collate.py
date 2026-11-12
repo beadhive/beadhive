@@ -217,7 +217,8 @@ def test_collation_is_deterministic_and_round_trips(tmp_path) -> None:
     assert loads_collation(data) == first
     obj = json.loads(data)
     assert obj["schema"] == "bdlg.collation/1"
-    assert obj["units"] == obj["verdicts"] == obj["conflicts"] == obj["residual"] == []
+    assert obj["verdicts"] == obj["conflicts"] == obj["residual"] == []
+    assert obj["units"] and loads_collation(data).units == first.units
     path = tmp_path / "c.json"
     write_collation(first, path)
     assert read_collation(path) == first and first.indexes is not None

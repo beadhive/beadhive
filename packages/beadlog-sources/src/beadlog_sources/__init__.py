@@ -212,6 +212,12 @@ from .reconcile import (
 from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
 
 # --- end collate B1+B2 ---
+# isort: split
+# --- collate B3 (bh-55bkx) ---
+from .cluster import ClusterOptions, ClusterOptionsError, cluster
+from .collate import CLAIM_RULES, UNIT_KINDS, UNIT_RULES, Unit, claimed_artifacts
+
+# --- end collate B3 ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -361,4 +367,14 @@ __all__ = [
     "resolve_refs",
     "write_collation",
     # --- end collate B1+B2 ---
+    # --- collate B3 (bh-55bkx) ---
+    "CLAIM_RULES",
+    "UNIT_KINDS",
+    "UNIT_RULES",
+    "ClusterOptions",
+    "ClusterOptionsError",
+    "Unit",
+    "claimed_artifacts",
+    "cluster",
+    # --- end collate B3 ---
 ]
