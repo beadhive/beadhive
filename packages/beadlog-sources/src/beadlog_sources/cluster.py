@@ -139,6 +139,25 @@ class ClusterOptions:
         """Options from a ``backfill.collate`` table; members other B steps own are ignored."""
         return cls(**{name: raw[name] for name in OPTION_MEMBERS if name in raw})
 
+    def to_json(self) -> dict[str, Any]:
+        """The effective options as a JSON object (every member, the collation's
+        ``options.cluster``)."""
+        return {
+            "rules": list(self.rules),
+            "include_types": list(self.include_types),
+            "epics": self.epics,
+            "areas": dict(self.areas),
+            "path_depth": self.path_depth,
+            "min_epic_units": self.min_epic_units,
+        }
+
+    @classmethod
+    def from_json(cls, raw: Any) -> ClusterOptions:
+        """Parse :meth:`to_json` output; missing or unknown members are refused."""
+        if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_MEMBERS):
+            raise ClusterOptionsError(f"cluster options must have exactly {OPTION_MEMBERS}")
+        return cls(**raw)
+
 
 @dataclass
 class _Draft:
@@ -427,15 +446,18 @@ class _Clusterer:
 
 
 def cluster(collation: Collation, options: ClusterOptions | None = None) -> Collation:
-    """B3: ``collation`` with its ``units`` filled (see the module doc).
+    """B3: ``collation`` with its ``units`` filled and ``options.cluster`` set (see the module doc).
 
     Needs the in-memory B1 indexes (a collation from :func:`~beadlog_sources.collate.collate`,
     not one loaded from disk).
     """
     if collation.indexes is None:
         raise CollationFormatError("cluster needs the B1 indexes (a loaded collation has none)")
-    units = _Clusterer(collation, collation.indexes, options or ClusterOptions()).run()
-    return replace(collation, units=units)
+    options = options or ClusterOptions()
+    units = _Clusterer(collation, collation.indexes, options).run()
+    return replace(
+        collation, units=units, options={**collation.options, "cluster": options.to_json()}
+    )
 
 
 __all__ = [

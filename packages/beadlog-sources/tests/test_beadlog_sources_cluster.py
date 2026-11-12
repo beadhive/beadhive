@@ -408,3 +408,51 @@ def test_mid_size_history() -> None:
     # no release, tracker or merge-only units; every unit lists its member artifact keys
     assert all(u.artifacts for u in col.units if u.rule != "area")
     assert dumps_collation(col) == dumps_collation(run(*arts, beads=beads))
+
+
+def test_options_are_recorded() -> None:
+    arts = _history()
+    default = run(*arts)
+    assert default.options == {"cluster": ClusterOptions().to_json()}
+    variants = [
+        run(*arts, include_types=["feat", "fix"]),
+        run(*arts, areas={"hq": "core"}),
+        run(*arts, rules=["review", "merge"]),
+        run(*arts, min_epic_units=3),
+    ]
+    data = [dumps_collation(c) for c in (default, *variants)]
+    assert len(set(data)) == len(data)
+    # options alone change the bytes: same units, different recorded options
+    same_units = run(*arts, path_depth=2)
+    assert same_units.units == default.units and dumps_collation(same_units) != data[0]
+    for col in (default, *variants):
+        loaded = loads_collation(dumps_collation(col))
+        assert loaded == col and loaded.options == col.options
+        assert ClusterOptions.from_json(loaded.options["cluster"]) == ClusterOptions(
+            **{k: v for k, v in col.options["cluster"].items()}
+        )
+
+
+def test_options_schema_and_strict_loading() -> None:
+    obj = json.loads(dumps_collation(run(*_history(), areas={"src/hq/": "hq"})))
+    assert obj["options"]["cluster"]["areas"] == {"src/hq/": "hq"}
+    jsonschema = pytest.importorskip("jsonschema")
+    jsonschema.Draft202012Validator(collation_schema()).validate(obj)
+
+    def load(options):
+        return loads_collation(beadlog.canonical_json({**obj, "options": options}).encode() + b"\n")
+
+    cluster_opts = obj["options"]["cluster"]
+    for bad in (
+        {},
+        {"cluster": cluster_opts, "attach": {}},
+        {"cluster": {**cluster_opts, "extra": 1}},
+        {"cluster": {k: v for k, v in cluster_opts.items() if k != "epics"}},
+        {"cluster": {**cluster_opts, "rules": ["guess"]}},
+        {"cluster": {**cluster_opts, "path_depth": 0}},
+    ):
+        with pytest.raises(CollationFormatError):
+            load(bad)
+    missing = {k: v for k, v in obj.items() if k != "options"}
+    with pytest.raises(CollationFormatError):
+        loads_collation(beadlog.canonical_json(missing).encode() + b"\n")

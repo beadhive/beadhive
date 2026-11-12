@@ -5,7 +5,7 @@
   "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units are the B3 work units (candidate beads, attachments to existing local beads, area epics), sorted by key; verdicts, conflicts and residual are filled by later collate steps (B5, B6) and are empty arrays until then. Implemented by beadlog_sources.collate.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual"],
+  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual", "options"],
   "properties": {
     "schema": {"const": "bdlg.collation/1"},
     "local": {"type": "string", "minLength": 1, "description": "The ledger being backfilled."},
@@ -15,9 +15,30 @@
     "units": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
     "verdicts": {"type": "array"},
     "conflicts": {"type": "array"},
-    "residual": {"type": "array"}
+    "residual": {"type": "array"},
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cluster"],
+      "description": "The effective options of the collate steps that ran, one sub-object per step (later steps add siblings): a collation made under other options has other bytes.",
+      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}}
+    }
   },
   "$defs": {
+    "cluster_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules", "include_types", "epics", "areas", "path_depth", "min_epic_units"],
+      "description": "B3 ClusterOptions (beadlog_sources.cluster).",
+      "properties": {
+        "rules": {"type": "array", "uniqueItems": true, "items": {"enum": ["plan-item", "local-bead", "review", "merge", "commit"]}, "description": "The claim rules run, in order."},
+        "include_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "cc_type values the commit rule makes units of; * matches any."},
+        "epics": {"type": "boolean", "description": "Whether the area rule grouped units into area epics."},
+        "areas": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}, "description": "Override map: a key with / is a path prefix, any other key renames a derived area."},
+        "path_depth": {"type": "integer", "minimum": 1},
+        "min_epic_units": {"type": "integer", "minimum": 1}
+      }
+    },
     "unit": {
       "type": "object",
       "additionalProperties": false,

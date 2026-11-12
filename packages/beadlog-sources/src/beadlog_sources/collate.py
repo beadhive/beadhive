@@ -83,6 +83,9 @@ OUTCOMES = (LOCAL, FOREIGN, ARTIFACT, AMBIGUOUS, UNRESOLVED)
 MIN_SHA_PREFIX = 7
 # Members later collate steps fill; B1/B2 write them empty so the schema is stable.
 EXTENSION_MEMBERS = ("units", "verdicts", "conflicts", "residual")
+# The sub-objects of a collation's ``options``: the effective options of each step that has
+# them (B3 ``cluster`` today; B4 to B6 add siblings).
+OPTION_SECTIONS = ("cluster",)
 
 # B3 unit shapes and the rules that form units (``beadlog_sources.cluster``). The claim rules
 # run in :data:`CLAIM_RULES` order by default; ``area`` groups units into epics afterwards.
@@ -541,8 +544,11 @@ class Collation:
     ``local`` names the ledger being backfilled; ``corpus`` and ``baseline`` fingerprint the
     inputs (``sha256:`` of the corpus bytes, ``beadlog.corpus_hash`` of the baseline). ``refs``
     is B2, ``units`` B3 (:class:`Unit`, sorted by key). ``verdicts``, ``conflicts`` and
-    ``residual`` are JSON-valued tuples B5 and B6 fill; until then they are empty. ``indexes``
-    is the in-memory B1 result (derived, never serialized; ``None`` on a loaded collation).
+    ``residual`` are JSON-valued tuples B5 and B6 fill; until then they are empty. ``options``
+    records the effective options of the steps that ran, one JSON sub-object per step
+    (:data:`OPTION_SECTIONS`; ``cluster`` is :meth:`ClusterOptions.to_json`), so a collation
+    made under other options has other bytes. ``indexes`` is the in-memory B1 result (derived,
+    never serialized; ``None`` on a loaded collation).
     """
 
     local: str
@@ -553,6 +559,7 @@ class Collation:
     verdicts: tuple[Any, ...] = ()
     conflicts: tuple[Any, ...] = ()
     residual: tuple[Any, ...] = ()
+    options: Mapping[str, Any] = field(default_factory=dict, hash=False)
     indexes: Indexes | None = field(default=None, compare=False, hash=False, repr=False)
 
     def refs_of(self, source: str) -> tuple[ResolvedRef, ...]:
@@ -575,6 +582,7 @@ class Collation:
             "verdicts": list(self.verdicts),
             "conflicts": list(self.conflicts),
             "residual": list(self.residual),
+            "options": json.loads(canonical_json(dict(self.options))),
         }
 
 
@@ -615,7 +623,7 @@ def loads_collation(data: bytes) -> Collation:
         raw = json.loads(data)
     except ValueError as error:
         raise CollationFormatError(f"collation is not JSON: {error}") from None
-    members = ("schema", "local", "corpus", "baseline", "refs", *EXTENSION_MEMBERS)
+    members = ("schema", "local", "corpus", "baseline", "refs", *EXTENSION_MEMBERS, "options")
     if not isinstance(raw, dict) or sorted(raw) != sorted(members):
         raise CollationFormatError(f"collation must have exactly the members {members}")
     if raw["schema"] != COLLATION_SCHEMA:
@@ -627,10 +635,23 @@ def loads_collation(data: bytes) -> Collation:
         refs=tuple(ResolvedRef.from_json(r) for r in raw["refs"]),
         units=tuple(Unit.from_json(u) for u in raw["units"]),
         **{name: tuple(raw[name]) for name in EXTENSION_MEMBERS if name != "units"},
+        options=_load_options(raw["options"]),
     )
     if dumps_collation(collation) != data:
         raise CollationFormatError("collation is not canonical JSON")
     return collation
+
+
+def _load_options(raw: Any) -> dict[str, Any]:
+    from .cluster import ClusterOptions, ClusterOptionsError  # B3 owns its options
+
+    if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_SECTIONS):
+        raise CollationFormatError(f"options must have exactly the members {OPTION_SECTIONS}")
+    try:
+        cluster_options = ClusterOptions.from_json(raw["cluster"])
+    except ClusterOptionsError as error:
+        raise CollationFormatError(f"options.cluster: {error}") from None
+    return {"cluster": cluster_options.to_json()}
 
 
 def write_collation(collation: Collation, path: str | Path) -> None:
@@ -661,6 +682,7 @@ __all__ = [
     "EXTENSION_MEMBERS",
     "ISSUE",
     "MIN_SHA_PREFIX",
+    "OPTION_SECTIONS",
     "OUTCOMES",
     "RULE_AREA",
     "RULE_COMMIT",

@@ -33,6 +33,8 @@ never imports `beadhive`.
   by path-prefix override, else majority CC scope, else top-level directory, else release
   window, with the `areas` override map. Each `Unit` keeps its key (the later `external_ref`),
   rule and claimed artifact keys; release markers never make units.
+  The collation's `options.cluster` records the effective `ClusterOptions`, so other options
+  give other bytes.
 - **`bd` baseline strategy** (`beadlog_sources.bd`, entry point `bd`): one `bd -C <root> export
   --all` read (never a `bd history` loop) turned into current-state events per issue row — a
   `create` snapshot, a `phase` when not open, `label_add` / `edge_add` per label and dependency,
