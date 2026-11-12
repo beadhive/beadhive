@@ -1,0 +1,132 @@
+{
+  "GET /repos/o/r/issues": {
+    "body": [
+      {
+        "assignees": [
+          {
+            "login": "alice"
+          },
+          {
+            "login": "bob"
+          }
+        ],
+        "body": "stack",
+        "closed_at": "2026-01-03T09:30:00Z",
+        "created_at": "2026-01-01T07:00:00Z",
+        "labels": [
+          {
+            "name": "bug"
+          },
+          {
+            "name": "area:z"
+          }
+        ],
+        "number": 1,
+        "state": "closed",
+        "state_reason": "completed",
+        "title": "bug: crash"
+      },
+      {
+        "assignees": [],
+        "body": "",
+        "closed_at": "2026-01-03T09:30:00Z",
+        "created_at": "2026-01-02T10:00:00Z",
+        "labels": [],
+        "number": 2,
+        "pull_request": {
+          "url": "x"
+        },
+        "state": "closed",
+        "state_reason": null,
+        "title": "pr as issue"
+      }
+    ],
+    "link": "<https://api.github.com/repos/o/r/issues?state=all&per_page=100&page=2>; rel=\"next\""
+  },
+  "GET /repos/o/r/pulls": {
+    "body": [
+      {
+        "body": "Closes #1\nand fixes o/r#3",
+        "closed_at": "2026-01-03T11:30:00+02:00",
+        "created_at": "2026-01-02T10:00:00Z",
+        "draft": false,
+        "merged_at": "2026-01-03T09:30:00Z",
+        "number": 2,
+        "state": "closed",
+        "title": "feat(x): add thing (bh-abc12)"
+      },
+      {
+        "body": "no refs",
+        "closed_at": "2026-01-01T09:00:00Z",
+        "created_at": "2026-01-01T08:00:00Z",
+        "draft": false,
+        "merged_at": null,
+        "number": 1,
+        "state": "closed",
+        "title": "docs: typo"
+      }
+    ],
+    "link": "<https://api.github.com/repos/o/r/pulls?state=all&per_page=100&page=2>; rel=\"next\""
+  },
+  "GET /repos/o/r/pulls/1/commits": {
+    "body": []
+  },
+  "GET /repos/o/r/pulls/2/commits": {
+    "body": [
+      {
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "link": "<https://api.github.com/repos/o/r/pulls/2/commits?per_page=100&page=2>; rel=\"next\""
+  },
+  "GET /repos/o/r/pulls/3/commits": {
+    "body": [
+      {
+        "sha": "cccccccccccccccccccccccccccccccccccccccc"
+      }
+    ]
+  },
+  "GET https://api.github.com/repos/o/r/issues?state=all&per_page=100&page=2": {
+    "body": [
+      {
+        "assignees": [],
+        "body": "body text bh-q7",
+        "closed_at": null,
+        "created_at": "2026-01-04T00:00:00Z",
+        "labels": [
+          {
+            "name": "p2"
+          },
+          {
+            "name": "bug"
+          }
+        ],
+        "number": 3,
+        "state": "open",
+        "state_reason": null,
+        "title": "idea bh-abc12"
+      }
+    ]
+  },
+  "GET https://api.github.com/repos/o/r/pulls/2/commits?per_page=100&page=2": {
+    "body": [
+      {
+        "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  },
+  "GET https://api.github.com/repos/o/r/pulls?state=all&per_page=100&page=2": {
+    "body": [
+      {
+        "body": "see bh-zz9",
+        "closed_at": null,
+        "created_at": "2026-01-05T00:00:00Z",
+        "draft": true,
+        "merged_at": null,
+        "number": 3,
+        "state": "open",
+        "title": "wip: draft"
+      }
+    ]
+  }
+}

@@ -172,8 +172,6 @@ from .ledger import (
     resolve_ref,
 )
 from .planning import PlanningStrategy
-
-# --- end docs reader ---
 from .readers import (
     BUILTIN_READERS,
     BUILTIN_STRATEGIES,
@@ -200,6 +198,9 @@ from .reconcile import (
 )
 from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
 
+# --- end docs reader ---
+from .tokens import bead_token_pattern, find_bead_tokens, token_mode
+
 DISTRIBUTION = "beadlog-sources"
 
 
@@ -222,6 +223,9 @@ __all__ = [
     # --- end html doc format ---
     "BUILTIN_READERS",
     "BUILTIN_STRATEGIES",
+    "bead_token_pattern",
+    "find_bead_tokens",
+    "token_mode",
     "READERS_GROUP",
     "DuplicateRegistrationError",
     "GitRead",

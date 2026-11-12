@@ -180,3 +180,14 @@ enabled.
 githubkit is MIT. The transitive `hishel` declares only the generic BSD trove classifier, so the
 root `osv-scanner.toml` carries a time-boxed override for it (see the entry for the date it was
 re-verified and when it lapses).
+
+## Backfill: the `github` source reader
+
+`beadhive_tracker_github.snapshot.fetch_snapshot` pages the repository's pull requests (with their
+commit shas) and issues over the plugin's own transport (`Transport.operation(...)` then
+`session.get`) into a deterministic, resumable `bdlg.github-snapshot/1` JSON file.
+`beadhive_tracker_github.reader.GitHubReader` (registered as the `github` entry point of the
+`beadlog.readers` group) parses that file, purely and offline, into `review` (`gh:pr/N`) and
+`tracker-item` (`gh:issue/N`) artifacts. See `docs/design/backfill-history-pipeline-adr.md` (D6).
+Nothing runs it yet: the `backfill.sources.github.enabled` switch (default off) arrives with the
+`bh backfill history` wiring.
