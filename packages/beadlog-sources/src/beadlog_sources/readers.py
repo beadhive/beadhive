@@ -42,6 +42,7 @@ BUILTIN_READERS: Mapping[str, str] = MappingProxyType(
     {
         "docs": "beadlog_sources.docs_reader:DocsReader",
         "git": "beadlog_sources.git_reader:GitReader",
+        "planning": "beadlog_sources.planning_reader:PlanningReader",
     }
 )
 BUILTIN_STRATEGIES: Mapping[str, str] = MappingProxyType(

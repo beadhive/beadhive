@@ -255,6 +255,27 @@ exit 1). A third-party reader registers under `[project.entry-points."beadlog.re
 implements `beadlog_sources.SourceReader` (`name`, `version`, `categories`, and a pure
 `read(ReadRequest) -> Iterable[Artifact]` that never touches a store).
 
+### The `planning` reader
+
+`beadlog read planning` emits one `plan-item` artifact per plan item, keyed
+`plan:<path>#<item-id>`, through the `PlanningFormat` port (adapters `gsd` and `roadmap`). Keys
+become bead `external_ref`s, so they only change when the structure does.
+
+- **GSD** (`.planning/phases/NN-name/NN-MM-PLAN.md`): a phase is `#phase`, a plan `#NN-MM`; its
+  parent is the phase, `depends_on` frontmatter gives the dependencies, a sibling `-SUMMARY.md`
+  marks it done.
+- **Roadmap** (`ROADMAP.md`, `IMPLEMENTATION_PLAN.md`, `--option files=...`): headings nest by
+  level and `- [ ]` / `- [x]` items nest under the nearest heading or the checkbox of lesser
+  indent. A single `#` heading is the document title, not an item; several are items. The item id
+  is the chain of ancestor slugs (`phase-1/setup-repo`), where a slug ignores bead tokens, the
+  `(depends: ...)` clause, checkbox state and punctuation, so adding a ref, a dependency or ticking
+  the box never changes the key; `-2`, `-3` separate only true duplicates under one parent.
+- **Dependencies**: end an item's text with `(depends: slug, other-slug)`. Each entry is the
+  slug of another item in the same file (a sibling is preferred; an ambiguous or unknown entry is
+  kept in `raw_attrs.unresolved_depends_on`).
+- **Done**: a ticked checkbox; a heading is done when it has checkboxes and all are ticked.
+  `order` is the position among siblings.
+
 ### `beadlog extract git-commits`
 
 The neutral `git-commits` strategy (`beadlog_sources.commits`) links commits to beads: it scans

@@ -206,10 +206,11 @@ def test_artifact_shape_refs_and_raw_attrs(tree: Path) -> None:
     assert record.category is Category.DESIGN_RECORD and record.provenance == "observed"
     assert record.title == "Use beads" and record.occurred_at is None
     assert dict(record.attrs) == {
-        "declared_status": None,
-        "declared_date": None,
+        "declared_status": "accepted",
+        "declared_date": "2026-01-02",
         "owner": None,
         "supersedes": (),
+        "superseded_by": (),
     }
     assert record.raw_attrs["frontmatter"]["status"] == "accepted"
     assert {(r.kind, r.raw, r.where) for r in record.refs} == {
