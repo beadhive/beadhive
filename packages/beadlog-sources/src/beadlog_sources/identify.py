@@ -7,24 +7,29 @@ unit, in key order, goes through these steps; the first that decides wins:
 1. ``external-ref``: a live baseline bead whose ``external_ref`` is the unit's key, the path of a
    ``doc:<path>`` key, or one of the unit's artifact keys: PRESENT, provenance ``derived``.
 2. ``explicit-id``: an ``attach`` unit names its local bead (B2/B3 resolved it): PRESENT.
-3. ``lexical``: the deterministic engine (:class:`~beadlog_sources.judges.DeterministicJudge`)
+3. ``no-candidate``: the baseline holds no bead (and no epic) sharing a title token with the unit,
+   so there is nothing it could be present as or covered by: NEW, provenance ``derived``,
+   confidence null (a rule decided it, nothing was estimated), always reviewed. Units WITH a
+   candidate keep the flow below.
+4. ``lexical``: the deterministic engine (:class:`~beadlog_sources.judges.DeterministicJudge`)
    over one :class:`~beadlog_sources.contracts.ChoiceQuery` shaped like reconcile's match query
    (``present:N`` for the baseline beads whose titles share the most tokens with the unit,
    ``noise:N`` for the best-matching baseline epics, ``new``, ``abstain``).
-4. ``judge``: the configured :class:`~beadlog_sources.contracts.JudgmentPort` when it is enabled
+5. ``judge``: the configured :class:`~beadlog_sources.contracts.JudgmentPort` when it is enabled
    (not ``None`` and not the deterministic engine), asked the same query. A unit with no baseline
    candidate is never sent (there is nothing to choose between).
-5. ``threshold``: when :attr:`IdentifyOptions.new_threshold` is set, a unit whose fuzzy score (the
+6. ``threshold``: when :attr:`IdentifyOptions.new_threshold` is set, a unit whose fuzzy score (the
    best title-token Jaccard against the baseline, in percent) is below it is NEW, provenance
    ``inferred``, confidence ``1 - score``, always reviewed. B5 mints no labels: label policy for
    created beads belongs to Phase C (``origin:backfill`` + ``source:<kind>``, D1); step, score,
    provenance and confidence carry what it needs.
-6. otherwise the unit goes to ``residual`` for a human.
+7. otherwise the unit goes to ``residual`` for a human.
 
 With the defaults (judge off, no threshold) the bridges and the lexical engine can still decide
-PRESENT, but nothing is ever NEW: every other unit is residual. Lexical NOISE effectively never
-fires: a matching epic is offered both as ``present:N`` and ``noise:M`` with the same score, and
-the deterministic engine abstains on that tie (only a judge picks NOISE).
+PRESENT, and a unit with no candidate at all is NEW (derived); every other unit is residual.
+Lexical NOISE effectively never fires: a matching epic is offered both as ``present:N`` and
+``noise:M`` with the same score, and the deterministic engine abstains on that tie (only a judge
+picks NOISE).
 
 Every decision, and every judge answer (abstentions included), is a verdict record
 (:data:`VERDICT_MEMBERS`) in the collation's ``verdicts``, sorted by unit then step: a judge
@@ -94,8 +99,16 @@ STEP_EXTERNAL_REF = "external-ref"
 STEP_EXPLICIT_ID = "explicit-id"
 STEP_LEXICAL = "lexical"
 STEP_JUDGE = "judge"
+STEP_NO_CANDIDATE = "no-candidate"
 STEP_THRESHOLD = "threshold"
-STEPS = (STEP_EXTERNAL_REF, STEP_EXPLICIT_ID, STEP_LEXICAL, STEP_JUDGE, STEP_THRESHOLD)
+STEPS = (
+    STEP_EXTERNAL_REF,
+    STEP_EXPLICIT_ID,
+    STEP_NO_CANDIDATE,
+    STEP_LEXICAL,
+    STEP_JUDGE,
+    STEP_THRESHOLD,
+)
 
 CLASSES = (str(ReconcileClass.NEW), str(ReconcileClass.PRESENT), str(ReconcileClass.NOISE))
 PROVENANCES = ("derived", "inferred")
@@ -389,6 +402,8 @@ def check_verdict(raw: Any) -> dict[str, Any]:
     ):
         raise _bad(f"verdict {raw['unit']!r}: fallback must have exactly {_FALLBACK_MEMBERS}")
     for name in ("confidence_permille", "option_count"):
+        if name == "confidence_permille" and raw[name] is None and raw["step"] == STEP_NO_CANDIDATE:
+            continue  # a rule decided it: no estimate to carry
         if not isinstance(raw[name], int) or isinstance(raw[name], bool) or raw[name] < 0:
             raise _bad(f"verdict {raw['unit']!r}: {name} must be a non-negative integer")
     probabilities = raw["probabilities_permille"]
@@ -629,6 +644,21 @@ def identify_units(
         subject = tokens(unit.title)
         present = base.ranked(subject, options.max_candidates, epics=False)
         epics = base.ranked(subject, options.max_candidates, epics=True)
+        if not present and not epics:
+            why = "no baseline bead shares a title token with the unit"
+            record = _verdict_json(
+                unit.key,
+                STEP_NO_CANDIDATE,
+                Judgment(NEW_KEY, {NEW_KEY: 1.0}, 1.0, 1, why, BRIDGE_ENGINE, ENGINE_VERSION),
+                cls=str(ReconcileClass.NEW),
+                bead=None,
+                provenance="derived",
+                review=Review.REQUIRED,
+                score=0,
+            )
+            record["confidence_permille"] = None
+            put(unit.key, STEP_NO_CANDIDATE, record)
+            continue
         score = round(present[0][0] * 100) if present else 0
         item = _Pending(unit, score, tuple(bead.id for _, bead in present))
         if present:
