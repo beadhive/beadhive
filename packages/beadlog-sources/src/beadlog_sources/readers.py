@@ -87,6 +87,11 @@ class SourceReader(Protocol):
         """Yield the artifacts of the source named by ``request``."""
         ...
 
+    # Optional (not part of the runtime protocol check): a reader may define
+    # ``header_options(options) -> Mapping[str, Any]`` returning the options to record in its
+    # ``ReaderHeader`` (the given ones plus derived facts such as ``token_mode``); ``beadlog read``
+    # uses it when present.
+
 
 @dataclass(frozen=True)
 class Registration:

@@ -24,7 +24,8 @@ Shallow clones are refused (their history is truncated) unless ``allow_shallow``
 the repository's ``shallow`` file, so it costs no process.
 
 Options: ``namespaces`` (comma-separated id namespaces anchoring bead tokens; absent: the generic
-shape, see :func:`token_mode`), ``rev`` (default ``HEAD``), ``since`` (a hex sha: only
+shape; ``header_options`` records ``token_mode``), ``rev`` (default ``HEAD``), ``since`` (a hex
+sha: only
 ``since..rev``; anything else is a date for ``git log --since``), ``allow_shallow`` and ``git``
 (the binary). A string
 :attr:`~beadlog_sources.readers.ReadRequest.cursor` is a sha read as ``cursor..rev``
@@ -35,7 +36,7 @@ cursor when nothing is new).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,13 +45,12 @@ from ._sources import commit_time, csv, truthy
 from .commits import (
     SHALLOW_REMEDIATION,
     ShallowCloneError,
-    candidate_pattern,
-    extract_candidates,
 )
 from .evidence import Artifact, Category, Ref
 from .git_dates import GitReadError
 from .readers import ReadRequest
 from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
+from .tokens import bead_token_pattern, find_bead_tokens, token_mode
 
 READER_NAME = "git"
 READER_VERSION = "0.1.0"
@@ -79,13 +79,7 @@ _TRAILER = re.compile(
 )
 _BREAKING_KEYS = frozenset({"breaking change", "breaking-change"})
 
-# Reference shapes. A bead token is shape-only: letters, then hyphenated base36 segments whose last
-# segment is 2+ characters with a digit (``bh-4o07n``, ``bhui-do1``, ``bh-baml-8u9.17``); the
-# collation phase decides which are real beads.
-_BEAD = re.compile(
-    r"(?<![0-9A-Za-z_./-])[a-z][a-z0-9]{1,9}(?:-[a-z0-9]+)*-(?=[0-9a-z]*[0-9])[0-9a-z]{2,}"
-    r"(?:\.[0-9]+)*(?![0-9A-Za-z_-])"
-)
+# Reference shapes (bead tokens come from the shared tokens module).
 _SHA = re.compile(
     r"(?<![0-9A-Za-z_-])(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![0-9A-Za-z_-])"
 )
@@ -150,26 +144,8 @@ def parse_trailers(body: str) -> tuple[dict[str, list[str]], list[str]]:
     return trailers, lines[:start]
 
 
-def _bead_pattern(namespaces: Sequence[str] | None) -> re.Pattern[str]:
-    """The bead-token pattern: namespace-anchored when ``namespaces`` are given, else the generic
-    digit-requiring shape. The one seam to swap for the shared tokens module."""
-    return candidate_pattern(namespaces) if namespaces else _BEAD
-
-
-def _find_bead_tokens(text: str, pattern: re.Pattern[str]) -> list[str]:
-    if pattern is _BEAD:
-        return [match.group(0) for match in pattern.finditer(text)]
-    return extract_candidates(text, pattern)
-
-
-def token_mode(options: Mapping[str, Any]) -> str:
-    """``namespaces`` when the ``namespaces`` option anchors bead tokens, else ``generic``; record
-    it in the run's ``ReaderHeader`` options."""
-    return "namespaces" if csv(options.get("namespaces", "")) else "generic"
-
-
 def _refs(
-    text: str, where: str, beads: re.Pattern[str] = _BEAD, *, subject: bool = False
+    text: str, where: str, beads: re.Pattern[str] | None = None, *, subject: bool = False
 ) -> list[Ref]:
     found: list[Ref] = []
 
@@ -187,7 +163,7 @@ def _refs(
         add("issue", f"#{match.group(1)}")
     for match in _NUMBER.finditer(text):
         add("issue", match.group(0))
-    for token in _find_bead_tokens(text, beads):
+    for token in find_bead_tokens(text, beads or bead_token_pattern(None)):
         add("bead-token", token)
     for pattern, kind in ((_SHA, "sha"), (_PATH, "path"), (_TAG, "tag")):
         for match in pattern.finditer(text):
@@ -375,7 +351,7 @@ def read_git(request: ReadRequest, runner: Runner | None = None) -> GitRead:
             "refs/tags",
         )
     )
-    beads = _bead_pattern(csv(options.get("namespaces", "")))
+    beads = bead_token_pattern(csv(options.get("namespaces", "")))
     artifacts: list[Artifact] = []
     head: str | None = None
     for chunk in text.split(_RS):
@@ -403,6 +379,11 @@ class GitReader:
     def __init__(self, runner: Runner | None = None) -> None:
         self._runner = runner
 
+    @staticmethod
+    def header_options(options: Mapping[str, Any]) -> dict[str, Any]:
+        """The options recorded in the run's ReaderHeader: the given ones plus ``token_mode``."""
+        return {**options, "token_mode": token_mode(csv(options.get("namespaces", "")))}
+
     def read(self, request: ReadRequest) -> Iterable[Artifact]:
         """The commits and tags of the repository at ``request.root``."""
         return read_git(request, self._runner).artifacts
@@ -418,5 +399,4 @@ __all__ = [
     "parse_conventional",
     "parse_trailers",
     "read_git",
-    "token_mode",
 ]

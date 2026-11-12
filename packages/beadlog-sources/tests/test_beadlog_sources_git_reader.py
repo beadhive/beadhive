@@ -255,9 +255,8 @@ def test_parse_trailers() -> None:
 
 
 def test_namespaces_anchor_bead_tokens(full_repo: Path) -> None:
-    from beadlog_sources.git_reader import token_mode
-
-    assert token_mode({}) == "generic" and token_mode({"namespaces": "bh, x"}) == "namespaces"
+    assert GitReader.header_options({})["token_mode"] == "generic"
+    assert GitReader.header_options({"namespaces": "bh, x"})["token_mode"] == "namespaces"
     got = read_git(ReadRequest(root=full_repo, options={"namespaces": "bh"}))
     tokens = {r.raw for a in got.artifacts for r in a.refs if r.kind == "bead-token"}
     assert tokens == {"bh-4o07n", "bh-abc12"}
