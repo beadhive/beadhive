@@ -50,6 +50,10 @@ def main() -> int:
             return connection
 
         hq_sql_receiver.connect = connect_with_abort
+    if os.environ.get("HQ_PARITY_BIN"):  # opt-in shadow parity with hq-service
+        from hq_parity import install_in_worker
+
+        install_in_worker()
     receiver = SqlTrustedReceiver(settings, broker=FixtureBroker())
     if arguments and arguments[0] == "--hive":
         result = receiver.accept_hive_lease(principal, request_id)
