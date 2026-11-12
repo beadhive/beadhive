@@ -463,6 +463,18 @@ and `PRESENT-in-sync` is PRESENT. For `git-commits` there is no per-doc status: 
 `git.commits` gains shas is DRIFT, and a stored value that is not a JSON array of strings is
 reported as DRIFT with no event.
 
+## Collation status and conflicts
+
+The collation derives each work unit's status and dates from history only (merged or committed
+is closed, a plan item follows its done marker) and lists conflicts between artifacts, never
+resolving one. Four rules are on by default: a draft or proposed doc whose commit or PR also
+landed code, a "design only" doc with a `feat` change attached, a doc accepted after the last
+release with no code, and an open plan item whose summary exists. The two clock rules
+(`clock-doc-date`, `clock-review-merge`) are **opt-in**, because declared doc dates routinely
+differ from add-commit days; enable them with the `rules` option of the `status` section
+(`beadlog_sources.StatusOptions`), and tune `date_tolerance_days` and
+`clock_tolerance_seconds`.
+
 ## Judged residuals
 
 Only the `docs` pass has a residual: the docs left after the deterministic bridges (reverse

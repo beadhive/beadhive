@@ -44,6 +44,9 @@ never imports ``beadhive``. It owns:
   Commits and trailer parse and un-resolved refs;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
+- collate B5 (:mod:`beadlog_sources.identify`): work units identified against the baseline
+  (bridges, lexical, opt-in judge, opt-in NEW threshold, residual), resumable by query hash,
+  with a cost preview before any judge call;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -97,6 +100,27 @@ from .bd_timeline import (
     read_store_start,
     source_family,
     suppress_artifacts,
+)
+
+# --- collate B1+B2 (bh-8vppn) ---
+from .collate import (  # noqa: E402, I001
+    ARTIFACT as REF_ARTIFACT,
+)
+from .collate import (
+    COLLATION_SCHEMA,
+    Collation,
+    CollationFormatError,
+    Indexes,
+    ResolvedRef,
+    baseline_ids,
+    build_indexes,
+    collate,
+    collation_schema,
+    dumps_collation,
+    loads_collation,
+    read_collation,
+    resolve_refs,
+    write_collation,
 )
 from .commits import (
     GitCommitsStrategy,
@@ -224,6 +248,52 @@ from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
 
 # --- end docs reader ---
 from .tokens import bead_token_pattern, find_bead_tokens, token_mode
+
+# --- end collate B1+B2 ---
+# isort: split
+# --- collate B3 (bh-55bkx) ---
+from .cluster import ClusterOptions, ClusterOptionsError, cluster
+from .collate import CLAIM_RULES, UNIT_KINDS, UNIT_RULES, Unit, claimed_artifacts
+
+# --- end collate B3 ---
+# isort: split
+# --- collate B4 (bh-f4380) ---
+from .attach import ATTACH_TIERS, AttachOptions, AttachOptionsError, attach
+from .collate import ATTACH_REASONS, Attachment
+
+# --- end collate B4 ---
+# isort: split
+# --- collate B5 (bh-h8vxt) ---
+from .identify import (
+    CostPreview,
+    IdentifyConfirmationRequired,
+    IdentifyOptions,
+    IdentifyOptionsError,
+    IdentifyResult,
+    IdentifyRun,
+    identify,
+    identify_units,
+)
+from .identify import prior_verdicts as identify_prior_verdicts
+
+# --- end collate B5 ---
+# --- collate B6 (bh-qhgsr) ---
+from .lifecycle import (
+    CONFLICT_RULES,
+    DEFAULT_RULES,
+    Conflict,
+    Lifecycle,
+    Moment,
+    Source,
+    StatusOptions,
+    StatusOptionsError,
+    conflicts_of,
+    derive_lifecycle,
+    lifecycle_of,
+    lifecycles,
+)
+
+# --- end collate B6 ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -389,4 +459,64 @@ __all__ = [
     "subprocess_runner",
     "suppress_artifacts",
     "write_plan",
+    # --- collate B1+B2 (bh-8vppn) ---
+    "COLLATION_SCHEMA",
+    "REF_ARTIFACT",
+    "Collation",
+    "CollationFormatError",
+    "Indexes",
+    "ResolvedRef",
+    "baseline_ids",
+    "build_indexes",
+    "collate",
+    "collation_schema",
+    "dumps_collation",
+    "loads_collation",
+    "read_collation",
+    "resolve_refs",
+    "write_collation",
+    # --- end collate B1+B2 ---
+    # --- collate B3 (bh-55bkx) ---
+    "CLAIM_RULES",
+    "UNIT_KINDS",
+    "UNIT_RULES",
+    "ClusterOptions",
+    "ClusterOptionsError",
+    "Unit",
+    "claimed_artifacts",
+    "cluster",
+    # --- end collate B3 ---
+    # --- collate B4 (bh-f4380) ---
+    "ATTACH_REASONS",
+    "ATTACH_TIERS",
+    "AttachOptions",
+    "AttachOptionsError",
+    "Attachment",
+    "attach",
+    # --- end collate B4 ---
+    # --- collate B5 (bh-h8vxt) ---
+    "CostPreview",
+    "IdentifyConfirmationRequired",
+    "IdentifyOptions",
+    "IdentifyOptionsError",
+    "IdentifyResult",
+    "IdentifyRun",
+    "identify",
+    "identify_prior_verdicts",
+    "identify_units",
+    # --- end collate B5 ---
+    # --- collate B6 (bh-qhgsr) ---
+    "CONFLICT_RULES",
+    "DEFAULT_RULES",
+    "Conflict",
+    "Lifecycle",
+    "Moment",
+    "Source",
+    "StatusOptions",
+    "StatusOptionsError",
+    "conflicts_of",
+    "derive_lifecycle",
+    "lifecycle_of",
+    "lifecycles",
+    # --- end collate B6 ---
 ]
