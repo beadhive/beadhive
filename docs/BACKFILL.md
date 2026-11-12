@@ -815,8 +815,10 @@ costs about an hour for the whole `bh` gap, so it stays off until you need what 
   example re-creating ids that existed before) and you want their snapshot history too. After
   apply the pipeline gap-fills exactly the ids that apply created (never the rest of the store),
   with the same `batch_size`, per-query `timeout_seconds` and resumable cursor. It is independent of
-  `enabled`. Freshly created beads usually have a single state and yield no events, so leave it off
-  unless the created ids are known to have earlier history.
+  `enabled`. `bh backfill history --until apply` runs it right after apply and writes the derived
+  events to `<run-dir>/gapfill.bdlg` (the store is only read).
+  Freshly created beads usually have a single state and yield no events, so leave it off unless
+  the created ids are known to have earlier history.
 
 ```yaml
 backfill:

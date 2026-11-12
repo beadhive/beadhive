@@ -101,6 +101,7 @@ from . import (
     registry,
 )
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
+from .backfill_gapfill import created_ids, gapfill_created, on_created_enabled
 from .modules.beadlog_store.contracts import BUILTIN_STORE, BeadlogStoreError
 from .modules.config.contracts import BackfillConfig, BackfillGapfillConfig, BackfillJudgeConfig
 
@@ -1165,6 +1166,11 @@ def _history_run(
         }
         summary["stages"]["apply"] = manifest["apply"]
         backfill_history.write_manifest(run, manifest)
+        gap = _gapfill_after_apply(cwd, group, plan, run)
+        if gap is not None:
+            summary["stages"]["gapfill"] = gap
+            manifest["gapfill"] = gap
+            backfill_history.write_manifest(run, manifest)
     except IdentifyConfirmationRequired as exc:
         raise _fail(RuntimeError(f"{exc}; rerun with --yes")) from None
     except _ERRORS as exc:
@@ -1172,6 +1178,43 @@ def _history_run(
     _record_cursor(hive, cwd, plan, files["audit"])
     refresh_coverage_after_apply(hive, as_json)
     _history_done(summary, files, as_json)
+
+
+def _gapfill_after_apply(cwd: Path, group: Group, plan: Plan, run: Path) -> dict[str, Any] | None:
+    """The ``backfill.timeline.gapfill.on_created`` pass: gap-fill exactly the beads this apply
+    created (``None`` when it is off or nothing was created). The derived events go to
+    ``<run>/gapfill.bdlg``; the store is only read."""
+    settings = gapfill_settings()
+    created = created_ids(e for e in plan.applicable_events() if e.bead.group == group.id)
+    if not on_created_enabled(settings) or not created:
+        return None
+    baseline = tuple(store_loader(cwd, group=group.id).export())
+    result = gapfill_created(
+        cwd,
+        group.id,
+        created,
+        settings,
+        baseline=baseline,
+        state=run / "gapfill.json",
+        reader=gapfill_reader,
+    )
+    if result is None:
+        return None
+    out = run / "gapfill.bdlg"
+    if result.events:
+        write_archive(
+            out,
+            result.events,
+            groups=[group],
+            generator=GENERATOR,
+            description="gap-fill history of the beads a backfill apply created",
+        )
+    (run / "gapfill.json").unlink(missing_ok=True)
+    return {
+        "beads": len(created),
+        "events": len(result.events),
+        "archive": str(out) if result.events else None,
+    }
 
 
 def _history_done(summary: dict[str, Any], files: Mapping[str, Path], as_json: bool) -> None:
@@ -1211,6 +1254,8 @@ def _history_done(summary: dict[str, Any], files: Mapping[str, Path], as_json: b
         )
         typer.echo(f"pre-state: {applied['pre_state']}")
         typer.echo(f"audit: {applied['audit']}")
+    if gap := stages.get("gapfill"):
+        typer.echo(f"gapfill: {gap['events']} events for the {gap['beads']} created beads")
     typer.echo(f"stopped after {summary['until']}; outputs in the run directory")
 
 
