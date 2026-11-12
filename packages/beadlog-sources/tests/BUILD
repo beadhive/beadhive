@@ -4,5 +4,13 @@
 python_tests(
     name="tests",
     sources=["**/test_*.py"],
+    dependencies=[":golden"],
+    tags=["category:test-only", "attest:packages"],
+)
+
+# Golden outputs the tests compare against (git reader artifacts, strategy extract outputs).
+resources(
+    name="golden",
+    sources=["golden/**/*.golden"],
     tags=["category:test-only", "attest:packages"],
 )

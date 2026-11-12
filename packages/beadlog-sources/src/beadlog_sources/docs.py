@@ -32,6 +32,15 @@ The classes are those of :mod:`beadlog_sources.reconcile`; a ``set`` on an exist
 there and the neutral ``bh backfill apply`` applies only NEW, so stamps are applied through a
 StoreLoader.
 
+**Parsing** goes through the docs reader's shared parser: the ``Beads:`` back-ref lines are
+:attr:`~beadlog_sources.doc_formats.ParsedDoc.backref_lines` of the markdown adapter, and the bead
+tokens on them are recognised with the namespaces read off the baseline (never a guessed prefix).
+Choosing the LAST token of the FIRST such line is this strategy's bridge rule and stays here. A
+doc's title keeps the strategy's own rule, :func:`beadlog_sources._sources.doc_title` (shared with
+the planning reader's GSD adapter): the markdown adapter's title differs on fenced or indented
+``#`` lines, setext headings and a capitalised ``Title:`` key, and the title feeds the shortlist,
+the judge's question and the created bead, so switching would change outputs.
+
 **Judging.** The residual is one :class:`ChoiceQuery` per doc (family :data:`FAMILY`): ``present:N``
 (a shortlisted bead already represents the doc), ``noise:N`` (a shortlisted epic covers it),
 ``new`` and ``abstain``. Every verdict (outcome, probabilities, confidence, option count, engine,
@@ -59,6 +68,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -87,10 +97,13 @@ from ._sources import (
     mint_bead_id,
     truthy,
 )
-from .commits import candidate_pattern, derive_namespaces, extract_candidates, require_full_history
+from .commits import derive_namespaces, extract_candidates
 from .contracts import ABSTAIN, ChoiceQuery, ExtractRequest, Judgment, JudgmentPort
+from .doc_formats import MarkdownFormat, ParsedDoc
+from .git_reader import require_full_history
 from .judges import tokens
 from .reconcile import ABSTAIN_TEXT, NEW_KEY, NEW_TEXT, Verdict, query_hash
+from .tokens import bead_token_pattern
 
 STRATEGY_NAME = "docs"
 STRATEGY_VERSION = "0.1.0"
@@ -111,9 +124,16 @@ QUESTION = (
 )
 _EXCERPT = 1500
 _CONTEXT_LIMIT = 4000
-_BEADS_LINE = re.compile(r"^\s*-?\s*beads?:", re.IGNORECASE)
 _HYPHEN_TAIL = re.compile(r"-[0-9a-z]+$")
 _STEM_PREFIX = re.compile(r"^[0-9]+[-_]")
+
+
+@cache
+def markdown() -> MarkdownFormat:
+    """The shared docs parser (the docs reader's markdown adapter). Only the back-ref lines are
+    read from it, which do not depend on markdown-it, so the regex heading scan is used. Built on
+    first use, so importing this module never imports markdown-it."""
+    return MarkdownFormat(use_markdown_it=False)
 
 
 class DocStatus(StrEnum):
@@ -156,14 +176,16 @@ def resolve_id(candidate: str, live_ids: frozenset[str] | set[str]) -> str | Non
         probe = trimmed
 
 
-def frontmatter_candidate(text: str, pattern: re.Pattern[str]) -> str | None:
+def frontmatter_candidate(doc: ParsedDoc | str, pattern: re.Pattern[str]) -> str | None:
     """Bridge 1: the id-shaped token a doc's first ``Beads:`` line names (the last one on the
-    line), or ``None``. Only the FIRST such line is read, as in ``reconcile.sh``."""
-    for line in text.splitlines():
-        if _BEADS_LINE.match(line):
-            found = extract_candidates(line, pattern)
-            return found[-1] if found else None
-    return None
+    line), or ``None``. Only the FIRST such line is read, as in ``reconcile.sh``. The back-ref
+    lines come from the shared docs parser (:attr:`ParsedDoc.backref_lines`); ``doc`` may be the
+    raw text, which is parsed first."""
+    parsed = markdown().parse(doc) if isinstance(doc, str) else doc
+    if not parsed.backref_lines:
+        return None
+    found = extract_candidates(parsed.backref_lines[0], pattern)
+    return found[-1] if found else None
 
 
 def commit_candidate(
@@ -463,7 +485,8 @@ def propose(
     live_ids = frozenset(live)
     refs = external_refs(live)
     namespaces = derive_namespaces(live_ids)
-    pattern = candidate_pattern(namespaces) if namespaces else None
+    # the readers' token recognition, anchored on the namespaces of the registered ids
+    pattern = bead_token_pattern(sorted(namespaces)) if namespaces else None
     paths = list(docs) if docs is not None else discover_docs(root, dirs)
     repo = is_git_repo(root, git)
     adds = first_adds(root, (), git) if repo else {}
@@ -517,7 +540,7 @@ def propose(
         bead: str | None = None
         bridge: str | None = None
         if pattern is not None:
-            token = frontmatter_candidate(text, pattern)
+            token = frontmatter_candidate(markdown().parse(text), pattern)
             if token is not None:
                 bead, bridge = resolve_id(token, live_ids), "frontmatter"
                 if bead is None:

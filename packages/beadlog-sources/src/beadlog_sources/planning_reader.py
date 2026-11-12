@@ -10,10 +10,11 @@ Provenance is ``observed``: the structure is stated by the files, not inferred.
 
 Parsing goes through the :class:`PlanningFormat` port, one adapter per layout:
 
-- ``gsd``: a ``.planning/phases/NN-<name>/NN-MM-PLAN.md`` tree (the parsing of the neutral
-  ``planning`` strategy, whose helpers it reuses). A phase is an item with no parent, closed when
-  it has plans and every one has a ``-SUMMARY.md``; a plan's parent is its phase, its
-  ``depends_on`` are the resolved plan keys, and it is done when its summary exists.
+- ``gsd``: a ``.planning/phases/NN-<name>/NN-MM-PLAN.md`` tree (:func:`scan_tree`; the neutral
+  ``planning`` strategy reads its phases through :meth:`GsdFormat.phases`). A phase is an item
+  with no parent, closed when it has plans and every one has a ``-SUMMARY.md``; a plan's parent
+  is its phase, its ``depends_on`` are the resolved plan keys, and it is done when its summary
+  exists.
 - ``roadmap``: headed checklists and implementation-plan markdown.
   Headings nest by level (a single ``#`` is the document title, not an item); a
   ``- [ ]`` / ``- [x]`` item nests under the nearest heading, or under the checkbox item of lesser
@@ -48,9 +49,16 @@ from typing import Any, Protocol
 
 from beadlog import instant
 
-from ._sources import SourceError, csv, first_adds, is_git_repo, truthy
+from ._sources import (
+    SourceError,
+    csv,
+    doc_title,
+    first_adds,
+    is_git_repo,
+    split_frontmatter,
+    truthy,
+)
 from .evidence import Artifact, Category, Ref
-from .planning import DEFAULT_TREE, Phase, _dep_key, scan_tree
 from .readers import ReadRequest
 from .tokens import GENERIC_BEAD_TOKEN, bead_token_pattern, find_bead_tokens, token_mode
 
@@ -69,6 +77,14 @@ ROADMAP_FILES = (
     "docs/IMPLEMENTATION_PLAN.md",
 )
 
+DEFAULT_TREE = ".planning"
+PLAN_SUFFIX = "-PLAN.md"
+SUMMARY_SUFFIX = "-SUMMARY.md"
+
+_DEPENDS_ON = re.compile(r"^depends_on:[ ]*(.*)$")
+_ITEM = re.compile(r"^[ \t]+-[ \t]")
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+_PHASE_NAME = re.compile(r"^(\d+)[-_](.*)$")
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t#]*$")
 _CHECKBOX = re.compile(r"^([ \t]*)[-*+][ \t]+\[([ xX])\][ \t]+(.*?)[ \t]*$")
 _FENCE = re.compile(r"^[ \t]*(```|~~~)")
@@ -113,17 +129,131 @@ class PlanningFormat(Protocol):
         ...
 
 
+# -- gsd: depends_on (the deps_of port) -----------------------------------------------------
+
+
+def deps_of(text: str) -> str:
+    """The first ``depends_on:`` frontmatter value, normalized to a bracketed list; ``""`` when
+    there is none. Exactly the awk ``deps_of`` of ``reconcile.sh``:
+
+    - inline (``depends_on: ["10-01"]``, ``[11-01]``, ``[]``) is returned as written;
+    - block style (``depends_on:`` then ``  - "01-01"`` lines) becomes ``[01-01,01-02]``, each
+      item stripped to ``[A-Za-z0-9._-]``; the block ends at the first unindented line;
+    - frontmatter only: the file must open with ``---`` and the scan stops at the closing one.
+    """
+    front, _ = split_frontmatter(text)
+    items: list[str] = []
+    in_block = False
+    for line in front:
+        line = line.rstrip("\r")
+        if not in_block:
+            match = _DEPENDS_ON.match(line)
+            if match is None:
+                continue
+            value = match.group(1)
+            if value != "":
+                return value
+            in_block = True
+            continue
+        if _ITEM.match(line):
+            item = _UNSAFE.sub("", re.sub(r"^[ \t]+-[ \t]*", "", line))
+            if item:
+                items.append(item)
+        elif line and not line[0].isspace():
+            in_block = False
+    return "[" + ",".join(items) + "]" if items else ""
+
+
+def parse_depends(text: str) -> list[str]:
+    """The ``depends_on`` entries of a plan as plain keys (``[]`` when it has none)."""
+    value = deps_of(text).strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    keys = (_UNSAFE.sub("", part) for part in value.split(","))
+    return [key for key in keys if key]
+
+
+# -- gsd: the tree --------------------------------------------------------------------------
+
+
+@dataclass
+class Plan:
+    """One ``NN-MM-PLAN.md``."""
+
+    key: str
+    path: str
+    title: str
+    deps: list[str]
+    summary: str | None  # the sibling summary's path, when it exists
+
+
+@dataclass
+class Phase:
+    """One ``phases/NN-<name>/`` directory and its plans."""
+
+    name: str
+    path: str
+    plans: list[Plan] = field(default_factory=list)
+
+    @property
+    def closed(self) -> bool:
+        return bool(self.plans) and all(plan.summary for plan in self.plans)
+
+    @property
+    def title(self) -> str:
+        match = _PHASE_NAME.match(self.name)
+        if not match:
+            return self.name
+        words = match.group(2).replace("-", " ").replace("_", " ").strip()
+        return f"Phase {match.group(1)}: {words[:1].upper()}{words[1:]}" if words else self.name
+
+
+def scan_tree(root: Path | str, tree: str = DEFAULT_TREE) -> list[Phase]:
+    """The phases of ``<root>/<tree>/phases`` (sorted), each with its sorted plans."""
+    base = Path(root)
+    phases_dir = base / tree / "phases"
+    if not phases_dir.is_dir():
+        return []
+    phases: list[Phase] = []
+    for folder in sorted(p for p in phases_dir.iterdir() if p.is_dir()):
+        phase = Phase(folder.name, folder.relative_to(base).as_posix())
+        for plan in sorted(folder.glob(f"*{PLAN_SUFFIX}")):
+            key = plan.name[: -len(PLAN_SUFFIX)]
+            text = plan.read_text(encoding="utf-8", errors="replace")
+            summary = folder / f"{key}{SUMMARY_SUFFIX}"
+            phase.plans.append(
+                Plan(
+                    key,
+                    plan.relative_to(base).as_posix(),
+                    doc_title(text, key),
+                    parse_depends(text),
+                    summary.relative_to(base).as_posix() if summary.is_file() else None,
+                )
+            )
+        phases.append(phase)
+    return phases
+
+
+def dep_key(raw: str) -> str:
+    """The plan key a ``depends_on`` entry names (``01-01-PLAN.md``, ``01-01-PLAN``: ``01-01``)."""
+    key = raw
+    for suffix in (".md", PLAN_SUFFIX[: -len(".md")]):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+    return key
+
+
 # -- gsd -------------------------------------------------------------------------------------
 
 
 def _gsd_items(phases: Sequence[Phase]) -> list[PlanItem]:
-    by_key: dict[str, list[tuple[Phase, Any]]] = {}
+    by_key: dict[str, list[tuple[Phase, Plan]]] = {}
     for phase in phases:
         for plan in phase.plans:
             by_key.setdefault(plan.key, []).append((phase, plan))
 
-    def resolve(raw: str, phase: Phase, plan: Any) -> Any | None:
-        found = by_key.get(_dep_key(raw), [])
+    def resolve(raw: str, phase: Phase, plan: Plan) -> Plan | None:
+        found = by_key.get(dep_key(raw), [])
         chosen = [c for c in found if c[0].path == phase.path] or found
         if len(chosen) != 1 or chosen[0][1].path == plan.path:
             return None  # names nothing, several plans, or itself
@@ -181,8 +311,12 @@ class GsdFormat:
     def _tree(options: Mapping[str, Any]) -> str:
         return str(options.get("planning", DEFAULT_TREE))
 
+    def phases(self, root: Path, options: Mapping[str, Any]) -> list[Phase]:
+        """The phases of the tree (option ``planning``), each with its plans."""
+        return scan_tree(root, self._tree(options))
+
     def items(self, root: Path, options: Mapping[str, Any]) -> list[PlanItem]:
-        items = _gsd_items(scan_tree(root, self._tree(options)))
+        items = _gsd_items(self.phases(root, options))
         for item in items:
             if item.item_id != "phase":
                 item.text = (root / item.path).read_text(encoding="utf-8", errors="replace")
@@ -457,12 +591,21 @@ class PlanningReader:
 
 __all__ = [
     "BUILTIN_FORMATS",
+    "DEFAULT_TREE",
+    "PLAN_SUFFIX",
     "ROADMAP_FILES",
+    "SUMMARY_SUFFIX",
     "GsdFormat",
+    "Phase",
+    "Plan",
     "PlanItem",
     "PlanningFormat",
     "PlanningReader",
     "RoadmapFormat",
+    "dep_key",
+    "deps_of",
+    "parse_depends",
     "roadmap_items",
+    "scan_tree",
     "slugify",
 ]

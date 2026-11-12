@@ -1,0 +1,1 @@
+{"error":"ShallowCloneError","message":"<tmp>/shallow is a shallow clone: its history is truncated, so beads whose commits predate the cut would be missed; run `git fetch --unshallow` to fetch the full history (or pass option allow_shallow=true to extract from the truncated history)"}
