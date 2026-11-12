@@ -228,6 +228,7 @@ from .collate import ATTACH_REASONS, Attachment
 # --- collate B6 (bh-qhgsr) ---
 from .lifecycle import (
     CONFLICT_RULES,
+    DEFAULT_RULES,
     Conflict,
     Lifecycle,
     Moment,
@@ -410,6 +411,7 @@ __all__ = [
     # --- end collate B4 ---
     # --- collate B6 (bh-qhgsr) ---
     "CONFLICT_RULES",
+    "DEFAULT_RULES",
     "Conflict",
     "Lifecycle",
     "Moment",

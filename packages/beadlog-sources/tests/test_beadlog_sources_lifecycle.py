@@ -9,6 +9,7 @@ import pytest
 import beadlog
 from beadlog_sources import (
     CONFLICT_RULES,
+    DEFAULT_RULES,
     ClusterOptions,
     CollationFormatError,
     Moment,
@@ -321,6 +322,7 @@ def test_clocks_disagree_declared_date_and_add_commit() -> None:
     col = run(
         commit(4, paths=["docs/d.md"], cc_type="docs", day="2026-01-01"),
         doc("docs/d.md", status="draft", date="2026-03-01"),
+        status={"rules": ["clock-doc-date"]},
     )
     found = only(col, "clock-doc-date")
     check_conflict(col, found, "doc:docs/d.md", "doc:docs/d.md", key(4))
@@ -335,8 +337,9 @@ def test_clock_tolerance_is_configurable_and_day_based() -> None:
         commit(4, paths=["docs/d.md"], cc_type="docs"),
         doc("docs/d.md", status="draft", date="2026-01-02"),
     )
-    assert conflicts_of(run(*arts)) == ()
-    strict = run(*arts, status={"date_tolerance_days": 0})
+    clocks = {"rules": ["clock-doc-date"]}
+    assert conflicts_of(run(*arts, status=clocks)) == ()
+    strict = run(*arts, status={**clocks, "date_tolerance_days": 0})
     assert [c.rule for c in conflicts_of(strict)] == ["clock-doc-date"]
 
 
@@ -346,6 +349,7 @@ def test_clocks_disagree_review_merged_before_its_change() -> None:
         ev.review(
             5, commits=[sha(1)], opened_at="2025-05-01T00:00:00Z", merged_at="2025-06-01T00:00:00Z"
         ),
+        status={"rules": ["clock-review-merge"]},
     )
     found = only(col, "clock-review-merge")
     check_conflict(col, found, "gh:pr/5", "gh:pr/5", key(1))
@@ -369,7 +373,18 @@ def every_rule():
         commit(6, paths=["docs/clock.md"], cc_type="docs"),
         commit(7, paths=["src/c.py"]),
         ev.review(5, commits=[sha(7)], merged_at="2025-06-01T00:00:00Z"),
+        status={"rules": list(CONFLICT_RULES)},
     )
+
+
+def test_clock_rules_are_off_by_default() -> None:
+    assert set(CONFLICT_RULES) - set(DEFAULT_RULES) == {"clock-doc-date", "clock-review-merge"}
+    assert StatusOptions().rules == DEFAULT_RULES
+    col = every_rule()
+    default = derive_lifecycle(col, StatusOptions())
+    assert {c.rule for c in conflicts_of(default)} == set(DEFAULT_RULES)
+    assert not [c for c in conflicts_of(default) if c.rule.startswith("clock-")]
+    assert col.lifecycle == default.lifecycle
 
 
 def test_every_rule_fires_once_and_is_sorted() -> None:
@@ -441,7 +456,7 @@ def test_deterministic_round_trip_and_schema() -> None:
 
 def test_status_options_validation_and_round_trip() -> None:
     default = StatusOptions()
-    assert default.rules == CONFLICT_RULES
+    assert default.rules == DEFAULT_RULES
     assert StatusOptions.from_json(default.to_json()) == default
     assert (
         StatusOptions.from_mapping({"date_tolerance_days": 3, "other": 1}).date_tolerance_days == 3

@@ -30,10 +30,14 @@ and normalized value) and the unit's derived status, which a conflict never chan
 - ``doc-accepted-no-code``: a doc declares ``accepted`` after the last release (day precision)
   and its unit has no code (a doc's date falls back to its add commit);
 - ``plan-open-summary``: a plan item is not done but its summary doc is attached;
-- ``clock-doc-date``: a doc's declared date and its add commit's day differ by more than
+- ``clock-doc-date`` (opt-in): a doc's declared date and its add commit's day differ by more than
   :attr:`StatusOptions.date_tolerance_days`;
-- ``clock-review-merge``: a review merged more than :attr:`StatusOptions.clock_tolerance_seconds`
-  before the first change of its unit was committed.
+- ``clock-review-merge`` (opt-in): a review merged more than
+  :attr:`StatusOptions.clock_tolerance_seconds` before the first change of its unit was committed.
+
+The two ``clock-*`` rules are **off by default** (:data:`DEFAULT_RULES` holds the four others):
+declared doc dates routinely differ from add-commit days by days or weeks, and on by default they
+would bury the four rules above. Enable them through :attr:`StatusOptions.rules`.
 
 Pure and deterministic: the same collation, the same bytes.
 """
@@ -82,6 +86,9 @@ CONFLICT_RULES = (
     RULE_CLOCK_REVIEW_MERGE,
 )
 
+# The rules on by default; the clock rules are opt-in (``StatusOptions(rules=CONFLICT_RULES)``).
+DEFAULT_RULES = tuple(r for r in CONFLICT_RULES if not r.startswith("clock-"))
+
 OPTION_MEMBERS = (
     "rules",
     "design_only",
@@ -109,7 +116,8 @@ class StatusOptions:
     """B6 options (``backfill.collate.status``).
 
     - ``rules``: the conflict rules to run (distinct names from :data:`CONFLICT_RULES`;
-      default all). Status and dates are always derived.
+      default :data:`DEFAULT_RULES`, i.e. all but the opt-in ``clock-*`` rules). Status and
+      dates are always derived.
     - ``design_only``: phrases (case-insensitive, ``-``/``_`` read as a space) that make a doc's
       raw declared status "design only" (default ``("design only",)``).
     - ``summary_suffix``: a doc whose file name ends with this (case-insensitive) is the summary
@@ -121,7 +129,7 @@ class StatusOptions:
       the clocks disagree (default 86400).
     """
 
-    rules: tuple[str, ...] = CONFLICT_RULES
+    rules: tuple[str, ...] = DEFAULT_RULES
     design_only: tuple[str, ...] = ("design only",)
     summary_suffix: str = "-summary.md"
     date_tolerance_days: int = 1
@@ -742,6 +750,7 @@ def validate_lifecycle(collation: Collation) -> None:
 __all__ = [
     "BASES",
     "CONFLICT_RULES",
+    "DEFAULT_RULES",
     "OPTION_MEMBERS",
     "STATUSES",
     "Conflict",
