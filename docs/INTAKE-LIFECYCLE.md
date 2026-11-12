@@ -160,14 +160,15 @@ looks for it today.
 | Closed report with `delivery:pending`, or tracked work that never shipped | none (the work is simply unfinished) | not a bug: finish or unlink the work |
 | Reply drafted for a `fixed`-with-owner proposal | none (it is dropped, bh-1hkjm) | file/apply once bh-1hkjm lands; until then draft the reply with `bh work outbox draft` |
 | Promoted or rerouted bound report whose issue gets no reply or close | no check | `bh work outbox draft` by hand; no automatic path |
-| `origin:` label on accepted-in-place work treated as an adopted report | no check | bh-l1m3p (known issue) |
+| Untriaged report hung child-of an epic (provenance or work?) | `bh plan verify` / `bh plan repair` (`ambiguous child`, bh-l1m3p) | `bh work promote <id>` keeps it as adopted provenance; `bh work accept <id>` makes it molecule work |
 
 ## Known issues
 
-- **bh-l1m3p**: the `origin:` label means both provenance (the intake channel) and, to
-  `adopt.is_origin_report`, "adopted origin report under an epic, not work". A plain-accepted
-  report that is later linked under an epic is misclassified as non-work. Treat `origin` as
-  provenance only until it is fixed.
+- **`origin:` is provenance only (bh-l1m3p).** Whether an epic child is work or a report is read
+  from its binding and its `intake:` value, never from `origin:`. An accepted-in-place report or
+  an `origin:backfill` bead under an epic is work. A promoted (adopted), bound (tracking),
+  rejected or rerouted report is not. See
+  [`origin-provenance-report-role-adr.md`](design/origin-provenance-report-role-adr.md).
 - **bh-1hkjm**: `triage apply` ignores `reporter_text` for a `fixed` proposal that names an owning
   work. Operator decision (2026-11-11): its reply is drafted without a close after the accept, and
   the completion path (above) drafts the closing record once the owning work has merged or

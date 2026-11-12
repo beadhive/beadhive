@@ -43,6 +43,8 @@ Provenance — THREE orthogonal facets (operator-approved, epic)
 2. **Intake channel** = the CLOSED ``origin`` dimension here (``origin_of`` / ``is_*``). A
    cross-hive report is born-native with no ``external_ref``, so its channel rides ``origin``
    (set via ``bd set-state``, like ``intake``) instead of overloading ``source_system``.
+   Provenance ONLY (bh-l1m3p): no caller decides from ``origin`` whether an epic child is work
+   or an adopted report; ``adopt.report_role`` keys that on the binding + ``intake`` value.
 3. **Reporter identity** = ``bd --actor`` (unchanged) — never a closed label (``reported-by``
    is open-ended and would fail ``bh label validate``). Do not add a reporter label dimension.
 
