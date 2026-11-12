@@ -195,14 +195,15 @@ def test_plan_items_are_units_with_structure() -> None:
     assert all(u.rule == "plan-item" for u in got.values())
 
 
-def test_release_tracker_and_docs_never_make_units() -> None:
+def test_release_and_tracker_never_make_units_and_a_lone_doc_is_a_doc_unit() -> None:
     col = run(
         ev.release_marker("v1"),
         ev.tracker_item("12"),
         ev.design_record("docs/a.md"),
         commit(1, cc_type="docs"),
     )
-    assert col.units == ()
+    # B3 leaves docs free; B4 makes the one no unit took a doc-unit
+    assert [(u.key, u.rule) for u in col.units] == [("doc:docs/a.md", "doc")]
 
 
 def test_include_types() -> None:
@@ -413,7 +414,8 @@ def test_mid_size_history() -> None:
 def test_options_are_recorded() -> None:
     arts = _history()
     default = run(*arts)
-    assert default.options == {"cluster": ClusterOptions().to_json()}
+    assert default.options["cluster"] == ClusterOptions().to_json()
+    assert set(default.options) == {"cluster", "attach"}
     variants = [
         run(*arts, include_types=["feat", "fix"]),
         run(*arts, areas={"hq": "core"}),
@@ -443,13 +445,16 @@ def test_options_schema_and_strict_loading() -> None:
         return loads_collation(beadlog.canonical_json({**obj, "options": options}).encode() + b"\n")
 
     cluster_opts = obj["options"]["cluster"]
+    attach_opts = obj["options"]["attach"]
     for bad in (
         {},
+        {"cluster": cluster_opts},
         {"cluster": cluster_opts, "attach": {}},
-        {"cluster": {**cluster_opts, "extra": 1}},
-        {"cluster": {k: v for k, v in cluster_opts.items() if k != "epics"}},
-        {"cluster": {**cluster_opts, "rules": ["guess"]}},
-        {"cluster": {**cluster_opts, "path_depth": 0}},
+        {"cluster": cluster_opts, "attach": attach_opts, "extra": {}},
+        {"attach": attach_opts, "cluster": {**cluster_opts, "extra": 1}},
+        {"attach": attach_opts, "cluster": {k: v for k, v in cluster_opts.items() if k != "epics"}},
+        {"attach": attach_opts, "cluster": {**cluster_opts, "rules": ["guess"]}},
+        {"attach": attach_opts, "cluster": {**cluster_opts, "path_depth": 0}},
     ):
         with pytest.raises(CollationFormatError):
             load(bad)

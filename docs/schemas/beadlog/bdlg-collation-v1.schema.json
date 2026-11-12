@@ -5,7 +5,7 @@
   "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units are the B3 work units (candidate beads, attachments to existing local beads, area epics), sorted by key; verdicts, conflicts and residual are filled by later collate steps (B5, B6) and are empty arrays until then. Implemented by beadlog_sources.collate.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual", "options"],
+  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual", "attachments", "options"],
   "properties": {
     "schema": {"const": "bdlg.collation/1"},
     "local": {"type": "string", "minLength": 1, "description": "The ledger being backfilled."},
@@ -16,12 +16,13 @@
     "verdicts": {"type": "array"},
     "conflicts": {"type": "array"},
     "residual": {"type": "array"},
+    "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}, "description": "B4: one record per design record, sorted by doc."},
     "options": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cluster"],
+      "required": ["cluster", "attach"],
       "description": "The effective options of the collate steps that ran, one sub-object per step (later steps add siblings): a collation made under other options has other bytes.",
-      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}}
+      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}, "attach": {"$ref": "#/$defs/attach_options"}}
     }
   },
   "$defs": {
@@ -39,6 +40,30 @@
         "min_epic_units": {"type": "integer", "minimum": 1}
       }
     },
+    "attach_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tiers", "lexical_percent", "lexical_min_tokens", "standalone"],
+      "description": "B4 AttachOptions (beadlog_sources.attach).",
+      "properties": {
+        "tiers": {"type": "array", "uniqueItems": true, "items": {"enum": ["explicit", "same-change", "shared-path", "lexical"]}, "description": "The attach tiers run, in order."},
+        "lexical_percent": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Minimum overlap coefficient (percent) of the lexical tier."},
+        "lexical_min_tokens": {"type": "integer", "minimum": 1},
+        "standalone": {"type": "boolean", "description": "Whether an unattached doc became a doc-unit."}
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["doc", "unit", "reason", "evidence"],
+      "description": "One B4 record: design record doc belongs to unit. A doc has at most one attachment.",
+      "properties": {
+        "doc": {"type": "string", "minLength": 1, "description": "The design record's key, doc:<path>."},
+        "unit": {"type": "string", "minLength": 1, "description": "Key of the unit it attaches to (the doc itself for standalone)."},
+        "reason": {"enum": ["explicit", "same-change", "shared-path", "lexical", "standalone"]},
+        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Artifact keys behind the decision (empty for standalone)."}
+      }
+    },
     "unit": {
       "type": "object",
       "additionalProperties": false,
@@ -46,7 +71,7 @@
       "properties": {
         "key": {"type": "string", "minLength": 1, "description": "Stable source key, later the bead's external_ref: the anchor artifact's key (plan:<item>, gh:pr/<n>, git:commit/<sha>), bead:<id> for an attach unit, area:<name> for an area epic."},
         "kind": {"enum": ["epic", "issue", "attach"], "description": "epic has children; issue is a leaf candidate bead; attach is evidence for the existing local bead named by bead."},
-        "rule": {"enum": ["plan-item", "local-bead", "review", "merge", "commit", "area"], "description": "The B3 rule that formed the unit."},
+        "rule": {"enum": ["plan-item", "local-bead", "review", "merge", "commit", "area", "doc"], "description": "The rule that formed the unit (B3 rules; doc is B4: a design record no unit took)."},
         "title": {"type": "string"},
         "bead": {"type": ["string", "null"], "description": "The existing local bead id of an attach unit; null otherwise."},
         "artifacts": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Artifact keys the unit claimed (its evidence), anchor first. An artifact is claimed by at most one unit."},
