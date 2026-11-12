@@ -2122,6 +2122,18 @@ class BackfillJudgeConfig(_Section):
     max_calls_per_run: int = Field(
         100, ge=0, description="Judge calls one run may make; past it the judge abstains."
     )
+    cost_per_call_usd: float | None = Field(
+        None,
+        ge=0,
+        description="Operator-estimated USD per judge call, used only to report a run's judge "
+        "cost. Null (default): no cost is reported.",
+    )
+    credential: HqFnoxRef = Field(
+        default_factory=HqFnoxRef,
+        description="Host-local fnox lookup (config_path, profile, key) for ANTHROPIC_API_KEY; "
+        "a reference only, never the value. Empty (default): the key must already be in the "
+        "environment.",
+    )
 
     @field_validator("auto_accept")
     @classmethod

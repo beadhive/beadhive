@@ -1,0 +1,85 @@
+{
+  "complete": true,
+  "issues": [
+    {
+      "assignees": [
+        "alice",
+        "bob"
+      ],
+      "body": "stack",
+      "closed_at": "2026-01-03T09:30:00Z",
+      "labels": [
+        "area:z",
+        "bug"
+      ],
+      "number": 1,
+      "opened_at": "2026-01-01T07:00:00Z",
+      "state": "closed",
+      "state_reason": "completed",
+      "title": "bug: crash"
+    },
+    {
+      "assignees": [],
+      "body": "body text bh-q7",
+      "closed_at": null,
+      "labels": [
+        "bug",
+        "p2"
+      ],
+      "number": 3,
+      "opened_at": "2026-01-04T00:00:00Z",
+      "state": "open",
+      "state_reason": null,
+      "title": "idea bh-abc12"
+    }
+  ],
+  "pulls": [
+    {
+      "body": "no refs",
+      "closed_at": "2026-01-01T09:00:00Z",
+      "closes": [],
+      "commits": [],
+      "draft": false,
+      "merged_at": null,
+      "number": 1,
+      "opened_at": "2026-01-01T08:00:00Z",
+      "state": "closed",
+      "title": "docs: typo"
+    },
+    {
+      "body": "Closes #1\nand fixes o/r#3",
+      "closed_at": "2026-01-03T11:30:00+02:00",
+      "closes": [
+        1,
+        3
+      ],
+      "commits": [
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ],
+      "draft": false,
+      "merged_at": "2026-01-03T09:30:00Z",
+      "number": 2,
+      "opened_at": "2026-01-02T10:00:00Z",
+      "state": "merged",
+      "title": "feat(x): add thing (bh-abc12)"
+    },
+    {
+      "body": "see bh-zz9",
+      "closed_at": null,
+      "closes": [],
+      "commits": [
+        "cccccccccccccccccccccccccccccccccccccccc"
+      ],
+      "draft": true,
+      "merged_at": null,
+      "number": 3,
+      "opened_at": "2026-01-05T00:00:00Z",
+      "state": "open",
+      "title": "wip: draft"
+    }
+  ],
+  "repo": "o/r",
+  "resume": null,
+  "schema": "bdlg.github-snapshot/1"
+}

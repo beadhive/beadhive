@@ -2,7 +2,7 @@ python_tests(
     name="tests",
     sources=["**/test_*.py"],
     # The recorded GitHub exchanges are read from disk next to the tests.
-    dependencies=[":recorded"],
+    dependencies=[":recorded", ":fixtures"],
     tags=["category:test-only", "attest:packages"],
 )
 
@@ -17,5 +17,12 @@ python_test_utils(
 resources(
     name="recorded",
     sources=["recorded/*.json"],
+    tags=["category:test-only", "attest:packages"],
+)
+
+# The offline GitHub snapshot fixtures: raw API pages and the golden snapshot they fetch to.
+resources(
+    name="fixtures",
+    sources=["fixtures/*.json"],
     tags=["category:test-only", "attest:packages"],
 )

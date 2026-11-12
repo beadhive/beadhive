@@ -37,6 +37,11 @@ never imports ``beadhive``. It owns:
 - the ledger directory port (:mod:`beadlog_sources.ledger`): which registered ledger owns a
   bead-id token, by exact id-set membership only (never a prefix guess), local / foreign /
   ambiguous / unresolved; test fake in :mod:`beadlog_sources.testing.ledger`;
+- the ``planning`` reader (:mod:`beadlog_sources.planning_reader`): GSD trees and roadmap
+  checklists as ``plan-item`` artifacts behind the :class:`PlanningFormat` port;
+- the ``git`` reader (:mod:`beadlog_sources.git_reader`): commits, merges and tags as ``change`` /
+  ``release-marker`` artifacts from two ``git`` calls per read, with a hand-written Conventional
+  Commits and trailer parse and un-resolved refs;
 - commit dates (:mod:`beadlog_sources.git_dates`): author and committer dates of many shas in one
   ``git`` call; the injected command seam is :mod:`beadlog_sources.runner`;
 - collate B5 (:mod:`beadlog_sources.identify`): work units identified against the baseline
@@ -138,7 +143,21 @@ from .contracts import (
     ScoreQuery,
     SourceStrategy,
 )
+
+# --- docs reader (bh-4r0uh) ---
+from .doc_formats import DocFormat, HtmlFormat, MarkdownFormat, ParsedDoc, Section
+
+# --- end docs reader ---
+# --- doc metadata normalization (bh-y1z13) ---
+from .doc_metadata import (
+    STATUS_SYNONYMS,
+    DocMetadata,
+    normalize_date,
+    normalize_doc_metadata,
+    normalize_status,
+)
 from .docs import DocsStrategy
+from .docs_reader import LAYOUT_PRESETS, DocsReader
 from .evidence import (
     CATEGORY_SHAPES,
     DECLARED_STATUSES,
@@ -163,6 +182,7 @@ from .evidence import (
     write_evidence,
 )
 from .git_dates import CommitDate, CommitDates, GitReadError, commit_dates
+from .git_reader import GitRead, GitReader, parse_conventional, parse_trailers, read_git
 from .judges import (
     CommandJudge,
     CommandResult,
@@ -188,6 +208,18 @@ from .ledger import (
     resolve_ref,
 )
 from .planning import PlanningStrategy
+
+# --- end doc metadata normalization ---
+# --- planning reader (bh-57r3j) ---
+from .planning_reader import (
+    GsdFormat,
+    PlanItem,
+    PlanningFormat,
+    PlanningReader,
+    RoadmapFormat,
+)
+
+# --- end planning reader ---
 from .readers import (
     BUILTIN_READERS,
     BUILTIN_STRATEGIES,
@@ -213,6 +245,9 @@ from .reconcile import (
     write_plan,
 )
 from .runner import DEFAULT_TIMEOUT_SECONDS, Runner, subprocess_runner
+
+# --- end docs reader ---
+from .tokens import bead_token_pattern, find_bead_tokens, token_mode
 
 # --- end collate B1+B2 ---
 # isort: split
@@ -269,15 +304,48 @@ def distribution_name() -> str:
 
 
 __all__ = [
+    # --- planning reader (bh-57r3j) ---
+    "GsdFormat",
+    "PlanItem",
+    "PlanningFormat",
+    "PlanningReader",
+    "RoadmapFormat",
+    # --- end planning reader ---
+    # --- docs reader (bh-4r0uh) ---
+    "LAYOUT_PRESETS",
+    "DocFormat",
+    "DocsReader",
+    "MarkdownFormat",
+    "ParsedDoc",
+    "Section",
+    # --- end docs reader ---
+    # --- html doc format (bh-rqshf) ---
+    "HtmlFormat",
+    # --- end html doc format ---
+    # --- doc metadata normalization (bh-y1z13) ---
+    "STATUS_SYNONYMS",
+    "DocMetadata",
+    "normalize_date",
+    "normalize_doc_metadata",
+    "normalize_status",
+    # --- end doc metadata normalization ---
     "BUILTIN_READERS",
     "BUILTIN_STRATEGIES",
+    "bead_token_pattern",
+    "find_bead_tokens",
+    "token_mode",
     "READERS_GROUP",
     "DuplicateRegistrationError",
+    "GitRead",
+    "GitReader",
     "ReadRequest",
     "Registration",
     "SourceReader",
     "discover_readers",
     "discover_strategies",
+    "parse_conventional",
+    "parse_trailers",
+    "read_git",
     "load_reader",
     "AMBIGUOUS",
     "FOREIGN",
