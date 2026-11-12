@@ -138,7 +138,7 @@ def residual(col) -> dict[str, dict[str, Any]]:
 # -- the steps -------------------------------------------------------------------------------
 
 
-def test_judge_off_and_no_threshold_is_residual_only() -> None:
+def test_judge_off_and_no_threshold_decides_only_the_bridges_and_no_candidate() -> None:
     arts = [
         doc("docs/linked.md", "Linked doc"),  # external_ref bridge
         doc("docs/archive.md", "Archive writer"),  # lexical PRESENT
@@ -154,18 +154,18 @@ def test_judge_off_and_no_threshold_is_residual_only() -> None:
     assert got["doc:docs/archive.md"]["step"] == "lexical"
     assert got["doc:docs/archive.md"]["class"] == "PRESENT"
     assert got["doc:docs/archive.md"]["bead"] == "bh-1"
-    assert all(v["class"] != "NEW" and v["step"] != "judge" for v in col.verdicts)
+    assert all(v["step"] != "judge" for v in col.verdicts)
+    # A unit with no candidate at all is NEW, derived by rule: no confidence, still reviewed.
+    zebra = got["doc:docs/zebra.md"]
+    assert zebra["step"] == "no-candidate" and zebra["class"] == "NEW"
+    assert zebra["provenance"] == "derived" and zebra["confidence_permille"] is None
+    assert zebra["review"] == "required" and zebra["bead"] is None
+    assert [v["unit"] for v in col.verdicts if v["class"] == "NEW"] == ["doc:docs/zebra.md"]
+    # A unit WITH a candidate that the lexical engine cannot decide stays residual.
     left = residual(col)
-    assert set(left) == {"doc:docs/near.md", "doc:docs/zebra.md"}
-    assert {r["reason"] for r in left.values()} == {"no-match"}
+    assert set(left) == {"doc:docs/near.md"}
+    assert left["doc:docs/near.md"]["reason"] == "no-match"
     assert left["doc:docs/near.md"]["candidates"] == ["bh-1"]
-    assert left["doc:docs/zebra.md"] == {
-        "unit": "doc:docs/zebra.md",
-        "reason": "no-match",
-        "score": 0,
-        "query_hash": None,
-        "candidates": [],
-    }
 
 
 def test_explicit_id_attach_unit_is_present() -> None:
@@ -188,7 +188,8 @@ def test_external_ref_matches_unit_key() -> None:
 def test_threshold_over_197_docs_yields_inferred_new() -> None:
     words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split()
     arts = [
-        doc(f"docs/design/d{i:03d}.md", f"{words[i % 12]} {words[(i // 12) % 12]} topic{i}")
+        # every title shares "archive" with a baseline bead, so each has a candidate
+        doc(f"docs/design/d{i:03d}.md", f"archive {words[i % 12]} {words[(i // 12) % 12]} topic{i}")
         for i in range(190)
     ]
     arts += [doc(f"docs/design/w{i}.md", f"Archive notes on extension point {i}") for i in range(4)]
@@ -229,7 +230,8 @@ def test_judge_decides_and_records_engine_model_confidence() -> None:
     abstained = [v for v in col.verdicts if v["unit"] == "doc:docs/other.md"]
     assert [v["class"] for v in abstained] == [None]
     assert residual(col)["doc:docs/other.md"]["reason"] == "judge-abstained"
-    assert residual(col)["doc:docs/zebra.md"]["reason"] == "no-match"
+    assert "doc:docs/zebra.md" not in residual(col)
+    assert decisions(col)["doc:docs/zebra.md"]["step"] == "no-candidate"
 
 
 def test_judge_abstention_then_threshold_keeps_both_records() -> None:
@@ -388,12 +390,19 @@ def test_schema_and_strict_loading() -> None:
     col = run(
         *_near_docs(3),
         doc("docs/zebra.md", "Zebra census"),
+        # a candidate ("Archive writer") but a score below the threshold: threshold NEW
+        doc("docs/far.md", "Archive zeta eta theta iota kappa lambda mu nu"),
         doc("docs/linked.md", "Linked"),
         options=IdentifyOptions(new_threshold=20),
         identify_run=judged(runner),
     )
     obj = json.loads(dumps_collation(col))
-    assert {v["step"] for v in obj["verdicts"]} == {"external-ref", "judge", "threshold"}
+    assert {v["step"] for v in obj["verdicts"]} == {
+        "external-ref",
+        "judge",
+        "no-candidate",
+        "threshold",
+    }
     assert obj["residual"]
     assert all(sorted(v) == sorted(VERDICT_MEMBERS) for v in obj["verdicts"])
     assert all(sorted(r) == sorted(RESIDUAL_MEMBERS) for r in obj["residual"])

@@ -546,7 +546,8 @@ class _Writer:
         self.new = record["class"] == DECISION_NEW
         self.state: BeadState | None = None if self.new else owner.live[bead.id]
         self.match = str(record["provenance"])
-        self.confidence = record["confidence_permille"] / 1000
+        permille = record["confidence_permille"]
+        self.confidence = None if permille is None else permille / 1000
         life = owner.life.get(unit.key)
         self.lifecycle = life
         self.created = None if life is None else life.created
