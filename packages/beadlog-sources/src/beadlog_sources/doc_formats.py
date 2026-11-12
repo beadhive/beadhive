@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
@@ -171,12 +172,148 @@ class MarkdownFormat:
         )
 
 
-# Formats shipped with the library, by name; the html adapter registers here when it lands.
-BUILTIN_FORMATS: Mapping[str, Any] = MappingProxyType({"markdown": MarkdownFormat})
+_STATUS_LINE = re.compile(r"^status[ \t]*:[ \t]*(\S.*?)[ \t]*$", re.IGNORECASE)
+_CHARSET = re.compile(rb"""<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)""", re.IGNORECASE)
+_HTML_HEADING = re.compile(r"h[1-6]")
+_HTML_SKIP = frozenset({"script", "style", "noscript", "template"})
+_HTML_BLOCK = frozenset(
+    "p div br li ul ol tr table section article header footer pre blockquote dd dt dl hr".split()
+)
+
+
+class _HtmlScan(HTMLParser):
+    """Collects the title, ``<meta>``, headings and visible text (never script/style content)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self.meta: dict[str, str] = {}
+        self.parts: list[str] = []
+        self.headings: list[tuple[int, str, int, int]] = []  # level, text, start, end in parts
+        self._skip = 0
+        self._in_title = False
+        self._level = 0
+        self._heading: list[str] = []
+        self._start = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _HTML_SKIP:
+            self._skip += 1
+        elif tag == "title":
+            self._in_title = True
+        elif tag == "meta":
+            fields = dict(attrs)
+            name, content = (fields.get("name") or "").strip().lower(), fields.get("content")
+            if name and content is not None:
+                self.meta.setdefault(name, content.strip())
+        elif _HTML_HEADING.fullmatch(tag):
+            self._close_heading()
+            self._level, self._heading, self._start = int(tag[1]), [], len(self.parts)
+        elif tag in _HTML_BLOCK:
+            self._close_heading()  # a block element cannot sit inside a heading
+        if tag in _HTML_BLOCK or _HTML_HEADING.fullmatch(tag):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _HTML_SKIP:
+            self._skip = max(0, self._skip - 1)
+        elif tag == "title":
+            self._in_title = False
+        elif _HTML_HEADING.fullmatch(tag):
+            self._close_heading()
+        if tag in _HTML_BLOCK or _HTML_HEADING.fullmatch(tag):
+            self.parts.append("\n")
+
+    def _close_heading(self) -> None:
+        text = " ".join("".join(self._heading).split())
+        if self._level and text:
+            self.headings.append((self._level, text, self._start, len(self.parts)))
+        self._level, self._heading = 0, []
+
+    def handle_data(self, data: str) -> None:
+        if self._skip:
+            return
+        if self._in_title:
+            self.title += data
+            return
+        self.parts.append(data)
+        if self._level:
+            self._heading.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._close_heading()
+
+
+class HtmlFormat:
+    """The ``html`` adapter (``.html`` / ``.htm``), on the stdlib ``html.parser`` only.
+
+    Title: ``<title>`` else the first ``<h1>``. Metadata: ``<meta name=... content=...>`` with
+    lowercased names (the frontmatter shape; values stay raw), plus a visible ``Status:`` line when
+    no ``status`` meta exists. Sections are ``h1``-``h6`` headings with their text. Script, style,
+    noscript and template content is ignored; nothing is fetched or executed.
+    """
+
+    name = "html"
+    extensions: tuple[str, ...] = (".html", ".htm")
+
+    def detect(self, path: str) -> bool:
+        return path.lower().endswith(self.extensions)
+
+    @staticmethod
+    def decode(data: bytes) -> str:
+        """Decode with a BOM or ``<meta charset>`` declaration, else UTF-8 (with replacement)."""
+        if data.startswith(b"\xef\xbb\xbf"):
+            return data[3:].decode("utf-8", errors="replace")
+        match = _CHARSET.search(data[:2048])
+        if match:
+            try:
+                return data.decode(match.group(1).decode("ascii"), errors="replace")
+            except LookupError:
+                pass
+        return data.decode("utf-8", errors="replace")
+
+    def parse(self, text: str) -> ParsedDoc:
+        scan = _HtmlScan()
+        scan.feed(text)
+        scan.close()
+        lines = "".join(scan.parts).split("\n")
+        lines = [" ".join(line.split()) for line in lines]
+        # Section text: the visible text between consecutive headings.
+        ends = [h[2] for h in scan.headings[1:]] + [len(scan.parts)] * bool(scan.headings)
+        pieces = [
+            "".join(scan.parts[h[3] : end]) for h, end in zip(scan.headings, ends, strict=True)
+        ]
+        sections = tuple(
+            Section(level, heading, "\n".join(x for x in map(str.strip, piece.split("\n")) if x))
+            for (level, heading, _, _), piece in zip(scan.headings, pieces, strict=True)
+        )
+        metadata = dict(scan.meta)
+        for line in lines:
+            status = _STATUS_LINE.match(line)
+            if status:
+                metadata.setdefault("status", status.group(1))
+                break
+        h1 = next((heading for level, heading, _, _ in scan.headings if level == 1), None)
+        title = " ".join(scan.title.split()) or h1
+        return ParsedDoc(
+            title=title or None,
+            metadata=MappingProxyType(metadata) if metadata else _EMPTY,
+            body="\n".join(line for line in lines if line),
+            sections=sections,
+            backref_lines=tuple(line for line in lines if _BEADS_LINE.match(line)),
+        )
+
+
+# Formats shipped with the library, by name (factories).
+BUILTIN_FORMATS: Mapping[str, Any] = MappingProxyType(
+    {"markdown": MarkdownFormat, "html": HtmlFormat}
+)
 
 __all__ = [
     "BUILTIN_FORMATS",
     "DocFormat",
+    "HtmlFormat",
     "MarkdownFormat",
     "ParsedDoc",
     "Section",

@@ -320,3 +320,101 @@ def test_beadlog_read_docs_writes_an_evidence_corpus(tree: Path, tmp_path: Path)
 )
 def test_generic_bead_token(text: str, found: list[str]) -> None:
     assert [m.group(0) for m in GENERIC_BEAD_TOKEN.finditer(text)] == found
+
+
+# --- html format (bh-rqshf) ---------------------------------------------------------------------
+
+HTML_CORPUS = {
+    "docs/design/one.html": (
+        "<html><head><title> Design One </title>"
+        '<meta name="Status" content="accepted"><meta name="date" content="2026-02-03">'
+        '<meta name="author" content="ann"><style>.x{content:"bh-style1"}</style>'
+        "<script>var t = 'bh-script1';</script></head>"
+        "<body><h1>Ignored h1</h1><p>Intro with bh-body1 ref.</p>"
+        "<h2>Details</h2><p>More text</p><p>Beads: bh-back1</p></body></html>"
+    ),
+    "docs/design/two.html": "<h1>Only h1</h1><p>Status: proposed</p><h3>Deep</h3>x",
+    "docs/adr/0001.htm": "<title>ADR</title><p>See bh-adr77",
+    "docs/arch.html": "<title>Top level</title>",
+    "docs/guides/nested.html": "<title>Not a preset</title>",
+    "docs/reviews/export.html": "<title>Review export</title><p>bh-rev11</p>",
+    "docs/design/plain.md": "# Markdown doc\n\nbh-md111\n",
+}
+
+
+def _html_tree(tmp_path: Path) -> Path:
+    for name, text in HTML_CORPUS.items():
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def test_html_format_title_meta_sections_and_ignored_content() -> None:
+    from beadlog_sources.doc_formats import BUILTIN_FORMATS, HtmlFormat
+
+    assert BUILTIN_FORMATS["html"] is HtmlFormat
+    fmt = HtmlFormat()
+    assert fmt.detect("a/B.HTML") and fmt.detect("x.htm") and not fmt.detect("x.md")
+    one = fmt.parse(HTML_CORPUS["docs/design/one.html"])
+    assert one.title == "Design One"
+    assert dict(one.metadata) == {"status": "accepted", "date": "2026-02-03", "author": "ann"}
+    assert [(s.level, s.heading) for s in one.sections] == [(1, "Ignored h1"), (2, "Details")]
+    assert "bh-body1" in one.sections[0].text and "More text" in one.sections[1].text
+    assert "bh-script1" not in one.body and "bh-style1" not in one.body
+    assert one.backref_lines == ("Beads: bh-back1",)
+    two = fmt.parse(HTML_CORPUS["docs/design/two.html"])
+    assert two.title == "Only h1"
+    assert two.metadata["status"] == "proposed"  # the visible Status: line
+    assert fmt.parse("<p>no title").title is None
+    assert fmt.parse("<h1>unclosed <b>bold<p>x</div></h1").title == "unclosed bold"
+
+
+def test_html_status_meta_beats_status_line() -> None:
+    from beadlog_sources.doc_formats import HtmlFormat
+
+    doc = HtmlFormat().parse('<meta name="status" content="accepted"><p>Status: draft</p>')
+    assert doc.metadata["status"] == "accepted"
+
+
+def test_html_decode_declared_charset() -> None:
+    from beadlog_sources.doc_formats import HtmlFormat
+
+    raw = '<meta charset="latin-1"><title>café</title>'.encode("latin-1")
+    assert HtmlFormat.decode(raw).endswith("café</title>")
+    assert "�" in HtmlFormat.decode(b"<title>\xff</title>")
+
+
+def _read_html(root: Path, **options: str) -> dict:
+    request = ReadRequest(root=str(root), options={"first_add": "false", **options})
+    return {a.key: a for a in DocsReader().read(request)}
+
+
+def test_html_docs_discovered_end_to_end_with_markdown(tmp_path: Path) -> None:
+    root = _html_tree(tmp_path)
+    assert set(_read_html(root)) == {"doc:docs/design/plain.md"}  # html is opt-in
+    found = _read_html(root, formats="markdown,html", namespaces="bh")
+    assert set(found) == {
+        "doc:docs/design/one.html",
+        "doc:docs/design/two.html",
+        "doc:docs/adr/0001.htm",
+        "doc:docs/arch.html",
+        "doc:docs/reviews/export.html",
+        "doc:docs/design/plain.md",
+    }
+    assert found["doc:docs/design/plain.md"].raw_attrs["format"] == "markdown"
+    one = found["doc:docs/design/one.html"]
+    assert one.raw_attrs["format"] == "html" and one.title == "Design One"
+    assert one.raw_attrs["frontmatter"]["status"] == "accepted"
+    tokens = {(r.raw, r.where) for r in one.refs if r.kind == "bead-token"}
+    assert tokens == {("bh-back1", "back-ref"), ("bh-back1", "body"), ("bh-body1", "body")}
+
+
+def test_html_layout_presets_and_globs(tmp_path: Path) -> None:
+    root = _html_tree(tmp_path)
+    only = _read_html(root, formats="html", layouts="docs-html")
+    assert set(only) == {"doc:docs/arch.html"}  # non-recursive glob preset
+    reviews = _read_html(root, formats="html", layouts="reviews")
+    assert set(reviews) == {"doc:docs/reviews/export.html"}
+    extra = _read_html(root, formats="html", layouts="none", globs="docs/guides/*.html")
+    assert set(extra) == {"doc:docs/guides/nested.html"}

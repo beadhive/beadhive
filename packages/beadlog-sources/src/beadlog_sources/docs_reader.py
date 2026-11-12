@@ -9,10 +9,12 @@ Options (``ReadRequest.options``; every value may be a string, lists are comma-s
 
 - ``layouts``: layout presets to read (default: all of :data:`LAYOUT_PRESETS`); ``none`` reads no
   preset directory. Every file below a preset directory whose name a format detects is read.
+  ``docs-html`` is the non-recursive glob ``docs/*.html``; ``reviews`` is ``docs/reviews``
+  (review-tool HTML exports).
 - ``globs``: extra glob patterns relative to the root (``docs/**/*.md``), routed by detection.
 - ``files``: explicit files of any extension, routed by ``DocFormat.detect`` (no format detects
   one: an error).
-- ``formats``: enabled format names (default ``markdown``).
+- ``formats``: enabled format names (``markdown``, ``html``; default ``markdown``).
 - ``namespaces``: bead id prefixes that make a token bead-looking (``bh,hq``), see
   :mod:`beadlog_sources.tokens`; without them a generic shape is used (it misses digit-free ids).
   The run header records ``token_mode`` (``namespaces`` or ``generic``).
@@ -49,6 +51,8 @@ LAYOUT_PRESETS: Mapping[str, str] = MappingProxyType(
         "design": "docs/design",
         "adr": "docs/adr",
         "architecture": "docs/architecture",
+        "docs-html": "docs/*.html",
+        "reviews": "docs/reviews",
     }
 )
 
@@ -104,7 +108,9 @@ class DocsReader:
             adds = first_adds(root, specs, git)
         for path in sorted(found):
             doc_format, _ = found[path]
-            text = (root / path).read_text(encoding="utf-8", errors="replace")
+            data = (root / path).read_bytes()
+            decode = getattr(doc_format, "decode", None)
+            text = decode(data) if decode else data.decode("utf-8", errors="replace")
             yield self.artifact(path, doc_format, text, pattern, adds.get(path))
 
     # -- discovery -------------------------------------------------------------------------
@@ -141,6 +147,10 @@ class DocsReader:
                 raise SourceError(
                     f"unknown docs layout {layout!r} (known: {', '.join(LAYOUT_PRESETS)})"
                 )
+            if _GLOB_CHARS.search(directory):  # a glob preset (not recursive)
+                for path in sorted(root.glob(directory)):
+                    add(path, _prefix(directory))
+                continue
             for path in sorted((root / directory).rglob("*")):
                 add(path, directory)
         for glob in csv(options.get("globs", "")):
