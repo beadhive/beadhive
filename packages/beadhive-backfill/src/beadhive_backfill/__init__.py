@@ -55,6 +55,7 @@ from .contracts import (
     VerifyingPass,
 )
 from .engine import BackfillEngine, system_clock
+from .history_pass import HISTORY_SCHEMA_VERSION, PASS_HISTORY, HistoryPass
 from .incremental import (
     CURSOR_FILE,
     IncrementalReaders,
@@ -114,6 +115,9 @@ __all__ = [
     "ReportingPass",
     "ScopedPass",
     "SourcePass",
+    "HistoryPass",
+    "PASS_HISTORY",
+    "HISTORY_SCHEMA_VERSION",
     "Stamper",
     "StoreLoader",
     "StoreReader",

@@ -316,8 +316,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-01-05T10:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["git:commit/c1"],
         ),
         (
@@ -383,8 +383,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-01-02T08:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["gh:pr/5", "git:commit/c1", "git:commit/c2"],
         ),
         (
@@ -450,8 +450,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-01-05T10:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["git:commit/c1"],
         ),
         (
@@ -537,8 +537,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-02-03T00:00:00Z",
             "day",
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["doc:docs/design/queue.md"],
         ),
         (
@@ -572,8 +572,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-01-05T10:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["git:commit/c1", "doc:docs/design/cache.md"],
         ),
         (
@@ -665,8 +665,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-03-01T00:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["plan:phase-1"],
         ),
         (
@@ -700,8 +700,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-03-02T00:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["plan:phase-1/a"],
         ),
         (
@@ -765,8 +765,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-03-03T00:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["plan:phase-1/b"],
         ),
         (
@@ -822,8 +822,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-04-03T00:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["git:tag/v1.0"],
         ),
         (
@@ -887,8 +887,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-04-01T10:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["git:commit/c1"],
         ),
         (
@@ -972,8 +972,8 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             },
             "2026-04-02T10:00:00Z",
             None,
-            "inferred",
-            1.0,
+            "derived",
+            None,
             ["git:commit/c2"],
         ),
         (
@@ -1080,9 +1080,11 @@ def test_new_creates_carry_the_b5_verdict() -> None:
     (create,) = [e for e in projection.events if e.kind == "create"]
     verdict = create.annotations["bdlg.collate"]["verdict"]
     decided = next(v for v in col.verdicts if v["unit"] == "gh:pr/5" and v["class"])
-    assert verdict["step"] == decided["step"] == "threshold"
+    # the review has no baseline candidate: B5 decides it by rule (derived, no confidence)
+    assert verdict["step"] == decided["step"] == "no-candidate"
     assert verdict["engine"] == decided["engine"] and verdict["score"] == decided["score"]
-    assert create.confidence == decided["confidence_permille"] / 1000
+    assert decided["confidence_permille"] is None and create.confidence is None
+    assert create.provenance == "derived"
 
 
 def test_day_precision_is_the_start_of_the_day_never_a_midnight_instant() -> None:
@@ -1227,8 +1229,11 @@ def test_a_differently_linked_or_unparsable_bead_is_kept_and_reported() -> None:
 def test_residual_units_project_nothing_but_are_reported() -> None:
     built = review_scenario()
     corpus = ev.corpus(*built["artifacts"])
-    col = collate(corpus, [], InMemoryLedgerDirectory(DIRECTORY), local="bh")  # no threshold
-    projection = project(col, corpus, [], prefix=PREFIX, group=GROUP, extracted_at=EXTRACTED)
+    # A baseline bead sharing a title token is a candidate; with no judge and no threshold the
+    # unit is then undecided (a unit with no candidate at all would be NEW by rule).
+    baseline = [existing("bh-9", "Add parser lexer and grammar notes")]
+    col = collate(corpus, baseline, InMemoryLedgerDirectory(DIRECTORY), local="bh")
+    projection = project(col, corpus, baseline, prefix=PREFIX, group=GROUP, extracted_at=EXTRACTED)
     assert projection.events == ()
     assert projection.residual == ("gh:pr/5",)
     assert projection.counts()["residual"] == 1
