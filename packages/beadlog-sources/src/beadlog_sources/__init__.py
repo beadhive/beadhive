@@ -47,6 +47,9 @@ never imports ``beadhive``. It owns:
 - collate B5 (:mod:`beadlog_sources.identify`): work units identified against the baseline
   (bridges, lexical, opt-in judge, opt-in NEW threshold, residual), resumable by query hash,
   with a cost preview before any judge call;
+- Phase C projection (:mod:`beadlog_sources.project`): collated work units as proposed BeadLog
+  events (NEW creates closed beads, PRESENT appends and stamps, never an overwrite) under an
+  explicit id prefix;
 - reconcile against a baseline (:mod:`beadlog_sources.reconcile`): NEW / PRESENT / NOISE /
   DRIFT plans written as ``.bdlg`` archives;
 - the standalone ``beadlog`` CLI (:mod:`beadlog_sources.cli`) and the opt-in reference judge
@@ -294,6 +297,24 @@ from .lifecycle import (
 )
 
 # --- end collate B6 ---
+# isort: split
+# --- project C (bh-rz6ys) ---
+from .project import (
+    DEFAULT_TYPES as PROJECT_DEFAULT_TYPES,
+)
+from .project import (
+    EVENT_KINDS as PROJECT_EVENT_KINDS,
+)
+from .project import (
+    Kept,
+    ProjectError,
+    Projection,
+    ProjectOptions,
+    UnitProjection,
+    project,
+)
+
+# --- end project C ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -519,4 +540,14 @@ __all__ = [
     "lifecycle_of",
     "lifecycles",
     # --- end collate B6 ---
+    # --- project C (bh-rz6ys) ---
+    "PROJECT_DEFAULT_TYPES",
+    "PROJECT_EVENT_KINDS",
+    "Kept",
+    "ProjectError",
+    "ProjectOptions",
+    "Projection",
+    "UnitProjection",
+    "project",
+    # --- end project C ---
 ]
