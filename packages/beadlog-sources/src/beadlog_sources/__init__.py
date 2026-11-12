@@ -122,6 +122,16 @@ from .contracts import (
 
 # --- docs reader (bh-4r0uh) ---
 from .doc_formats import DocFormat, HtmlFormat, MarkdownFormat, ParsedDoc, Section
+
+# --- end docs reader ---
+# --- doc metadata normalization (bh-y1z13) ---
+from .doc_metadata import (
+    STATUS_SYNONYMS,
+    DocMetadata,
+    normalize_date,
+    normalize_doc_metadata,
+    normalize_status,
+)
 from .docs import DocsStrategy
 from .docs_reader import LAYOUT_PRESETS, DocsReader
 from .evidence import (
@@ -175,7 +185,7 @@ from .ledger import (
 )
 from .planning import PlanningStrategy
 
-# --- end docs reader ---
+# --- end doc metadata normalization ---
 # --- planning reader (bh-57r3j) ---
 from .planning_reader import (
     GsdFormat,
@@ -239,6 +249,13 @@ __all__ = [
     # --- html doc format (bh-rqshf) ---
     "HtmlFormat",
     # --- end html doc format ---
+    # --- doc metadata normalization (bh-y1z13) ---
+    "STATUS_SYNONYMS",
+    "DocMetadata",
+    "normalize_date",
+    "normalize_doc_metadata",
+    "normalize_status",
+    # --- end doc metadata normalization ---
     "BUILTIN_READERS",
     "BUILTIN_STRATEGIES",
     "READERS_GROUP",

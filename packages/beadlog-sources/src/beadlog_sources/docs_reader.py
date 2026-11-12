@@ -21,8 +21,11 @@ Options (``ReadRequest.options``; every value may be a string, lists are comma-s
 - ``first_add``: record the first-add commit time (default true); ``git``: the git executable.
 
 ``occurred_at`` is the committer time of the commit that first added the file, ``None`` when git
-cannot say. ``declared_status`` / ``declared_date`` / ``owner`` / ``supersedes`` are left empty
-here; the raw frontmatter is kept in ``raw_attrs`` for the metadata normalization layer.
+cannot say. ``declared_status`` / ``declared_date`` / ``owner`` / ``supersedes`` come from
+:func:`beadlog_sources.doc_metadata.normalize_doc_metadata` (frontmatter, HTML meta, ``## Status``
+sections, ``Status:`` lines); the raw frontmatter and every raw declared value stay in
+``raw_attrs`` (``frontmatter``, ``declared``), and bead-looking supersedes entries add
+``bead-token`` refs with ``where="supersedes"``.
 """
 
 from __future__ import annotations
@@ -35,12 +38,13 @@ from typing import Any
 
 from ._sources import SourceError, csv, first_adds, is_git_repo, truthy
 from .doc_formats import BUILTIN_FORMATS, DocFormat, ParsedDoc
+from .doc_metadata import normalize_doc_metadata
 from .evidence import Artifact, Category, Ref
 from .readers import ReadRequest
 from .tokens import bead_token_pattern, find_bead_tokens, token_mode
 
 READER_NAME = "docs"
-READER_VERSION = "0.1.0"
+READER_VERSION = "0.2.0"
 KIND = "doc"
 DEFAULT_FORMATS = ("markdown",)
 
@@ -182,6 +186,10 @@ class DocsReader:
         if parsed.metadata:
             raw_attrs["frontmatter"] = dict(parsed.metadata)
         refs = self._refs(parsed, pattern)
+        declared = normalize_doc_metadata(parsed, pattern)
+        if declared.raw:
+            raw_attrs["declared"] = dict(declared.raw)
+        refs.extend(declared.refs)
         occurred_at = None
         if add is not None:
             raw_attrs["first_add"] = {"sha": add.sha, "date": add.date}
@@ -193,12 +201,7 @@ class DocsReader:
             key=f"doc:{path}",
             title=parsed.title or Path(path).stem,
             occurred_at=occurred_at,
-            attrs={
-                "declared_status": None,
-                "declared_date": None,
-                "owner": None,
-                "supersedes": [],
-            },
+            attrs=declared.attrs(),
             raw_attrs=raw_attrs,
             refs=tuple(refs),
             reader=self.name,
