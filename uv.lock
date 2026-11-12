@@ -462,13 +462,17 @@ dependencies = [
 haiku = [
     { name = "httpx" },
 ]
+md = [
+    { name = "markdown-it-py" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "beadlog", editable = "packages/beadlog" },
     { name = "httpx", marker = "extra == 'haiku'", specifier = ">=0.28,<1" },
+    { name = "markdown-it-py", marker = "extra == 'md'", specifier = ">=3,<5" },
 ]
-provides-extras = ["haiku"]
+provides-extras = ["haiku", "md"]
 
 [[package]]
 name = "beadlog-xtdb"

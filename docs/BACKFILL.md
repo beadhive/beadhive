@@ -226,8 +226,21 @@ command's imports.
 | `beadlog read <reader>` | run a source reader, writing a `bdlg.evidence/1` JSONL corpus (`--root`, repeatable `--option key=value`, `-o`) |
 | `beadlog merge`, `reconcile`, `inspect`, `verify` | archive operations |
 
-`beadlog extract --help` and `beadlog read --help` list what is registered. No built-in reader
-ships yet; the git, docs, planning and GitHub readers land with the history pipeline's M1.
+`beadlog extract --help` and `beadlog read --help` list what is registered. The git, planning and
+GitHub readers land with the history pipeline's M1; the `docs` reader is shipped (below).
+
+**`beadlog read docs`** reads design and decision documents into `design-record` artifacts keyed
+`doc:<path>`, through the `DocFormat` port (`beadlog_sources.doc_formats`; the markdown adapter uses
+markdown-it-py when the optional `beadlog-sources[md]` extra is installed and a regex scan
+otherwise, with identical results). Options (`--option key=value`): `layouts` (presets `decisions`,
+`design`, `adr`, `architecture`; `none`), `globs`, `files` (any extension a format detects),
+`formats`, `namespaces`, `first_add`, `git`.
+
+Bead-token recognition is shared (`beadlog_sources.tokens`). With `namespaces` (id prefixes, for
+example `bh,hq`) every `<ns>-<id>` is a token. Without them a generic shape is used (a short
+prefix, a hyphen and an id segment containing a digit), which **misses digit-free ids such as
+`bh-art`**; the run header records `token_mode` (`namespaces` or `generic`) so a corpus says which
+applied. `bh backfill` will pass `namespaces` from the registered ledgers.
 
 **Discovery.** Strategies come from the `beadlog.sources` entry-point group and readers from
 `beadlog.readers`. The `bh` wheel registers the strategies in its own metadata, and

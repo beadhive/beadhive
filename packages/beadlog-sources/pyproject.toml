@@ -15,6 +15,11 @@ classifiers = ["Private :: Do Not Upload"]
 # off by default (`backfill.judge.enabled = false`).
 haiku = ["httpx>=0.28,<1"]
 
+# `beadlog-sources[md]` — markdown-it-py (MIT) gives the docs reader's markdown adapter a CommonMark
+# token stream for headings/sections. Never a base dependency: it is imported lazily by
+# beadlog_sources/doc_formats.py, which falls back to a regex scan when it is absent.
+md = ["markdown-it-py>=3,<5"]
+
 # Source strategies shipped with this package (entry-point group `beadlog.sources`); each one is
 # also a `beadlog extract <name>` subcommand.
 [project.entry-points."beadlog.sources"]
@@ -24,9 +29,10 @@ docs = "beadlog_sources.docs:DocsStrategy"
 git-commits = "beadlog_sources.commits:GitCommitsStrategy"
 planning = "beadlog_sources.planning:PlanningStrategy"
 
-# Source readers will register under `[project.entry-points."beadlog.readers"]` (each is a
-# `beadlog read <name>` subcommand), mirrored in the built-in table of beadlog_sources.readers;
-# none ship yet (M1).
+# Source readers register under `beadlog.readers` (each is a `beadlog read <name>` subcommand),
+# mirrored in the built-in table of beadlog_sources.readers.
+[project.entry-points."beadlog.readers"]
+docs = "beadlog_sources.docs_reader:DocsReader"
 
 [project.scripts]
 beadlog = "beadlog_sources.cli:main"

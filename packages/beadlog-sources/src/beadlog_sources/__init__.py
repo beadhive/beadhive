@@ -114,7 +114,11 @@ from .contracts import (
     ScoreQuery,
     SourceStrategy,
 )
+
+# --- docs reader (bh-4r0uh) ---
+from .doc_formats import DocFormat, MarkdownFormat, ParsedDoc, Section
 from .docs import DocsStrategy
+from .docs_reader import LAYOUT_PRESETS, DocsReader
 from .evidence import (
     CATEGORY_SHAPES,
     DECLARED_STATUSES,
@@ -164,6 +168,8 @@ from .ledger import (
     resolve_ref,
 )
 from .planning import PlanningStrategy
+
+# --- end docs reader ---
 from .readers import (
     BUILTIN_READERS,
     BUILTIN_STRATEGIES,
@@ -199,6 +205,14 @@ def distribution_name() -> str:
 
 
 __all__ = [
+    # --- docs reader (bh-4r0uh) ---
+    "LAYOUT_PRESETS",
+    "DocFormat",
+    "DocsReader",
+    "MarkdownFormat",
+    "ParsedDoc",
+    "Section",
+    # --- end docs reader ---
     "BUILTIN_READERS",
     "BUILTIN_STRATEGIES",
     "READERS_GROUP",

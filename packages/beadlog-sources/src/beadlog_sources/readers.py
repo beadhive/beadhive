@@ -38,7 +38,11 @@ STRATEGIES_GROUP = "beadlog.sources"
 
 # Static registries: name -> "module:attribute". Entry points of the same names are checked
 # against these. Real readers (git, docs, planning, github) register here as they land.
-BUILTIN_READERS: Mapping[str, str] = MappingProxyType({})
+BUILTIN_READERS: Mapping[str, str] = MappingProxyType(
+    {
+        "docs": "beadlog_sources.docs_reader:DocsReader",
+    }
+)
 BUILTIN_STRATEGIES: Mapping[str, str] = MappingProxyType(
     {
         "bd": "beadlog_sources.bd:BdBaselineStrategy",
