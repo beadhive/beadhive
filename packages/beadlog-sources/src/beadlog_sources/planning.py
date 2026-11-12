@@ -9,6 +9,10 @@ creates. The mapping:
 - ``NN-MM-PLAN.md`` -> an **issue** ``create`` with a ``parent-child`` edge to its phase epic;
 - the plan's frontmatter ``depends_on`` (inline ``[..]`` and block YAML list) -> ``blocks`` edges
   to the plans it names (``deps_of`` is the awk function of the script, ported with its self-test);
+
+The tree is read through the ``planning`` reader's GSD adapter
+(:meth:`beadlog_sources.planning_reader.GsdFormat.phases`), which owns the scanning and the
+``depends_on`` parsing; this module keeps the strategy: bead identity, events and the report.
 - a plan is **closed** (a ``phase`` event) when its sibling ``NN-MM-SUMMARY.md`` exists, and a
   phase epic is closed when it has plans and every one of them is;
 - ``occurred_at`` is the committer date of the commit that first added the file (the plan for a
@@ -33,7 +37,6 @@ Options (``ExtractRequest.options``): ``planning`` (the tree, default ``.plannin
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,137 +48,33 @@ from ._sources import (
     AddRecord,
     SourceError,
     csv,
-    doc_title,
     external_refs,
     first_adds,
     follow_add,
     is_git_repo,
     live_beads,
     mint_bead_id,
-    split_frontmatter,
     truthy,
 )
 from .commits import require_full_history
 from .contracts import ExtractRequest
+from .planning_reader import (
+    DEFAULT_TREE,
+    GsdFormat,
+    Phase,
+    Plan,
+    dep_key,
+    deps_of,
+    parse_depends,
+    scan_tree,
+)
 
 STRATEGY_NAME = "planning"
 STRATEGY_VERSION = "0.1.0"
 SOURCE_SYSTEM = "planning"
 ANNOTATION_KEY = "bdlg.planning"
-DEFAULT_TREE = ".planning"
 ORIGIN_LABELS = ("origin:backfill", "source:planning")
-PLAN_SUFFIX = "-PLAN.md"
-SUMMARY_SUFFIX = "-SUMMARY.md"
 CLOSED = "closed"
-_DEPENDS = re.compile(r"^depends_on:[ ]*(.*)$")
-_ITEM = re.compile(r"^[ \t]+-[ \t]")
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-_PHASE_NAME = re.compile(r"^(\d+)[-_](.*)$")
-
-
-# -- depends_on (the deps_of port) ---------------------------------------------------------
-
-
-def deps_of(text: str) -> str:
-    """The first ``depends_on:`` frontmatter value, normalized to a bracketed list; ``""`` when
-    there is none. Exactly the awk ``deps_of`` of ``reconcile.sh``:
-
-    - inline (``depends_on: ["10-01"]``, ``[11-01]``, ``[]``) is returned as written;
-    - block style (``depends_on:`` then ``  - "01-01"`` lines) becomes ``[01-01,01-02]``, each
-      item stripped to ``[A-Za-z0-9._-]``; the block ends at the first unindented line;
-    - frontmatter only: the file must open with ``---`` and the scan stops at the closing one.
-    """
-    front, _ = split_frontmatter(text)
-    items: list[str] = []
-    in_block = False
-    for line in front:
-        line = line.rstrip("\r")
-        if not in_block:
-            match = _DEPENDS.match(line)
-            if match is None:
-                continue
-            value = match.group(1)
-            if value != "":
-                return value
-            in_block = True
-            continue
-        if _ITEM.match(line):
-            item = _UNSAFE.sub("", re.sub(r"^[ \t]+-[ \t]*", "", line))
-            if item:
-                items.append(item)
-        elif line and not line[0].isspace():
-            in_block = False
-    return "[" + ",".join(items) + "]" if items else ""
-
-
-def parse_depends(text: str) -> list[str]:
-    """The ``depends_on`` entries of a plan as plain keys (``[]`` when it has none)."""
-    value = deps_of(text).strip()
-    if value.startswith("[") and value.endswith("]"):
-        value = value[1:-1]
-    keys = (_UNSAFE.sub("", part) for part in value.split(","))
-    return [key for key in keys if key]
-
-
-# -- the tree ------------------------------------------------------------------------------
-
-
-@dataclass
-class Plan:
-    """One ``NN-MM-PLAN.md``."""
-
-    key: str
-    path: str
-    title: str
-    deps: list[str]
-    summary: str | None  # the sibling summary's path, when it exists
-
-
-@dataclass
-class Phase:
-    """One ``phases/NN-<name>/`` directory and its plans."""
-
-    name: str
-    path: str
-    plans: list[Plan] = field(default_factory=list)
-
-    @property
-    def closed(self) -> bool:
-        return bool(self.plans) and all(plan.summary for plan in self.plans)
-
-    @property
-    def title(self) -> str:
-        match = _PHASE_NAME.match(self.name)
-        if not match:
-            return self.name
-        words = match.group(2).replace("-", " ").replace("_", " ").strip()
-        return f"Phase {match.group(1)}: {words[:1].upper()}{words[1:]}" if words else self.name
-
-
-def scan_tree(root: Path | str, tree: str = DEFAULT_TREE) -> list[Phase]:
-    """The phases of ``<root>/<tree>/phases`` (sorted), each with its sorted plans."""
-    base = Path(root)
-    phases_dir = base / tree / "phases"
-    if not phases_dir.is_dir():
-        return []
-    phases: list[Phase] = []
-    for folder in sorted(p for p in phases_dir.iterdir() if p.is_dir()):
-        phase = Phase(folder.name, folder.relative_to(base).as_posix())
-        for plan in sorted(folder.glob(f"*{PLAN_SUFFIX}")):
-            key = plan.name[: -len(PLAN_SUFFIX)]
-            text = plan.read_text(encoding="utf-8", errors="replace")
-            summary = folder / f"{key}{SUMMARY_SUFFIX}"
-            phase.plans.append(
-                Plan(
-                    key,
-                    plan.relative_to(base).as_posix(),
-                    doc_title(text, key),
-                    parse_depends(text),
-                    summary.relative_to(base).as_posix() if summary.is_file() else None,
-                )
-            )
-        phases.append(phase)
-    return phases
 
 
 # -- the report ----------------------------------------------------------------------------
@@ -246,14 +145,6 @@ class PlanningProposal:
 # -- the strategy --------------------------------------------------------------------------
 
 
-def _dep_key(raw: str) -> str:
-    key = raw
-    for suffix in (".md", PLAN_SUFFIX[: -len(".md")]):
-        if key.endswith(suffix):
-            key = key[: -len(suffix)]
-    return key
-
-
 def propose(
     request: ExtractRequest,
     phases: Sequence[Phase] | None = None,
@@ -264,7 +155,7 @@ def propose(
     """The events creating the beads of ``phases`` (default: scanned from ``request.root``) that
     the baseline does not hold yet (module doc)."""
     root = Path(request.root)
-    phases = scan_tree(root, tree) if phases is None else list(phases)
+    phases = GsdFormat().phases(root, {"planning": tree}) if phases is None else list(phases)
     live = live_beads(fold(request.baseline), request.group)
     refs = external_refs(live)
     repo = is_git_repo(root, git)
@@ -457,7 +348,7 @@ def _resolve_dep(
     report: PlanningReport,
 ) -> Plan | None:
     """The plan a ``depends_on`` entry names: its key (``01-01``), preferring the same phase."""
-    key = _dep_key(raw)
+    key = dep_key(raw)
     found = by_key.get(key, [])
     if not found:
         report.unresolved.append(
