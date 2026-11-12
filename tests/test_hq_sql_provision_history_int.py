@@ -18,7 +18,7 @@ from beadhive.hq_sql_runtime_schema import (
     evidence_table,
     session_table,
 )
-from beadhive.hq_sql_session import evidence_ddl, session_ddl
+from beadhive.hq_sql_session import SessionError, _existing, evidence_ddl, session_ddl
 from beadhive.hq_sql_session_provision import (
     provision_incarnation,
     provision_liveness_schema,
@@ -1259,4 +1259,61 @@ def test_first_incarnation_provisioning_refuses_everything_else(
                 json.loads(Path(reader.settings["runtime_floor_path"]).read_text())["head"]
                 == initial
             )
+        connection.close()
+
+
+@pytest.mark.parametrize("pending", [None, "dropped_tables", "dropped_trigger"])
+def test_reprovision_at_same_sequence_stays_additive_or_refuses(
+    tmp_path, fixture, monkeypatch, pending
+):
+    """bh-14h9r: the 8r5uj -> 78jp5 sequence. A never-admitted frame is provisioned as
+    incarnation A (epoch 0), re-joined with a new principal B at the same epoch and
+    re-provisioned with no authority publication in between. Provisioning B must stay purely
+    additive, or refuse before committing; it never leaves a head the floor fences."""
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+    first, second = "frame_" + "a" * 20, "frame_" + "c" * 20
+    with _server(tmp_path) as port:
+        connection = _root(port)
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE DATABASE {DB}")
+            cursor.execute(f"USE {DB}")
+            initial = _initial(cursor, fixture)
+            reader = _reader(tmp_path, fixture, initial, "operator")
+            reader.verified_state_at(cursor, initial)
+            provision = dict(frame_address="127.0.0.1", password=PASSWORD, database=DB)
+            provision_incarnation(cursor, first, 0, **provision)
+            floor = _head(cursor)
+            reader.verified_state_at(cursor, floor)
+            old = [f"{session_table(first, 0)}_stamp", f"{evidence_table(first, 0)}_stamp"]
+            if pending == "dropped_tables":
+                # Retiring A's tables drops its triggers from the working dolt_schemas.
+                cursor.execute(f"DROP TABLE {session_table(first, 0)}")
+                cursor.execute(f"DROP TABLE {evidence_table(first, 0)}")
+            elif pending == "dropped_trigger":
+                cursor.execute(f"DROP TRIGGER {old[0]}")
+            if pending:
+                with pytest.raises(SessionError) as refused:
+                    provision_incarnation(cursor, second, 0, **provision)
+                message = str(refused.value)
+                assert "docs/HQ.md#restore-floor-recovery" in message
+                assert "CALL DOLT_CHECKOUT('dolt_schemas')" in message
+                assert old[0] in message
+                assert _head(cursor) == floor
+                assert not _existing(cursor, (session_table(second, 0),))
+                reader.verified_state_at(cursor, floor)
+                # The named recovery restores A's fragments; the retry is then additive.
+                if pending == "dropped_tables":
+                    for ddl in (session_ddl(first, 0), evidence_ddl(first, 0)):
+                        cursor.execute(ddl[0])
+                        cursor.execute(ddl[2])
+                cursor.execute("CALL DOLT_CHECKOUT('dolt_schemas')")
+            provision_incarnation(cursor, second, 0, **provision)
+            head = _head(cursor)
+            assert head != floor
+            reader.verified_state_at(cursor, head)
+            assert (
+                json.loads(Path(reader.settings["runtime_floor_path"]).read_text())["head"] == head
+            )
+            cursor.execute("SELECT name FROM dolt_schemas WHERE type='trigger'")
+            assert set(old) <= {row[0] for row in cursor.fetchall()}
         connection.close()

@@ -26,7 +26,7 @@ from beadlog_sources import (
 SOURCE = Path(beadlog_sources.__file__).parent
 STDLIB = set(sys.stdlib_module_names) | {"__future__"}
 # The one third-party import: httpx, the `[haiku]` extra, only in the reference judge command.
-OPTIONAL = {"haiku.py": {"httpx"}}
+OPTIONAL = {"haiku.py": {"httpx"}, "doc_formats.py": {"markdown_it"}}
 GROUP = "urn:uuid:00000000-0000-4000-8000-000000000003"
 
 
@@ -114,10 +114,21 @@ def test_httpx_is_imported_lazily_inside_a_function() -> None:
     assert subprocess.run([sys.executable, "-I", "-c", probe], check=False).returncode == 0
 
 
+def test_markdown_it_is_imported_lazily() -> None:
+    probe = (
+        "import sys, beadlog_sources, beadlog_sources.cli, beadlog_sources.doc_formats; "
+        "sys.exit(1 if 'markdown_it' in sys.modules else 0)"
+    )
+    assert subprocess.run([sys.executable, "-I", "-c", probe], check=False).returncode == 0
+
+
 def test_declares_only_beadlog_and_is_a_library() -> None:
     pyproject = tomllib.loads((SOURCE.parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["dependencies"] == ["beadlog"]
-    assert pyproject["project"]["optional-dependencies"] == {"haiku": ["httpx>=0.28,<1"]}
+    assert pyproject["project"]["optional-dependencies"] == {
+        "haiku": ["httpx>=0.28,<1"],
+        "md": ["markdown-it-py>=3,<5"],
+    }
     assert pyproject["project"]["scripts"] == {
         "beadlog": "beadlog_sources.cli:main",
         "bh-judge-haiku": "beadlog_sources.haiku:main",

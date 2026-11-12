@@ -40,6 +40,7 @@ STRATEGIES_GROUP = "beadlog.sources"
 # against these. Real readers (git, docs, planning, github) register here as they land.
 BUILTIN_READERS: Mapping[str, str] = MappingProxyType(
     {
+        "docs": "beadlog_sources.docs_reader:DocsReader",
         "git": "beadlog_sources.git_reader:GitReader",
     }
 )
