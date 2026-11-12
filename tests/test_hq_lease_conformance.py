@@ -34,6 +34,7 @@ from beadhive.hq_sql_receiver import ReceiverError, SqlTrustedReceiver
 from beadhive.hq_sql_runtime import SqlRuntimeAuthority, SqlRuntimeError
 from beadhive.hq_sql_signatures import verify_authority
 from beadhive.modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+from harness import hq_authority_mode
 
 
 def _corpus() -> Path | None:
@@ -213,6 +214,9 @@ def _receiver(case: dict, monkeypatch) -> SimpleNamespace:
     # Post-commit emergency audit is I/O, not a lease rule.
     monkeypatch.setattr("beadhive.frame_emergency.audit", lambda *a, **k: None)
     world.receiver = receiver
+    # A case with "authority_mode" runs against the real authority in that mode (this case only).
+    hq_authority_mode.pin(case, monkeypatch)
+    hq_authority_mode.install(world, case)
     return world
 
 
