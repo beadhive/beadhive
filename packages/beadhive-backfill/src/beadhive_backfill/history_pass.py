@@ -44,6 +44,7 @@ from beadlog_sources import (
     ClusterOptions,
     EvidenceCorpus,
     IdentifyOptions,
+    IdentifyRun,
     JudgmentPort,
     LedgerDirectory,
     ProjectError,
@@ -67,7 +68,8 @@ class HistoryPass:
 
     ``corpus`` is the evidence read from the hive's sources, ``directory`` the ledger directory
     its refs resolve against, ``local`` the hive's ledger name, ``group`` the BeadLog group of
-    the hive. ``prefix`` is the hive's explicit id prefix (required with ``create``).
+    the hive. ``identify_run`` is the B5 runtime (judge, prior verdicts, cost preview; default: no
+    judge). ``prefix`` is the hive's explicit id prefix (required with ``create``).
     """
 
     name: ClassVar[str] = PASS_HISTORY
@@ -91,6 +93,7 @@ class HistoryPass:
         attach_options: AttachOptions | None = None,
         identify_options: IdentifyOptions | None = None,
         status_options: StatusOptions | None = None,
+        identify_run: IdentifyRun | None = None,
     ) -> None:
         if create and not prefix:
             raise BackfillError(
@@ -108,6 +111,7 @@ class HistoryPass:
         self.attach_options = attach_options
         self.identify_options = identify_options
         self.status_options = status_options
+        self.identify_run = identify_run
         self._report: dict[str, Any] = {}
 
     def propose(
@@ -131,6 +135,7 @@ class HistoryPass:
             attach_options=self.attach_options,
             identify_options=self.identify_options,
             status_options=self.status_options,
+            identify_run=self.identify_run,
         )
         try:
             projection = project(
