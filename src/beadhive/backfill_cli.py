@@ -19,6 +19,7 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
 - ``export`` — the hive's current state as a ``.bdlg`` archive, read by the neutral bd strategy;
   with ``--history`` also every history event of the bd events table (the archival archive);
 - ``inspect`` — an archive's manifest, counts and (for a plan) its classification and verdicts;
+- ``verdicts`` — review the recorded judge verdicts by class (a plan, archive or collation JSON);
 - ``verify`` — an archive's integrity and event ids, and a plan's hash;
 - ``apply`` — a ``.bdlg`` plan through the envelope: one written by ``bh backfill`` or by the
   standalone ``beadlog reconcile``;
@@ -617,6 +618,12 @@ _OPTION_OPTION = typer.Option(
 )
 
 
+_VERDICTS_ARGUMENT = typer.Argument(..., help="a .bdlg plan/archive or a bdlg.collation/1 JSON")
+_CLASS_OPTION = typer.Option(
+    None, "--class", help="verdict class to show (repeatable): NEW, PRESENT, NOISE, abstain"
+)
+
+
 def judge_settings(cfg: Mapping[str, Any] | None = None) -> JudgeSettings:
     """The ``backfill.judge`` settings (disabled unless the config enables them)."""
     cfg = config.load() if cfg is None else cfg
@@ -1055,6 +1062,47 @@ def inspect_cmd(
             f"verdicts: {verdicts['recorded']} recorded; "
             + (", ".join(f"{k}={v}" for k, v in verdicts["by_outcome"].items()) or "none")
         )
+
+
+@app.command("verdicts")
+def verdicts_cmd(
+    path: Path = _VERDICTS_ARGUMENT,
+    verdict_class: list[str] | None = _CLASS_OPTION,
+    engine: str | None = typer.Option(None, "--engine", help="only verdicts of this engine/model"),
+    min_confidence: float | None = typer.Option(
+        None, "--min-confidence", help="only verdicts at or above this confidence"
+    ),
+    max_confidence: float | None = typer.Option(
+        None, "--max-confidence", help="only verdicts at or below this confidence"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the view as JSON"),
+) -> None:
+    """Review recorded judge verdicts by class with confidence, engine/model and fallback.
+
+    Read-only. Reads a plan or extract archive, or the verdicts of a bdlg.collation/1 JSON; shows
+    the cost when backfill.judge.cost_per_call_usd is set.
+    """
+    from . import backfill_verdicts as review
+
+    cost = BackfillJudgeConfig.model_validate(
+        (config.load().get("backfill") or {}).get("judge") or {}
+    ).cost_per_call_usd
+    try:
+        view = review.build_view(
+            path,
+            classes=list(verdict_class or ()),
+            engine=engine,
+            min_confidence=min_confidence,
+            max_confidence=max_confidence,
+            cost_per_call_usd=cost,
+        )
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    if as_json:
+        _emit(view)
+        return
+    for line in review.render_text(view):
+        typer.echo(line)
 
 
 @app.command("verify")
