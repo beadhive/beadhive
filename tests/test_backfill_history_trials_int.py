@@ -151,7 +151,7 @@ def _created(store: FakeBd, source: str) -> list[dict[str, Any]]:
 
 def _assert_well_formed(rows: list[dict[str, Any]], source: str) -> None:
     """Created beads carry provenance, the source label and the identity triplet, and are closed
-    (the units are history), apart from a doc still drafted."""
+    (the units are history). A doc unit closes by its add commit, so the run reads git too."""
     assert rows
     for row in rows:
         labels = set(row["labels"])
@@ -159,6 +159,7 @@ def _assert_well_formed(rows: list[dict[str, Any]], source: str) -> None:
         assert row["id"].startswith(ENTRY["prefix"] + "-")
         assert row["external_ref"]
         assert row["title"]
+        assert row["status"] == "closed", (row["id"], row["external_ref"])
 
 
 def _by_ref(store: FakeBd) -> dict[str, dict[str, Any]]:
@@ -243,7 +244,7 @@ def test_docs_heavy_hive_judge_off_with_threshold(cfg_path, monkeypatch, tmp_pat
     store = _wire(monkeypatch, repo, rows)
     _config(cfg_path, collate={"create": "propose", "identify": {"new_threshold": 50}})
 
-    first, second = _converge(tmp_path, "docs")
+    first, second = _converge(tmp_path, "git", "docs")
 
     units = first["stages"]["plan"]["units"]
     assert units["NEW"] == 16 and units["PRESENT"] == 6 and units["residual"] == 6
@@ -294,7 +295,7 @@ def test_html_documented_hive_finds_all_eleven_design_docs(cfg_path, monkeypatch
         cfg_path, collate={"create": "propose"}, sources={"docs": {"formats": ["markdown", "html"]}}
     )
 
-    first, second = _converge(tmp_path, "docs")
+    first, second = _converge(tmp_path, "git", "docs")
 
     refs = _by_ref(store)
     for t in html_topics:
@@ -321,5 +322,5 @@ def test_html_is_not_read_unless_opted_in(cfg_path, monkeypatch, tmp_path) -> No
     )
     store = _wire(monkeypatch, repo, [])
     _config(cfg_path, collate={"create": "propose"})
-    _converge(tmp_path, "docs")
+    _converge(tmp_path, "git", "docs")
     assert not any(r.get("external_ref", "").endswith(".html") for r in store.rows.values())
