@@ -39,7 +39,7 @@ import os
 import re
 import uuid
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +78,7 @@ from beadlog_sources import (
     BdReadError,
     GapfillReader,
     HistoryRead,
+    IdentifyConfirmationRequired,
     JsonCursorFile,
     JudgeSettings,
     build_judge,
@@ -90,10 +91,18 @@ from beadlog_sources import (
     read_store_start,
 )
 
-from . import backfill_continuous, backfill_coverage, complexity_backfill, config, registry
+from . import (
+    backfill_continuous,
+    backfill_coverage,
+    backfill_history,
+    backfill_views,
+    complexity_backfill,
+    config,
+    registry,
+)
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
 from .modules.beadlog_store.contracts import BUILTIN_STORE, BeadlogStoreError
-from .modules.config.contracts import BackfillGapfillConfig, BackfillJudgeConfig
+from .modules.config.contracts import BackfillConfig, BackfillGapfillConfig, BackfillJudgeConfig
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -628,7 +637,9 @@ def judge_settings(cfg: Mapping[str, Any] | None = None) -> JudgeSettings:
     """The ``backfill.judge`` settings (disabled unless the config enables them)."""
     cfg = config.load() if cfg is None else cfg
     section = BackfillJudgeConfig.model_validate((cfg.get("backfill") or {}).get("judge") or {})
-    return JudgeSettings(**section.model_dump(exclude={"cost_per_call_usd", "credential"}))
+    return JudgeSettings(
+        **section.model_dump(exclude={"cost_per_call_usd", "credential", "resume"})
+    )
 
 
 def _judge_runner(cfg: Mapping[str, Any] | None = None) -> Any:
@@ -841,6 +852,452 @@ def _source_command(name: str) -> Callable[..., None]:
 
 for _name in SOURCE_PASS_NAMES:
     app.command(_name, help=_SOURCE_PASS_HELP[_name])(_source_command(_name))
+
+
+# -- history pipeline (bh backfill history | collate | view ...) --------------------------------
+
+_SOURCES_OPTION = typer.Option(
+    None,
+    "--sources",
+    help="readers to run, comma-separated (default: backfill.history.sources; github is opt-in)",
+)
+_RUN_DIR_OPTION = typer.Option(
+    None,
+    "--run-dir",
+    help="persistent run directory (default: backfill.history.run_dir, else a per-hive state dir)",
+)
+_REFRESH_OPTION = typer.Option(
+    False,
+    "--refresh",
+    help="read the sources again even when the run directory's evidence is current",
+)
+_YES_OPTION = typer.Option(
+    False,
+    "--yes",
+    help="confirm: judge more units than max_calls_per_run (first batch now, rest on the next "
+    "run), and apply a plan with verdicts that need review",
+)
+_DECISION_OPTION = typer.Option(
+    None,
+    "--decision",
+    help="only units with this decision (repeatable): NEW, PRESENT, NOISE, residual",
+)
+_VIEW_PATH = typer.Argument(..., help="a run directory or a bdlg.collation/1 JSON")
+
+
+def history_directory(hive: str, cfg: Mapping[str, Any], backfill: BackfillConfig) -> Any:
+    """The ledger directory of a history run (the seam tests replace): the registry's ledgers
+    (``backfill.history.ledgers`` restricts which; the hive's own is always read), each read
+    announced on stderr as it starts, since the first foreign-token lookup exports every one."""
+    from .backfill_ledgers import WarningLedgerDirectory, bd_export_ids, ledger_directory_for
+
+    prefix = hive_prefix(hive)
+    if not prefix:
+        raise BackfillError("the hive has no registered prefix (prefixes are never derived)")
+    names: dict[str, str] = {}
+
+    def announce(path: Path) -> list[str]:
+        typer.echo(f"ledger {names.get(str(path), path)}: reading bead ids ...", err=True)
+        return bd_export_ids(path)
+
+    full = ledger_directory_for(prefix, cfg, read_ids=announce)
+    allowed = set(backfill.history.ledgers)
+    sources = {
+        name: path
+        for name, path in full.sources.items()
+        if not allowed or name in allowed or name == prefix
+    }
+    names.update({str(path): name for name, path in sources.items()})
+    return WarningLedgerDirectory(sources, announce)
+
+
+class _Snapshot:
+    """A StoreReader over a baseline already read (so planning does not export the store twice)."""
+
+    def __init__(self, events: tuple[Any, ...]) -> None:
+        self._events = events
+
+    def export(self) -> tuple[Any, ...]:
+        return self._events
+
+
+def _run_dir_for(hive: str, backfill: BackfillConfig, override: Path | None) -> Path:
+    if override is not None:
+        return override
+    if backfill.history.run_dir:
+        return Path(backfill.history.run_dir).expanduser()
+    cfg = config.load()
+    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+    key = registry.sanitize(registry.hive_key(entry)) if entry is not None else "default"
+    return backfill_history.default_run_dir(config.home(), key)
+
+
+def _split_sources(sources: str | None) -> list[str]:
+    return [item.strip() for item in (sources or "").split(",") if item.strip()]
+
+
+def _warn_ledgers(directory: Any) -> list[str]:
+    warnings = [str(w) for w in getattr(directory, "warnings", ())]
+    for text in warnings:
+        typer.echo(f"! {text}", err=True)
+    return warnings
+
+
+def _history_pass(
+    corpus: Any,
+    directory: Any,
+    group: Group,
+    prefix: str,
+    options: backfill_history.CollateOptions,
+    run: Any,
+    run_dir: Path,
+    names: Sequence[str],
+    collation: Any = None,
+) -> backfill_history.HistoryPass:
+    return backfill_history.HistoryPass(
+        corpus,
+        directory,
+        group,
+        prefix,
+        options,
+        run=run,
+        run_dir=str(run_dir),
+        sources=tuple(names),
+        collation=collation,
+    )
+
+
+def history_pass_for_plan(plan: Plan, group: Group, hive: str, *, cfg: Mapping[str, Any]) -> Any:
+    """The ``history`` pass that applies ``plan``: rebuilt from the run directory the plan
+    recorded (its ``evidence.jsonl`` and ``collation.json``), replaying the recorded verdicts."""
+    from beadlog_sources import (
+        AttachOptions,
+        ClusterOptions,
+        IdentifyOptions,
+        StatusOptions,
+        read_collation,
+        read_evidence,
+    )
+
+    report = plan.report
+    run_dir = Path(str(report.get("run_dir") or ""))
+    files = backfill_history.run_paths(run_dir)
+    if (
+        not report.get("run_dir")
+        or not files["evidence"].is_file()
+        or not files["collation"].is_file()
+    ):
+        raise BackfillError(
+            f"the history plan's run directory {str(run_dir)!r} no longer holds its evidence and "
+            "collation; rerun `bh backfill history` to plan again"
+        )
+    backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
+    collation = read_collation(files["collation"])
+    recorded = collation.options
+    options = backfill_history.CollateOptions(
+        ClusterOptions.from_json(recorded["cluster"]),
+        AttachOptions.from_json(recorded["attach"]),
+        IdentifyOptions.from_json(recorded["identify"]),
+        StatusOptions.from_json(recorded["status"]),
+        str(report.get("create") or "off"),
+    )
+    pass_ = _history_pass(
+        read_evidence(files["evidence"]),
+        history_directory(hive, cfg, backfill),
+        group,
+        str(report.get("prefix") or ""),
+        options,
+        None,
+        run_dir,
+        report.get("sources") or (),
+        collation,
+    )
+    pass_.replay()
+    return pass_
+
+
+def _history_run(
+    hive: str,
+    sources: str | None,
+    until: str,
+    run_dir: Path | None,
+    refresh: bool,
+    yes: bool,
+    as_json: bool,
+) -> None:
+    cfg = config.load()
+    backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
+    summary: dict[str, Any] = {"until": until}
+    try:
+        last = backfill_history.stage_index(until)
+        cwd, group = _target(hive)
+        prefix = hive_prefix(hive)
+        if not prefix:
+            raise BackfillError("the hive has no registered prefix (prefixes are never derived)")
+        chosen = backfill_history.resolve_sources(_split_sources(sources), backfill, cfg)
+        names = [name for name, _ in chosen]
+        run = _run_dir_for(hive, backfill, run_dir)
+        run.mkdir(parents=True, exist_ok=True)
+        files = backfill_history.run_paths(run)
+        summary.update({"run_dir": str(run), "sources": names, "stages": {}})
+        directory = history_directory(hive, cfg, backfill)
+        manifest = backfill_history.read_manifest(run)
+
+        # parse
+        namespaces = list(directory.ledgers())
+        key = backfill_history.parse_key(
+            cwd, [(n, backfill_history.source_options(n, backfill, namespaces)) for n in names]
+        )
+        reused = (
+            not refresh
+            and files["evidence"].is_file()
+            and (manifest.get("parse") or {}).get("key") == key
+        )
+        if reused:
+            corpus = backfill_history.read_evidence(files["evidence"])
+        else:
+            corpus = backfill_history.read_sources(cwd, chosen, backfill, namespaces)
+            backfill_history.write_evidence(corpus, files["evidence"])
+        manifest["parse"] = {"key": key, "artifacts": len(corpus.artifacts), "reused": reused}
+        summary["stages"]["parse"] = manifest["parse"]
+        backfill_history.write_manifest(run, manifest)
+        if last == 0:
+            return _history_done(summary, files, as_json)
+
+        # collate
+        loader = store_loader(cwd, group=group.id)
+        baseline = tuple(loader.export())
+        prior, note = (
+            backfill_history.load_prior(files["collation"])
+            if backfill.judge.resume
+            else (None, None)
+        )
+        if note:
+            typer.echo(f"! {note}", err=True)
+        settings = judge_settings(cfg)
+        identify = backfill_history.identify_run(
+            settings,
+            prior=prior,
+            cost_per_call_usd=backfill.judge.cost_per_call_usd,
+            runner=_judge_runner(cfg) if settings.enabled else None,
+            confirm=yes,
+        )
+        options = backfill_history.CollateOptions.from_config(backfill)
+        collation = backfill_history.collate_stage(
+            corpus, baseline, directory, local=prefix, options=options, run=identify
+        )
+        backfill_history.write_collation_atomic(collation, files["collation"])
+        warnings = _warn_ledgers(directory)
+        manifest["collate"] = {
+            "units": len(collation.units),
+            "verdicts": len(collation.verdicts),
+            "residual": len(collation.residual),
+            "conflicts": len(collation.conflicts),
+            "prior": prior is not None,
+            "ledger_warnings": warnings,
+        }
+        summary["stages"]["collate"] = manifest["collate"]
+        backfill_history.write_manifest(run, manifest)
+        if last == 1:
+            return _history_done(summary, files, as_json)
+
+        # plan
+        pass_ = _history_pass(
+            corpus, directory, group, prefix, options, identify, run, names, collation
+        )
+        engine = BackfillEngine(groups=[group], passes=[pass_])
+        plan = engine.plan(pass_, _Snapshot(baseline))
+        plan.write(files["plan"])
+        pass_.replay()
+        review = int(plan.totals.get("review_required", 0))
+        manifest["plan"] = {
+            "plan_hash": plan.plan_hash,
+            "changes": plan.changes,
+            "events": len(plan.applicable_events()),
+            "by_class": plan.totals.get("by_class", {}),
+            "review_required": review,
+            "create": options.create,
+            "creates_suppressed": (plan.report.get("projection") or {}).get(
+                "creates_suppressed", 0
+            ),
+        }
+        summary["stages"]["plan"] = manifest["plan"]
+        backfill_history.write_manifest(run, manifest)
+        if last == 2:
+            return _history_done(summary, files, as_json)
+
+        # apply: the existing envelope, behind the review gate
+        if review and not yes:
+            raise BackfillError(
+                f"{review} verdict(s) need review: inspect them with `bh backfill verdicts "
+                f"{files['plan']}`, then rerun with --yes to apply"
+            )
+        apply_loader = store_loader(cwd, group=group.id, pre_state_path=files["pre_state"])
+        entry = engine.apply(
+            plan, apply_loader, apply_loader, JsonFileAuditSink(files["audit"]),
+            pre_state=apply_loader,
+        )  # fmt: skip
+        manifest["apply"] = {
+            "completed": len(entry.completed),
+            "audit": str(files["audit"]),
+            "pre_state": str(entry.recovery.pre_state_artifact),
+        }
+        summary["stages"]["apply"] = manifest["apply"]
+        backfill_history.write_manifest(run, manifest)
+    except IdentifyConfirmationRequired as exc:
+        raise _fail(RuntimeError(f"{exc}; rerun with --yes")) from None
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    _record_cursor(hive, cwd, plan, files["audit"])
+    refresh_coverage_after_apply(hive, as_json)
+    _history_done(summary, files, as_json)
+
+
+def _history_done(summary: dict[str, Any], files: Mapping[str, Path], as_json: bool) -> None:
+    summary["files"] = {name: str(path) for name, path in files.items() if path.is_file()}
+    if as_json:
+        _emit(summary)
+        return
+    stages = summary["stages"]
+    typer.echo(f"run directory: {summary['run_dir']}")
+    if parse := stages.get("parse"):
+        typer.echo(
+            f"parse: {parse['artifacts']} artifacts from {', '.join(summary['sources'])}"
+            + (" (evidence reused)" if parse["reused"] else "")
+        )
+    if collate_ := stages.get("collate"):
+        typer.echo(
+            f"collate: {collate_['units']} units, {collate_['verdicts']} verdicts, "
+            f"{collate_['residual']} residual, {collate_['conflicts']} conflicts"
+            + (" (prior collation reused)" if collate_["prior"] else "")
+        )
+    if plan := stages.get("plan"):
+        classes = ", ".join(f"{k}={v}" for k, v in plan["by_class"].items()) or "none"
+        typer.echo(
+            f"plan: {plan['changes']} beads would change ({plan['events']} events); "
+            f"classes: {classes}; review required: {plan['review_required']}; "
+            f"create: {plan['create']}"
+        )
+        if plan["creates_suppressed"]:
+            typer.echo(
+                f"create is off: {plan['creates_suppressed']} events for units matching no bead "
+                "were not proposed"
+            )
+        typer.echo(f"plan hash: {plan['plan_hash']}")
+    if applied := stages.get("apply"):
+        typer.echo(
+            f"applied {applied['completed']} beads; verification clean; second dry-run empty"
+        )
+        typer.echo(f"pre-state: {applied['pre_state']}")
+        typer.echo(f"audit: {applied['audit']}")
+    typer.echo(f"stopped after {summary['until']}; outputs in the run directory")
+
+
+@app.command("history")
+def history_cmd(
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    sources: str | None = _SOURCES_OPTION,
+    until: str = typer.Option(
+        "plan",
+        "--until",
+        help="last stage to run: parse, collate, plan (default; writes nothing to the store) "
+        "or apply",
+    ),
+    run_dir: Path | None = _RUN_DIR_OPTION,
+    refresh: bool = _REFRESH_OPTION,
+    yes: bool = _YES_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="emit the run summary as JSON"),
+) -> None:
+    """Read the hive's history (git, docs, planning, github) and link it to beads, stage by stage.
+
+    Each --until stage stops and leaves its output in the run directory (evidence.jsonl,
+    collation.json, plan.bdlg); a rerun resumes from it. apply goes through the same
+    plan/verify/apply envelope as the other passes.
+    """
+    _history_run(hive, sources, until, run_dir, refresh, yes, as_json)
+
+
+@app.command("collate")
+def collate_cmd(
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    sources: str | None = _SOURCES_OPTION,
+    run_dir: Path | None = _RUN_DIR_OPTION,
+    refresh: bool = _REFRESH_OPTION,
+    yes: bool = _YES_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="emit the run summary as JSON"),
+) -> None:
+    """Run `bh backfill history` up to the collation (units, verdicts, conflicts), no plan."""
+    _history_run(hive, sources, "collate", run_dir, refresh, yes, as_json)
+
+
+view_app = typer.Typer(
+    no_args_is_help=True,
+    help="Review a history run: units, conflicts, cross references, judge cost, verdicts.",
+)
+app.add_typer(view_app, name="view")
+
+
+def _show_view(build: Callable[[], dict[str, Any]], as_json: bool) -> None:
+    try:
+        view = build()
+    except (*_ERRORS, backfill_views.ViewInputError) as exc:
+        raise _fail(exc) from None
+    if as_json:
+        _emit(view)
+        return
+    for line in backfill_views.render_text(view):
+        typer.echo(line)
+
+
+def _cost_per_call() -> float | None:
+    cfg = config.load()
+    return BackfillConfig.model_validate(cfg.get("backfill") or {}).judge.cost_per_call_usd
+
+
+@view_app.command("unit")
+def view_unit_cmd(
+    path: Path = _VIEW_PATH,
+    decision: list[str] | None = _DECISION_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="emit the view as JSON"),
+) -> None:
+    """Units with their NEW / PRESENT / NOISE / residual decision, bead, status and dates."""
+    _show_view(lambda: backfill_views.unit_view(path, decision=decision or ()), as_json)
+
+
+@view_app.command("conflict")
+def view_conflict_cmd(
+    path: Path = _VIEW_PATH,
+    as_json: bool = typer.Option(False, "--json", help="emit the view as JSON"),
+) -> None:
+    """Status conflicts between sources, both sides shown (none is auto-resolved)."""
+    _show_view(lambda: backfill_views.conflict_view(path), as_json)
+
+
+@view_app.command("xref")
+def view_xref_cmd(
+    path: Path = _VIEW_PATH,
+    as_json: bool = typer.Option(False, "--json", help="emit the view as JSON"),
+) -> None:
+    """References to other ledgers' beads and to tracker items found in the evidence."""
+    _show_view(lambda: backfill_views.xref_view(path), as_json)
+
+
+@view_app.command("cost")
+def view_cost_cmd(
+    path: Path = _VIEW_PATH,
+    as_json: bool = typer.Option(False, "--json", help="emit the view as JSON"),
+) -> None:
+    """Judge calls the collation recorded and their cost (backfill.judge.cost_per_call_usd)."""
+    _show_view(lambda: backfill_views.cost_view(path, _cost_per_call()), as_json)
+
+
+@view_app.command("verdicts")
+def view_verdicts_cmd(
+    path: Path = _VIEW_PATH,
+    as_json: bool = typer.Option(False, "--json", help="emit the view as JSON"),
+) -> None:
+    """The judge verdicts of the run (the same view as `bh backfill verdicts`, unfiltered)."""
+    _show_view(lambda: backfill_views.verdicts_view(path, _cost_per_call()), as_json)
 
 
 @app.command("export")
@@ -1191,6 +1648,8 @@ def apply_cmd(
             passes.append(_timeline_pass_for_plan(cwd, hive, plan))
         elif plan.pass_name in SOURCE_PASS_NAMES:
             passes.append(source_pass_for_plan(plan.pass_name, cwd, group.id, plan.report))
+        elif plan.pass_name == backfill_history.PASS_NAME:
+            passes.append(history_pass_for_plan(plan, group, hive, cfg=config.load()))
         engine = BackfillEngine(groups=plan.groups, passes=passes)
         entry = engine.apply(plan, loader, loader, JsonFileAuditSink(audit), pre_state=loader)
     except _ERRORS as exc:
