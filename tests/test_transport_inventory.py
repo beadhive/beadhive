@@ -64,7 +64,7 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
     assert counts == {
         # + `outbox backfill-close` (bh-pr5ll), `send-approved` (bh-pc9rf), `reopen` (bh-ih484),
         # `work validation reindex` (bh-0qazu), `work delivery sweep` (bh-qwv0t)
-        "cli": 299,
+        "cli": 306,
         "gateway": 36,
         "mcp-resource": 21,
         "mcp-tool": 10,

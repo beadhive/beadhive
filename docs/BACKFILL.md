@@ -29,6 +29,9 @@ bh backfill commits      [--hive H] [--dry-run | --apply] [--since-cursor] [--pl
 bh backfill docs         (the same options as commits, without --since-cursor)
 bh backfill planning     (the same options as commits, without --since-cursor)
 bh backfill coverage     [--hive H] [--refresh] [--json]
+bh backfill history      [--hive H] [--sources S,...] [--until parse|collate|plan|apply] [--run-dir D] [--refresh] [--yes] [--json]
+bh backfill collate      [--hive H] [--sources S,...] [--run-dir D] [--refresh] [--yes] [--json]
+bh backfill view         unit|conflict|xref|cost|verdicts RUN_DIR|COLLATION.json [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--store bd|xtdb] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verdicts     F.bdlg|COLLATION.json [--class C]... [--engine E] [--min-confidence X] [--max-confidence X] [--json]
@@ -200,6 +203,64 @@ a map of class to items (`source`, `class`, `bead`, `match`, `covered_by`, `revi
 `confidence`, `engine`, `engine_version`, `model`, `fallback`, `family`, `query_hash`,
 `rationale`, `note`, plus `unit`, `step`, `provenance`, `score`, `reason`, `candidates` for a
 collation).
+
+### `bh backfill history`, `collate` and `view` (the history pipeline)
+
+`bh backfill history` is the single entry of the history pipeline
+([`design/backfill-history-pipeline-adr.md`](design/backfill-history-pipeline-adr.md)): it reads the
+hive's own sources (git, docs, planning and, opt-in, a GitHub snapshot), collates them into work
+units, identifies each unit against the hive's beads and projects the result as one reconcile plan
+that the ordinary `plan -> verify -> apply` envelope applies. It does not replace `commits`,
+`docs` and `planning`, which are unchanged.
+
+`--until` stops after a stage, and every stage leaves its output in the **run directory**:
+
+| `--until` | Leaves | What it did |
+|---|---|---|
+| `parse` | `evidence.jsonl` | every reader's artifacts (`bdlg.evidence/1`) |
+| `collate` | `collation.json` | refs, units, attached docs, verdicts, residual, conflicts, lifecycle (`bdlg.collation/1`) |
+| `plan` (default) | `plan.bdlg` | the projected events reconciled against the store, sealed; nothing is written to the store |
+| `apply` | `audit.json`, `pre-state.jsonl` | the existing apply envelope (plan hash, drift gate, pre-state, audit, verification, rollback, second dry run) |
+
+`run.json` in the same directory records what each stage did and what it reused. The directory
+is persistent: `--run-dir`, else `backfill.history.run_dir`, else
+`<bh home>/state/backfill-history/<hive>`. **A rerun resumes from it**: the evidence is reused while
+the sources, their options, `HEAD` and the working tree are unchanged (`--refresh` reads again);
+the previous `collation.json` is fed to B5 as its `prior` (`backfill.judge.resume`), so judged
+queries are answered from it and a run stopped by `max_calls_per_run` continues where it stopped.
+Collation and planning are recomputed against the current store. `bh backfill collate` is
+`history --until collate`.
+
+`--sources` names the readers (default `backfill.history.sources`: `git,docs,planning`). `github`
+needs `backfill.sources.github.enabled` and an enabled `tracker-github` plugin; the reader is
+loaded through the plugin, so it is found in an installed `bh` too. Bead tokens are anchored to
+the registered ledger names (`backfill.history.ledgers` restricts which ledgers are read; each
+read is announced on stderr, since the first foreign-token lookup exports every registered ledger).
+
+With `backfill.judge` on, B5 prints its cost preview (`N judge calls ≈ $X`, from
+`backfill.judge.cost_per_call_usd`) before any call, and `--yes` confirms a run with more units
+than `max_calls_per_run`. `--until apply` also needs `--yes` when the plan holds verdicts that
+need review (`bh backfill view verdicts` / `bh backfill verdicts plan.bdlg` show them). A history
+plan can also be applied later with `bh backfill apply plan.bdlg`, which rebuilds the pass from the
+run directory the plan recorded.
+
+**Create mode.** `backfill.collate.create = off` (default) is link-only: a unit that matches no
+bead projects nothing (the plan reports how many events were not proposed). The projector writes
+PRESENT units' `git.commits`, `external_ref` and cross-reference stamps; nothing is overwritten.
+
+`bh backfill view` reviews a run, read-only, over a run directory or any `bdlg.collation/1` JSON.
+Each view is its own verb because adding parameters to the published `inspect` would break the
+wire contract:
+
+| View | Shows |
+|---|---|
+| `unit [--decision D]` | every unit with its NEW / PRESENT / NOISE / residual decision, bead, status and dates |
+| `conflict` | status conflicts between sources, both sides shown, none resolved |
+| `xref` | references to other ledgers' beads and to tracker items |
+| `cost` | judge calls recorded and their estimated cost |
+| `verdicts` | the judge verdicts, the same view as `bh backfill verdicts` |
+
+`--json` emits `beadhive.backfill.view/1` (`view`, `path`, counts and the records).
 
 ### `bh backfill verify`
 

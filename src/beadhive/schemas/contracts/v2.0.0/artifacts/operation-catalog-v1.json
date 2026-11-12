@@ -35,6 +35,15 @@
       "declared_hidden": false,
       "divergence": null,
       "effective_hidden": false,
+      "effective_panel": "Hive",
+      "panel": null,
+      "path": "backfill view"
+    },
+    {
+      "alias_of": null,
+      "declared_hidden": false,
+      "divergence": null,
+      "effective_hidden": false,
       "effective_panel": "Admin / infra",
       "panel": "Admin / infra",
       "path": "backup"
@@ -706,6 +715,104 @@
       "constraints": {
         "hq_write": false,
         "interactive": false,
+        "override_parameters": [
+          "yes"
+        ],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "backfill.collate",
+      "parameters": [
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "sources",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "run_dir",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "refresh",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "yes",
+          "privilege": "privileged-override",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "hive",
+            "sources",
+            "run_dir",
+            "refresh",
+            "yes",
+            "as_json"
+          ],
+          "path": "backfill collate",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
         "override_parameters": [],
         "secret_material": false
       },
@@ -1193,6 +1300,113 @@
             "store"
           ],
           "path": "backfill export",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [
+          "yes"
+        ],
+        "secret_material": false
+      },
+      "kind": "action",
+      "name": "backfill.history",
+      "parameters": [
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "sources",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "until",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "run_dir",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "refresh",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "yes",
+          "privilege": "privileged-override",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "ordinary-mutation",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "hive",
+            "sources",
+            "until",
+            "run_dir",
+            "refresh",
+            "yes",
+            "as_json"
+          ],
+          "path": "backfill history",
           "progress": {
             "mode": "structured",
             "notification_uris": [],
@@ -1744,6 +1958,316 @@
             "as_json"
           ],
           "path": "backfill verify",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "read-resource",
+      "name": "backfill.view.conflict",
+      "parameters": [
+        {
+          "name": "path",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "unprivileged-read",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "path",
+            "as_json"
+          ],
+          "path": "backfill view conflict",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "read-resource",
+      "name": "backfill.view.cost",
+      "parameters": [
+        {
+          "name": "path",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "unprivileged-read",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "path",
+            "as_json"
+          ],
+          "path": "backfill view cost",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "read-resource",
+      "name": "backfill.view.unit",
+      "parameters": [
+        {
+          "name": "path",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "decision",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "unprivileged-read",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "path",
+            "decision",
+            "as_json"
+          ],
+          "path": "backfill view unit",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "read-resource",
+      "name": "backfill.view.verdicts",
+      "parameters": [
+        {
+          "name": "path",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "unprivileged-read",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "path",
+            "as_json"
+          ],
+          "path": "backfill view verdicts",
+          "progress": {
+            "mode": "structured",
+            "notification_uris": [],
+            "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+          }
+        }
+      }
+    },
+    {
+      "alias_of": null,
+      "constraints": {
+        "hq_write": false,
+        "interactive": false,
+        "override_parameters": [],
+        "secret_material": false
+      },
+      "kind": "read-resource",
+      "name": "backfill.view.xref",
+      "parameters": [
+        {
+          "name": "path",
+          "privilege": "inherited",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "as_json",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "privilege": "unprivileged-read",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "surfaces": {
+        "cli": {
+          "aliases": [],
+          "declared_hidden": false,
+          "effective_hidden": false,
+          "granularity": {
+            "mode": "fine",
+            "reason": null
+          },
+          "interactivity": {
+            "guard_conditions": [],
+            "guard_parameters": [],
+            "mode": "none",
+            "prompt_seams": [],
+            "reason": null
+          },
+          "parameter_map": {},
+          "parameters": [
+            "path",
+            "as_json"
+          ],
+          "path": "backfill view xref",
           "progress": {
             "mode": "structured",
             "notification_uris": [],
