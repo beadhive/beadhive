@@ -242,6 +242,23 @@ from .identify import (
 from .identify import prior_verdicts as identify_prior_verdicts
 
 # --- end collate B5 ---
+# --- collate B6 (bh-qhgsr) ---
+from .lifecycle import (
+    CONFLICT_RULES,
+    DEFAULT_RULES,
+    Conflict,
+    Lifecycle,
+    Moment,
+    Source,
+    StatusOptions,
+    StatusOptionsError,
+    conflicts_of,
+    derive_lifecycle,
+    lifecycle_of,
+    lifecycles,
+)
+
+# --- end collate B6 ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -420,4 +437,18 @@ __all__ = [
     "identify_prior_verdicts",
     "identify_units",
     # --- end collate B5 ---
+    # --- collate B6 (bh-qhgsr) ---
+    "CONFLICT_RULES",
+    "DEFAULT_RULES",
+    "Conflict",
+    "Lifecycle",
+    "Moment",
+    "Source",
+    "StatusOptions",
+    "StatusOptionsError",
+    "conflicts_of",
+    "derive_lifecycle",
+    "lifecycle_of",
+    "lifecycles",
+    # --- end collate B6 ---
 ]
