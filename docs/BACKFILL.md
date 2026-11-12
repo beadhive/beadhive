@@ -256,8 +256,24 @@ command's imports.
 | `beadlog read <reader>` | run a source reader, writing a `bdlg.evidence/1` JSONL corpus (`--root`, repeatable `--option key=value`, `-o`) |
 | `beadlog merge`, `reconcile`, `inspect`, `verify` | archive operations |
 
-`beadlog extract --help` and `beadlog read --help` list what is registered. No built-in reader
-ships yet; the git, docs, planning and GitHub readers land with the history pipeline's M1.
+`beadlog extract --help` and `beadlog read --help` list what is registered. The git, planning and
+GitHub readers land with the history pipeline's M1; the `docs` reader is shipped (below).
+
+**`beadlog read docs`** reads design and decision documents into `design-record` artifacts keyed
+`doc:<path>`, through the `DocFormat` port (`beadlog_sources.doc_formats`; the markdown adapter uses
+markdown-it-py when the optional `beadlog-sources[md]` extra is installed and a regex scan
+otherwise, with identical results). Options (`--option key=value`): `layouts` (presets `decisions`,
+`design`, `adr`, `architecture`, `docs-html` (`docs/*.html`, not recursive), `reviews`
+(`docs/reviews`, review-tool HTML exports); `none`), `globs`, `files` (any extension a format
+detects), `formats` (`markdown` by default; add `html` to read `.html`/`.htm` docs: title from
+`<title>` else the first `<h1>`, `<meta name=...>` as metadata, a visible `Status:` line, `h1`-`h6`
+sections; stdlib `html.parser` only, script/style ignored), `namespaces`, `first_add`, `git`.
+
+Bead-token recognition is shared (`beadlog_sources.tokens`). With `namespaces` (id prefixes, for
+example `bh,hq`) every `<ns>-<id>` is a token. Without them a generic shape is used (a short
+prefix, a hyphen and an id segment containing a digit), which **misses digit-free ids such as
+`bh-art`**; the run header records `token_mode` (`namespaces` or `generic`) so a corpus says which
+applied. `bh backfill` will pass `namespaces` from the registered ledgers.
 
 **Discovery.** Strategies come from the `beadlog.sources` entry-point group and readers from
 `beadlog.readers`. The `bh` wheel registers the strategies in its own metadata, and
@@ -268,6 +284,27 @@ registration; the same name with different targets is an error (`beadlog: Duplic
 exit 1). A third-party reader registers under `[project.entry-points."beadlog.readers"]` and
 implements `beadlog_sources.SourceReader` (`name`, `version`, `categories`, and a pure
 `read(ReadRequest) -> Iterable[Artifact]` that never touches a store).
+
+### The `planning` reader
+
+`beadlog read planning` emits one `plan-item` artifact per plan item, keyed
+`plan:<path>#<item-id>`, through the `PlanningFormat` port (adapters `gsd` and `roadmap`). Keys
+become bead `external_ref`s, so they only change when the structure does.
+
+- **GSD** (`.planning/phases/NN-name/NN-MM-PLAN.md`): a phase is `#phase`, a plan `#NN-MM`; its
+  parent is the phase, `depends_on` frontmatter gives the dependencies, a sibling `-SUMMARY.md`
+  marks it done.
+- **Roadmap** (`ROADMAP.md`, `IMPLEMENTATION_PLAN.md`, `--option files=...`): headings nest by
+  level and `- [ ]` / `- [x]` items nest under the nearest heading or the checkbox of lesser
+  indent. A single `#` heading is the document title, not an item; several are items. The item id
+  is the chain of ancestor slugs (`phase-1/setup-repo`), where a slug ignores bead tokens, the
+  `(depends: ...)` clause, checkbox state and punctuation, so adding a ref, a dependency or ticking
+  the box never changes the key; `-2`, `-3` separate only true duplicates under one parent.
+- **Dependencies**: end an item's text with `(depends: slug, other-slug)`. Each entry is the
+  slug of another item in the same file (a sibling is preferred; an ambiguous or unknown entry is
+  kept in `raw_attrs.unresolved_depends_on`).
+- **Done**: a ticked checkbox; a heading is done when it has checkboxes and all are ticked.
+  `order` is the position among siblings.
 
 ### `beadlog extract git-commits`
 

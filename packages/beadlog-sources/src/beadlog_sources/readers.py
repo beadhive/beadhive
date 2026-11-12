@@ -38,7 +38,13 @@ STRATEGIES_GROUP = "beadlog.sources"
 
 # Static registries: name -> "module:attribute". Entry points of the same names are checked
 # against these. Real readers (git, docs, planning, github) register here as they land.
-BUILTIN_READERS: Mapping[str, str] = MappingProxyType({})
+BUILTIN_READERS: Mapping[str, str] = MappingProxyType(
+    {
+        "docs": "beadlog_sources.docs_reader:DocsReader",
+        "git": "beadlog_sources.git_reader:GitReader",
+        "planning": "beadlog_sources.planning_reader:PlanningReader",
+    }
+)
 BUILTIN_STRATEGIES: Mapping[str, str] = MappingProxyType(
     {
         "bd": "beadlog_sources.bd:BdBaselineStrategy",
@@ -81,6 +87,11 @@ class SourceReader(Protocol):
     def read(self, request: ReadRequest) -> Iterable[Artifact]:
         """Yield the artifacts of the source named by ``request``."""
         ...
+
+    # Optional (not part of the runtime protocol check): a reader may define
+    # ``header_options(options) -> Mapping[str, Any]`` returning the options to record in its
+    # ``ReaderHeader`` (the given ones plus derived facts such as ``token_mode``); ``beadlog read``
+    # uses it when present.
 
 
 @dataclass(frozen=True)

@@ -196,6 +196,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_continuous.py",
         "tests/test_backfill_coverage_advisory.py",
         "tests/test_backfill_coverage_cli.py",
+        "tests/test_backfill_ledgers.py",
         "tests/test_backfill_reconcile_docs.py",
         "tests/test_backfill_source_passes_cli.py",
         "tests/test_backfill_source_passes_int.py",

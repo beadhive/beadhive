@@ -11,11 +11,18 @@ requires-python = ">=3.11"
 # (the `github` dependency group is the editable dev/CI spelling).
 # The transitive `hishel` needs the osv-scanner.toml licence override (bh-h8kab), and is capped
 # below 2: hishel 2.0.0 fails githubkit's import, which allows it (bh-coqtn).
-dependencies = ["beadhive", "githubkit>=0.16.1,<1", "hishel<2"]
+dependencies = ["beadhive", "beadlog-sources", "githubkit>=0.16.1,<1", "hishel<2"]
 classifiers = ["Private :: Do Not Upload"]
 
 [tool.uv.sources]
 beadhive = { workspace = true }
+beadlog-sources = { workspace = true }
+
+# The `github` source reader (docs/design/backfill-history-pipeline-adr.md D6) lives here because
+# this plugin owns GitHub auth and transport; it registers itself, so beadlog-sources never depends
+# on this plugin (its built-in reader table stays the libraries' own).
+[project.entry-points."beadlog.readers"]
+github = "beadhive_tracker_github.reader:GitHubReader"
 
 [build-system]
 requires = ["hatchling"]
