@@ -18,6 +18,12 @@ of full shas, itself serialized as a string).
 store call: the live ids are the baseline beads of ``request.group`` that exist, and the
 namespaces the pattern anchors on are read off those ids. A baseline with no beads is refused.
 
+**The history is read through the git reader** (:func:`beadlog_sources.git_reader.read_git`): its
+``change`` artifacts (commits and merges) carry the bead-looking tokens of each message's
+subject, body and trailer values as ``bead-token`` refs, recognised with the namespaces read off
+the baseline. The strategy adds the tokens of trailer *keys* (a closing ``bh-4o07n: done``
+paragraph parses as a trailer) so every token of the whole message is a candidate, as before.
+
 **Append-only, idempotent.** The proposed value is the baseline's current list with the new shas
 appended in oldest-first order: existing entries keep their place and are never removed. A bead
 whose commits are all recorded yields no event, so extracting again after an apply proposes
@@ -40,6 +46,10 @@ would be silently missed. Option ``allow_shallow=true`` accepts the truncated hi
 Options (``ExtractRequest.options``): ``rev`` (default ``HEAD``), ``since`` (a commit: only
 ``since..rev``; otherwise a date handed to ``git log --since``), ``allow_shallow`` and ``git``
 (the binary, default ``git``).
+
+The token recognition (:func:`candidate_pattern`) lives in :mod:`beadlog_sources.tokens` and the
+git plumbing (:func:`read_commits`, :func:`require_full_history`, the errors) in
+:mod:`beadlog_sources.git_reader`; both are re-exported here.
 """
 
 from __future__ import annotations
@@ -60,14 +70,28 @@ from beadlog import (
     BeadState,
     EventKind,
     Evidence,
-    TimestampError,
     fold,
     format_timestamp,
     instant,
     mint_event,
 )
 
+from ._sources import commit_time, floors, truthy
 from .contracts import ExtractRequest
+from .evidence import Artifact, Category
+from .git_reader import (
+    SHALLOW_REMEDIATION,
+    Commit,
+    CommitsSourceError,
+    ShallowCloneError,
+    is_shallow,
+    read_commits,
+    read_git,
+    require_full_history,
+    resolve_commit,
+)
+from .readers import ReadRequest
+from .tokens import CANDIDATE_TEMPLATE, candidate_pattern, find_bead_tokens
 
 STRATEGY_NAME = "git-commits"
 STRATEGY_VERSION = "0.1.0"
@@ -75,31 +99,11 @@ SOURCE_SYSTEM = "git"
 # The BeadLog field the linkage lives in: the flat bd metadata key ``git.commits``.
 FIELD = "metadata.git.commits"
 ANNOTATION_KEY = "bdlg.git-commits"
-SHALLOW_REMEDIATION = (
-    "run `git fetch --unshallow` to fetch the full history "
-    "(or pass option allow_shallow=true to extract from the truncated history)"
-)
 
 # -- the canonical matcher -----------------------------------------------------------------
 
-# A bead ID is ``<namespace>-<slug>`` with optional dotted child suffixes, where the slug is
-# base36-ish and may itself carry hyphenated segments (`bh-4o07n`, `bhui-do1`, `bh-baml-8u9.17`).
-# Anchored on the namespace so it does not match every hyphenated English word, but greedy to the
-# right so a multi-segment ID arrives as ONE token; `resolve_candidate` trims back to the longest
-# segment that actually resolves. A token glued to surrounding word characters is not matched.
-CANDIDATE_TEMPLATE = r"(?<![0-9A-Za-z_-])(?:{ns})-[0-9a-z]+(?:[.-][0-9a-z]+)*(?![0-9A-Za-z_])"
-
 # Separators a greedy candidate can be trimmed back on, one segment at a time.
 _TRIM_RE = re.compile(r"[.-][0-9a-z]+$")
-
-
-def candidate_pattern(namespaces: Iterable[str]) -> re.Pattern[str]:
-    """The candidate regex for one hive's namespace set (the leading segments of its bead ids)."""
-    names = sorted({str(name) for name in namespaces}, key=len, reverse=True)
-    if not names:
-        raise ValueError("no namespaces to anchor on: the live bead ID set was empty")
-    alt = "|".join(re.escape(name) for name in names)
-    return re.compile(CANDIDATE_TEMPLATE.format(ns=alt), re.IGNORECASE)
 
 
 def extract_candidates(text: str, pattern: re.Pattern[str]) -> list[str]:
@@ -158,120 +162,75 @@ def derive_namespaces(live_ids: Iterable[str], coverage: float = 0.95) -> set[st
     return kept
 
 
-# -- git adapter ---------------------------------------------------------------------------
+# -- reading the history through the git reader ----------------------------------------------
 
-_FIELD_SEP = "\x1f"
-_RECORD_SEP = "\x1e"
-
-
-class CommitsSourceError(ValueError):
-    """The git history cannot be read or the baseline cannot resolve bead ids (a ``ValueError``,
-    so the ``beadlog`` CLI reports it as a failed operation)."""
+# A ``since`` date the git reader would take for a sha (all hex digits, such as ``20260901``) is
+# handed over with a leading space: git's date parser skips it, the reader's sha test fails.
+_HEX_SINCE = re.compile(r"[0-9a-fA-F]{7,64}")
 
 
-class ShallowCloneError(CommitsSourceError):
-    """The repository is a shallow clone, so its history is truncated."""
+def _runner(root: Path | str) -> Any:
+    """The reader's command seam with this strategy's failure contract: output decoded as UTF-8
+    with replacement, any failure a :class:`CommitsSourceError` naming the git command."""
+
+    def run(argv: Sequence[str]) -> str:
+        try:
+            result = subprocess.run(
+                list(argv),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            raise CommitsSourceError(f"cannot run {argv[0]}: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip().splitlines()
+            command = " ".join(argv[5:7])  # after ``git -C <root> -c core.quotepath=off``
+            raise CommitsSourceError(
+                f"git {command} failed in {root} ({result.returncode}): "
+                f"{detail[-1] if detail else ''}"
+            )
+        return result.stdout
+
+    return run
 
 
-@dataclass(frozen=True)
-class Commit:
-    """One commit: ``message`` is subject AND body; ``date`` the committer date (ISO 8601)."""
-
-    sha: str
-    parents: int
-    subject: str
-    message: str
-    date: str
-
-
-def _git(
-    root: Path | str, args: Sequence[str], git: str = "git"
-) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            [git, "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except OSError as exc:
-        raise CommitsSourceError(f"cannot run {git}: {exc}") from exc
-
-
-def _git_out(root: Path | str, args: Sequence[str], git: str = "git") -> str:
-    result = _git(root, args, git)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip().splitlines()
-        raise CommitsSourceError(
-            f"git {' '.join(args[:2])} failed in {root} ({result.returncode}): "
-            f"{detail[-1] if detail else ''}"
-        )
-    return result.stdout
-
-
-def is_shallow(root: Path | str, git: str = "git") -> bool:
-    """Whether the repository at ``root`` is a shallow clone."""
-    return _git_out(root, ["rev-parse", "--is-shallow-repository"], git).strip() == "true"
-
-
-def require_full_history(root: Path | str, git: str = "git") -> None:
-    """Refuse a shallow clone with the remediation text."""
-    if is_shallow(root, git):
-        raise ShallowCloneError(
-            f"{root} is a shallow clone: its history is truncated, so beads whose commits "
-            f"predate the cut would be missed; {SHALLOW_REMEDIATION}"
-        )
-
-
-def read_commits(
+def read_changes(
     root: Path | str,
     rev: str = "HEAD",
     *,
     since: str | None = None,
-    limit: int | None = None,
+    namespaces: Iterable[str] = (),
     git: str = "git",
-) -> list[Commit]:
-    """Walk ``rev`` backwards, newest first.
-
-    ``since`` narrows the walk: a commit (anything ``git`` resolves to one) means only the
-    commits after it, ``since..rev``; any other value is a date for ``git log --since``.
-    """
-    fmt = _FIELD_SEP.join(["%H", "%P", "%cI", "%s", "%B"]) + _RECORD_SEP
-    args = ["log", f"--pretty=format:{fmt}", "--no-color"]
+) -> list[Artifact]:
+    """The ``change`` artifacts (commits and merges) of ``rev``, newest first, read by the git
+    reader with bead tokens anchored on ``namespaces``. ``since`` is a commit (only
+    ``since..rev``) or else a date for ``git log --since``. The caller checks for a shallow
+    clone (:func:`require_full_history`)."""
+    options: dict[str, Any] = {
+        "rev": rev,
+        "git": git,
+        "allow_shallow": "true",
+        "namespaces": ",".join(sorted(set(namespaces))),
+    }
     if since:
-        probe = _git(root, ["rev-parse", "--verify", "--quiet", f"{since}^{{commit}}"], git)
-        if probe.returncode == 0:
-            args.append(f"{since}..{rev}")
-        else:
-            args += [f"--since={since}", rev]
-    else:
-        args.append(rev)
-    if limit:
-        args.append(f"-n{limit}")
-    raw = _git_out(root, args, git)
-    commits: list[Commit] = []
-    for chunk in raw.split(_RECORD_SEP):
-        chunk = chunk.strip("\n")
-        if not chunk.strip():
-            continue
-        parts = chunk.split(_FIELD_SEP)
-        if len(parts) < 5:
-            continue
-        sha, parents, date, subject, body = parts[:5]
-        commits.append(
-            Commit(
-                sha=sha,
-                parents=len(parents.split()),
-                subject=subject,
-                # %B already holds subject + body; both stay explicit so "subject AND body"
-                # is visible rather than implied.
-                message=f"{subject}\n{body}",
-                date=date,
-            )
+        sha = resolve_commit(root, since, git)
+        options["since"] = (
+            sha if sha is not None else (f" {since}" if _HEX_SINCE.fullmatch(since) else since)
         )
-    return commits
+    read = read_git(ReadRequest(root=Path(root), options=options), _runner(root))
+    return [a for a in read.artifacts if a.category is Category.CHANGE]
+
+
+def change_tokens(change: Artifact, pattern: re.Pattern[str]) -> list[str]:
+    """Every bead-looking token of one change: the reader's ``bead-token`` refs (subject, body
+    and trailer values) plus those of its trailer keys."""
+    found = [ref.raw for ref in change.refs if ref.kind == "bead-token"]
+    for key in change.attrs.get("trailers") or {}:
+        found.extend(find_bead_tokens(key, pattern))
+    return found
 
 
 # -- the pure domain -----------------------------------------------------------------------
@@ -310,6 +269,34 @@ def match_commits(
     return out
 
 
+@dataclass
+class ChangeMatches:
+    """Change artifacts grouped by the beads they resolve to (oldest first within each bead)."""
+
+    by_bead: dict[str, list[Artifact]] = field(default_factory=dict)
+    examined: int = 0
+    unmatched: int = 0
+
+
+def match_changes(
+    changes_oldest_first: Iterable[Artifact],
+    live_ids: frozenset[str],
+    pattern: re.Pattern[str],
+) -> ChangeMatches:
+    """:func:`match_commits` over the git reader's change artifacts (:func:`change_tokens`)."""
+    out = ChangeMatches()
+    for change in changes_oldest_first:
+        out.examined += 1
+        resolved, _dropped = resolve_candidates(change_tokens(change, pattern), live_ids)
+        hit = set(resolved)
+        if not hit:
+            out.unmatched += 1
+            continue
+        for bead_id in hit:
+            out.by_bead.setdefault(bead_id, []).append(change)
+    return out
+
+
 def parse_linkage(raw: Any) -> list[str] | None:
     """The shas of a stored ``git.commits`` value, or ``None`` when it is not a clean JSON array
     of strings (the contract's wire format)."""
@@ -327,17 +314,6 @@ def parse_linkage(raw: Any) -> list[str] | None:
 def dump_linkage(shas: Sequence[str]) -> str:
     """The wire format of a ``git.commits`` value: a JSON array serialized as a string."""
     return json.dumps(list(shas))
-
-
-def commit_time(value: str) -> str | None:
-    """A git ISO 8601 date as a canonical BeadLog timestamp, or ``None`` if unparsable."""
-    try:
-        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if moment.tzinfo is None:
-            return None
-        return format_timestamp(moment)
-    except (ValueError, TimestampError):
-        return None
 
 
 def just_after(value: str) -> str:
@@ -410,10 +386,6 @@ class CommitsProposal:
     report: CommitsReport
 
 
-def _truthy(value: Any) -> bool:
-    return str(value).lower() in ("1", "true", "yes", "on")
-
-
 def _live_beads(states: Mapping[BeadRef, BeadState], group: str) -> dict[str, BeadState]:
     """Lowercase id -> folded state for the beads of ``group`` that exist and are not erased."""
     return {
@@ -423,44 +395,26 @@ def _live_beads(states: Mapping[BeadRef, BeadState], group: str) -> dict[str, Be
     }
 
 
-def _floors(baseline: Iterable[BeadEvent], group: str) -> dict[str, str]:
-    """Per bead, the time of the latest baseline event that decides ``metadata.git.commits``
-    (a create, a checkpoint or a set of the field), as the event states it."""
-    out: dict[str, str] = {}
-    for event in baseline:
-        if event.bead.group != group:
-            continue
-        kind = event.kind
-        decides = kind in (EventKind.CREATE, EventKind.CHECKPOINT) or (
-            kind is EventKind.SET and event.data.get("field") == FIELD
-        )
-        when = event.occurred_at or event.recorded_at
-        if not decides or when is None:
-            continue
-        known = out.get(event.bead.id)
-        if known is None or instant(when) > instant(known):
-            out[event.bead.id] = when
-    return out
-
-
 def propose(
-    commits_newest_first: Sequence[Commit],
+    changes_newest_first: Sequence[Artifact],
     request: ExtractRequest,
     *,
     rev: str = "HEAD",
     since: str | None = None,
+    states: Mapping[BeadRef, BeadState] | None = None,
 ) -> CommitsProposal:
-    """The events appending ``commits`` to the beads of ``request.baseline`` (module doc)."""
-    states = fold(request.baseline)
-    live = _live_beads(states, request.group)
+    """The events appending the git reader's ``changes`` to the beads of ``request.baseline``
+    (module doc). ``states`` is the folded baseline when the caller already has it."""
+    live = _live_beads(fold(request.baseline) if states is None else states, request.group)
     if not live:
         raise CommitsSourceError(
             f"the baseline holds no beads of group {request.group!r} to resolve commit "
             "messages against: export the hive first and pass it as the baseline"
         )
     live_ids = frozenset(live)
-    matches = match_commits(list(reversed(commits_newest_first)), live_ids)
-    floors = _floors(request.baseline, request.group)
+    pattern = candidate_pattern(derive_namespaces(live_ids))
+    matches = match_changes(list(reversed(changes_newest_first)), live_ids, pattern)
+    decided = floors(request.baseline, request.group, FIELD)
     report = CommitsReport(
         rev=rev,
         since=since,
@@ -473,6 +427,7 @@ def propose(
         state = live[key]
         bead = state.bead
         raw = state.fields.get(FIELD)
+        shas = [str(change.attrs["sha"]) for change in matches.by_bead[key]]
         existing: list[str] = []
         if raw is not None:
             parsed = parse_linkage(raw)
@@ -482,39 +437,44 @@ def propose(
                         bead.id,
                         "existing git.commits is not a JSON array of strings",
                         str(raw)[:200],
-                        tuple(commit.sha for commit in matches.by_bead[key]),
+                        tuple(shas),
                     )
                 )
                 continue
             existing = parsed
         seen = set(existing)
-        new: list[Commit] = []
-        for commit in matches.by_bead[key]:
-            if commit.sha not in seen:
-                seen.add(commit.sha)
-                new.append(commit)
+        new: list[Artifact] = []
+        for sha, change in zip(shas, matches.by_bead[key], strict=True):
+            if sha not in seen:
+                seen.add(sha)
+                new.append(change)
         if not new:
             report.present += 1
             continue
-        timed = [(instant(t), t, commit) for commit in new if (t := commit_time(commit.date))]
+        timed = [
+            (instant(t), t, change)
+            for change in new
+            if (t := commit_time(str(change.raw_attrs["committed_at"])))
+        ]
         if timed:
             _, when, newest = max(timed, key=lambda item: item[0])
         else:
             when, newest = None, new[-1]
-        floor = floors.get(bead.id)
+        floor = decided.get(bead.id)
         if floor is not None and (when is None or instant(when) <= instant(floor)):
             when = just_after(floor)
+        new_shas = [str(change.attrs["sha"]) for change in new]
         events.append(
             mint_event(
                 str(EventKind.SET),
                 bead,
-                {"field": FIELD, "value": dump_linkage([*existing, *(c.sha for c in new)])},
+                {"field": FIELD, "value": dump_linkage([*existing, *new_shas])},
                 occurred_at=when,
                 recorded_at=None,
                 extracted_at=request.extracted_at,
-                source=(SOURCE_SYSTEM, f"commit/{newest.sha}"),
+                source=(SOURCE_SYSTEM, f"commit/{newest.attrs['sha']}"),
                 provenance="derived",
-                evidence=[Evidence("commit", commit.sha) for commit in new],
+                evidence=[Evidence("commit", sha) for sha in new_shas],
             )
         )
         report.new_shas += len(new)
@@ -538,10 +498,12 @@ class GitCommitsStrategy:
         binary = str(options.get("git", "git"))
         rev = str(options.get("rev", "HEAD"))
         since = str(options["since"]) if options.get("since") else None
-        if not _truthy(options.get("allow_shallow", "false")):
+        if not truthy(options.get("allow_shallow", "false")):
             require_full_history(request.root, binary)
-        commits = read_commits(request.root, rev, since=since, git=binary)
-        proposal = propose(commits, request, rev=rev, since=since)
+        states = fold(request.baseline)
+        namespaces = derive_namespaces(_live_beads(states, request.group))
+        changes = read_changes(request.root, rev, since=since, namespaces=namespaces, git=binary)
+        proposal = propose(changes, request, rev=rev, since=since, states=states)
         self._report = proposal.report
         return proposal
 
@@ -562,6 +524,7 @@ __all__ = [
     "STRATEGY_NAME",
     "STRATEGY_VERSION",
     "Commit",
+    "ChangeMatches",
     "CommitMatches",
     "CommitsProposal",
     "CommitsReport",
@@ -570,15 +533,18 @@ __all__ = [
     "GitCommitsStrategy",
     "ShallowCloneError",
     "candidate_pattern",
+    "change_tokens",
     "commit_time",
     "derive_namespaces",
     "dump_linkage",
     "extract_candidates",
     "is_shallow",
     "just_after",
+    "match_changes",
     "match_commits",
     "parse_linkage",
     "propose",
+    "read_changes",
     "read_commits",
     "require_full_history",
     "resolve_candidate",
