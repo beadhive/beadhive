@@ -5,7 +5,8 @@ deterministic: no git, no store, no network, every artifact read once. This modu
 B1 and B2 of ``docs/design/backfill-history-pipeline-adr.md``; later steps (B3 cluster, B4 attach
 docs, B5 identify, B6 status/conflicts) extend :class:`Collation` through the members reserved in
 :data:`EXTENSION_MEMBERS`. B3 (``beadlog_sources.cluster``) fills ``units`` with :class:`Unit`
-records; :func:`collate` runs it after B2.
+records; :func:`collate` runs it after B2. B5 (``beadlog_sources.identify``) fills ``verdicts``
+and ``residual``; :func:`collate` runs it after B4.
 
 **B1, :func:`build_indexes`.** One pass over the corpus builds :class:`Indexes`, all values
 artifact keys (so they serialize and compare without holding records):
@@ -73,6 +74,7 @@ from .reconcile import corpus_hash
 if TYPE_CHECKING:
     from .attach import AttachOptions
     from .cluster import ClusterOptions
+    from .identify import IdentifyOptions, IdentifyRun
 
 COLLATION_SCHEMA = "bdlg.collation/1"
 SCHEMA_RESOURCE = "bdlg-collation-v1.schema.json"
@@ -87,7 +89,7 @@ EXTENSION_MEMBERS = ("units", "verdicts", "conflicts", "residual")
 
 # The sub-objects of a collation's ``options``: the effective options of each step that has
 # them (B3 ``cluster`` today; B4 to B6 add siblings).
-OPTION_SECTIONS = ("cluster", "attach")
+OPTION_SECTIONS = ("cluster", "attach", "identify")
 
 # B3 unit shapes and the rules that form units (``beadlog_sources.cluster``). The claim rules
 # run in :data:`CLAIM_RULES` order by default; ``area`` groups units into epics afterwards.
@@ -608,8 +610,10 @@ class Collation:
 
     ``local`` names the ledger being backfilled; ``corpus`` and ``baseline`` fingerprint the
     inputs (``sha256:`` of the corpus bytes, ``beadlog.corpus_hash`` of the baseline). ``refs``
-    is B2, ``units`` B3 (:class:`Unit`, sorted by key). ``verdicts``, ``conflicts`` and
-    ``residual`` are JSON-valued tuples B5 and B6 fill; until then they are empty. ``options``
+    is B2, ``units`` B3 (:class:`Unit`, sorted by key). ``verdicts`` and ``residual`` are B5's
+    JSON records (``beadlog_sources.identify``: one verdict per step that answered for a unit,
+    sorted by unit then step; one residual record per unit nothing decided, sorted by unit).
+    ``conflicts`` is a JSON-valued tuple B6 fills; until then it is empty. ``options``
     records the effective options of the steps that ran, one JSON sub-object per step
     (:data:`OPTION_SECTIONS`; ``cluster`` is :meth:`ClusterOptions.to_json`, ``attach``
     :meth:`~beadlog_sources.attach.AttachOptions.to_json`), so a collation
@@ -666,12 +670,16 @@ def collate(
     local: str,
     options: ClusterOptions | None = None,
     attach_options: AttachOptions | None = None,
+    identify_options: IdentifyOptions | None = None,
+    identify_run: IdentifyRun | None = None,
 ) -> Collation:
     """Run B1 to B4 over ``corpus`` (see the module doc, ``beadlog_sources.cluster`` and
     ``beadlog_sources.attach``).
 
     ``options`` configures B3 (default :class:`~beadlog_sources.cluster.ClusterOptions`),
-    ``attach_options`` B4 (default :class:`~beadlog_sources.attach.AttachOptions`).
+    ``attach_options`` B4 (default :class:`~beadlog_sources.attach.AttachOptions`),
+    ``identify_options`` and ``identify_run`` B5 (``beadlog_sources.identify``; default: no
+    judge, no threshold).
     """
     from .attach import attach  # B3 and B4 build on this module's records
     from .cluster import cluster
@@ -685,7 +693,11 @@ def collate(
         refs=resolve_refs(corpus, indexes, baseline, directory, local=local),
         indexes=indexes,
     )
-    return attach(cluster(resolved, options), attach_options)
+    from .identify import identify  # B5
+
+    return identify(
+        attach(cluster(resolved, options), attach_options), baseline, identify_options, identify_run
+    )
 
 
 def dumps_collation(collation: Collation) -> bytes:
@@ -723,14 +735,22 @@ def loads_collation(data: bytes) -> Collation:
         attachments=tuple(Attachment.from_json(a) for a in raw["attachments"]),
         options=_load_options(raw["options"]),
     )
+    _check_identify(collation)
     if dumps_collation(collation) != data:
         raise CollationFormatError("collation is not canonical JSON")
     return collation
 
 
+def _check_identify(collation: Collation) -> None:
+    from .identify import check_records  # B5 owns its record shapes
+
+    check_records(collation.verdicts, collation.residual)
+
+
 def _load_options(raw: Any) -> dict[str, Any]:
     from .attach import AttachOptions, AttachOptionsError  # B3 and B4 own their options
     from .cluster import ClusterOptions, ClusterOptionsError
+    from .identify import IdentifyOptions, IdentifyOptionsError
 
     if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_SECTIONS):
         raise CollationFormatError(f"options must have exactly the members {OPTION_SECTIONS}")
@@ -742,7 +762,15 @@ def _load_options(raw: Any) -> dict[str, Any]:
         attach_options = AttachOptions.from_json(raw["attach"])
     except AttachOptionsError as error:
         raise CollationFormatError(f"options.attach: {error}") from None
-    return {"cluster": cluster_options.to_json(), "attach": attach_options.to_json()}
+    try:
+        identify_options = IdentifyOptions.from_json(raw["identify"])
+    except IdentifyOptionsError as error:
+        raise CollationFormatError(f"options.identify: {error}") from None
+    return {
+        "cluster": cluster_options.to_json(),
+        "attach": attach_options.to_json(),
+        "identify": identify_options.to_json(),
+    }
 
 
 def write_collation(collation: Collation, path: str | Path) -> None:

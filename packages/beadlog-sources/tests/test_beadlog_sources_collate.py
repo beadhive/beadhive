@@ -217,7 +217,11 @@ def test_collation_is_deterministic_and_round_trips(tmp_path) -> None:
     assert loads_collation(data) == first
     obj = json.loads(data)
     assert obj["schema"] == "bdlg.collation/1"
-    assert obj["verdicts"] == obj["conflicts"] == obj["residual"] == []
+    assert obj["conflicts"] == []
+    # B5 runs by default (judge off, no threshold): units are decided or residual, never NEW.
+    assert all(v["class"] != "NEW" for v in obj["verdicts"])
+    decided = {v["unit"] for v in obj["verdicts"]} | {r["unit"] for r in obj["residual"]}
+    assert decided == {u["key"] for u in obj["units"]}
     assert obj["units"] and loads_collation(data).units == first.units
     path = tmp_path / "c.json"
     write_collation(first, path)
