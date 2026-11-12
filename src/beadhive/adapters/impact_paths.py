@@ -43,6 +43,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_store_cli.py",
         "tests/test_backfill_store_xtdb_int.py",
         "tests/test_backfill_timeline_cli.py",
+        "tests/test_backfill_verdicts_cli.py",
         "tests/test_complexity_backfill.py",
         "tests/test_hive_ready.py",
         "tests/test_work_merge_backfill.py",
@@ -183,6 +184,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_store_cli.py",
         "tests/test_backfill_store_xtdb_int.py",
         "tests/test_backfill_timeline_cli.py",
+        "tests/test_backfill_verdicts_cli.py",
         "tests/test_complexity_backfill.py",
     ),
     "beadlog-sources": (
@@ -200,6 +202,7 @@ PACKAGE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_backfill_store_cli.py",
         "tests/test_backfill_store_xtdb_int.py",
         "tests/test_backfill_timeline_cli.py",
+        "tests/test_backfill_verdicts_cli.py",
         "tests/test_complexity_backfill.py",
     ),
     # The XTDB loader library (dev/CI group only): root reaches it only through the opt-in plugin

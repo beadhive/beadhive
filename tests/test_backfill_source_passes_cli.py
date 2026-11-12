@@ -307,7 +307,7 @@ def test_docs_with_backfill_judge_configured_creates_the_judged_new_bead(
     monkeypatch.setattr(
         backfill_cli, "judge_settings", lambda cfg=None: JudgeSettings(enabled=True)
     )
-    monkeypatch.setattr(backfill_cli, "build_judge", lambda settings: judge)
+    monkeypatch.setattr(backfill_cli, "build_judge", lambda settings, runner=None: judge)
     plan_path = tmp_path / "docs.bdlg"
 
     text = _invoke(
