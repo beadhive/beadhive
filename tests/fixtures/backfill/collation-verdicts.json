@@ -1,0 +1,51 @@
+{
+  "schema": "bdlg.collation/1",
+  "_provisional": "The collation verdicts member is an open array until B5 (bh-h8vxt) fills it. This item shape (a unit class plus the beadlog_sources Verdict record) is a plausible guess, not a contract.",
+  "units": [],
+  "verdicts": [
+    {
+      "unit": "unit:pr/123",
+      "class": "NEW",
+      "verdict": {
+        "family": "reconcile.match",
+        "query_hash": "sha256:aaaa",
+        "outcome": "new",
+        "probabilities": {"new": 0.9, "present:wd-1": 0.1},
+        "confidence": 0.8,
+        "option_count": 3,
+        "rationale": "no existing bead covers the PR",
+        "engine": "haiku",
+        "engine_version": "1",
+        "model": "claude-haiku-4-5",
+        "fallback": null
+      }
+    },
+    {
+      "unit": "unit:pr/124",
+      "class": "PRESENT",
+      "match": {"group": "bh", "id": "wd-1"},
+      "verdict": {
+        "family": "reconcile.match",
+        "query_hash": "sha256:bbbb",
+        "outcome": "present:wd-1",
+        "probabilities": {"present:wd-1": 1.0},
+        "confidence": 1.0,
+        "option_count": 3,
+        "rationale": "",
+        "engine": "deterministic-lexical",
+        "engine_version": "1",
+        "model": null,
+        "fallback": {"engine": "deterministic-lexical", "reason": "timeout", "detail": "judge timed out"}
+      }
+    },
+    {
+      "unit": "unit:pr/125",
+      "outcome": null,
+      "confidence": 0.0,
+      "engine": "haiku",
+      "model": "claude-haiku-4-5",
+      "query_hash": "sha256:cccc"
+    },
+    "not an object"
+  ]
+}

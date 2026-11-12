@@ -57,6 +57,7 @@ backfill inspect|path:string:r,as_json:boolean:o
 backfill judge setup|dry_run:boolean:o,install:boolean:o,enable:boolean:o,fnox_config:string:o,fnox_profile:string:o,fnox_key:string:o,as_json:boolean:o
 backfill planning|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o
 backfill timeline|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o,since_cursor:boolean:o
+backfill verdicts|path:string:r,verdict_class:array:o,engine:string:o,min_confidence:number:o,max_confidence:number:o,as_json:boolean:o
 backfill verify|path:string:r,as_json:boolean:o
 backfill-complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backup export|dest:string:o
