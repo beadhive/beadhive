@@ -944,26 +944,43 @@ def _warn_ledgers(directory: Any) -> list[str]:
 
 
 def _history_pass(
+    cfg: Mapping[str, Any],
+    hive: str,
     corpus: Any,
     directory: Any,
     group: Group,
-    prefix: str,
     options: backfill_history.CollateOptions,
     run: Any,
     run_dir: Path,
     names: Sequence[str],
-    collation: Any = None,
 ) -> backfill_history.HistoryPass:
+    """The ``history`` pass of this hive: create mode, prefix and creation labels come from
+    :mod:`beadhive.backfill_create`, the prefix from the registry (never derived)."""
+    from . import backfill_create
+
+    create = backfill_create.parse_create(options.create)
+    prefix = hive_prefix(hive)
+    if create == backfill_create.CREATE_PROPOSE and not prefix:
+        raise BackfillError("create mode needs the hive's explicit bead id prefix (never derived)")
+    if not prefix:
+        raise BackfillError("the hive has no registered prefix (prefixes are never derived)")
+    project_options = (
+        backfill_create.create_mode_options(hive, cfg, create)
+        if create == backfill_create.CREATE_PROPOSE
+        else None
+    )
     return backfill_history.HistoryPass(
         corpus,
         directory,
-        group,
-        prefix,
-        options,
+        local=prefix,
+        group=group.id,
+        prefix=prefix,
+        create=create,
+        project_options=project_options,
+        options=options,
         run=run,
         run_dir=str(run_dir),
-        sources=tuple(names),
-        collation=collation,
+        sources=names,
     )
 
 
@@ -999,21 +1016,19 @@ def history_pass_for_plan(plan: Plan, group: Group, hive: str, *, cfg: Mapping[s
         AttachOptions.from_json(recorded["attach"]),
         IdentifyOptions.from_json(recorded["identify"]),
         StatusOptions.from_json(recorded["status"]),
-        str(report.get("create") or "off"),
+        str(report.get("create_mode") or "off"),
     )
-    pass_ = _history_pass(
+    return _history_pass(
+        cfg,
+        hive,
         read_evidence(files["evidence"]),
         history_directory(hive, cfg, backfill),
         group,
-        str(report.get("prefix") or ""),
         options,
-        None,
+        backfill_history.replay_run(collation),
         run_dir,
         report.get("sources") or (),
-        collation,
     )
-    pass_.replay()
-    return pass_
 
 
 def _history_run(
@@ -1103,12 +1118,19 @@ def _history_run(
 
         # plan
         pass_ = _history_pass(
-            corpus, directory, group, prefix, options, identify, run, names, collation
+            cfg,
+            hive,
+            corpus,
+            directory,
+            group,
+            options,
+            backfill_history.replay_run(collation, settings.auto_accept),
+            run,
+            names,
         )
         engine = BackfillEngine(groups=[group], passes=[pass_])
         plan = engine.plan(pass_, _Snapshot(baseline))
         plan.write(files["plan"])
-        pass_.replay()
         review = int(plan.totals.get("review_required", 0))
         manifest["plan"] = {
             "plan_hash": plan.plan_hash,
@@ -1117,9 +1139,8 @@ def _history_run(
             "by_class": plan.totals.get("by_class", {}),
             "review_required": review,
             "create": options.create,
-            "creates_suppressed": (plan.report.get("projection") or {}).get(
-                "creates_suppressed", 0
-            ),
+            "units": plan.report.get("units") or {},
+            "creates_skipped": plan.report.get("creates_skipped", 0),
         }
         summary["stages"]["plan"] = manifest["plan"]
         backfill_history.write_manifest(run, manifest)
@@ -1173,15 +1194,15 @@ def _history_done(summary: dict[str, Any], files: Mapping[str, Path], as_json: b
         )
     if plan := stages.get("plan"):
         classes = ", ".join(f"{k}={v}" for k, v in plan["by_class"].items()) or "none"
+        units = ", ".join(f"{k}={v}" for k, v in plan["units"].items()) or "none"
         typer.echo(
             f"plan: {plan['changes']} beads would change ({plan['events']} events); "
-            f"classes: {classes}; review required: {plan['review_required']}; "
+            f"classes: {classes}; units: {units}; review required: {plan['review_required']}; "
             f"create: {plan['create']}"
         )
-        if plan["creates_suppressed"]:
+        if plan["creates_skipped"]:
             typer.echo(
-                f"create is off: {plan['creates_suppressed']} events for units matching no bead "
-                "were not proposed"
+                f"create is off: {plan['creates_skipped']} units matching no bead were not proposed"
             )
         typer.echo(f"plan hash: {plan['plan_hash']}")
     if applied := stages.get("apply"):

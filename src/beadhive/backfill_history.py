@@ -27,7 +27,7 @@ projects, so the engine's second dry run proves idempotency exactly as for the o
 :meth:`~beadhive_backfill.BackfillEngine.apply` is the only writer.
 
 **Create mode.** ``create="off"`` (default) is link-only: a unit that matches no bead projects
-nothing. ``create="propose"`` is wired in :func:`project_for_create`.
+nothing. ``create="propose"`` also proposes them as closed beads (:mod:`beadhive.backfill_create`).
 """
 
 from __future__ import annotations
@@ -36,12 +36,13 @@ import hashlib
 import json
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from beadhive_backfill import BackfillError
-from beadlog import BeadEvent, BeadRef, Group, canonical_json
+from beadhive_backfill import HistoryPass as _BaseHistoryPass
+from beadlog import BeadEvent, BeadRef, canonical_json
 from beadlog_sources import (
     BUILTIN_READERS,
     AttachOptions,
@@ -62,7 +63,6 @@ from beadlog_sources import (
     collate,
     discover_readers,
     load_reader,
-    project,
     read_collation,
     read_evidence,
     write_collation,
@@ -70,7 +70,6 @@ from beadlog_sources import (
 )
 from beadlog_sources.collate import dumps_collation
 from beadlog_sources.identify import prior_verdicts
-from beadlog_sources.reconcile import corpus_hash
 
 # ``Backfill`` is the validated ``backfill`` config section (``BackfillConfig``); the root CLI owns
 # the schema import so this module adds no importer of the config module.
@@ -94,10 +93,6 @@ STATE_DIRS = ("state", "backfill-history")
 # the reader discoverable exactly when the plugin is enabled (bh-cyqgr).
 PLUGIN_READER_PLUGIN = "tracker-github"
 PLUGIN_READERS: Mapping[str, str] = {"github": "beadhive_tracker_github.reader:GitHubReader"}
-
-# What the projector reads from the baseline: which beads exist, and the fields it stamps or
-# declines to overwrite. A change to either since planning invalidates the plan.
-FACETS = frozenset({"exists", "deleted", "erased", "phase", "fields"})
 
 
 # -- readers -----------------------------------------------------------------------------------
@@ -297,138 +292,65 @@ def load_prior(path: Path) -> tuple[Collation | None, str | None]:
         return None, f"previous collation ignored: {exc}"
 
 
-# -- create mode -------------------------------------------------------------------------------
-
-
-def project_for_create(
-    create: str,
-    collation: Collation,
-    corpus: EvidenceCorpus,
-    baseline: Sequence[BeadEvent],
-    *,
-    prefix: str,
-    group: str,
-    extracted_at: str,
-) -> tuple[tuple[BeadEvent, ...], dict[str, Any]]:
-    """Phase C under ``create``: ``(events, report)``.
-
-    ``off``: link only. A NEW unit's create, labels, phase and edges are dropped, and so is any
-    edge into a bead that would have been created, so nothing the plan applies can name a bead
-    that does not exist; PRESENT units' appends and stamps stay. ``propose`` is wired by the
-    create-mode bead (bh-iv61r): until then it is refused rather than half done."""
-    if create == "propose":
-        raise BackfillError(
-            "backfill.collate.create = propose is not wired in this build (bh-iv61r); "
-            "use create = off (link only)"
-        )
-    if create != "off":
-        raise BackfillError(f"unknown create mode {create!r}; known: off, propose")
-    projection = project(
-        collation,
-        corpus,
-        baseline,
-        prefix=prefix,
-        group=group,
-        extracted_at=extracted_at,
-        options=ProjectOptions(),
-    )
-    new_beads = {unit.bead for unit in projection.units if unit.decision == "NEW" and unit.bead}
-    kept: list[BeadEvent] = []
-    for event in projection.events:
-        target = (event.data.get("target") or {}) if isinstance(event.data, Mapping) else {}
-        into = target.get("id") if isinstance(target, Mapping) else None
-        if event.bead.id in new_beads or into in new_beads:
-            continue
-        kept.append(event)
-    report = {
-        "create": create,
-        "counts": projection.counts(),
-        "residual": list(projection.residual),
-        "creates_suppressed": len(projection.events) - len(kept),
-    }
-    return tuple(kept), report
+def replay_run(collation: Collation, auto_accept: Mapping[str, float] | None = None) -> IdentifyRun:
+    """A B5 runtime answering from ``collation``'s recorded verdicts only: no judge, no spend.
+    The plan stage, the engine's second dry run and a standalone apply propose through it."""
+    return IdentifyRun(prior=prior_verdicts(collation), auto_accept=dict(auto_accept or {}))
 
 
 # -- the pass ----------------------------------------------------------------------------------
 
 
-@dataclass
-class HistoryPass:
-    """The ``history`` pass: collation projected to proposed events (module doc).
+class HistoryPass(_BaseHistoryPass):
+    """The neutral :class:`beadhive_backfill.HistoryPass` plus the run's own facts in its report.
 
-    ``propose`` recollates against the baseline it is given (reusing the stage's own collation
-    when the baseline is the one that collation was made from) and projects it, so planning and
-    the engine's second dry run share one code path. ``directory`` is the ledger directory,
-    ``run`` the B5 runtime (judge and prior), ``settings`` the recorded run settings."""
+    ``create`` is ``backfill.collate.create`` (``off`` links only; ``propose`` also proposes the
+    units no bead matches, labelled by ``project_options``, see :mod:`beadhive.backfill_create`).
+    ``run`` is the B5 runtime (:func:`replay_run` for recorded verdicts only)."""
 
-    corpus: EvidenceCorpus
-    directory: LedgerDirectory
-    group: Group
-    prefix: str
-    options: CollateOptions
-    run: IdentifyRun | None = None
-    run_dir: str = ""
-    sources: tuple[str, ...] = ()
-    name: str = PASS_NAME
-    schema_version: str = PASS_SCHEMA_VERSION
-    drift_applicable: bool = True
-    collation: Collation | None = field(default=None, repr=False)
-    _report: dict[str, Any] = field(default_factory=dict, repr=False)
-
-    def replay(self) -> None:
-        """Answer from the current collation's recorded verdicts only: no judge, no spend. The
-        engine's second dry run and a standalone apply propose through this."""
-        prior = prior_verdicts(self.collation) if self.collation is not None else {}
-        auto = dict(self.run.auto_accept) if self.run is not None else {}
-        self.run = IdentifyRun(prior=prior, auto_accept=auto)
-
-    @property
-    def invalidating_fields(self) -> frozenset[str]:
-        return FACETS
-
-    def propose(
-        self, baseline: Sequence[BeadEvent], *, extracted_at: str, judge: Any
-    ) -> tuple[BeadEvent, ...]:
-        baseline = tuple(baseline)
-        stamp = corpus_hash(baseline)
-        if self.collation is None or self.collation.baseline != stamp:
-            self.collation = collate_stage(
-                self.corpus,
-                baseline,
-                self.directory,
-                local=self.prefix,
-                options=self.options,
-                run=self.run,
-            )
-        events, projected = project_for_create(
-            self.options.create,
-            self.collation,
-            self.corpus,
-            baseline,
-            prefix=self.prefix,
-            group=self.group.id,
-            extracted_at=extracted_at,
+    def __init__(
+        self,
+        corpus: EvidenceCorpus,
+        directory: LedgerDirectory,
+        *,
+        local: str,
+        group: str,
+        prefix: str | None,
+        create: str,
+        project_options: ProjectOptions | None,
+        options: CollateOptions,
+        run: IdentifyRun | None,
+        run_dir: str,
+        sources: Sequence[str],
+    ) -> None:
+        super().__init__(
+            corpus,
+            directory,
+            local=local,
+            group=group,
+            prefix=prefix,
+            create=create == "propose",
+            project_options=project_options,
+            cluster_options=options.cluster,
+            attach_options=options.attach,
+            identify_options=options.identify,
+            status_options=options.status,
+            identify_run=run,
         )
-        self._report = projected
-        return events
+        self.mode = create
+        self.run_dir = run_dir
+        self.sources = tuple(sources)
 
     def report(
         self, states: Mapping[BeadRef, Any], proposed: Sequence[BeadEvent]
     ) -> dict[str, Any]:
-        collation = self.collation
         return {
+            **super().report(states, proposed),
             "run_dir": self.run_dir,
             "sources": list(self.sources),
             "prefix": self.prefix,
-            "create": self.options.create,
-            "judging": bool(self.run is not None and self.run.judging),
-            "corpus": collation.corpus if collation else None,
-            "baseline": collation.baseline if collation else None,
-            "units": dict(self._report.get("counts") or {}),
-            "unit_count": len(collation.units) if collation else 0,
-            "conflicts": len(collation.conflicts) if collation else 0,
-            "residual_units": len(collation.residual) if collation else 0,
-            "projection": dict(self._report),
+            "create_mode": self.mode,
+            "judging": bool(self.identify_run is not None and self.identify_run.judging),
         }
 
 
@@ -485,7 +407,6 @@ __all__ = [
     "AUDIT_FILE",
     "COLLATION_FILE",
     "EVIDENCE_FILE",
-    "FACETS",
     "PASS_NAME",
     "PLAN_FILE",
     "PLUGIN_READERS",
@@ -495,6 +416,7 @@ __all__ = [
     "STAGES",
     "CollateOptions",
     "HistoryPass",
+    "replay_run",
     "collate_stage",
     "default_run_dir",
     "discover",
@@ -503,7 +425,6 @@ __all__ = [
     "load_prior",
     "parse_key",
     "plugin_reader_table",
-    "project_for_create",
     "read_evidence",
     "read_manifest",
     "read_sources",

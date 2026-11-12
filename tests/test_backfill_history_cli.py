@@ -353,3 +353,36 @@ def test_cost_view_uses_the_configured_per_call_cost(collated, cfg_path) -> None
     view = json.loads(_invoke("backfill", "view", "cost", str(collated), "--json").stdout)
     assert view["cost_per_call_usd"] == 0.5
     assert view["estimated_usd"] == round(view["judge_calls"] * 0.5, 6)
+
+
+# -- create mode (bh-iv61r seam) -----------------------------------------------------------------
+
+
+def test_create_propose_proposes_new_beads_with_the_creation_labels(
+    hive, tmp_path, monkeypatch, cfg_path
+) -> None:
+    from beadhive import backfill_create
+    from beadlog_sources import ProjectOptions
+
+    labels = ("origin:backfill", *TRIPLET)
+    monkeypatch.setattr(
+        backfill_create,
+        "create_mode_options",
+        lambda h, c, m: ProjectOptions(creation_labels=labels),
+    )
+    _config(cfg_path, collate={"create": "propose"})
+    store, _ = hive
+    result = _run(tmp_path, "--sources", "git", "--json")
+    plan = json.loads(result.stdout)["stages"]["plan"]
+    assert plan["create"] == "propose"
+    events = _plan_events(tmp_path / "run" / "plan.bdlg")
+    assert "create" in {e["kind"] for e in events}
+    added = {e["data"].get("label") for e in events if e["kind"] == "label_add"}
+    assert "origin:backfill" in added
+    assert store.writes == []
+
+
+def test_the_plan_report_carries_unit_counts(hive, tmp_path) -> None:
+    plan = json.loads(_run(tmp_path, "--sources", "git", "--json").stdout)["stages"]["plan"]
+    assert set(plan["units"]) <= {"NEW", "PRESENT", "NOISE", "residual"}
+    assert plan["create"] == "off" and plan["creates_skipped"] >= 0
