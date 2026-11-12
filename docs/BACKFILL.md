@@ -183,20 +183,23 @@ bead.
 
 It reads a `.bdlg` plan or extract archive (the `bdlg.reconcile` entries and the pass's
 judgments, both `beadlog_sources` verdict records) or a `bdlg.collation/1` JSON file's
-`verdicts` array. That array is filled by the B5 identify step; until then it is read
-defensively (missing or empty gives an empty view). A collation item is a bare verdict record or
-`{"class": ..., "verdict": {...}}`; the shape is provisional, see
-`tests/fixtures/backfill/collation-verdicts.json`.
+`verdicts` and `residual` arrays. A collation `verdicts` item is a flat record, one per step that
+answered (`unit`, `step`, `class` or null, `bead`, `provenance`, `review`, `score`,
+`confidence_permille`, `engine`, `model`, `fallback`, ...); a null class is shown as `abstain`.
+`residual` items (`unit`, `reason`, `score`, `candidates`) are listed under `residual`. Unknown
+members are ignored. See `tests/fixtures/backfill/collation-verdicts.json`.
 
 With `backfill.judge.cost_per_call_usd` set, the view adds the judge calls recorded (a verdict
-from a model engine, or a fallback after a failed attempt; verdicts answered by the lexical
+from a model engine, or a fallback after a failed attempt; in a collation, a `judge` step record
+without a fallback; verdicts answered by the lexical
 engine, replayed from a prior plan or skipped by the call budget are not calls) times that cost.
 `--json` emits schema `beadhive.backfill.verdicts/1`: `path`, `input` (`archive` or
 `collation`), `filters`, `totals` (`recorded`, `shown`, `without_verdict`, `by_class`,
 `by_engine`, `fallbacks`), `cost` (`calls`, `cost_per_call_usd`, `estimated_usd`) and `groups`,
 a map of class to items (`source`, `class`, `bead`, `match`, `covered_by`, `review`, `outcome`,
 `confidence`, `engine`, `engine_version`, `model`, `fallback`, `family`, `query_hash`,
-`rationale`, `note`).
+`rationale`, `note`, plus `unit`, `step`, `provenance`, `score`, `reason`, `candidates` for a
+collation).
 
 ### `bh backfill verify`
 

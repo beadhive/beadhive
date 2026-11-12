@@ -3,14 +3,15 @@
 Collects the verdicts recorded in a ``.bdlg`` plan or extract archive (the ``bdlg.reconcile``
 entries and the ``beadhive.backfill`` pass judgments, both written as
 ``beadlog_sources.reconcile.Verdict.to_json``) or listed in a ``bdlg.collation/1`` JSON file's
-``verdicts`` member, normalizes them to one item shape, filters them and renders groups by
+``verdicts`` member (and its ``residual`` list), normalizes them to one item shape, filters them
+and renders groups by
 class. Nothing here writes a plan, an archive or a bead.
 
-The collation ``verdicts`` member is an open array until the B5 identify step fills it
-(``docs/design/backfill-history-pipeline-adr.md``), so it is read defensively: a missing,
-empty or malformed member yields an empty view, and an item is accepted either as a bare
-verdict record or as ``{"class": ..., "verdict": {...}}`` (provisional, see
-``tests/fixtures/backfill/collation-verdicts.json``).
+A collation's ``verdicts`` are flat records (``unit``, ``step``, ``class`` or null, ``bead``,
+``provenance``, ``review``, ``score``, ``confidence_permille`` ... ``fallback``), one per step
+that answered; a null class is shown as ``abstain``. Its ``residual`` items (``unit``,
+``reason``, ``score``, ``query_hash``, ``candidates``) are listed under ``residual``. Reading is
+tolerant: unknown members are ignored and a missing or malformed member gives an empty view.
 """
 
 from __future__ import annotations
@@ -104,6 +105,12 @@ def normalize(
         "query_hash": verdict.get("query_hash"),
         "rationale": verdict.get("rationale") or "",
         "note": entry.get("note") or "",
+        "unit": None,
+        "step": None,
+        "provenance": None,
+        "score": None,
+        "reason": None,
+        "candidates": None,
     }
 
 
@@ -129,21 +136,70 @@ def _archive_items(path: Path) -> tuple[list[dict[str, Any]], int]:
     return items, structural
 
 
+def _bead(value: Any) -> dict[str, str] | None:
+    if isinstance(value, str) and value:
+        return {"group": "", "id": value}
+    return _ref(value)
+
+
+def _permille(value: Any) -> float | None:
+    number = _number(value)
+    return None if number is None else number / 1000
+
+
+def _collation_record(element: Mapping[str, Any]) -> dict[str, Any]:
+    """A flat ``verdicts`` record of a collation (one per step that answered)."""
+    item = normalize(
+        {
+            "outcome": element.get("outcome"),
+            "confidence": _permille(element.get("confidence_permille")),
+            "engine": element.get("engine"),
+            "engine_version": element.get("engine_version"),
+            "model": element.get("model"),
+            "fallback": element.get("fallback"),
+            "family": element.get("family"),
+            "query_hash": element.get("query_hash"),
+            "rationale": element.get("rationale"),
+        },
+        source="collation",
+        cls=element.get("class"),
+        entry={"review": element.get("review")},
+    )
+    if element.get("class") is None:
+        item["class"] = "abstain"
+    item["bead"] = _bead(element.get("bead"))
+    item["unit"] = element.get("unit")
+    item["step"] = element.get("step")
+    item["provenance"] = element.get("provenance")
+    item["score"] = _number(element.get("score"))
+    item["is_call"] = element.get("step") == "judge" and item["fallback"] is None
+    return item
+
+
+def _collation_residual(element: Mapping[str, Any]) -> dict[str, Any]:
+    """A ``residual`` item: a unit no step could decide, for a human."""
+    item = normalize({}, source="collation")
+    item.update(
+        {
+            "class": "residual",
+            "engine": "none",
+            "unit": element.get("unit"),
+            "reason": element.get("reason"),
+            "score": _number(element.get("score")),
+            "query_hash": element.get("query_hash"),
+            "candidates": element.get("candidates"),
+            "is_call": False,
+        }
+    )
+    return item
+
+
 def _collation_items(document: Mapping[str, Any]) -> list[dict[str, Any]]:
-    raw = document.get("verdicts")
     items: list[dict[str, Any]] = []
-    for element in raw if isinstance(raw, list) else ():
-        if not isinstance(element, Mapping):
-            continue
-        nested = element.get("verdict")
-        record = nested if isinstance(nested, Mapping) else element
-        items.append(
-            normalize(
-                record,
-                source="collation",
-                cls=element.get("class") or element.get("classification"),
-                entry=element,
-            )
+    for key, build in (("verdicts", _collation_record), ("residual", _collation_residual)):
+        raw = document.get(key)
+        items.extend(
+            build(el) for el in (raw if isinstance(raw, list) else ()) if isinstance(el, Mapping)
         )
     return items
 
@@ -191,6 +247,8 @@ def select(
 
 def is_call(item: Mapping[str, Any]) -> bool:
     """Whether recording this verdict took a judge call (budget-skipped ones did not)."""
+    if "is_call" in item:
+        return bool(item["is_call"])
     fallback = item["fallback"]
     if fallback is not None and fallback["reason"] in _NO_ATTEMPT_REASONS:
         return False
@@ -270,11 +328,19 @@ def render_text(view: Mapping[str, Any]) -> list[str]:
         lines.append(f"{cls} ({len(items)})")
         for item in items:
             confidence = "-" if item["confidence"] is None else f"{item['confidence']:.2f}"
-            subject = (item["bead"] or {}).get("id") or (item["query_hash"] or "?")[:19]
+            subject = (
+                (item["bead"] or {}).get("id") or item["unit"] or (item["query_hash"] or "?")[:19]
+            )
             target = item["match"] or item["covered_by"]
             arrow = f" -> {target['id']}" if target else ""
             engine = item["engine"] + (f"/{item['model']}" if item["model"] else "")
             line = f"  {subject}{arrow}  conf={confidence}  engine={engine}"
+            if item["step"]:
+                line += f"  step={item['step']}"
+            if item["provenance"]:
+                line += f"  provenance={item['provenance']}"
+            if item["reason"]:
+                line += f"  reason={item['reason']}"
             if item["fallback"]:
                 fb = item["fallback"]
                 line += f"  fallback={fb['reason']}"

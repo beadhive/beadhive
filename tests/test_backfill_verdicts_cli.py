@@ -1,7 +1,7 @@
 """``bh backfill verdicts``: the read-only judge verdict review.
 
 Inputs: a ``.bdlg`` reconcile plan with recorded verdicts and a ``bdlg.collation/1`` JSON whose
-``verdicts`` member is still provisional (``tests/fixtures/backfill/collation-verdicts.json``).
+``verdicts`` member (the B5 shape, ``tests/fixtures/backfill/collation-verdicts.json``).
 """
 
 from __future__ import annotations
@@ -119,13 +119,23 @@ def test_filters_and_cost(plan_path, cfg_path, monkeypatch) -> None:  # noqa: F8
     assert "PRESENT (1)" in out and "fallback=timeout" in out and "NEW" not in out
 
 
-def test_collation_fixture_is_read_defensively(cfg_path) -> None:  # noqa: F811
+def test_collation_fixture_uses_the_b5_shape(cfg_path) -> None:  # noqa: F811
     view = json.loads(_invoke("backfill", "verdicts", str(FIXTURE), "--json").stdout)
     assert view["input"] == "collation"
-    assert view["totals"]["recorded"] == 3
-    assert set(view["groups"]) == {"NEW", "PRESENT", "abstain"}
-    assert view["groups"]["PRESENT"][0]["fallback"]["reason"] == "timeout"
-    assert view["groups"]["abstain"][0]["engine"] == "haiku"
+    assert view["totals"]["recorded"] == 4
+    assert set(view["groups"]) == {"NEW", "PRESENT", "abstain", "residual"}
+    new = view["groups"]["NEW"][0]
+    assert new["confidence"] == 0.8 and new["step"] == "judge"
+    assert new["provenance"] == "inferred" and new["score"] == 41.0
+    assert view["groups"]["PRESENT"][0]["bead"] == {"group": "", "id": "wd-1"}
+    abstain = view["groups"]["abstain"][0]
+    assert abstain["fallback"]["reason"] == "timeout"
+    assert view["groups"]["residual"][0]["reason"] == "judge-budget"
+    # one judge record without fallback is a call; the fallback and the budget residual are not
+    from beadhive import backfill_verdicts as bv
+
+    priced = bv.build_view(FIXTURE, cost_per_call_usd=0.5)
+    assert priced["cost"]["calls"] == 1 and priced["cost"]["estimated_usd"] == 0.5
 
 
 @pytest.mark.parametrize(
