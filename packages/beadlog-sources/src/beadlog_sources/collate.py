@@ -71,6 +71,7 @@ from .ledger import (
 from .reconcile import corpus_hash
 
 if TYPE_CHECKING:
+    from .attach import AttachOptions
     from .cluster import ClusterOptions
 
 COLLATION_SCHEMA = "bdlg.collation/1"
@@ -83,9 +84,10 @@ OUTCOMES = (LOCAL, FOREIGN, ARTIFACT, AMBIGUOUS, UNRESOLVED)
 MIN_SHA_PREFIX = 7
 # Members later collate steps fill; B1/B2 write them empty so the schema is stable.
 EXTENSION_MEMBERS = ("units", "verdicts", "conflicts", "residual")
+
 # The sub-objects of a collation's ``options``: the effective options of each step that has
 # them (B3 ``cluster`` today; B4 to B6 add siblings).
-OPTION_SECTIONS = ("cluster",)
+OPTION_SECTIONS = ("cluster", "attach")
 
 # B3 unit shapes and the rules that form units (``beadlog_sources.cluster``). The claim rules
 # run in :data:`CLAIM_RULES` order by default; ``area`` groups units into epics afterwards.
@@ -100,7 +102,24 @@ RULE_MERGE = "merge"
 RULE_COMMIT = "commit"
 RULE_AREA = "area"
 CLAIM_RULES = (RULE_PLAN_ITEM, RULE_LOCAL_BEAD, RULE_REVIEW, RULE_MERGE, RULE_COMMIT)
-UNIT_RULES = (*CLAIM_RULES, RULE_AREA)
+# ``doc`` (B4): a design record no unit took, a unit of its own.
+RULE_DOC = "doc"
+UNIT_RULES = (*CLAIM_RULES, RULE_AREA, RULE_DOC)
+
+# B4: why a doc is attached to a unit (``beadlog_sources.attach``), in precedence order, then
+# ``standalone`` for a doc that is a doc-unit of its own.
+REASON_EXPLICIT = "explicit"
+REASON_SAME_CHANGE = "same-change"
+REASON_SHARED_PATH = "shared-path"
+REASON_LEXICAL = "lexical"
+REASON_STANDALONE = "standalone"
+ATTACH_REASONS = (
+    REASON_EXPLICIT,
+    REASON_SAME_CHANGE,
+    REASON_SHARED_PATH,
+    REASON_LEXICAL,
+    REASON_STANDALONE,
+)
 
 _HEX = re.compile(r"^[0-9a-f]+$")
 _FULL_SHA = 40
@@ -537,6 +556,52 @@ def claimed_artifacts(units: Iterable[Unit]) -> dict[str, str]:
     return {artifact: unit.key for unit in units for artifact in unit.artifacts}
 
 
+_ATTACHMENT_MEMBERS = ("doc", "unit", "reason", "evidence")
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """One B4 record: design record ``doc`` (a ``doc:<path>`` key) belongs to unit ``unit``.
+
+    ``reason`` is one of :data:`ATTACH_REASONS`; ``evidence`` the artifact keys behind it (empty
+    for ``standalone``, where ``unit`` is the doc's own doc-unit, i.e. ``unit == doc``). A doc has
+    at most one attachment.
+    """
+
+    doc: str
+    unit: str
+    reason: str
+    evidence: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.doc, str) or not self.doc or not isinstance(self.unit, str):
+            raise CollationFormatError("attachment doc and unit must be non-empty strings")
+        if self.reason not in ATTACH_REASONS:
+            raise CollationFormatError(f"attachment {self.doc!r}: unknown reason {self.reason!r}")
+        if (self.reason == REASON_STANDALONE) != (self.unit == self.doc and not self.evidence):
+            raise CollationFormatError(
+                f"attachment {self.doc!r}: standalone exactly when the unit is the doc itself"
+            )
+
+    def to_json(self) -> dict[str, Any]:
+        """The record as a JSON object."""
+        return {
+            "doc": self.doc,
+            "unit": self.unit,
+            "reason": self.reason,
+            "evidence": list(self.evidence),
+        }
+
+    @classmethod
+    def from_json(cls, raw: Any) -> Attachment:
+        """Parse a record object; unknown or missing members are refused."""
+        if not isinstance(raw, dict) or sorted(raw) != sorted(_ATTACHMENT_MEMBERS):
+            raise CollationFormatError(f"attachment must have exactly {_ATTACHMENT_MEMBERS}")
+        return cls(
+            doc=raw["doc"], unit=raw["unit"], reason=raw["reason"], evidence=tuple(raw["evidence"])
+        )
+
+
 @dataclass(frozen=True)
 class Collation:
     """The collation of one run (``bdlg.collation/1``).
@@ -546,7 +611,8 @@ class Collation:
     is B2, ``units`` B3 (:class:`Unit`, sorted by key). ``verdicts``, ``conflicts`` and
     ``residual`` are JSON-valued tuples B5 and B6 fill; until then they are empty. ``options``
     records the effective options of the steps that ran, one JSON sub-object per step
-    (:data:`OPTION_SECTIONS`; ``cluster`` is :meth:`ClusterOptions.to_json`), so a collation
+    (:data:`OPTION_SECTIONS`; ``cluster`` is :meth:`ClusterOptions.to_json`, ``attach``
+    :meth:`~beadlog_sources.attach.AttachOptions.to_json`), so a collation
     made under other options has other bytes. ``indexes`` is the in-memory B1 result (derived,
     never serialized; ``None`` on a loaded collation).
     """
@@ -559,6 +625,7 @@ class Collation:
     verdicts: tuple[Any, ...] = ()
     conflicts: tuple[Any, ...] = ()
     residual: tuple[Any, ...] = ()
+    attachments: tuple[Attachment, ...] = ()
     options: Mapping[str, Any] = field(default_factory=dict, hash=False)
     indexes: Indexes | None = field(default=None, compare=False, hash=False, repr=False)
 
@@ -569,6 +636,10 @@ class Collation:
     def unit(self, key: str) -> Unit | None:
         """The unit keyed ``key``, or ``None``."""
         return next((u for u in self.units if u.key == key), None)
+
+    def docs_of(self, unit: str) -> tuple[Attachment, ...]:
+        """The B4 attachments to ``unit`` (its doc-unit's own standalone record included)."""
+        return tuple(a for a in self.attachments if a.unit == unit)
 
     def to_json(self) -> dict[str, Any]:
         """The collation as a JSON object."""
@@ -582,6 +653,7 @@ class Collation:
             "verdicts": list(self.verdicts),
             "conflicts": list(self.conflicts),
             "residual": list(self.residual),
+            "attachments": [a.to_json() for a in self.attachments],
             "options": json.loads(canonical_json(dict(self.options))),
         }
 
@@ -593,12 +665,16 @@ def collate(
     *,
     local: str,
     options: ClusterOptions | None = None,
+    attach_options: AttachOptions | None = None,
 ) -> Collation:
-    """Run B1, B2 and B3 over ``corpus`` (see the module doc and ``beadlog_sources.cluster``).
+    """Run B1 to B4 over ``corpus`` (see the module doc, ``beadlog_sources.cluster`` and
+    ``beadlog_sources.attach``).
 
-    ``options`` configures B3 (default :class:`~beadlog_sources.cluster.ClusterOptions`).
+    ``options`` configures B3 (default :class:`~beadlog_sources.cluster.ClusterOptions`),
+    ``attach_options`` B4 (default :class:`~beadlog_sources.attach.AttachOptions`).
     """
-    from .cluster import cluster  # B3 builds on this module's records
+    from .attach import attach  # B3 and B4 build on this module's records
+    from .cluster import cluster
 
     baseline = tuple(baseline)
     indexes = build_indexes(corpus)
@@ -609,7 +685,7 @@ def collate(
         refs=resolve_refs(corpus, indexes, baseline, directory, local=local),
         indexes=indexes,
     )
-    return cluster(resolved, options)
+    return attach(cluster(resolved, options), attach_options)
 
 
 def dumps_collation(collation: Collation) -> bytes:
@@ -623,7 +699,16 @@ def loads_collation(data: bytes) -> Collation:
         raw = json.loads(data)
     except ValueError as error:
         raise CollationFormatError(f"collation is not JSON: {error}") from None
-    members = ("schema", "local", "corpus", "baseline", "refs", *EXTENSION_MEMBERS, "options")
+    members = (
+        "schema",
+        "local",
+        "corpus",
+        "baseline",
+        "refs",
+        *EXTENSION_MEMBERS,
+        "attachments",
+        "options",
+    )
     if not isinstance(raw, dict) or sorted(raw) != sorted(members):
         raise CollationFormatError(f"collation must have exactly the members {members}")
     if raw["schema"] != COLLATION_SCHEMA:
@@ -635,6 +720,7 @@ def loads_collation(data: bytes) -> Collation:
         refs=tuple(ResolvedRef.from_json(r) for r in raw["refs"]),
         units=tuple(Unit.from_json(u) for u in raw["units"]),
         **{name: tuple(raw[name]) for name in EXTENSION_MEMBERS if name != "units"},
+        attachments=tuple(Attachment.from_json(a) for a in raw["attachments"]),
         options=_load_options(raw["options"]),
     )
     if dumps_collation(collation) != data:
@@ -643,7 +729,8 @@ def loads_collation(data: bytes) -> Collation:
 
 
 def _load_options(raw: Any) -> dict[str, Any]:
-    from .cluster import ClusterOptions, ClusterOptionsError  # B3 owns its options
+    from .attach import AttachOptions, AttachOptionsError  # B3 and B4 own their options
+    from .cluster import ClusterOptions, ClusterOptionsError
 
     if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_SECTIONS):
         raise CollationFormatError(f"options must have exactly the members {OPTION_SECTIONS}")
@@ -651,7 +738,11 @@ def _load_options(raw: Any) -> dict[str, Any]:
         cluster_options = ClusterOptions.from_json(raw["cluster"])
     except ClusterOptionsError as error:
         raise CollationFormatError(f"options.cluster: {error}") from None
-    return {"cluster": cluster_options.to_json()}
+    try:
+        attach_options = AttachOptions.from_json(raw["attach"])
+    except AttachOptionsError as error:
+        raise CollationFormatError(f"options.attach: {error}") from None
+    return {"cluster": cluster_options.to_json(), "attach": attach_options.to_json()}
 
 
 def write_collation(collation: Collation, path: str | Path) -> None:
@@ -676,6 +767,7 @@ def collation_schema() -> dict[str, Any]:
 __all__ = [
     "ARTIFACT",
     "ATTACH",
+    "ATTACH_REASONS",
     "CLAIM_RULES",
     "COLLATION_SCHEMA",
     "EPIC",
@@ -685,13 +777,20 @@ __all__ = [
     "OPTION_SECTIONS",
     "OUTCOMES",
     "RULE_AREA",
+    "REASON_EXPLICIT",
+    "REASON_LEXICAL",
+    "REASON_SAME_CHANGE",
+    "REASON_SHARED_PATH",
+    "REASON_STANDALONE",
     "RULE_COMMIT",
+    "RULE_DOC",
     "RULE_LOCAL_BEAD",
     "RULE_MERGE",
     "RULE_PLAN_ITEM",
     "RULE_REVIEW",
     "UNIT_KINDS",
     "UNIT_RULES",
+    "Attachment",
     "Collation",
     "CollationFormatError",
     "Indexes",

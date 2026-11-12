@@ -218,6 +218,12 @@ from .cluster import ClusterOptions, ClusterOptionsError, cluster
 from .collate import CLAIM_RULES, UNIT_KINDS, UNIT_RULES, Unit, claimed_artifacts
 
 # --- end collate B3 ---
+# isort: split
+# --- collate B4 (bh-f4380) ---
+from .attach import ATTACH_TIERS, AttachOptions, AttachOptionsError, attach
+from .collate import ATTACH_REASONS, Attachment
+
+# --- end collate B4 ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -377,4 +383,12 @@ __all__ = [
     "claimed_artifacts",
     "cluster",
     # --- end collate B3 ---
+    # --- collate B4 (bh-f4380) ---
+    "ATTACH_REASONS",
+    "ATTACH_TIERS",
+    "AttachOptions",
+    "AttachOptionsError",
+    "Attachment",
+    "attach",
+    # --- end collate B4 ---
 ]
