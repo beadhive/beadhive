@@ -142,23 +142,26 @@ def test_roadmap_nesting_done_markers_and_order(tmp_path: Path) -> None:
     (tmp_path / "ROADMAP.md").write_text(ROADMAP, encoding="utf-8")
     arts = {a.key.split("#")[1]: a for a in _read(tmp_path, first_add="false")}
     k = lambda i: f"plan:ROADMAP.md#{i}"  # noqa: E731
-    assert arts["roadmap"].attrs["parent"] is None
-    assert arts["phase-1"].attrs["parent"] == k("roadmap")
-    assert arts["setup-repo"].attrs["parent"] == k("phase-1")
-    assert arts["init-git"].attrs["parent"] == k("setup-repo")
-    assert arts["write-docs"].attrs["parent"] == k("phase-1")
-    assert [arts[i].attrs["order"] for i in ("setup-repo", "write-docs")] == [0, 1]
-    assert arts["details"].attrs["parent"] == k("phase-3")
+    assert "roadmap" not in arts  # the single H1 is the document title
+    assert arts["phase-1"].attrs["parent"] is None
+    assert arts["phase-1/setup-repo"].attrs["parent"] == k("phase-1")
+    assert arts["phase-1/setup-repo/init-git"].attrs["parent"] == k("phase-1/setup-repo")
+    assert arts["phase-1/write-docs"].attrs["parent"] == k("phase-1")
+    order = [arts[i].attrs["order"] for i in ("phase-1/setup-repo", "phase-1/write-docs")]
+    assert order == [0, 1]
+    assert arts["phase-3/details"].attrs["parent"] == k("phase-3")
     done = {i: a.attrs["done_marker"] for i, a in arts.items()}
-    assert done["init-git"] and done["setup-repo"] and not done["phase-1"]
-    assert not done["write-docs"] and not done["phase-2"]
-    assert done["roadmap"] is False  # not every checkbox below is ticked
-    assert "not-an-item" not in arts  # fenced code is ignored
-    assert arts["item"].attrs["done_marker"] is False and arts["item-2"].attrs["done_marker"]
-    assert arts["add-ci"].attrs["depends_on"] == (k("init-git"),)
-    assert arts["ship"].attrs["depends_on"] == (k("write-docs"),)
-    assert arts["ship"].raw_attrs["unresolved_depends_on"] == ("nothing",)
-    assert arts["ship"].title == "Ship"
+    assert done["phase-1/setup-repo/init-git"] and done["phase-1/setup-repo"]
+    assert not done["phase-1"] and not done["phase-1/write-docs"] and not done["phase-2"]
+    assert "not-an-item" not in str(list(arts))  # fenced code is ignored
+    items = ("phase-3/details/item", "phase-3/details/item-2")
+    assert [arts[i].attrs["done_marker"] for i in items] == [False, True]
+    assert arts["phase-1/setup-repo/add-ci"].attrs["depends_on"] == (
+        k("phase-1/setup-repo/init-git"),
+    )
+    assert arts["phase-2/ship"].attrs["depends_on"] == (k("phase-1/write-docs"),)
+    assert arts["phase-2/ship"].raw_attrs["unresolved_depends_on"] == ("nothing",)
+    assert arts["phase-2/ship"].title == "Ship"
 
 
 def test_roadmap_files_option_and_missing_file(tmp_path: Path) -> None:
@@ -202,3 +205,37 @@ def test_roadmap_item_token_refs(tmp_path: Path) -> None:
         if a.title.startswith("Tokens")
     )
     assert [(r.kind, r.raw) for r in art.refs] == [("bead-token", "bh-zz9")]
+
+
+def _keys(text: str) -> list[str]:
+    return [i.key for i in roadmap_items("R.md", text)]
+
+
+def test_roadmap_keys_survive_incidental_edits() -> None:
+    base = "## Phase\n- [ ] Write docs\n- [ ] Ship\n"
+    edited = "## Phase\n- [x]   Write docs, bh-ab1c2!! (depends: ship)\n- [ ] Ship\n"
+    assert (
+        _keys(base)
+        == _keys(edited)
+        == ["plan:R.md#phase", "plan:R.md#phase/write-docs", "plan:R.md#phase/ship"]
+    )
+
+
+def test_roadmap_same_text_under_different_headings_is_distinct_and_order_free() -> None:
+    one = "## A\n- [ ] Task\n## B\n- [ ] Task\n"
+    two = "## B\n- [ ] Task\n## A\n- [ ] Task\n"
+    assert set(_keys(one)) == set(_keys(two))
+    assert "plan:R.md#a/task" in _keys(one) and "plan:R.md#b/task" in _keys(one)
+    dup = _keys("## A\n- [ ] Task\n- [ ] Task\n")
+    assert dup[1:] == ["plan:R.md#a/task", "plan:R.md#a/task-2"]
+
+
+def test_roadmap_single_h1_is_title_but_several_are_items() -> None:
+    assert _keys("# Title\n## A\n") == ["plan:R.md#a"]
+    assert [i.parent for i in roadmap_items("R.md", "# Title\n## A\n")] == [None]
+    several = roadmap_items("R.md", "# One\n## A\n# Two\n")
+    assert [(i.key, i.parent) for i in several] == [
+        ("plan:R.md#one", None),
+        ("plan:R.md#one/a", "plan:R.md#one"),
+        ("plan:R.md#two", None),
+    ]

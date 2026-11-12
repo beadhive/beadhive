@@ -1,9 +1,10 @@
 """The ``planning`` source reader: plan trees and checklists -> ``plan-item`` artifacts.
 
 One artifact per plan item, keyed ``plan:<path>#<item-id>`` (``path`` is the plan file, or the
-phase directory for a GSD phase; ``item-id`` is stable across runs: the GSD plan key ``01-01`` /
-the literal ``phase``, or the slug of a roadmap item's text with ``-2``, ``-3`` for repeats). The
-reader is pure (files plus ONE ``git log`` for first-add commit times) and does no resolution:
+phase directory for a GSD phase; ``item-id`` is stable across runs: the GSD plan key ``01-01`` / the
+literal ``phase``, or a roadmap item's ancestor-slug path such as ``phase-1/setup-repo``, see
+:func:`roadmap_items`). The reader is pure (files plus ONE ``git log`` for first-add commit times)
+and does no resolution:
 every bead-looking token is a ``Ref(kind="bead-token")`` (:mod:`beadlog_sources.tokens`).
 Provenance is ``observed``: the structure is stated by the files, not inferred.
 
@@ -13,7 +14,8 @@ Parsing goes through the :class:`PlanningFormat` port, one adapter per layout:
   ``planning`` strategy, whose helpers it reuses). A phase is an item with no parent, closed when
   it has plans and every one has a ``-SUMMARY.md``; a plan's parent is its phase, its
   ``depends_on`` are the resolved plan keys, and it is done when its summary exists.
-- ``roadmap``: headed checklists and implementation-plan markdown. Headings nest by level; a
+- ``roadmap``: headed checklists and implementation-plan markdown.
+  Headings nest by level (a single ``#`` is the document title, not an item); a
   ``- [ ]`` / ``- [x]`` item nests under the nearest heading, or under the checkbox item of lesser
   indentation. A checkbox is done when ticked; a heading is done when it has checkbox descendants
   and all are done. ``(depends: <item text or id>, ...)`` at the end of an item's text names
@@ -50,7 +52,7 @@ from ._sources import SourceError, csv, first_adds, is_git_repo, truthy
 from .evidence import Artifact, Category, Ref
 from .planning import DEFAULT_TREE, Phase, _dep_key, scan_tree
 from .readers import ReadRequest
-from .tokens import bead_token_pattern, find_bead_tokens, token_mode
+from .tokens import GENERIC_BEAD_TOKEN, bead_token_pattern, find_bead_tokens, token_mode
 
 READER_NAME = "planning"
 READER_VERSION = "0.1.0"
@@ -208,6 +210,7 @@ class _Node:
     text: str
     children: list[_Node] = field(default_factory=list)
     item_id: str = ""
+    slug: str = ""
 
 
 def _parse_roadmap(text: str) -> list[_Node]:
@@ -271,31 +274,56 @@ def _checkboxes(node: _Node) -> Iterable[_Node]:
         yield from _checkboxes(child)
 
 
-def roadmap_items(path: str, text: str) -> list[PlanItem]:
-    """The items of one roadmap file (``path`` is its repo-relative posix path)."""
-    roots = _parse_roadmap(text)
-    seen: dict[str, int] = {}
+def _drop_document_title(roots: list[_Node]) -> list[_Node]:
+    """A single ``#`` heading is the file's title, not an item: its children become roots."""
+    titles = [n for n in roots if n.kind == "heading" and n.level == 1]
+    if len(titles) != 1:
+        return roots
+    out: list[_Node] = []
+    for node in roots:
+        out.extend(node.children if node is titles[0] else [node])
+    return out
+
+
+def roadmap_items(
+    path: str, text: str, pattern: re.Pattern[str] = GENERIC_BEAD_TOKEN
+) -> list[PlanItem]:
+    """The items of one roadmap file (``path`` is its repo-relative posix path).
+
+    The item id is the chain of ancestor slugs and the item's own: ``phase-1/setup-repo``. A slug
+    is made from the title without bead tokens, the ``(depends: ...)`` clause, the checkbox state
+    and punctuation, so editing those never changes the key; ``-2``, ``-3`` only separate true
+    duplicates under one parent.
+    """
+    roots = _drop_document_title(_parse_roadmap(text))
     flat: list[tuple[_Node, str | None, int]] = []
 
-    def walk(nodes: Sequence[_Node], parent: str | None) -> None:
+    def walk(nodes: Sequence[_Node], parent: _Node | None) -> None:
+        seen: dict[str, int] = {}
         for order, node in enumerate(nodes):
-            base = slugify(node.title)
+            base = slugify(pattern.sub(" ", node.title))
             seen[base] = seen.get(base, 0) + 1
-            node.item_id = base if seen[base] == 1 else f"{base}-{seen[base]}"
-            flat.append((node, parent, order))
-            walk(node.children, f"plan:{path}#{node.item_id}")
+            leaf = base if seen[base] == 1 else f"{base}-{seen[base]}"
+            node.slug = leaf
+            node.item_id = f"{parent.item_id}/{leaf}" if parent else leaf
+            flat.append((node, f"plan:{path}#{parent.item_id}" if parent else None, order))
+            walk(node.children, node)
 
     walk(roots, None)
     ids = {node.item_id for node, _, _ in flat}
-    first = {}
+    by_slug: dict[str, list[str]] = {}
     for node, _, _ in flat:
-        first.setdefault(slugify(node.title), node.item_id)
+        by_slug.setdefault(node.slug, []).append(node.item_id)
     out: list[PlanItem] = []
     for node, parent, order in flat:
         deps: list[str] = []
         unresolved: list[str] = []
+        sibling = node.item_id.rpartition("/")[0]
         for raw in node.deps:
-            target = raw if raw in ids else first.get(raw)
+            found = by_slug.get(raw, [])
+            near = [i for i in found if i.rpartition("/")[0] == sibling]
+            chosen = near or found
+            target = raw if raw in ids else (chosen[0] if len(chosen) == 1 else None)
             if target is None or target == node.item_id:
                 unresolved.append(raw)
             else:
@@ -330,10 +358,11 @@ class RoadmapFormat:
         return sorted(found)
 
     def items(self, root: Path, options: Mapping[str, Any]) -> list[PlanItem]:
+        pattern = bead_token_pattern(csv(options.get("namespaces", "")))
         out: list[PlanItem] = []
         for path in self.discover(root, options):
             text = (root / path).read_text(encoding="utf-8", errors="replace")
-            out.extend(roadmap_items(path, text))
+            out.extend(roadmap_items(path, text, pattern))
         return out
 
     def pathspecs(self, root: Path, options: Mapping[str, Any]) -> list[str]:
