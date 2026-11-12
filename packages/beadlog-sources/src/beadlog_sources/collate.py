@@ -73,6 +73,7 @@ from .reconcile import corpus_hash
 if TYPE_CHECKING:
     from .attach import AttachOptions
     from .cluster import ClusterOptions
+    from .lifecycle import StatusOptions
 
 COLLATION_SCHEMA = "bdlg.collation/1"
 SCHEMA_RESOURCE = "bdlg-collation-v1.schema.json"
@@ -87,7 +88,7 @@ EXTENSION_MEMBERS = ("units", "verdicts", "conflicts", "residual")
 
 # The sub-objects of a collation's ``options``: the effective options of each step that has
 # them (B3 ``cluster`` today; B4 to B6 add siblings).
-OPTION_SECTIONS = ("cluster", "attach")
+OPTION_SECTIONS = ("cluster", "attach", "status")
 
 # B3 unit shapes and the rules that form units (``beadlog_sources.cluster``). The claim rules
 # run in :data:`CLAIM_RULES` order by default; ``area`` groups units into epics afterwards.
@@ -626,6 +627,7 @@ class Collation:
     conflicts: tuple[Any, ...] = ()
     residual: tuple[Any, ...] = ()
     attachments: tuple[Attachment, ...] = ()
+    lifecycle: tuple[Any, ...] = ()
     options: Mapping[str, Any] = field(default_factory=dict, hash=False)
     indexes: Indexes | None = field(default=None, compare=False, hash=False, repr=False)
 
@@ -654,6 +656,7 @@ class Collation:
             "conflicts": list(self.conflicts),
             "residual": list(self.residual),
             "attachments": [a.to_json() for a in self.attachments],
+            "lifecycle": list(self.lifecycle),
             "options": json.loads(canonical_json(dict(self.options))),
         }
 
@@ -666,15 +669,18 @@ def collate(
     local: str,
     options: ClusterOptions | None = None,
     attach_options: AttachOptions | None = None,
+    status_options: StatusOptions | None = None,
 ) -> Collation:
-    """Run B1 to B4 over ``corpus`` (see the module doc, ``beadlog_sources.cluster`` and
+    """Run B1 to B4 (and B6) over ``corpus`` (see the module doc, ``beadlog_sources.cluster`` and
     ``beadlog_sources.attach``).
 
     ``options`` configures B3 (default :class:`~beadlog_sources.cluster.ClusterOptions`),
-    ``attach_options`` B4 (default :class:`~beadlog_sources.attach.AttachOptions`).
+    ``attach_options`` B4 (default :class:`~beadlog_sources.attach.AttachOptions`),
+    ``status_options`` B6 (default :class:`~beadlog_sources.lifecycle.StatusOptions`).
     """
     from .attach import attach  # B3 and B4 build on this module's records
     from .cluster import cluster
+    from .lifecycle import derive_lifecycle
 
     baseline = tuple(baseline)
     indexes = build_indexes(corpus)
@@ -685,7 +691,7 @@ def collate(
         refs=resolve_refs(corpus, indexes, baseline, directory, local=local),
         indexes=indexes,
     )
-    return attach(cluster(resolved, options), attach_options)
+    return derive_lifecycle(attach(cluster(resolved, options), attach_options), status_options)
 
 
 def dumps_collation(collation: Collation) -> bytes:
@@ -707,6 +713,7 @@ def loads_collation(data: bytes) -> Collation:
         "refs",
         *EXTENSION_MEMBERS,
         "attachments",
+        "lifecycle",
         "options",
     )
     if not isinstance(raw, dict) or sorted(raw) != sorted(members):
@@ -721,8 +728,12 @@ def loads_collation(data: bytes) -> Collation:
         units=tuple(Unit.from_json(u) for u in raw["units"]),
         **{name: tuple(raw[name]) for name in EXTENSION_MEMBERS if name != "units"},
         attachments=tuple(Attachment.from_json(a) for a in raw["attachments"]),
+        lifecycle=tuple(raw["lifecycle"]),
         options=_load_options(raw["options"]),
     )
+    from .lifecycle import validate_lifecycle  # B6 owns its members' shapes
+
+    validate_lifecycle(collation)
     if dumps_collation(collation) != data:
         raise CollationFormatError("collation is not canonical JSON")
     return collation
@@ -731,6 +742,7 @@ def loads_collation(data: bytes) -> Collation:
 def _load_options(raw: Any) -> dict[str, Any]:
     from .attach import AttachOptions, AttachOptionsError  # B3 and B4 own their options
     from .cluster import ClusterOptions, ClusterOptionsError
+    from .lifecycle import StatusOptions, StatusOptionsError
 
     if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_SECTIONS):
         raise CollationFormatError(f"options must have exactly the members {OPTION_SECTIONS}")
@@ -742,7 +754,15 @@ def _load_options(raw: Any) -> dict[str, Any]:
         attach_options = AttachOptions.from_json(raw["attach"])
     except AttachOptionsError as error:
         raise CollationFormatError(f"options.attach: {error}") from None
-    return {"cluster": cluster_options.to_json(), "attach": attach_options.to_json()}
+    try:
+        status_options = StatusOptions.from_json(raw["status"])
+    except StatusOptionsError as error:
+        raise CollationFormatError(f"options.status: {error}") from None
+    return {
+        "cluster": cluster_options.to_json(),
+        "attach": attach_options.to_json(),
+        "status": status_options.to_json(),
+    }
 
 
 def write_collation(collation: Collation, path: str | Path) -> None:

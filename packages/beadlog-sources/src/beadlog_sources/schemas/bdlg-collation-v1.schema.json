@@ -5,7 +5,7 @@
   "description": "The collation of a backfill run (Phase B): every ref of an evidence corpus resolved (B1 indexes, B2 resolution) against a baseline BeadLog and a ledger directory. One canonical-JSON line. units are the B3 work units (candidate beads, attachments to existing local beads, area epics), sorted by key; verdicts, conflicts and residual are filled by later collate steps (B5, B6) and are empty arrays until then. Implemented by beadlog_sources.collate.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual", "attachments", "options"],
+  "required": ["schema", "local", "corpus", "baseline", "refs", "units", "verdicts", "conflicts", "residual", "attachments", "lifecycle", "options"],
   "properties": {
     "schema": {"const": "bdlg.collation/1"},
     "local": {"type": "string", "minLength": 1, "description": "The ledger being backfilled."},
@@ -14,15 +14,16 @@
     "refs": {"type": "array", "items": {"$ref": "#/$defs/resolved_ref"}},
     "units": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
     "verdicts": {"type": "array"},
-    "conflicts": {"type": "array"},
+    "conflicts": {"type": "array", "items": {"$ref": "#/$defs/conflict"}, "description": "B6: status conflicts, sorted by unit, rule and artifacts; none is ever resolved."},
     "residual": {"type": "array"},
     "attachments": {"type": "array", "items": {"$ref": "#/$defs/attachment"}, "description": "B4: one record per design record, sorted by doc."},
+    "lifecycle": {"type": "array", "items": {"$ref": "#/$defs/lifecycle"}, "description": "B6: one record per unit, sorted by unit."},
     "options": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cluster", "attach"],
+      "required": ["cluster", "attach", "status"],
       "description": "The effective options of the collate steps that ran, one sub-object per step (later steps add siblings): a collation made under other options has other bytes.",
-      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}, "attach": {"$ref": "#/$defs/attach_options"}}
+      "properties": {"cluster": {"$ref": "#/$defs/cluster_options"}, "attach": {"$ref": "#/$defs/attach_options"}, "status": {"$ref": "#/$defs/status_options"}}
     }
   },
   "$defs": {
@@ -50,6 +51,69 @@
         "lexical_percent": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Minimum overlap coefficient (percent) of the lexical tier."},
         "lexical_min_tokens": {"type": "integer", "minimum": 1},
         "standalone": {"type": "boolean", "description": "Whether an unattached doc became a doc-unit."}
+      }
+    },
+    "status_options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules", "design_only", "summary_suffix", "date_tolerance_days", "clock_tolerance_seconds"],
+      "description": "B6 StatusOptions (beadlog_sources.lifecycle).",
+      "properties": {
+        "rules": {"type": "array", "uniqueItems": true, "items": {"enum": ["doc-draft-code-landed", "doc-design-only-feat", "doc-accepted-no-code", "plan-open-summary", "clock-doc-date", "clock-review-merge"]}, "description": "The conflict rules run."},
+        "design_only": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Normalized phrases that make a raw declared status design only."},
+        "summary_suffix": {"type": "string", "minLength": 1},
+        "date_tolerance_days": {"type": "integer", "minimum": 0},
+        "clock_tolerance_seconds": {"type": "integer", "minimum": 0}
+      }
+    },
+    "moment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["at", "precision", "source"],
+      "description": "A point in time with its precision: a canonical timestamp (second) or YYYY-MM-DD (day, never read as midnight), and the artifact or unit whose clock gave it.",
+      "properties": {
+        "at": {"type": "string", "minLength": 10},
+        "precision": {"enum": ["second", "day"]},
+        "source": {"type": "string", "minLength": 1}
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "status", "basis", "created", "closed"],
+      "description": "B6: a unit's status and dates, derived from history only.",
+      "properties": {
+        "unit": {"type": "string", "minLength": 1},
+        "status": {"enum": ["open", "closed"]},
+        "basis": {"enum": ["plan-item", "merged", "committed", "released", "tracker", "review", "doc", "children", "none"]},
+        "created": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}]},
+        "closed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "Null unless the unit is closed."}
+      }
+    },
+    "conflict_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact", "field", "raw", "value", "at"],
+      "description": "One side of a conflict: the artifact claims value (normalized; raw as written) for field.",
+      "properties": {
+        "artifact": {"type": "string", "minLength": 1},
+        "field": {"type": "string", "minLength": 1},
+        "raw": {},
+        "value": {},
+        "at": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "The moment compared, for the date rules."}
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "unit", "status", "sources", "detail"],
+      "description": "B6: two artifacts that disagree about a unit. status is the unit's status as derived from history; a conflict never changes it.",
+      "properties": {
+        "rule": {"enum": ["doc-draft-code-landed", "doc-design-only-feat", "doc-accepted-no-code", "plan-open-summary", "clock-doc-date", "clock-review-merge"]},
+        "unit": {"type": "string", "minLength": 1},
+        "status": {"enum": ["open", "closed"]},
+        "sources": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/conflict_source"}, "description": "The claim, then the evidence against it."},
+        "detail": {"type": "string"}
       }
     },
     "attachment": {

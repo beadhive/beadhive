@@ -224,6 +224,23 @@ from .attach import ATTACH_TIERS, AttachOptions, AttachOptionsError, attach
 from .collate import ATTACH_REASONS, Attachment
 
 # --- end collate B4 ---
+# isort: split
+# --- collate B6 (bh-qhgsr) ---
+from .lifecycle import (
+    CONFLICT_RULES,
+    Conflict,
+    Lifecycle,
+    Moment,
+    Source,
+    StatusOptions,
+    StatusOptionsError,
+    conflicts_of,
+    derive_lifecycle,
+    lifecycle_of,
+    lifecycles,
+)
+
+# --- end collate B6 ---
 
 DISTRIBUTION = "beadlog-sources"
 
@@ -391,4 +408,17 @@ __all__ = [
     "Attachment",
     "attach",
     # --- end collate B4 ---
+    # --- collate B6 (bh-qhgsr) ---
+    "CONFLICT_RULES",
+    "Conflict",
+    "Lifecycle",
+    "Moment",
+    "Source",
+    "StatusOptions",
+    "StatusOptionsError",
+    "conflicts_of",
+    "derive_lifecycle",
+    "lifecycle_of",
+    "lifecycles",
+    # --- end collate B6 ---
 ]
