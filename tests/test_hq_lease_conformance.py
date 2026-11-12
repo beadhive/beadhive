@@ -9,6 +9,11 @@ checks, expiry) runs for real, and the config catalog is read from the case's
 config rows by the real _committed (including validate_documents). Stubbed: the
 rollback floor files, the config/runtime head fences, and the post-commit
 emergency audit.
+
+A case with ``config_move`` models a config head H1 later than the signed H0
+(bh-u67ve, 27da31b1): the real SqlRuntimeAuthority.bound_config_at runs over the
+case's rows (H0) and the case's H1 documents, with HAS_ANCESTOR answered by
+``descends_from_signed``. The registration runner reuses this harness.
 """
 
 import json
@@ -21,13 +26,14 @@ from types import SimpleNamespace
 import pytest
 
 from beadhive import hq_authority_guard as guard
+from beadhive import hq_sql_config
 from beadhive import hq_sql_receiver as receiver_module
 from beadhive.hq_hive_policy import validate_sql_hive_policies
 from beadhive.hq_sql_config import SqlFleetConfigRevisionStore
 from beadhive.hq_sql_receiver import ReceiverError, SqlTrustedReceiver
-from beadhive.hq_sql_runtime import SqlRuntimeError
+from beadhive.hq_sql_runtime import SqlRuntimeAuthority, SqlRuntimeError
 from beadhive.hq_sql_signatures import verify_authority
-from beadhive.modules.config.domain.ports import FleetConfigSnapshot
+from beadhive.modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
 
 
 def _corpus() -> Path | None:
@@ -68,6 +74,7 @@ class Cursor:
         self.db = db
         self.rows = []
         self.rowcount = 1
+        self.descends = True  # HAS_ANCESTOR(H1, H0); a case's config_move sets it
 
     def __enter__(self):
         return self
@@ -76,7 +83,11 @@ class Cursor:
         return False
 
     def execute(self, sql, params=()):
-        if sql.startswith("SELECT CURRENT_USER"):
+        if sql.startswith("USE "):
+            self.rows = []
+        elif sql.startswith("SELECT HAS_ANCESTOR"):
+            self.rows = [(1 if self.descends else 0,)]
+        elif sql.startswith("SELECT CURRENT_USER"):
             self.rows = [("observer@localhost", "authority", "main", "2.3.5")]
         elif sql.startswith("SELECT DOLT_HASHOF"):
             self.rows = [("head-1",)]
@@ -145,6 +156,29 @@ def _config(cursor, crossref: tuple, now: float) -> FleetConfigSnapshot:
     return snapshot
 
 
+def _moved_authority(case: dict, world, monkeypatch) -> SqlRuntimeAuthority:
+    """The real bound_config_at, reading H1 (the case's config_move) after the signed H0."""
+    move, now = case["config_move"], case["now"]
+    world.cursor.descends = move["descends_from_signed"]
+    # committed_snapshot_at memoizes per (backend, generation, head); cases share the signed head.
+    monkeypatch.setattr(hq_sql_config, "_COMMITTED_CACHE", {})
+    documents = tuple(FleetConfigDocument(d["path"], d["content"]) for d in move["documents"])
+    authority = object.__new__(SqlRuntimeAuthority)
+    authority.clock = lambda: now
+    authority.broker = None
+    authority.settings = {
+        "reader": {"database": "config"},
+        "observer": {"database": "authority"},
+        "backend_identity": "config",
+        "generation": "generation",
+        "cache_ttl": 10**6,
+    }
+    authority.load_latest_config_at = lambda cursor, **k: FleetConfigSnapshot(
+        "sql:config", move["head"], "generation", now - 50, now + 10**6, documents
+    )
+    return authority
+
+
 def _receiver(case: dict, monkeypatch) -> SimpleNamespace:
     now, rows = case["now"], case["rows"]
     authority = rows["hq_authority"][0]
@@ -170,6 +204,9 @@ def _receiver(case: dict, monkeypatch) -> SimpleNamespace:
         fresh_config_head_fence=lambda *a, **k: None,
         fresh_runtime_head_fence=lambda *a, **k: None,
     )
+    if "config_move" in case:
+        bound = _moved_authority(case, world, monkeypatch)
+        receiver.authority.bound_config_at = bound.bound_config_at
     monkeypatch.setattr(receiver_module.time, "monotonic", lambda: 0.0)
     # Post-commit emergency audit is I/O, not a lease rule.
     monkeypatch.setattr("beadhive.frame_emergency.audit", lambda *a, **k: None)
