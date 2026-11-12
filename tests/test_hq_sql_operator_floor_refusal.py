@@ -156,3 +156,66 @@ def test_load_keeps_other_failures_generic_and_secret_free(monkeypatch, failure)
     assert str(refused.value) == "protected authority writer read unavailable"
     assert SECRET not in str(refused.value)
     assert world.closed == 1
+
+
+def _newer(detail):
+    from beadhive.hq_sql_runtime import version_mismatch
+
+    return version_mismatch(detail)
+
+
+def test_load_names_a_version_mismatch_for_newer_authority_state(monkeypatch):
+    error = _newer("it carries runtime schema 2; this bh understands 1")
+    operator, world = _operator(monkeypatch, error)
+    with pytest.raises(SqlOperatorError) as refused:
+        operator.load()
+    message = str(refused.value)
+    assert message == str(error)
+    assert "version mismatch" in message
+    assert "fleet release floor" in message
+    assert "runtime schema 2" in message
+    assert "read unavailable" not in message
+    assert world.closed == 1
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param({"domain": "beadhive/git-authority/v3"}, id="newer-domain"),
+        pytest.param(
+            {
+                "domain": "beadhive/git-authority/v2",
+                "generation": "g",
+                "revision": 1,
+                "issued_at": 1,
+                "expires_at": 2,
+                "frames": {},
+                "writer_release": "9.9.9",
+            },
+            id="unknown-envelope-field",
+        ),
+    ],
+)
+def test_newer_state_is_a_version_mismatch_not_a_generic_envelope_error(state):
+    from beadhive.hq_sql_runtime import SqlRuntimeVersionMismatch, check_state_compatible
+
+    with pytest.raises(SqlRuntimeVersionMismatch) as refused:
+        check_state_compatible(state)
+    assert "bh " in str(refused.value)
+    assert "fleet release floor" in str(refused.value)
+
+
+def test_current_state_shape_is_compatible():
+    from beadhive.hq_sql_runtime import check_state_compatible
+
+    for domain in ("beadhive/git-authority/v1", "beadhive/git-authority/v2"):
+        check_state_compatible(
+            {
+                "domain": domain,
+                "generation": "g",
+                "revision": 1,
+                "issued_at": 1,
+                "expires_at": 2,
+                "frames": {},
+            }
+        )

@@ -25,6 +25,7 @@ from .hq_sql_runtime import (
     SqlRuntimeAuthority,
     SqlRuntimeCapabilityMissing,
     SqlRuntimeFloorRefusal,
+    SqlRuntimeVersionMismatch,
 )
 from .hq_sql_runtime_schema import (
     evidence_table,
@@ -114,7 +115,7 @@ class SqlRuntimeOperator:
             raise SqlOperatorError(
                 f"protected authority writer read unavailable: {error}"
             ) from None
-        except SqlRuntimeFloorRefusal as error:
+        except (SqlRuntimeFloorRefusal, SqlRuntimeVersionMismatch) as error:
             # A restore-floor refusal is a finding, not an outage (bh-a0wem): its fixed text
             # names heads, sequences and changed tables, never rows or secrets, and points at
             # the native recovery procedure the operator needs.
@@ -523,6 +524,13 @@ class SqlRuntimeOperator:
             if not crossed_commit:
                 connection.rollback()
                 raise
+            raise AuthorityPublicationUnknown(expected_revision) from None
+        except SqlRuntimeVersionMismatch as error:
+            # An older binding facing newer authority state (bh-jc6zo): name it, never the
+            # generic "unavailable". Before the commit nothing was written.
+            if not crossed_commit:
+                connection.rollback()
+                raise SqlOperatorError(str(error)) from None
             raise AuthorityPublicationUnknown(expected_revision) from None
         except Exception:
             if not crossed_commit:

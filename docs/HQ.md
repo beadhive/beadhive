@@ -994,6 +994,22 @@ replay.
 4. If the change is not intended, revert it with a new commit, then publish again as in
    step 3. A revert alone is still refused, because every commit since the floor is checked.
 
+**Keep the binding in step with the fleet's release floor (bh-jc6zo).** Steps 3 and 4 run the
+`bh` installed beside the server-local operator binding, and that `bh` must read the current
+authority state before it can republish. A binding older than the `bh` that wrote that state
+cannot validate it. It refuses, naming its own version and what the state carries (a newer
+runtime schema, authority carrier or envelope field), instead of the generic "unavailable":
+
+```text
+HQ authority version mismatch: the authority state was written by a newer bh than this
+binding's bh 0.35.0 (it carries authority carrier beadhive/git-authority/v3; this bh
+understands beadhive/git-authority/v1 and beadhive/git-authority/v2); upgrade the server-local
+operator binding to at least the fleet release floor and retry
+```
+
+Upgrade the binding to at least the fleet release floor, then retry. Upgrade it together with
+the fleet, before any recovery needs it.
+
 ### The signed release catalog {#release-catalog}
 
 `hq_release_catalog` (bh-vfrem.4, [ADR](design/frame-release-range-adr.md) sections 2 and 3) binds
