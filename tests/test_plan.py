@@ -1813,9 +1813,12 @@ def test_verify_all_origin_children_names_real_cause(hive, monkeypatch):
     ]
     result = _verify(hive, monkeypatch, children=children)
     assert result.exit_code != 0
-    assert "all 2 children are origin reports" in result.output
-    assert "strip those labels" in result.output
+    assert "all 2 children are reports" in result.output
+    assert "work accept <id>" in result.output
     assert "no issues: a molecule needs at least one issue" not in result.output
+    # bh-l1m3p: an untriaged report under the epic is ambiguous, flagged before kickoff
+    assert "rep-1: ambiguous child" in result.output
+    assert "rep-2: ambiguous child" in result.output
 
 
 def test_verify_flags_work_child_with_kickoff_label(hive, monkeypatch):
@@ -1830,15 +1833,79 @@ def test_verify_flags_work_child_with_kickoff_label(hive, monkeypatch):
     assert children[0]["id"] in result.output
 
 
-def test_verify_flags_work_child_with_intake_label(hive, monkeypatch):
-    """A work child carrying intake: state (no origin:, so it stays in the sibling set) fails
-    verify with a message naming the child and the label (bh-l9s8.2)."""
-    children = _good_children()
-    children[0]["labels"] = children[0]["labels"] + ["intake:untriaged"]
+def test_verify_flags_nested_epic_child_with_intake_label(hive, monkeypatch):
+    """A nested epic child stays in the sibling set whatever its labels; carrying a report's
+    intake: state it fails verify with a message naming the child and the label (bh-l9s8.2)."""
+    children = _good_children() + [
+        _child(
+            "epic-1.3",
+            "nested coordinator",
+            labels=_TRIPLET + ["intake:untriaged"],
+            issue_type="epic",
+            acceptance="",
+        )
+    ]
     result = _verify(hive, monkeypatch, children=children)
     assert result.exit_code != 0
     assert "must not carry state labels" in result.output
     assert "intake:untriaged" in result.output
+
+
+# ---- bh-l1m3p: origin: is provenance; binding + intake: disposition carry the role -------------
+
+
+def test_verify_counts_accepted_in_place_report_child_as_work(hive, monkeypatch):
+    """An intake report accepted in place (`intake:accepted`, `origin:report` kept) and parented
+    under the epic IS molecule work: verify passes with it (its provenance labels are not state
+    labels on work) and it is a sibling, so its missing acceptance is a problem (bh-c5nhv)."""
+    accepted = _TRIPLET + ["model:anthropic/sonnet", "intake:accepted", "origin:report"]
+    children = _good_children()
+    children[1]["labels"] = children[1]["labels"] + ["intake:accepted", "origin:report"]
+    result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code == 0, result.output
+
+    children = _good_children() + [
+        _child("epic-1.3", "accepted report", labels=accepted, deps=["epic-1.1"], acceptance="")
+    ]
+    result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code != 0
+    assert "epic-1.3" in result.output
+
+
+def test_verify_counts_backfill_origin_child_as_work(hive, monkeypatch):
+    """`origin:backfill` (backfill D1) is provenance: the child is work and verify passes."""
+    children = _good_children()
+    children[1]["labels"] = children[1]["labels"] + ["origin:backfill", "source:planning"]
+    result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code == 0, result.output
+    assert "state labels" not in result.output
+
+
+def test_verify_still_excludes_tracking_report_child(hive, monkeypatch):
+    """A bound report that tracks separate work (`accept --work`: intake:accepted + the
+    intake.source binding) stays a report even when hung child-of the epic: no acceptance, no
+    triplet, no kickoff gate demanded, and it is not flagged as ambiguous."""
+    tracking = _child(
+        "rep-7", "tracked report", labels=["intake:accepted", "origin:github"], acceptance=""
+    )
+    tracking["metadata"] = {"intake.source": "{}"}
+    result = _verify(hive, monkeypatch, children=_good_children() + [tracking])
+    assert result.exit_code == 0, result.output
+    assert "rep-7" not in result.output
+
+
+def test_verify_flags_untriaged_report_child_as_ambiguous_before_kickoff(hive, monkeypatch):
+    """An untriaged report hung under an epic is neither adopted provenance nor work: verify (the
+    pre-kickoff gate) names it with the one-verb remedy, while it stays out of the work set."""
+    report = _child(
+        "rep-3", "never triaged", labels=["intake:untriaged", "origin:report"], acceptance=""
+    )
+    result = _verify(hive, monkeypatch, children=_good_children() + [report])
+    assert result.exit_code != 0
+    assert "rep-3: ambiguous child" in result.output
+    assert "work promote rep-3" in result.output
+    assert "work accept rep-3" in result.output
+    assert "no kickoff gate" not in result.output  # not a work root
 
 
 def test_verify_genuinely_childless_epic_keeps_plain_message(hive, monkeypatch):

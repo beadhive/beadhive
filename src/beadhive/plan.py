@@ -402,12 +402,15 @@ def _render_from_spec(data: dict, path) -> None:
 
 
 def _origin_report_card(child: dict) -> dict:
-    """A render-ready dict for an originating (adopted) report child: id/title/status + its resolved
-    intake channel and native system-of-record provenance (source_system/external_ref)."""
+    """A render-ready dict for a report child: id/title/status, its role (``adopt.report_role``:
+    adopted / tracking / declined / unfielded) + its resolved intake channel and native
+    system-of-record provenance (source_system/external_ref). The channel is provenance only; the
+    role is what held the child out of the work-sibling set (bh-l1m3p)."""
     return {
         "id": child.get("id"),
         "title": child.get("title") or "",
         "status": child.get("status") or "",
+        "role": adopt.report_role(child) or "",
         "channel": state.channel_of(child.get("labels"), child.get("source_system")) or "",
         "source_system": child.get("source_system") or "",
         "external_ref": child.get("external_ref") or "",
@@ -439,13 +442,15 @@ def _epic_molecule(epic_id: str, cwd):
     if not isinstance(children, list):
         return None
 
-    # An adopted origin report is a child too, but it is a source link, NOT molecule work — pull it
-    # out of the sibling set so verify never demands acceptance / a kickoff gate for it, and show
-    # renders it in its own section.
+    # A report child (adopted provenance, a tracking report, ...) is a child too, but NOT molecule
+    # work — pull it out of the sibling set so verify never demands acceptance / a kickoff gate for
+    # it, and show renders it in its own section. The role comes from the binding + the `intake:`
+    # disposition, never from `origin:`: an accepted-in-place report or an `origin:backfill` bead
+    # is work (bh-l1m3p).
     origin_reports = [
         _origin_report_card(c)
         for c in children
-        if c.get("issue_type") not in ("epic", "gate") and adopt.is_origin_report(c.get("labels"))
+        if c.get("issue_type") not in ("epic", "gate") and adopt.is_report_child(c)
     ]
     origin_ids = {c["id"] for c in origin_reports}
 
@@ -515,9 +520,10 @@ def _render_origin_reports(origin_reports: list[dict]) -> None:
     typer.echo(f"originating reports ({len(origin_reports)}):")
     for report in origin_reports:
         channel = f" [{report['channel']}]" if report.get("channel") else ""
+        role = f" <{report['role']}>" if report.get("role") else ""
         status = f" ({report['status']})" if report.get("status") else ""
         suffix = _provenance_suffix(report.get("source_system", ""), report.get("external_ref", ""))
-        typer.echo(f"  {report['id']}{channel}: {report['title']}{status}{suffix}")
+        typer.echo(f"  {report['id']}{channel}{role}: {report['title']}{status}{suffix}")
 
 
 def _render_from_epic(epic_id: str, cwd) -> None:
@@ -716,6 +722,23 @@ def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
     return [f"root {rid}: no kickoff gate" for rid in ungated]
 
 
+_INTAKE_ACCEPTED = "intake:accepted"
+
+
+def _check_ambiguous_children(origin_reports) -> list[str]:
+    """A report child nobody triaged (``intake:untriaged`` / ``intake:needs-info``) is ambiguous:
+    adopted provenance or work? Flag it before kickoff with the one-verb remedy, rather than let
+    the land decide silently (bh-l1m3p). It stays out of the work set until it is triaged."""
+    alias = config.BINARY_ALIAS
+    return [
+        f"{report['id']}: ambiguous child — an untriaged report under the epic is neither adopted "
+        f"provenance nor work; `{alias} work promote {report['id']}` keeps it as provenance, "
+        f"`{alias} work accept {report['id']}` makes it molecule work"
+        for report in origin_reports
+        if report.get("role") == adopt.ROLE_UNFIELDED and report.get("status") != "closed"
+    ]
+
+
 def _check_child_labels(issues: list[dict], cfg) -> list[str]:
     """Check identity, state-label exclusion, and the authoritative routing-label contract."""
     closed = registry.closed_dimensions(cfg)
@@ -728,14 +751,18 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
                 problems.append(f"{cid}: missing identity label '{field}:'")
         # bh-l9s8.2: state labels do not belong on leaf work.  A nested epic is a coordinator
         # container in its own right, however, so its kickoff state is required and valid.
-        state_prefixes = ("origin:", "intake:")
+        # bh-l1m3p: `origin:` is provenance, valid on work (accept in place, backfill), and
+        # `intake:accepted` records an accept in place; any other `intake:` value is report state.
+        state_prefixes: tuple[str, ...] = ("intake:",)
         if issue.get("type") != "epic":
             state_prefixes += ("kickoff:",)
-        offending = sorted(lbl for lbl in labels if lbl.startswith(state_prefixes))
+        offending = sorted(
+            lbl for lbl in labels if lbl.startswith(state_prefixes) and lbl != _INTAKE_ACCEPTED
+        )
         if offending:
             problems.append(
                 f"{cid}: work children must not carry state labels ({', '.join(offending)}) — "
-                "origin:/intake:/kickoff: belong to intake items and epics, not molecule work"
+                "intake:/kickoff: belong to intake items and epics, not molecule work"
             )
         problems += [
             f"{cid}: {problem}"
@@ -810,17 +837,18 @@ def _verify_loaded(
     ]
     if not issues and origin_reports:
         # "no issues" is technically true but actively misleading here (bh-l9s8.1): the epic HAS
-        # children — every one was filtered out of the work-sibling set as an origin report.
+        # children — every one was filtered out of the work-sibling set as a report.
         problems = [
             (
-                f"no work issues: all {len(origin_reports)} children are origin reports "
-                "(origin:/intake: labels) held out of the work-sibling set — strip those labels "
-                "so the children count as molecule work"
+                f"no work issues: all {len(origin_reports)} children are reports (a binding or a "
+                "non-accepted intake: state) held out of the work-sibling set — accept a report "
+                f"(`{config.BINARY_ALIAS} work accept <id>`) so it counts as molecule work"
                 if p.startswith("no issues:")
                 else p
             )
             for p in problems
         ]
+    problems += _check_ambiguous_children(origin_reports)
     problems += _check_epic_type(epic_data, epic_id)
     problems += _check_swarm(epic_id, cwd)
     problems += _check_kickoff_gates(epic_id, issues, cwd)

@@ -34,8 +34,8 @@ one subprocess seam and the shaping logic stays trivially unit-testable.
 
 from __future__ import annotations
 
-from . import state
 from .adapters.intake import SOURCE_KEY
+from .modules.intake import INTAKE_DIM
 
 # Native system-of-record provenance fields carried from an origin report onto the filed epic.
 PROVENANCE_FIELDS = ("source_system", "external_ref")
@@ -173,12 +173,53 @@ def epic_import_record(epic: dict, labels: list[str]) -> dict:
     return record
 
 
-# ---- read-side: distinguish an origin report from a work sibling -------------
+# ---- read-side: the role of an epic child (bh-l1m3p) ---------------------------
+#
+# `origin:` is PROVENANCE only (the channel a bead came in through, any value, including
+# `origin:backfill`); it never decides whether an epic child is work. The role is carried by the
+# markers the intake flow already writes: the binding (a bound report is never work, D-a) and the
+# `intake:` disposition. See docs/design/origin-provenance-report-role-adr.md.
+
+#: A bound report: imported from an external issue, it tracks separate work (D-a).
+ROLE_TRACKING = "tracking"
+#: A promoted report the planner's adopt path linked child-of the epic as provenance.
+ROLE_ADOPTED = "adopted"
+#: A report triage fielded away from work (`intake:rejected` / `intake:rerouted`).
+ROLE_DECLINED = "declined"
+#: A report nobody triaged (`intake:untriaged` / `intake:needs-info`): provenance or work is
+#: ambiguous, so it stays out of the work set (legacy hand assembly) and `plan verify` flags it.
+ROLE_UNFIELDED = "unfielded"
+
+_INTAKE_ROLES = {
+    "promoted": ROLE_ADOPTED,
+    "rejected": ROLE_DECLINED,
+    "rerouted": ROLE_DECLINED,
+    "untriaged": ROLE_UNFIELDED,
+    "needs-info": ROLE_UNFIELDED,
+}
 
 
-def is_origin_report(labels) -> bool:
-    """True for an ADOPTED origin report linked under an epic — a promoted intake bead
-    (``intake:promoted``) or one carrying an ``origin:`` channel label. Used to keep origin reports
-    OUT of the molecule's work-sibling set (they carry no acceptance and demand no kickoff gate)
-    while still surfacing them in ``ws plan show``."""
-    return state.is_promoted(labels) or state.origin_of(labels) is not None
+def _intake_value(labels) -> str:
+    prefix = f"{INTAKE_DIM}:"
+    for label in labels or []:
+        if str(label).startswith(prefix):
+            return str(label)[len(prefix) :]
+    return ""
+
+
+def report_role(bead: dict) -> str | None:
+    """The report role of an epic child, or ``None`` when it is WORK.
+
+    A bound report wins over its ``intake:`` value (an accepted bound report tracks separate work
+    and is never the work itself). Otherwise the ``intake:`` disposition decides: ``accepted``
+    (accept in place) or no ``intake:`` value at all is work, whatever ``origin:`` it carries."""
+    if is_bound_report(bead):
+        return ROLE_TRACKING
+    return _INTAKE_ROLES.get(_intake_value(bead.get("labels")))
+
+
+def is_report_child(bead: dict) -> bool:
+    """True for an epic child that is a report rather than molecule work: it is held OUT of the
+    work-sibling set (no acceptance, no kickoff gate), of history policy and of the completeness
+    guard, and it rides the epic to completion. ``origin:`` alone never makes a child a report."""
+    return report_role(bead) is not None

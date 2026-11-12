@@ -107,22 +107,53 @@ def test_epic_import_record_defaults_an_omitted_priority_to_p2_not_p0():
         assert adopt.epic_import_record(epic, [])["priority"] == 2
 
 
-# ---- is_origin_report -------------------------------------------------------
+# ---- report_role / is_report_child (bh-l1m3p) -----------------------------
+#
+# `origin:` is provenance only; the role of an epic child comes from its binding and its
+# `intake:` disposition (docs/design/origin-provenance-report-role-adr.md).
+
+_BOUND = {"intake.source": "{}"}
 
 
-def test_is_origin_report_true_for_promoted_or_origin_channel():
-    """An adopted origin report is identified by intake:promoted OR an origin: channel label — so
-    it is held out of the molecule's work-sibling set."""
-    assert adopt.is_origin_report([state.INTAKE_PROMOTED])
-    assert adopt.is_origin_report([state.ORIGIN_GITHUB])
-    assert adopt.is_origin_report([state.INTAKE_PROMOTED, "provider:github"])
+@pytest.mark.parametrize(
+    ("labels", "metadata", "role"),
+    [
+        ([state.INTAKE_PROMOTED], None, adopt.ROLE_ADOPTED),
+        ([state.INTAKE_PROMOTED, state.ORIGIN_GITHUB], None, adopt.ROLE_ADOPTED),
+        (["intake:rejected", state.ORIGIN_REPORT], None, adopt.ROLE_DECLINED),
+        (["intake:rerouted", state.ORIGIN_REPORT], None, adopt.ROLE_DECLINED),
+        ([state.INTAKE_UNTRIAGED, state.ORIGIN_REPORT], None, adopt.ROLE_UNFIELDED),
+        (["intake:needs-info", state.ORIGIN_GITHUB], None, adopt.ROLE_UNFIELDED),
+        # a bound report wins over its intake value: an accepted bound report TRACKS work (D-a)
+        (["intake:accepted", state.ORIGIN_GITHUB], _BOUND, adopt.ROLE_TRACKING),
+        ([state.INTAKE_PROMOTED], _BOUND, adopt.ROLE_TRACKING),
+    ],
+)
+def test_report_role_keys_on_binding_and_intake_disposition(labels, metadata, role):
+    bead = {"id": "c", "labels": labels, "metadata": metadata}
+    assert adopt.report_role(bead) == role
+    assert adopt.is_report_child(bead)
 
 
-def test_is_origin_report_false_for_plain_work_sibling():
-    """A normal work issue (no intake/origin labels) is NOT an origin report — stays a sibling."""
-    assert not adopt.is_origin_report(["provider:github", "org:o", "repo:r", "model:sonnet"])
-    assert not adopt.is_origin_report([])
-    assert not adopt.is_origin_report(None)
+@pytest.mark.parametrize(
+    "labels",
+    [
+        # accept in place: the report IS the work (bh-c5nhv's bh-3egoy shape)
+        ["intake:accepted", state.ORIGIN_REPORT],
+        ["intake:accepted", state.ORIGIN_GITHUB],
+        # origin: alone is provenance, never a role: backfill (D1), any channel, plain work
+        [state.ORIGIN_BACKFILL, "source:planning"],
+        [state.ORIGIN_GITHUB],
+        [state.ORIGIN_ESCALATION],
+        ["provider:github", "org:o", "repo:r", "model:sonnet"],
+        [],
+        None,
+    ],
+)
+def test_report_role_none_for_work_children_whatever_their_origin(labels):
+    bead = {"id": "c", "labels": labels}
+    assert adopt.report_role(bead) is None
+    assert not adopt.is_report_child(bead)
 
 
 # ---- bound reports: tracked, never adopted (external-intake D-c) --------------------------

@@ -1649,6 +1649,10 @@ write (D-g); one shared metadata key for thread and outbox (`bh-6wj9y` R1).
   built: the progress milestones"). Revert detection stays open.
 - ~~A relation for reproduction work that never fires milestones~~: landed in `bh-u3a53` (section
   6, "As built: the investigates relation").
+- ~~Whether `origin:` decides that an epic child is an adopted report rather than work~~:
+  decided by `bh-l1m3p` in
+  [`origin-provenance-report-role-adr.md`](origin-provenance-report-role-adr.md). `origin:` is
+  provenance only. The binding and the `intake:` disposition carry the role.
 - A closing-keyword lint on merge commits.
 - Issue identity across a transfer or key change (port ADR O3): v1 refuses a transferred URL as
   `OTHER_PROJECT` and marks a thread `missing` for a human; no automatic re-binding.

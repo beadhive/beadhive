@@ -175,9 +175,11 @@ def impl__open_landing_pr(api, cfg, entry, main, bead, data, branch, base):
 
 
 def impl__guard_molecule_children(api, epic, main):
-    """Guard the molecule is complete — every child closed, except an adopted origin report,
-    linked child-of the epic as PROVENANCE, not molecule work — it carries no acceptance and never
-    gets worked/closed on its own, so it must never gate the land. Returns the origin-report
+    """Guard the molecule is complete — every child closed, except a REPORT child (an adopted origin
+    report linked child-of the epic as PROVENANCE, not molecule work) — it carries no acceptance
+    and never gets worked/closed on its own, so it must never gate the land. The role is
+    `adopt.is_report_child` (binding + `intake:` disposition), never an `origin:` label: an OPEN
+    accepted-in-place report child is work and blocks the land (bh-l1m3p). Returns the origin-report
     children (the intended jf5k/jey0 behavior: the report rides the epic to completion) for the
     caller to auto-close once the epic lands. Children come from `bd.children`, which trusts the
     parent EDGE — bd's own `--parent` matches by dotted-id PREFIX, so a bead detached from this
@@ -186,12 +188,11 @@ def impl__guard_molecule_children(api, epic, main):
     if not isinstance(children, list):
         api.typer.echo(f"✗ cannot list children of {epic} — refusing to land", err=True)
         raise api.typer.Exit(1)
-    origin_reports = [c for c in children if api.adopt.is_origin_report(c.get("labels"))]
+    origin_reports = [c for c in children if api.adopt.is_report_child(c)]
     open_kids = [
         str(c.get("id"))
         for c in children
-        if str(c.get("status", "")) != "closed"
-        and (not api.adopt.is_origin_report(c.get("labels")))
+        if str(c.get("status", "")) != "closed" and not api.adopt.is_report_child(c)
     ]
     if open_kids:
         api.typer.echo(
@@ -825,7 +826,7 @@ def impl__close_land_origin_reports(api, bead, main):
         [
             r
             for r in (children if isinstance(children, list) else [])
-            if api.adopt.is_origin_report(r.get("labels"))
+            if api.adopt.is_report_child(r)
         ],
     )
     if not ids:
