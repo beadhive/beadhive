@@ -801,6 +801,32 @@ died at 11.7 s) and get worse as the store grows; `content_hash` is unchanged by
 the modeled columns itself; `commit_hash IN (...)` and `dolt_diff_issues` give no shortcut (still
 the full walk); `EXPLAIN` is not supported through `bd sql --json`.
 
+### When to enable gap fill
+
+Gap fill is a recovery tool for *old* beads whose history the events table never saw, and it
+costs about an hour for the whole `bh` gap, so it stays off until you need what it recovers.
+
+- **`enabled`** (export-wide): turn it on for a one-off `bh backfill export --history` of a store
+  that predates the events table (or was imported without `created` rows) when you want
+  snapshot-level field and status history for those beads and accept the run time. Leave it off for
+  routine exports and for hives that started on a current `bd`: nothing there lacks a `created` row.
+- **`on_created`** (post-apply, scoped): turn it on when a create-mode backfill apply
+  (`backfill.collate.create: propose`) makes beads whose ids already have `dolt_history` (for
+  example re-creating ids that existed before) and you want their snapshot history too. After
+  apply the pipeline gap-fills exactly the ids that apply created (never the rest of the store),
+  with the same `batch_size`, per-query `timeout_seconds` and resumable cursor. It is independent of
+  `enabled`. `bh backfill history --until apply` runs it right after apply and writes the derived
+  events to `<run-dir>/gapfill.bdlg` (the store is only read).
+  Freshly created beads usually have a single state and yield no events, so leave it off unless
+  the created ids are known to have earlier history.
+
+```yaml
+backfill:
+  timeline:
+    gapfill:
+      on_created: false   # the default; true gap-fills only the beads a backfill apply created
+```
+
 ## First archival export (2026-10-31)
 
 The first archival BeadLog of the `bh` hive was produced on 2026-10-31 with

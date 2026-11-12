@@ -878,6 +878,7 @@ extra runs and the archive and its `bdlg.history` annotation are exactly what th
 | Key (under `backfill.timeline.gapfill`) | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | run the gap fill when exporting with `--history` |
+| `on_created` | `false` | after a create-mode `bh backfill history` apply, gap-fill **only** the beads that run created (same bounds and resumable cursor; independent of `enabled`; see [BACKFILL.md](BACKFILL.md#when-to-enable-gap-fill)) |
 | `batch_size` | `25` | beads per history scan (>= 1). Each scan walks every store commit (~9 s on `bh`) and costs ~1.3 s and ~3 MB of CSV per bead, so the whole `bh` gap takes about an hour at any size >= 25 |
 | `timeout_seconds` | `180` | seconds one gap-fill query may run before the run stops; the cursor `<out>.gapfill.json` lets the next run resume |
 

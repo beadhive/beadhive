@@ -392,3 +392,62 @@ def test_the_plan_report_carries_unit_counts(hive, tmp_path) -> None:
     plan = json.loads(_run(tmp_path, "--sources", "git", "--json").stdout)["stages"]["plan"]
     assert set(plan["units"]) <= {"NEW", "PRESENT", "NOISE", "residual"}
     assert plan["create"] == "off" and plan["creates_skipped"] >= 0
+
+
+# -- gap fill of the created beads (bh-79fwx) ----------------------------------------------------
+
+
+@pytest.fixture
+def created_run(hive, monkeypatch, cfg_path):
+    """A create-mode ``--until apply`` over the fake store with a recording gap-fill reader."""
+    import re
+
+    from beadhive import backfill_create
+    from beadlog_sources import GapfillReader, ProjectOptions
+
+    labels = ("origin:backfill", *TRIPLET)
+    monkeypatch.setattr(
+        backfill_create,
+        "create_mode_options",
+        lambda h, c, m: ProjectOptions(creation_labels=labels),
+    )
+    asked: list[list[str]] = []
+
+    def runner(argv):
+        sql = argv[5]
+        if argv[4] == "--csv":
+            asked.append(re.findall(r"'([^']+)'", sql[sql.index(" IN (") :]))
+        return "id,commit_hash,d,h\n" if argv[4] == "--csv" else "[]"
+
+    def reader(cwd, settings):
+        return GapfillReader(cwd, batch_size=settings.batch_size, runner=runner)
+
+    monkeypatch.setattr(backfill_cli, "gapfill_reader", reader)
+    return hive[0], asked
+
+
+def test_on_created_off_runs_no_gapfill(created_run, tmp_path, cfg_path) -> None:
+    _, asked = created_run
+    _config(cfg_path, collate={"create": "propose"})
+    summary = json.loads(
+        _run(tmp_path, "--sources", "git", "--until", "apply", "--yes", "--json").stdout
+    )
+    assert summary["stages"]["apply"]["completed"] > 0
+    assert "gapfill" not in summary["stages"] and asked == []
+
+
+def test_on_created_gap_fills_only_the_created_beads(created_run, tmp_path, cfg_path) -> None:
+    store, asked = created_run
+    _config(
+        cfg_path,
+        collate={"create": "propose"},
+        timeline={"gapfill": {"on_created": True, "batch_size": 50}},
+    )
+    summary = json.loads(
+        _run(tmp_path, "--sources", "git", "--until", "apply", "--yes", "--json").stdout
+    )
+    plan = _plan_events(tmp_path / "run" / "plan.bdlg")
+    created = {e["bead"]["id"] for e in plan if e["kind"] == "create"}
+    assert created and summary["stages"]["gapfill"]["beads"] == len(created)
+    assert [i for batch in asked for i in batch] == sorted(created)
+    assert not created & {"ag-infra-1", "ag-infra-2"}  # the existing beads were never asked
