@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from beadhive.hq_sql_runtime import SqlRuntimeAuthority, SqlRuntimeError
+from harness import hq_authority_mode
 from test_hq_lease_conformance import Cursor, _database
 
 
@@ -46,8 +47,9 @@ class ObserverCursor(Cursor):
 
 
 @pytest.mark.parametrize("path", CASES, ids=[p.stem for p in CASES])
-def test_authority_conformance(path, tmp_path):
+def test_authority_conformance(path, tmp_path, monkeypatch):
     case = json.loads(path.read_text())
+    hq_authority_mode.pin(case, monkeypatch)
     codes = json.loads((CORPUS / "refusal-codes.json").read_text())
     row = case["rows"]["hq_authority"][0]
     floor = tmp_path / "floor.json"
