@@ -233,8 +233,11 @@ GitHub readers land with the history pipeline's M1; the `docs` reader is shipped
 `doc:<path>`, through the `DocFormat` port (`beadlog_sources.doc_formats`; the markdown adapter uses
 markdown-it-py when the optional `beadlog-sources[md]` extra is installed and a regex scan
 otherwise, with identical results). Options (`--option key=value`): `layouts` (presets `decisions`,
-`design`, `adr`, `architecture`; `none`), `globs`, `files` (any extension a format detects),
-`formats`, `namespaces`, `first_add`, `git`.
+`design`, `adr`, `architecture`, `docs-html` (`docs/*.html`, not recursive), `reviews`
+(`docs/reviews`, review-tool HTML exports); `none`), `globs`, `files` (any extension a format
+detects), `formats` (`markdown` by default; add `html` to read `.html`/`.htm` docs: title from
+`<title>` else the first `<h1>`, `<meta name=...>` as metadata, a visible `Status:` line, `h1`-`h6`
+sections; stdlib `html.parser` only, script/style ignored), `namespaces`, `first_add`, `git`.
 
 Bead-token recognition is shared (`beadlog_sources.tokens`). With `namespaces` (id prefixes, for
 example `bh,hq`) every `<ns>-<id>` is a token. Without them a generic shape is used (a short

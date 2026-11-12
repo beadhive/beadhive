@@ -119,7 +119,7 @@ from .contracts import (
 )
 
 # --- docs reader (bh-4r0uh) ---
-from .doc_formats import DocFormat, MarkdownFormat, ParsedDoc, Section
+from .doc_formats import DocFormat, HtmlFormat, MarkdownFormat, ParsedDoc, Section
 from .docs import DocsStrategy
 from .docs_reader import LAYOUT_PRESETS, DocsReader
 from .evidence import (
@@ -217,6 +217,9 @@ __all__ = [
     "ParsedDoc",
     "Section",
     # --- end docs reader ---
+    # --- html doc format (bh-rqshf) ---
+    "HtmlFormat",
+    # --- end html doc format ---
     "BUILTIN_READERS",
     "BUILTIN_STRATEGIES",
     "READERS_GROUP",
