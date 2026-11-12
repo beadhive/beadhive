@@ -119,6 +119,7 @@ class OnboardPlan:
     skipped_checks: list[str] = field(default_factory=list)
     steps_run: list[str] = field(default_factory=list)
     registered: bool = False
+    published: bool = False  # bh-buaij: the bead database was pushed before registration
     installers_run: list[str] = field(default_factory=list)
     hub_synced: bool = False
     warnings: list[str] = field(default_factory=list)  # fenced step failures (non-fatal)
@@ -1581,6 +1582,65 @@ def _guard_beads_remote(ctx: Ctx) -> None:
         )
 
 
+def _act_publish(ctx: Ctx) -> None:
+    """Publish the bead database to the hive's remote BEFORE fleet registration (bh-buaij).
+
+    A zero-footprint onboard used to register the hive in ``managed_repos`` while its remote
+    still had no ``refs/dolt/data``: no other host could create a replica, and because
+    hives-ready requires every registered hive's replica, other executors' claims were fenced.
+    So when the store has a beads remote (``sync.remote`` — kept only with confirmed push
+    access, see ``_guard_beads_remote``) and origin does not yet carry ``refs/dolt/data``, push
+    through the managed remote sync's own push leg (``sync_remote._push_dolt_state`` →
+    ``Engine.push_state``, which reserves the remote fence) before ``register`` runs.
+
+    Not applicable (returns quietly): an external hive (pull-only contribution policy, never
+    published), an HQ-declared remote or partitioned stores (``_bootstrap_from_hq_remote``
+    already clones a populated remote or seed-pushes an empty one, failing closed), a store
+    with no beads remote (local by design), or a remote that already carries the data.
+
+    A failed publish on a NEW registration exits before ``register``: the hive is never
+    registered fleet-wide unpublished. The local store is kept, so a re-run takes the
+    already-initialized path and retries the publish. On an already-registered hive (no
+    re-registration this run) a failure is a warning, since there is no registration to hold."""
+    from . import sync_remote
+
+    _ensure_derived(ctx)
+    if ctx.kind == "external" or _hq_remote_descriptor(ctx) is not None:
+        return
+    if _partitioned_entry(ctx) is not None:
+        return
+    if not bd_mod.sync_remote(ctx.base):
+        return
+    if _origin_has_dolt_data(ctx):
+        typer.echo(f"{_GLYPH_INFO} beads: remote already carries refs/dolt/data — published")
+        return
+    typer.echo(f"{_GLYPH_INFO} beads: publishing the bead database before registration")
+    ok, reason = sync_remote._push_dolt_state(ctx.cfg, ctx.base)
+    if ok:
+        typer.echo(f"{_GLYPH_OK} beads: published refs/dolt/data")
+        if ctx.plan is not None:
+            ctx.plan.published = True
+        return
+    for line in (reason or "").splitlines():
+        typer.echo(f"    - {line}", err=True)
+    if not ctx.reconfigure:
+        warning = (
+            "could not publish the bead database (refs/dolt/data) — other hosts cannot "
+            "replicate this hive until `bh hive sync remotes --push` succeeds"
+        )
+        typer.echo(f"{_GLYPH_WARN} {warning}", err=True)
+        if ctx.plan is not None:
+            ctx.plan.warnings.append(warning)
+        return
+    typer.echo(
+        f"{_GLYPH_FAIL} beads: publishing the bead database failed — the hive was NOT "
+        "registered fleet-wide (an unpublished hive fences other hosts' replicas). The local "
+        "store is kept; fix the push and re-run onboarding.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def _act_register(ctx: Ctx) -> None:
     if ctx.reconfigure:
         registry.register(
@@ -1915,7 +1975,7 @@ def build_steps(ctx: Ctx) -> list[Step]:
     """The concrete onboarding DAG.
 
     Edges: resolve→clone→identity→{classify,worktree-clean}; classify→prefix;
-    {prefix,worktree-clean}→bd-init→register; register→{installers}；
+    {prefix,worktree-clean}→bd-init→publish→register; register→{installers}；
     {register,installers}→hub-sync. Clone is the preflight/acquire step; hub-sync runs last
     and only when ``ctx.hub_sync is not False`` (onboard defaults to deferred; plain init passes
     ``False`` and skips it). dirty-tree/on-default-branch apply only to an existing folder we
@@ -2034,7 +2094,12 @@ def build_steps(ctx: Ctx) -> list[Step]:
             ),
         ],
     )
-    register = Step("register", "register hive", _act_register, requires=["bd-init"], mutates=True)
+    # bh-buaij: publish BEFORE register — a hive registered fleet-wide with no refs/dolt/data
+    # on its remote cannot be replicated, and hives-ready then fences every other executor.
+    publish = Step(
+        "publish", "publish bead database", _act_publish, requires=["bd-init"], mutates=True
+    )
+    register = Step("register", "register hive", _act_register, requires=["publish"], mutates=True)
 
     # NO prepush-hook step (bh-smcj). Onboard used to furnish the pre-push fence hook here,
     # which made bh install a hook file as a side effect of onboarding — the thing
@@ -2158,6 +2223,7 @@ def build_steps(ctx: Ctx) -> list[Step]:
         prefix,
         worktree_clean,
         bd_init,
+        publish,
         register,
         node_id,
         beads_role,

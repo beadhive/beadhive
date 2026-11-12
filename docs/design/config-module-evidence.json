@@ -18,7 +18,7 @@
   "static_test_blast_radius": {
     "historical_documented_files": 129,
     "exact_ast_files_at_baseline": 135,
-    "exact_ast_files_after": 178,
+    "exact_ast_files_after": 179,
     "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, host-daemon, process dispatch, fleet consumer, HQ seed/bootstrap, and fleet membership end-to-end suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure. The bh-qa7vc Factory enrollment and daemon-origin coverage is included in the current exact AST inventory.",
     "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
   },
@@ -159,6 +159,10 @@
   "backfill_cli_inventory_update": {
     "bead": "bh-xxmb1",
     "reason": "The live generated ledger now measures 91 production config importers after src/beadhive/backfill_cli.py (the bh backfill command group) loads config to resolve the target hive and its registry entry for export and apply; it is enumerated in the dependency ledger under the bh-18hud.5 compatibility owner. Schema importers, test config importers, patch sites, historical extraction counts, the pinned baseline, and earlier full-gate receipts are unchanged."
+  },
+  "onboard_publish_inventory_update": {
+    "bead": "bh-buaij",
+    "reason": "The live generated ledger now measures 179 test config importers after tests/test_onboard_publish.py proves onboard publishes the bead database before fleet registration (it loads the hermetic config through the beadhive.config facade to build the onboard context and to read the registration back, the same shape as tests/test_onboard_dag.py). Production and schema importer counts, patch sites, historical extraction counts, the pinned baseline and earlier full-gate receipts are unchanged."
   },
   "outbox_batch_inventory_update": {
     "bead": "bh-pc9rf",
