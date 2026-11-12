@@ -814,7 +814,8 @@ the fallback. Verdicts are recorded in the plan and never asked again at apply t
 | `model` | `claude-haiku-5-5` | the model named in every request |
 | `auto_accept` | `{}` | judgment family (for reconcile, `reconcile.match`) → confidence `0..1` at or above which a judged verdict needs no review; empty means every judged verdict is reviewed |
 | `max_calls_per_run` | `100` | judge calls one run may make; past it the judge abstains |
-| `cost_per_call_usd` | `null` | operator-estimated USD per call; only reported by `bh backfill judge setup`, null reports nothing |
+| `cost_per_call_usd` | `null` | operator-estimated USD per call; reported by `bh backfill judge setup`, `bh backfill verdicts`, the B5 cost preview of `bh backfill history` and `bh backfill view cost`; null reports nothing |
+| `resume` | `true` | `bh backfill history` feeds the run directory's previous collation to the next run as the B5 prior, so judged queries are answered from it and a run stopped by `max_calls_per_run` continues |
 | `credential` | empty | host-local fnox lookup (`config_path`, `profile`, `key`) for `ANTHROPIC_API_KEY`; a reference only, never the value. Empty: the key must already be in the environment |
 
 `bh backfill judge setup [--dry-run] [--install] [--enable] [--fnox-config P --fnox-profile N
@@ -836,6 +837,35 @@ speaker, such as Jev, needs no code change. `backfill` is a new section: `Beadhi
 unknown keys, so nothing in a shared config should set it until the schema has rotated to every
 host (`bh-tfko9`).
 
+### `backfill.history`, `backfill.sources`, `backfill.collate` {#backfill-history}
+
+These configure `bh backfill history` ([BACKFILL.md](BACKFILL.md#bh-backfill-history-collate-and-view-the-history-pipeline)).
+They are **host-owned** (part of `backfill`) and inert by default: the command is the opt-in,
+nothing runs it for you, and its default stop (`--until plan`) never writes to the store.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `backfill.history.run_dir` | `""` | persistent run directory (`evidence.jsonl`, `collation.json`, `plan.bdlg`); empty: `<bh home>/state/backfill-history/<hive>`; `--run-dir` wins |
+| `backfill.history.sources` | `[git, docs, planning]` | readers used without `--sources`; `github` is allowed here only with the next section's switch |
+| `backfill.history.ledgers` | `[]` | ledger names (registered prefixes) whose id sets resolve foreign bead tokens; empty reads every registered ledger (one `bd export` each, announced on stderr); the hive's own ledger is always read |
+| `backfill.sources.git.options` / `.planning.options` | `{}` | reader options passed verbatim (strings); an `options` key wins over a typed key |
+| `backfill.sources.docs.formats` | `[markdown]` | doc formats read; **`html` is opt-in** |
+| `backfill.sources.docs.layouts` | `[]` | docs layout presets; empty: the reader's presets |
+| `backfill.sources.github.enabled` | `false` | allow the `github` reader (an offline read of a snapshot; needs `plugins.tracker-github.enabled`) |
+| `backfill.sources.github.snapshot` | `github-snapshot.json` | the snapshot file, relative to the checkout |
+| `backfill.collate.create` | `off` | `off` links only (a unit matching no bead projects nothing); `propose` makes closed beads from such units |
+| `backfill.collate.rules` | `[plan-item, local-bead, review, merge, commit]` | B3 claim rules, in order |
+| `backfill.collate.include_types` | `[feat]` | conventional-commit types the `commit` rule makes units of (`*` any) |
+| `backfill.collate.epics` / `areas` / `path_depth` / `min_epic_units` | `true` / `{}` / `1` / `2` | area epics and the per-hive area overrides |
+| `backfill.collate.attach.tiers` / `lexical_percent` / `lexical_min_tokens` / `standalone` | all four tiers / `60` / `2` / `true` | B4, attaching docs to units |
+| `backfill.collate.identify.new_threshold` / `max_candidates` | `null` / `5` | B5: a fuzzy score below `new_threshold` percent is NEW (off when null); candidates offered per match |
+| `backfill.collate.status.rules` / `design_only` / `summary_suffix` / `date_tolerance_days` / `clock_tolerance_seconds` | the four non-clock rules / `[design only]` / `-summary.md` / `1` / `86400` | B6 conflict rules (the `clock-*` rules are opt-in) and tolerances |
+
+Every default equals the library's own, so an absent section changes nothing. `bh config` validates
+the section (unknown keys, an unknown rule or tier and out-of-range numbers are refused). As with
+the rest of `backfill`, `BeadhiveConfig` forbids unknown keys: set these only after the schema has
+rotated to the host.
+
 ### `backfill.timeline.gapfill` {#backfill-timeline-gapfill}
 
 `backfill.timeline.gapfill` configures the opt-in gap fill of `bh backfill export --history`:
@@ -848,6 +878,7 @@ extra runs and the archive and its `bdlg.history` annotation are exactly what th
 | Key (under `backfill.timeline.gapfill`) | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | run the gap fill when exporting with `--history` |
+| `on_created` | `false` | after a create-mode `bh backfill history` apply, gap-fill **only** the beads that run created (same bounds and resumable cursor; independent of `enabled`; see [BACKFILL.md](BACKFILL.md#when-to-enable-gap-fill)) |
 | `batch_size` | `25` | beads per history scan (>= 1). Each scan walks every store commit (~9 s on `bh`) and costs ~1.3 s and ~3 MB of CSV per bead, so the whole `bh` gap takes about an hour at any size >= 25 |
 | `timeout_seconds` | `180` | seconds one gap-fill query may run before the run stops; the cursor `<out>.gapfill.json` lets the next run resume |
 

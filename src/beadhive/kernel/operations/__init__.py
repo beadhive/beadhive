@@ -48,17 +48,24 @@ class OperationSpec:
 _CLI_ROWS = """
 alerts show|as_json:boolean:o
 backfill apply|plan_path:string:r,hive:string:o,dry_run:boolean:o,pre_state:string:o,audit:string:o,as_json:boolean:o,store:string:o
+backfill collate|hive:string:o,sources:string:o,run_dir:string:o,refresh:boolean:o,yes:boolean:o,as_json:boolean:o
 backfill commits|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o,since_cursor:boolean:o
 backfill complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backfill coverage|hive:string:o,refresh:boolean:o,as_json:boolean:o
 backfill docs|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o
 backfill export|hive:string:o,out:string:o,as_json:boolean:o,history:boolean:o,store:string:o
+backfill history|hive:string:o,sources:string:o,until:string:o,run_dir:string:o,refresh:boolean:o,yes:boolean:o,as_json:boolean:o
 backfill inspect|path:string:r,as_json:boolean:o
 backfill judge setup|dry_run:boolean:o,install:boolean:o,enable:boolean:o,fnox_config:string:o,fnox_profile:string:o,fnox_key:string:o,as_json:boolean:o
 backfill planning|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o
 backfill timeline|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o,since_cursor:boolean:o
 backfill verdicts|path:string:r,verdict_class:array:o,engine:string:o,min_confidence:number:o,max_confidence:number:o,as_json:boolean:o
 backfill verify|path:string:r,as_json:boolean:o
+backfill view conflict|path:string:r,as_json:boolean:o
+backfill view cost|path:string:r,as_json:boolean:o
+backfill view unit|path:string:r,decision:array:o,as_json:boolean:o
+backfill view verdicts|path:string:r,as_json:boolean:o
+backfill view xref|path:string:r,as_json:boolean:o
 backfill-complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backup export|dest:string:o
 backup list|hive:string:o,as_json:boolean:o
@@ -340,6 +347,11 @@ _READ_PATHS = {
     "alerts show",
     "backfill inspect",
     "backfill verify",
+    "backfill view conflict",
+    "backfill view cost",
+    "backfill view unit",
+    "backfill view verdicts",
+    "backfill view xref",
     "backup list",
     "backup usage",
     "config get",
@@ -435,6 +447,7 @@ _CLI_PARENT_ROWS = """
 alerts|false|Fleet / HQ
 backfill|false|Hive
 backfill judge|false|
+backfill view|false|
 backup|false|Admin / infra
 checkpoint|false|Integration plane
 config|false|Admin / infra

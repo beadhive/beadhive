@@ -218,8 +218,9 @@ def test_collation_is_deterministic_and_round_trips(tmp_path) -> None:
     obj = json.loads(data)
     assert obj["schema"] == "bdlg.collation/1"
     assert obj["conflicts"] == []  # the opt-in clock rules are off by default
-    # B5 runs by default (judge off, no threshold): units are decided or residual, never NEW.
-    assert all(v["class"] != "NEW" for v in obj["verdicts"])
+    # B5 runs by default (judge off, no threshold): units are decided or residual, and NEW only
+    # by the derived no-candidate rule.
+    assert all(v["step"] == "no-candidate" for v in obj["verdicts"] if v["class"] == "NEW")
     decided = {v["unit"] for v in obj["verdicts"]} | {r["unit"] for r in obj["residual"]}
     assert decided == {u["key"] for u in obj["units"]}
     assert [u["unit"] for u in obj["lifecycle"]] == [u["key"] for u in obj["units"]]

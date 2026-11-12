@@ -419,7 +419,8 @@ def test_defaults_match_the_root_backfill_judge_config_schema() -> None:
     )
     schema = json.loads(artifacts[-1].read_text(encoding="utf-8"))
     judge = schema["$defs"]["BackfillJudgeConfig"]["properties"]
-    host_only = {"cost_per_call_usd", "credential"}  # bh-only keys (bh backfill judge setup)
+    # bh-only keys (bh backfill judge setup, bh backfill history)
+    host_only = {"cost_per_call_usd", "credential", "resume"}
     assert set(judge) - host_only == set(judges_module.SETTING_KEYS)
     assert judge["cost_per_call_usd"]["default"] is None
     defaults = JudgeSettings()

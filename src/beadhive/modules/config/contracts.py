@@ -2128,6 +2128,12 @@ class BackfillJudgeConfig(_Section):
         description="Operator-estimated USD per judge call, used only to report a run's judge "
         "cost. Null (default): no cost is reported.",
     )
+    resume: bool = Field(
+        True,
+        description="bh backfill history feeds the run directory's previous collation to the "
+        "next run as the B5 prior, so judged queries are answered from it instead of asked again "
+        "and a run stopped by max_calls_per_run continues where it stopped.",
+    )
     credential: HqFnoxRef = Field(
         default_factory=HqFnoxRef,
         description="Host-local fnox lookup (config_path, profile, key) for ANTHROPIC_API_KEY; "
@@ -2149,10 +2155,16 @@ class BackfillGapfillConfig(_Section):
     that have no ``created`` row in the events table (docs/BACKFILL.md "Gap fill"). Off by
     default: ``bh backfill export --history`` reads the events table only and no history scan
     runs. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with
-    ``timeout_seconds`` as its time limit."""
+    ``timeout_seconds`` as its time limit. ``on_created`` (also off) instead gap-fills just the
+    beads one create-mode backfill apply created."""
 
     enabled: bool = Field(
         False, description="Recover snapshot-level history for beads lacking a created event."
+    )
+    on_created: bool = Field(
+        False,
+        description="After a create-mode backfill apply, gap-fill only the beads that run "
+        "created (bounded by batch_size / timeout_seconds); independent of enabled.",
     )
     batch_size: int = Field(
         25,
@@ -2228,6 +2240,175 @@ class BackfillContinuousConfig(_Section):
     )
 
 
+class BackfillHistoryConfig(_Section):
+    """``backfill.history`` — settings of ``bh backfill history`` (the BeadLog history pipeline,
+    docs/BACKFILL.md "History pipeline"). The command is the opt-in: nothing here runs it. Every
+    default is inert: the run stops before the store is written unless ``--until apply`` says
+    otherwise."""
+
+    run_dir: str = Field(
+        "",
+        description="Persistent run directory (evidence.jsonl, collation.json, plan.bdlg). "
+        "Empty (default): <bh home>/state/backfill-history/<hive>. --run-dir wins.",
+    )
+    sources: list[Literal["git", "docs", "planning", "github"]] = Field(
+        default_factory=lambda: ["git", "docs", "planning"],
+        description="Readers used when --sources is not given. github also needs "
+        "backfill.sources.github.enabled and the tracker-github plugin enabled.",
+    )
+    ledgers: list[str] = Field(
+        default_factory=list,
+        description="Ledger names (registered hive prefixes) whose id sets resolve foreign bead "
+        "tokens. Empty (default): every registered ledger (one bd export each, on first use); "
+        "the hive's own ledger is always read.",
+    )
+
+
+class BackfillSourceConfig(_Section):
+    """One reader's options (``backfill.sources.<name>``)."""
+
+    options: dict[str, str] = Field(
+        default_factory=dict,
+        description="Reader options passed through verbatim (strings; lists comma-separated). "
+        "A key set here wins over the typed keys of the section.",
+    )
+
+
+class BackfillDocsSourceConfig(BackfillSourceConfig):
+    """``backfill.sources.docs`` — the docs reader."""
+
+    formats: list[Literal["markdown", "html"]] = Field(
+        default_factory=lambda: ["markdown"],
+        min_length=1,
+        description="Doc formats read. html is opt-in: add it to read HTML pages.",
+    )
+    layouts: list[str] = Field(
+        default_factory=list,
+        description="Layout presets of the docs reader. Empty (default): the reader's presets.",
+    )
+
+
+class BackfillGithubSourceConfig(BackfillSourceConfig):
+    """``backfill.sources.github`` — the GitHub snapshot reader (tracker-github plugin)."""
+
+    enabled: bool = Field(
+        False,
+        description="Allow the github reader (an offline read of a snapshot the tracker-github "
+        "plugin wrote). Needs plugins.tracker-github.enabled too.",
+    )
+    snapshot: str = Field(
+        "github-snapshot.json",
+        min_length=1,
+        description="The snapshot file, relative to the hive checkout.",
+    )
+
+
+class BackfillSourcesConfig(_Section):
+    """``backfill.sources`` — per-reader settings of the history pipeline."""
+
+    git: BackfillSourceConfig = Field(default_factory=BackfillSourceConfig)
+    docs: BackfillDocsSourceConfig = Field(default_factory=BackfillDocsSourceConfig)
+    planning: BackfillSourceConfig = Field(default_factory=BackfillSourceConfig)
+    github: BackfillGithubSourceConfig = Field(default_factory=BackfillGithubSourceConfig)
+
+
+class BackfillAttachConfig(_Section):
+    """``backfill.collate.attach`` — B4, attaching docs to units."""
+
+    tiers: list[Literal["explicit", "same-change", "shared-path", "lexical"]] = Field(
+        default_factory=lambda: ["explicit", "same-change", "shared-path", "lexical"],
+        description="Attach tiers run, in order; drop one to turn it off.",
+    )
+    lexical_percent: int = Field(
+        60, ge=1, le=100, description="Minimum overlap percent of the lexical tier."
+    )
+    lexical_min_tokens: int = Field(
+        2, ge=1, description="Fewest shared tokens the lexical tier accepts."
+    )
+    standalone: bool = Field(True, description="Make a doc-unit of a doc no tier attached.")
+
+
+class BackfillIdentifyConfig(_Section):
+    """``backfill.collate.identify`` — B5, identifying units against the baseline."""
+
+    new_threshold: int | None = Field(
+        None,
+        ge=1,
+        le=100,
+        description="Integer percent: a unit nothing else decided whose fuzzy score is below it "
+        "is NEW (inferred, reviewed). Null (default): the step is off.",
+    )
+    max_candidates: int = Field(
+        5, ge=1, description="Baseline beads (and epics) offered to the match query."
+    )
+
+
+class BackfillStatusConfig(_Section):
+    """``backfill.collate.status`` — B6, status, dates and conflicts."""
+
+    rules: list[
+        Literal[
+            "doc-draft-code-landed",
+            "doc-design-only-feat",
+            "doc-accepted-no-code",
+            "plan-open-summary",
+            "clock-doc-date",
+            "clock-review-merge",
+        ]
+    ] = Field(
+        default_factory=lambda: [
+            "doc-draft-code-landed",
+            "doc-design-only-feat",
+            "doc-accepted-no-code",
+            "plan-open-summary",
+        ],
+        description="Conflict rules run. The clock-* rules are opt-in.",
+    )
+    design_only: list[str] = Field(
+        default_factory=lambda: ["design only"],
+        description="Phrases that make a doc's declared status design only.",
+    )
+    summary_suffix: str = Field(
+        "-summary.md", min_length=1, description="File-name suffix of a plan item's summary doc."
+    )
+    date_tolerance_days: int = Field(
+        1, ge=0, description="Days a doc's declared date may differ from its add commit."
+    )
+    clock_tolerance_seconds: int = Field(
+        86400, ge=0, description="Seconds a review may be merged before its first change."
+    )
+
+
+class BackfillCollateConfig(_Section):
+    """``backfill.collate`` — B3 clustering plus the B4 to B6 sub-sections, and ``create``.
+    Every default is the library's own; nothing creates a bead until ``create`` is changed."""
+
+    create: Literal["off", "propose"] = Field(
+        "off",
+        description="off (default): link only, units that match no bead are reported and "
+        "propose nothing. propose: a unit that matches no bead is proposed as a closed bead.",
+    )
+    rules: list[Literal["plan-item", "local-bead", "review", "merge", "commit"]] = Field(
+        default_factory=lambda: ["plan-item", "local-bead", "review", "merge", "commit"],
+        description="B3 claim rules run, in order.",
+    )
+    include_types: list[str] = Field(
+        default_factory=lambda: ["feat"],
+        description="Conventional-commit types the commit rule makes units of (* = any).",
+    )
+    epics: bool = Field(True, description="Group units into area epics.")
+    areas: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-hive area overrides: a key with a / is a path prefix, any other key "
+        "renames a derived area.",
+    )
+    path_depth: int = Field(1, ge=1, description="Directory segments of a path-derived area.")
+    min_epic_units: int = Field(2, ge=1, description="Fewest units an area needs for an epic.")
+    attach: BackfillAttachConfig = Field(default_factory=BackfillAttachConfig)
+    identify: BackfillIdentifyConfig = Field(default_factory=BackfillIdentifyConfig)
+    status: BackfillStatusConfig = Field(default_factory=BackfillStatusConfig)
+
+
 class BackfillConfig(_Section):
     """``backfill`` — shared backfill engine settings (every behavior off by default)."""
 
@@ -2246,6 +2427,18 @@ class BackfillConfig(_Section):
     continuous: BackfillContinuousConfig = Field(
         default_factory=BackfillContinuousConfig,
         description="Opt-in incremental backfill after merges and syncs.",
+    )
+    history: BackfillHistoryConfig = Field(
+        default_factory=BackfillHistoryConfig,
+        description="bh backfill history: run directory, default sources, ledger restriction.",
+    )
+    sources: BackfillSourcesConfig = Field(
+        default_factory=BackfillSourcesConfig,
+        description="Per-reader settings of the history pipeline (docs formats, github opt-in).",
+    )
+    collate: BackfillCollateConfig = Field(
+        default_factory=BackfillCollateConfig,
+        description="Collation options (B3 to B6) and the create mode of bh backfill history.",
     )
 
 
@@ -4715,8 +4908,10 @@ __all__ = (
     "AttestTrivialConfig",
     "AttestVersionBumpConfig",
     "AttestKeyConfig",
+    "BackfillCollateConfig",
     "BackfillConfig",
     "BackfillCoverageConfig",
+    "BackfillHistoryConfig",
     "BackfillJudgeConfig",
     "BackupConfig",
     "BEADLOG_XTDB_VALIDATED_IMAGE",

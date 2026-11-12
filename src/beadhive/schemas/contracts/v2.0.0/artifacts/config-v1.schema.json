@@ -363,10 +363,135 @@
       "title": "AttestVersionBumpConfig",
       "type": "object"
     },
+    "BackfillAttachConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.collate.attach`` — B4, attaching docs to units.",
+      "properties": {
+        "lexical_min_tokens": {
+          "default": 2,
+          "description": "Fewest shared tokens the lexical tier accepts.",
+          "minimum": 1,
+          "title": "Lexical Min Tokens",
+          "type": "integer"
+        },
+        "lexical_percent": {
+          "default": 60,
+          "description": "Minimum overlap percent of the lexical tier.",
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Lexical Percent",
+          "type": "integer"
+        },
+        "standalone": {
+          "default": true,
+          "description": "Make a doc-unit of a doc no tier attached.",
+          "title": "Standalone",
+          "type": "boolean"
+        },
+        "tiers": {
+          "description": "Attach tiers run, in order; drop one to turn it off.",
+          "items": {
+            "enum": [
+              "explicit",
+              "same-change",
+              "shared-path",
+              "lexical"
+            ],
+            "type": "string"
+          },
+          "title": "Tiers",
+          "type": "array"
+        }
+      },
+      "title": "BackfillAttachConfig",
+      "type": "object"
+    },
+    "BackfillCollateConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.collate`` — B3 clustering plus the B4 to B6 sub-sections, and ``create``.\nEvery default is the library's own; nothing creates a bead until ``create`` is changed.",
+      "properties": {
+        "areas": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-hive area overrides: a key with a / is a path prefix, any other key renames a derived area.",
+          "title": "Areas",
+          "type": "object"
+        },
+        "attach": {
+          "$ref": "#/$defs/BackfillAttachConfig"
+        },
+        "create": {
+          "default": "off",
+          "description": "off (default): link only, units that match no bead are reported and propose nothing. propose: a unit that matches no bead is proposed as a closed bead.",
+          "enum": [
+            "off",
+            "propose"
+          ],
+          "title": "Create",
+          "type": "string"
+        },
+        "epics": {
+          "default": true,
+          "description": "Group units into area epics.",
+          "title": "Epics",
+          "type": "boolean"
+        },
+        "identify": {
+          "$ref": "#/$defs/BackfillIdentifyConfig"
+        },
+        "include_types": {
+          "description": "Conventional-commit types the commit rule makes units of (* = any).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Include Types",
+          "type": "array"
+        },
+        "min_epic_units": {
+          "default": 2,
+          "description": "Fewest units an area needs for an epic.",
+          "minimum": 1,
+          "title": "Min Epic Units",
+          "type": "integer"
+        },
+        "path_depth": {
+          "default": 1,
+          "description": "Directory segments of a path-derived area.",
+          "minimum": 1,
+          "title": "Path Depth",
+          "type": "integer"
+        },
+        "rules": {
+          "description": "B3 claim rules run, in order.",
+          "items": {
+            "enum": [
+              "plan-item",
+              "local-bead",
+              "review",
+              "merge",
+              "commit"
+            ],
+            "type": "string"
+          },
+          "title": "Rules",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/BackfillStatusConfig"
+        }
+      },
+      "title": "BackfillCollateConfig",
+      "type": "object"
+    },
     "BackfillConfig": {
       "additionalProperties": false,
       "description": "``backfill`` — shared backfill engine settings (every behavior off by default).",
       "properties": {
+        "collate": {
+          "$ref": "#/$defs/BackfillCollateConfig",
+          "description": "Collation options (B3 to B6) and the create mode of bh backfill history."
+        },
         "continuous": {
           "$ref": "#/$defs/BackfillContinuousConfig",
           "description": "Opt-in incremental backfill after merges and syncs."
@@ -375,9 +500,17 @@
           "$ref": "#/$defs/BackfillCoverageConfig",
           "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
         },
+        "history": {
+          "$ref": "#/$defs/BackfillHistoryConfig",
+          "description": "bh backfill history: run directory, default sources, ledger restriction."
+        },
         "judge": {
           "$ref": "#/$defs/BackfillJudgeConfig",
           "description": "Opt-in bh-judge/1 command judge for reconcile; deterministic when off."
+        },
+        "sources": {
+          "$ref": "#/$defs/BackfillSourcesConfig",
+          "description": "Per-reader settings of the history pipeline (docs formats, github opt-in)."
         },
         "timeline": {
           "$ref": "#/$defs/BackfillTimelineConfig",
@@ -471,9 +604,46 @@
       "title": "BackfillCoverageConfig",
       "type": "object"
     },
+    "BackfillDocsSourceConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.sources.docs`` — the docs reader.",
+      "properties": {
+        "formats": {
+          "description": "Doc formats read. html is opt-in: add it to read HTML pages.",
+          "items": {
+            "enum": [
+              "markdown",
+              "html"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Formats",
+          "type": "array"
+        },
+        "layouts": {
+          "description": "Layout presets of the docs reader. Empty (default): the reader's presets.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Layouts",
+          "type": "array"
+        },
+        "options": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Reader options passed through verbatim (strings; lists comma-separated). A key set here wins over the typed keys of the section.",
+          "title": "Options",
+          "type": "object"
+        }
+      },
+      "title": "BackfillDocsSourceConfig",
+      "type": "object"
+    },
     "BackfillGapfillConfig": {
       "additionalProperties": false,
-      "description": "``backfill.timeline.gapfill`` — the opt-in, bounded ``dolt_history_*`` gap fill for beads\nthat have no ``created`` row in the events table (docs/BACKFILL.md \"Gap fill\"). Off by\ndefault: ``bh backfill export --history`` reads the events table only and no history scan\nruns. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with\n``timeout_seconds`` as its time limit.",
+      "description": "``backfill.timeline.gapfill`` — the opt-in, bounded ``dolt_history_*`` gap fill for beads\nthat have no ``created`` row in the events table (docs/BACKFILL.md \"Gap fill\"). Off by\ndefault: ``bh backfill export --history`` reads the events table only and no history scan\nruns. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with\n``timeout_seconds`` as its time limit. ``on_created`` (also off) instead gap-fills just the\nbeads one create-mode backfill apply created.",
       "properties": {
         "batch_size": {
           "default": 25,
@@ -488,6 +658,12 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "on_created": {
+          "default": false,
+          "description": "After a create-mode backfill apply, gap-fill only the beads that run created (bounded by batch_size / timeout_seconds); independent of enabled.",
+          "title": "On Created",
+          "type": "boolean"
+        },
         "timeout_seconds": {
           "default": 180.0,
           "description": "Seconds one gap-fill query may run before the run stops.",
@@ -497,6 +673,101 @@
         }
       },
       "title": "BackfillGapfillConfig",
+      "type": "object"
+    },
+    "BackfillGithubSourceConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.sources.github`` — the GitHub snapshot reader (tracker-github plugin).",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Allow the github reader (an offline read of a snapshot the tracker-github plugin wrote). Needs plugins.tracker-github.enabled too.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "options": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Reader options passed through verbatim (strings; lists comma-separated). A key set here wins over the typed keys of the section.",
+          "title": "Options",
+          "type": "object"
+        },
+        "snapshot": {
+          "default": "github-snapshot.json",
+          "description": "The snapshot file, relative to the hive checkout.",
+          "minLength": 1,
+          "title": "Snapshot",
+          "type": "string"
+        }
+      },
+      "title": "BackfillGithubSourceConfig",
+      "type": "object"
+    },
+    "BackfillHistoryConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.history`` — settings of ``bh backfill history`` (the BeadLog history pipeline,\ndocs/BACKFILL.md \"History pipeline\"). The command is the opt-in: nothing here runs it. Every\ndefault is inert: the run stops before the store is written unless ``--until apply`` says\notherwise.",
+      "properties": {
+        "ledgers": {
+          "description": "Ledger names (registered hive prefixes) whose id sets resolve foreign bead tokens. Empty (default): every registered ledger (one bd export each, on first use); the hive's own ledger is always read.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Ledgers",
+          "type": "array"
+        },
+        "run_dir": {
+          "default": "",
+          "description": "Persistent run directory (evidence.jsonl, collation.json, plan.bdlg). Empty (default): <bh home>/state/backfill-history/<hive>. --run-dir wins.",
+          "title": "Run Dir",
+          "type": "string"
+        },
+        "sources": {
+          "description": "Readers used when --sources is not given. github also needs backfill.sources.github.enabled and the tracker-github plugin enabled.",
+          "items": {
+            "enum": [
+              "git",
+              "docs",
+              "planning",
+              "github"
+            ],
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "title": "BackfillHistoryConfig",
+      "type": "object"
+    },
+    "BackfillIdentifyConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.collate.identify`` — B5, identifying units against the baseline.",
+      "properties": {
+        "max_candidates": {
+          "default": 5,
+          "description": "Baseline beads (and epics) offered to the match query.",
+          "minimum": 1,
+          "title": "Max Candidates",
+          "type": "integer"
+        },
+        "new_threshold": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Integer percent: a unit nothing else decided whose fuzzy score is below it is NEW (inferred, reviewed). Null (default): the step is off.",
+          "title": "New Threshold"
+        }
+      },
+      "title": "BackfillIdentifyConfig",
       "type": "object"
     },
     "BackfillJudgeConfig": {
@@ -556,6 +827,12 @@
           "title": "Model",
           "type": "string"
         },
+        "resume": {
+          "default": true,
+          "description": "bh backfill history feeds the run directory's previous collation to the next run as the B5 prior, so judged queries are answered from it instead of asked again and a run stopped by max_calls_per_run continues where it stopped.",
+          "title": "Resume",
+          "type": "boolean"
+        },
         "timeout_seconds": {
           "default": 30.0,
           "description": "Seconds one judge call may run before it falls back.",
@@ -565,6 +842,95 @@
         }
       },
       "title": "BackfillJudgeConfig",
+      "type": "object"
+    },
+    "BackfillSourceConfig": {
+      "additionalProperties": false,
+      "description": "One reader's options (``backfill.sources.<name>``).",
+      "properties": {
+        "options": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Reader options passed through verbatim (strings; lists comma-separated). A key set here wins over the typed keys of the section.",
+          "title": "Options",
+          "type": "object"
+        }
+      },
+      "title": "BackfillSourceConfig",
+      "type": "object"
+    },
+    "BackfillSourcesConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.sources`` — per-reader settings of the history pipeline.",
+      "properties": {
+        "docs": {
+          "$ref": "#/$defs/BackfillDocsSourceConfig"
+        },
+        "git": {
+          "$ref": "#/$defs/BackfillSourceConfig"
+        },
+        "github": {
+          "$ref": "#/$defs/BackfillGithubSourceConfig"
+        },
+        "planning": {
+          "$ref": "#/$defs/BackfillSourceConfig"
+        }
+      },
+      "title": "BackfillSourcesConfig",
+      "type": "object"
+    },
+    "BackfillStatusConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.collate.status`` — B6, status, dates and conflicts.",
+      "properties": {
+        "clock_tolerance_seconds": {
+          "default": 86400,
+          "description": "Seconds a review may be merged before its first change.",
+          "minimum": 0,
+          "title": "Clock Tolerance Seconds",
+          "type": "integer"
+        },
+        "date_tolerance_days": {
+          "default": 1,
+          "description": "Days a doc's declared date may differ from its add commit.",
+          "minimum": 0,
+          "title": "Date Tolerance Days",
+          "type": "integer"
+        },
+        "design_only": {
+          "description": "Phrases that make a doc's declared status design only.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Design Only",
+          "type": "array"
+        },
+        "rules": {
+          "description": "Conflict rules run. The clock-* rules are opt-in.",
+          "items": {
+            "enum": [
+              "doc-draft-code-landed",
+              "doc-design-only-feat",
+              "doc-accepted-no-code",
+              "plan-open-summary",
+              "clock-doc-date",
+              "clock-review-merge"
+            ],
+            "type": "string"
+          },
+          "title": "Rules",
+          "type": "array"
+        },
+        "summary_suffix": {
+          "default": "-summary.md",
+          "description": "File-name suffix of a plan item's summary doc.",
+          "minLength": 1,
+          "title": "Summary Suffix",
+          "type": "string"
+        }
+      },
+      "title": "BackfillStatusConfig",
       "type": "object"
     },
     "BackfillTimelineConfig": {
