@@ -2149,10 +2149,16 @@ class BackfillGapfillConfig(_Section):
     that have no ``created`` row in the events table (docs/BACKFILL.md "Gap fill"). Off by
     default: ``bh backfill export --history`` reads the events table only and no history scan
     runs. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with
-    ``timeout_seconds`` as its time limit."""
+    ``timeout_seconds`` as its time limit. ``on_created`` (also off) instead gap-fills just the
+    beads one create-mode backfill apply created."""
 
     enabled: bool = Field(
         False, description="Recover snapshot-level history for beads lacking a created event."
+    )
+    on_created: bool = Field(
+        False,
+        description="After a create-mode backfill apply, gap-fill only the beads that run "
+        "created (bounded by batch_size / timeout_seconds); independent of enabled.",
     )
     batch_size: int = Field(
         25,
