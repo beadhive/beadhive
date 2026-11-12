@@ -108,8 +108,11 @@ def provision_incarnation(
 
     Refuses unless the ignore rule is committed first (bh-v0k3i), and refuses when either table
     already exists. Commits ``dolt_schemas`` (the trigger definitions) so the runtime working
-    tree stays clean for the next authority publication. Then runs :func:`check_provisioning`
-    and raises on any violation; returns the (empty) problem list on success."""
+    tree stays clean for the next authority publication. Additive only (bh-14h9r): refuses
+    before committing when the commit would remove or rewrite any existing fragment, such as
+    another incarnation's triggers, since that same-sequence head fences every reader. Then
+    runs :func:`check_provisioning` and raises on any violation; returns the (empty) problem
+    list on success."""
     tables = (session_table(principal, epoch), evidence_table(principal, epoch))
     if not _ignore_committed(cursor) or not _existing(cursor, (LIVENESS_POLICY_TABLE,)):
         raise SessionError(
@@ -121,7 +124,10 @@ def provision_incarnation(
     if not isinstance(password, str) or not password:
         raise SessionError("frame account password required")
     sql = _statements(cursor)
-    for statement in (*session_ddl(principal, epoch), *evidence_ddl(principal, epoch)):
+    definitions = (session_ddl(principal, epoch), evidence_ddl(principal, epoch))
+    expected = {("trigger", f"{ddl[0].split()[2]}_stamp"): ddl[1] for ddl in definitions}
+    _additive_schema(sql, {})
+    for statement in (*definitions[0], *definitions[1]):
         sql.execute(statement)
     for statement in account_statements(
         principal,
@@ -132,6 +138,7 @@ def provision_incarnation(
         catalog=bool(_existing(sql, (RELEASE_CATALOG_TABLE,))),
     ):
         sql.execute(statement, (password,) if "%s" in statement else None)
+    _additive_schema(sql, expected)
     sql.commit_schemas(f"HQ session/evidence triggers for {principal} incarnation {epoch}")
     problems = check_provisioning(cursor, principal, epoch, database=database, inbox=inbox)
     if problems:
@@ -215,6 +222,40 @@ def validate_incarnation(cursor, principal: str, epoch: int, *, database: str) -
     problems = check_provisioning(sql, principal, epoch, database=database)
     if problems:
         raise SessionError("provisioning check failed: " + "; ".join(problems))
+
+
+#: Where an operator recovers when provisioning would rewrite history at the same sequence.
+RESTORE_FLOOR_RECOVERY = (
+    "Restore the fragments (re-create any dropped incarnation table, then "
+    "CALL DOLT_CHECKOUT('dolt_schemas')) and retry, or commit the change and publish the "
+    "authority again first; see docs/HQ.md#restore-floor-recovery"
+)
+
+
+def _additive_schema(sql, expected: dict) -> None:
+    """Refuse, before committing, a ``dolt_schemas`` change the restore floor rejects (bh-14h9r).
+
+    Provisioning commits at the authority sequence it found, so every reader accepts the head
+    only if the commit purely adds this incarnation's stamp-trigger pair. A pending removal or
+    rewrite of an existing fragment (another incarnation's triggers, e.g. dropped with its
+    tables) would be committed along with it and fence every frame in the fleet. ``expected``
+    is the exact set of fragments this call may add (empty before any DDL runs)."""
+    before = {tuple(row[:2]): tuple(row[2:]) for row in sql.schemas(at=sql.head())}
+    current = {tuple(row[:2]): tuple(row[2:]) for row in sql.schemas()}
+    changed = sorted(str(key[1]) for key, row in before.items() if current.get(key) != row)
+    if changed:
+        raise SessionError(
+            "provisioning would remove or rewrite existing schema fragments ("
+            + ", ".join(changed)
+            + ") at an unchanged authority sequence, which every reader's restore floor "
+            "refuses; nothing was committed. " + RESTORE_FLOOR_RECOVERY
+        )
+    added = {key: row[0] for key, row in current.items() if key not in before}
+    if added != expected:
+        raise SessionError(
+            "pending dolt_schemas changes other than this incarnation's stamp-trigger pair; "
+            "nothing was committed. " + RESTORE_FLOOR_RECOVERY
+        )
 
 
 def _pending_schema(cursor, expected_triggers, *, complete=False):
