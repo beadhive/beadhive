@@ -15,7 +15,7 @@ import pytest
 
 import beadlog
 from beadhive_backfill import BackfillEngine, BackfillError, HistoryPass, Plan
-from beadlog_sources import CachedLedgerDirectory, IdentifyOptions, ProjectOptions, baseline_events
+from beadlog_sources import CachedLedgerDirectory, ProjectOptions, baseline_events
 from beadlog_sources.testing import evidence as ev
 
 GROUP = beadlog.Group("urn:uuid:00000000-0000-4000-8000-0000000000ee", "wd")
@@ -92,7 +92,6 @@ def make_pass(*, create: bool, prefix: str | None = "fx") -> HistoryPass:
         group=GROUP.id,
         prefix=prefix,
         create=create,
-        identify_options=IdentifyOptions(new_threshold=100),
         project_options=ProjectOptions(creation_labels=LABELS),
     )
 
@@ -201,3 +200,20 @@ def test_create_mode_needs_an_explicit_prefix() -> None:
     for prefix in (None, ""):
         with pytest.raises(BackfillError, match="prefix"):
             make_pass(create=True, prefix=prefix)
+
+
+def test_create_mode_needs_no_new_threshold_and_off_still_writes_nothing() -> None:
+    # No identify options at all: no threshold, no judge. The units have no baseline candidate
+    # (the only bead is unrelated), so B5 decides them NEW by rule.
+    store = FoldStore([_row("fx-seed")])
+    on = make_pass(create=True)
+    plan = engine(on).plan(on, store)
+    assert decisions(plan) == {"NEW": 6}
+    creates = [e for e in plan.events if e.kind == "create"]
+    assert len(creates) == 6
+    for event in creates:
+        verdict = event.to_json()["annotations"]["bdlg.collate"]["verdict"]
+        assert verdict["step"] == "no-candidate" and verdict["class"] == "NEW"
+        assert event.provenance == "derived" and event.confidence is None
+    off = make_pass(create=False, prefix=None)
+    assert not engine(off).plan(off, store).applicable_events()

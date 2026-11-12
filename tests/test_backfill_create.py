@@ -19,7 +19,7 @@ from beadhive.backfill_create import (
     parse_create,
 )
 from beadhive_backfill import BackfillError, HistoryPass
-from beadlog_sources import CachedLedgerDirectory, IdentifyOptions, ProjectOptions
+from beadlog_sources import CachedLedgerDirectory, ProjectOptions
 from beadlog_sources.testing import evidence as ev
 
 ENTRY = {"provider": "github", "org": "beadhive", "repo": "fixture", "prefix": "fx"}
@@ -81,7 +81,6 @@ def _created_beads() -> dict[str, dict]:
         prefix=create_mode_prefix(ENTRY, CFG, "propose"),
         create=True,
         project_options=create_mode_options(ENTRY, CFG, "propose"),
-        identify_options=IdentifyOptions(new_threshold=100),
     )
     events = pass_.propose((), extracted_at="2026-11-12T00:00:00Z", judge=None)  # type: ignore[arg-type]
     return {

@@ -16,6 +16,15 @@ applicable; what ``create`` decides is the NEW units.
   triplet, see ``beadhive.backfill_create``) plus their ``source:`` label. They are reviewed through
   the unchanged plan, verify and apply envelope.
 
+**Converged runs.** Reconcile classifies only proposed events, so a run with nothing left to do
+has an empty ``by_class``. Its state is reported through the pass report's ``units`` counts (the
+projector's per-unit decisions: ``PRESENT`` for what is already linked); read those, not
+``by_class`` (``bh backfill inspect``).
+
+**No threshold needed.** A unit with no baseline candidate at all (an empty or commit-only hive)
+is NEW by rule in B5 (step ``no-candidate``, derived), so create mode produces beads without
+``new_threshold``.
+
 **Empty hive.** A hive with no beads gives the link-only mode nothing to link to, so it is refused
 there (``BackfillError``). Create mode is the only mode that allows it, and only with an explicit
 ``prefix`` (never derived, bh-ear6v): a missing prefix is refused at construction.
