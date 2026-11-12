@@ -300,6 +300,9 @@ from .lifecycle import (
 # isort: split
 # --- project C (bh-rz6ys) ---
 from .project import (
+    DEFAULT_SOURCE_LABELS as PROJECT_DEFAULT_SOURCE_LABELS,
+)
+from .project import (
     DEFAULT_TYPES as PROJECT_DEFAULT_TYPES,
 )
 from .project import (
@@ -541,6 +544,7 @@ __all__ = [
     "lifecycles",
     # --- end collate B6 ---
     # --- project C (bh-rz6ys) ---
+    "PROJECT_DEFAULT_SOURCE_LABELS",
     "PROJECT_DEFAULT_TYPES",
     "PROJECT_EVENT_KINDS",
     "Kept",

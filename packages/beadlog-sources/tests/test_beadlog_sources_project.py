@@ -390,7 +390,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
         (
             "gh:pr/5",
             "label_add",
-            {"label": "source:pr"},
+            {"label": "source:github"},
             "2026-01-02T08:00:00Z",
             None,
             "derived",
@@ -544,7 +544,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
         (
             "doc:docs/design/queue.md",
             "label_add",
-            {"label": "source:doc"},
+            {"label": "source:docs"},
             "2026-02-03T00:00:00Z",
             "day",
             "derived",
@@ -672,7 +672,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
         (
             "plan:phase-1",
             "label_add",
-            {"label": "source:plan-item"},
+            {"label": "source:planning"},
             "2026-03-01T00:00:00Z",
             None,
             "derived",
@@ -717,7 +717,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
         (
             "plan:phase-1/a",
             "label_add",
-            {"label": "source:plan-item"},
+            {"label": "source:planning"},
             "2026-03-02T00:00:00Z",
             None,
             "derived",
@@ -792,7 +792,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
         (
             "plan:phase-1/b",
             "label_add",
-            {"label": "source:plan-item"},
+            {"label": "source:planning"},
             "2026-03-03T00:00:00Z",
             None,
             "derived",
@@ -1147,7 +1147,7 @@ def test_projected_beads_fold_to_closed_history() -> None:
     assert done.phase == "closed" and todo.phase == "open"
     assert beadlog.Edge("parent-child", epic.bead) in done.edges
     assert beadlog.Edge("blocks", done.bead) in todo.edges
-    assert set(done.labels) == {"source:plan-item"}
+    assert set(done.labels) == {"source:planning"}
 
 
 # -- matched units never overwrite ------------------------------------------------------------
@@ -1236,11 +1236,11 @@ def test_residual_units_project_nothing_but_are_reported() -> None:
 
 def test_creation_labels_are_an_option_and_off_by_default() -> None:
     (_, _, plain), _ = scenario("review")
-    assert {e.data["label"] for e in plain.events if e.kind == "label_add"} == {"source:pr"}
+    assert {e.data["label"] for e in plain.events if e.kind == "label_add"} == {"source:github"}
     options = ProjectOptions(creation_labels=("origin:backfill",))
     (_, _, labelled), _ = scenario("review", options)
     labels = {e.data["label"] for e in labelled.events if e.kind == "label_add"}
-    assert labels == {"source:pr", "origin:backfill"}
+    assert labels == {"source:github", "origin:backfill"}
     assert labelled.to_json()["options"]["creation_labels"] == ["origin:backfill"]
 
 
@@ -1251,6 +1251,8 @@ def test_types_are_configurable_per_category() -> None:
     assert create.data["type"] == "story"
     with pytest.raises(ProjectError):
         ProjectOptions(types={"pull-request": "story"})
+    with pytest.raises(ProjectError):
+        ProjectOptions(source_labels={"review": ""})
     with pytest.raises(ProjectError):
         ProjectOptions(creation_labels="origin:backfill")  # type: ignore[arg-type]
 
@@ -1294,3 +1296,21 @@ def test_projection_is_deterministic_and_reads_a_loaded_collation(name: str) -> 
         col, corpus, baseline, prefix=PREFIX, group=GROUP, extracted_at="2027-01-01T00:00:00Z"
     )
     assert [e.id for e in later.events] == [e.id for e in first.events]  # not identity
+
+
+def test_source_labels_match_the_existing_corpus_and_are_configurable() -> None:
+    expected = {
+        "change": {"source:commit"},
+        "review": {"source:github"},
+        "tracker-item": {"source:commit"},  # its unit is the commit that refs the issue
+        "design-record": {"source:docs", "source:commit"},
+        "plan-item": {"source:planning"},
+        "release-marker": {"source:commit", "source:area"},
+    }
+    for name, labels in expected.items():
+        (_, _, projection), _ = scenario(name)
+        assert {e.data["label"] for e in projection.events if e.kind == "label_add"} == labels
+    options = ProjectOptions(source_labels={"pr": "source:gh-pr"})  # a kind beats its category
+    (_, _, projection), _ = scenario("review", options)
+    assert {e.data["label"] for e in projection.events if e.kind == "label_add"} == {"source:gh-pr"}
+    assert projection.to_json()["options"]["source_labels"]["review"] == "source:github"

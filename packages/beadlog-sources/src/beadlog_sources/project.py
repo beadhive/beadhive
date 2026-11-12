@@ -19,8 +19,11 @@ today).
   (type per :attr:`ProjectOptions.types`, ``epic`` for an epic unit; title; ``external_ref`` = the
   unit key, which is the idempotency key B5 step 1 matches on the next run; a ``Reconstructed from``
   description) carrying the verdict's confidence and, as annotation :data:`ANNOTATION`, the
-  verdict; one ``label_add`` of ``source:<kind>`` (the anchor artifact's kind, else the unit's
-  rule) plus :attr:`ProjectOptions.creation_labels` (default none: the ``origin:backfill``
+  verdict; one ``label_add`` of its source label (:attr:`ProjectOptions.source_labels`, looked
+  up by the anchor artifact's kind, then its category, then the unit's rule; the defaults
+  :data:`DEFAULT_SOURCE_LABELS` match the labels the older passes already wrote:
+  ``source:docs``, ``source:planning``, ``source:commit``, ``source:github``, ``source:area``)
+  plus :attr:`ProjectOptions.creation_labels` (default none: the ``origin:backfill``
   creation label of decision D1 is wired by the create-mode caller); a ``parent-child``
   ``edge_add`` to the parent unit's bead (an area epic or a plan parent) and a ``blocks`` edge
   per plan ``depends_on`` whose target has a bead; a closed ``phase`` when B6 says closed; and the
@@ -163,7 +166,20 @@ DEFAULT_TYPES: Mapping[str, str] = MappingProxyType(
         Category.RELEASE_MARKER.value: "epic",
     }
 )
-OPTION_MEMBERS = ("creation_labels", "types")
+# The ``source:`` label of a NEW bead, by its anchor's kind, category or (area epics) unit rule.
+# The values match the corpus the older passes wrote (``source:docs``, ``source:planning``) and
+# #143's ``source:commit``, so the backfilled corpus is not split by a new spelling.
+DEFAULT_SOURCE_LABELS: Mapping[str, str] = MappingProxyType(
+    {
+        Category.DESIGN_RECORD.value: "source:docs",
+        Category.PLAN_ITEM.value: "source:planning",
+        Category.CHANGE.value: "source:commit",
+        Category.REVIEW.value: "source:github",
+        Category.TRACKER_ITEM.value: "source:github",
+        RULE_AREA: "source:area",
+    }
+)
+OPTION_MEMBERS = ("creation_labels", "types", "source_labels")
 
 NOTE_CLOSED_UNDATED = "closed-undated"
 NOTE_PHASE_RAISED = "phase-raised"
@@ -182,7 +198,10 @@ class ProjectError(ValueError):
 class ProjectOptions:
     """Phase C options.
 
-    - ``creation_labels``: labels every NEW bead gets besides ``source:<kind>`` (default none;
+    - ``source_labels``: anchor kind, category or unit rule to the ``source:`` label of a NEW
+      bead (default :data:`DEFAULT_SOURCE_LABELS`; a given mapping overrides or adds keys only).
+      A unit no key covers gets ``source:<rule>``.
+    - ``creation_labels``: labels every NEW bead gets besides its source label (default none;
       the create-mode caller passes ``origin:backfill``, decision D1).
     - ``types``: category to the bead type of a NEW non-epic unit (default
       :data:`DEFAULT_TYPES`; a given mapping overrides those keys only). Epic units are ``epic``.
@@ -190,6 +209,7 @@ class ProjectOptions:
 
     creation_labels: tuple[str, ...] = ()
     types: Mapping[str, str] = field(default_factory=dict, hash=False)
+    source_labels: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         labels = self.creation_labels
@@ -209,10 +229,32 @@ class ProjectOptions:
         object.__setattr__(
             self, "types", MappingProxyType({**DEFAULT_TYPES, **dict(sorted(self.types.items()))})
         )
+        sources = self.source_labels
+        if not isinstance(sources, Mapping) or not all(
+            isinstance(k, str) and k and isinstance(v, str) and v.strip()
+            for k, v in sources.items()
+        ):
+            raise ProjectError("source_labels must map non-empty keys to non-empty labels")
+        object.__setattr__(
+            self,
+            "source_labels",
+            MappingProxyType(dict(sorted({**DEFAULT_SOURCE_LABELS, **dict(sources)}.items()))),
+        )
+
+    def source_label(self, kind: str | None, category: str | None, rule: str) -> str:
+        """The source label of a NEW bead: by anchor kind, then category, then unit rule."""
+        for key in (kind, category, rule):
+            if key is not None and key in self.source_labels:
+                return self.source_labels[key]
+        return f"source:{rule}"
 
     def to_json(self) -> dict[str, Any]:
         """The effective options as a JSON object."""
-        return {"creation_labels": list(self.creation_labels), "types": dict(self.types)}
+        return {
+            "creation_labels": list(self.creation_labels),
+            "types": dict(self.types),
+            "source_labels": dict(self.source_labels),
+        }
 
 
 @dataclass(frozen=True)
@@ -592,9 +634,13 @@ class _Writer:
             {ANNOTATION: {"verdict": self.verdict()}},
         )
         anchor = self.p.anchor(unit)
-        kind = anchor.kind if anchor is not None else unit.rule
+        source = self.p.options.source_label(
+            anchor.kind if anchor is not None else None,
+            anchor.category.value if anchor is not None else None,
+            unit.rule,
+        )
         label_evidence = [anchor.key] if anchor is not None else keys
-        for label in dict.fromkeys([f"source:{kind}", *self.p.options.creation_labels]):
+        for label in dict.fromkeys([source, *self.p.options.creation_labels]):
             self.emit("label_add", {"label": label}, self.create_at, label_evidence, DERIVED)
         self.edges(keys)
         self.phase(create)
@@ -807,6 +853,7 @@ __all__ = [
     "CONFLICT",
     "CREATED_AT",
     "DECISIONS",
+    "DEFAULT_SOURCE_LABELS",
     "DEFAULT_TYPES",
     "EVENT_KINDS",
     "GIT_COMMITS",
