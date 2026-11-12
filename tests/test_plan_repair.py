@@ -347,11 +347,13 @@ def test_repair_surfaces_unfixable_problems(hive, monkeypatch):
 # Captured while hand-assembling bh-er55 (an epic built by `bd create --type=epic` +
 # `bd dep add <child> <epic> -t parent-child` over pre-existing beads instead of
 # `bh plan file`). Two things a naive repair would get wrong:
-#   A) origin-report children (intake:untriaged / origin:*) are neither gated nor counted
-#      as roots — repair must reuse the same is_origin_report exclusion verify uses;
+#   A) report children (adopted: intake:promoted, whatever their origin:) are neither gated
+#      nor counted as roots — repair must reuse the same adopt.is_report_child exclusion verify
+#      uses. bh-l1m3p: the bh-er55 reports were UNTRIAGED; that shape is now ambiguous and
+#      verify names it (see test_repair_reports_untriaged_report_children_as_ambiguous);
 #   B) identity-label backfill is one `bd label add` per missing field per child.
 
-ORIGIN_LABELS = ["intake:untriaged", "origin:report"]
+ORIGIN_LABELS = ["intake:promoted", "origin:report"]
 
 
 def _er55_children():
@@ -369,7 +371,7 @@ def _er55_children():
 
 def test_repair_excludes_origin_report_children_from_roots(hive, monkeypatch):
     """Edge case A: origin-report children are NEITHER gated NOR counted as roots — repair
-    reuses the same adopt.is_origin_report exclusion _epic_molecule/verify apply, and the
+    reuses the same adopt.is_report_child exclusion _epic_molecule/verify apply, and the
     molecule still verifies clean with them ungated (and without acceptance/triplet)."""
     fake = FakeBdRepair(children=_er55_children())
     result = _repair(hive, monkeypatch, fake)
@@ -382,6 +384,26 @@ def test_repair_excludes_origin_report_children_from_roots(hive, monkeypatch):
         assert not fake.did("label", "add", origin_child)
     # the dependent member is not a root either
     assert not fake.did("gate", "create", "--blocks", "mr-3")
+
+
+def test_repair_reports_untriaged_report_children_as_ambiguous(hive, monkeypatch):
+    """bh-l1m3p: the original bh-er55 reports were never triaged. Repair still never gates or
+    labels them (they stay out of the work set, so nothing is silently reclassified), but the
+    verify it ends with names each one as ambiguous with the one-verb remedy, so the operator
+    triages it before kickoff."""
+    children = [
+        *_er55_children()[:3],
+        _child("mr-62ex", labels=["intake:untriaged", "origin:report"], acceptance=""),
+    ]
+    fake = FakeBdRepair(children=children)
+    result = _repair(hive, monkeypatch, fake)
+
+    assert result.exit_code != 0
+    assert "mr-62ex: ambiguous child" in result.output
+    assert "work promote mr-62ex" in result.output
+    assert not fake.did("gate", "create", "--blocks", "mr-62ex")
+    assert not fake.did("label", "add", "mr-62ex")
+    assert fake.did("gate", "create", "--blocks", "mr-8")
 
 
 def test_repair_backfills_only_missing_identity_fields_one_label_per_call(hive, monkeypatch):
@@ -522,11 +544,11 @@ def test_approve_leaves_a_nested_epics_kickoff_gate_open(hive, monkeypatch):
 def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     """END-TO-END regression (real bd): hand-assemble an epic exactly like bh-er55 —
     `bd create --type=epic` + `bd dep add <child> <epic> -t parent-child` over pre-existing
-    beads (no swarm, no gates, no kickoff state, no identity labels, one untriaged
-    origin-report child) — then replay real `plan repair` against durable storage, approve the
-    generated gates, prove the graph with `plan verify`, and prove `bh work start` takes the
-    dispatcher seat. Fast unit coverage separately proves both commands converge to a clean
-    no-op when repeated."""
+    beads (no swarm, no gates, no kickoff state, no identity labels, one adopted
+    origin-report child; bh-l1m3p: an untriaged one is now ambiguous) — then replay real
+    `plan repair` against durable storage, approve the generated gates, prove the graph with
+    `plan verify`, and prove `bh work start` takes the dispatcher seat. Fast unit coverage
+    separately proves both commands converge to a clean no-op when repeated."""
     from harness.beads import bd as hbd
     from harness.hive import make_hive
 
@@ -545,7 +567,7 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     dependent = _create(
         "pre-existing dependent", "--acceptance", "c done", "-l", "complexity:MEDIUM"
     )
-    origin = _create("reported thing", "-l", "origin:report,intake:untriaged")
+    origin = _create("reported thing", "-l", "origin:report,intake:promoted")
 
     dependency_batch = world.tmp / "plan-repair-dependencies.batch"
     dependency_batch.write_text(

@@ -6865,6 +6865,79 @@ def test_merge_molecule_lands_and_auto_closes_adopted_origin_report(hive, fakebd
     assert fakebd.did("close", "mr-1.rpt", "--reason", "adopted epic mr-1 landed")
 
 
+# ---- bh-l1m3p: origin: is provenance; binding + intake: disposition carry the role -------------
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        ["intake:accepted", "origin:report"],  # accepted in place: the report IS the work
+        ["origin:backfill", "source:planning"],  # backfill D1: provenance, work
+    ],
+)
+def test_merge_molecule_refuses_open_work_child_whatever_its_origin(hive, fakebd, capsys, labels):
+    """An OPEN work child blocks the land even when it carries an `origin:` label: before
+    bh-l1m3p the completeness guard read `origin:` as "adopted report" and let the molecule land
+    without that work, then plain-closed it as provenance."""
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.seed("mr-1.acc", title="accepted report", parent="mr-1", labels=labels)
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead="mr-1", hive="myrepo", molecule=True)
+
+    assert "open child issue(s): mr-1.acc" in capsys.readouterr().err
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
+    assert fakebd.beads["mr-1.acc"]["status"] == "open"
+    assert fakebd.beads["mr-1"]["status"] != "closed"
+
+
+def test_merge_molecule_open_tracking_report_child_does_not_gate_the_land(hive, fakebd):
+    """A bound report that tracks separate work (`accept --work`: intake:accepted + binding) is a
+    report, not work, even hung child-of the epic: it never gates the land and is never
+    plain-closed by it (bh-p28yo)."""
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.seed(
+        "mr-1.trk",
+        title="tracking report",
+        parent="mr-1",
+        labels=["intake:accepted", "origin:github"],
+        metadata={"intake.source": "{}"},
+    )
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)
+
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.trk"]["status"] == "open"
+
+
+@pytest.mark.parametrize(
+    ("labels", "valid"),
+    [
+        (["intake:accepted", "origin:report"], True),  # bh-c5nhv: accepted in place is a child
+        (["origin:backfill", "source:planning"], True),  # backfill D1
+        (["intake:promoted", "origin:report"], False),  # adopted report: never a work child
+    ],
+)
+def test_epic_history_policy_classifies_child_by_role_not_origin(
+    hive, fakebd, capsys, labels, valid
+):
+    """bh-c5nhv: a merged child that is an intake report accepted in place (it keeps
+    `origin:report`) is a direct work child, so its bead bubble is accounted for. Only a report
+    role (here `intake:promoted`) drops it, and then the bubble names a non-child."""
+    _restored_two_bead_molecule(hive, fakebd, "mr-1")
+    fakebd.beads["mr-1.1"]["labels"] = [*fakebd.beads["mr-1.1"].get("labels", []), *labels]
+    capsys.readouterr()
+
+    work.show(bead="mr-1", view=["log"], json_out=True, hive="myrepo")
+
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["valid"] is valid, policy["errors"]
+    if not valid:
+        assert any("names non-child mr-1.1" in error for error in policy["errors"])
+
+
 def test_merge_molecule_never_plain_closes_a_bound_adopted_report(hive, fakebd, capsys):
     """bh-p28yo: a BOUND report (intake.source) hanging child-of the epic is not closed by the
     landing's plain `bd close` (that would skip the held close, reply and issue close); an

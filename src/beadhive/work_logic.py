@@ -263,7 +263,11 @@ def _landed_child(data: dict) -> bool:
 
 
 def _direct_work_children(epic: str, main) -> tuple[list[dict], list[str]]:
-    """One authoritative direct-child snapshot, excluding infrastructure/provenance rows."""
+    """One authoritative direct-child snapshot, excluding infrastructure rows and report children.
+
+    A report child is decided by its role (binding + ``intake:`` disposition), never by an
+    ``origin:`` label: an accepted-in-place report or an ``origin:backfill`` bead is work
+    (bh-l1m3p, absorbing bh-c5nhv)."""
     rows = bd.children(epic, main, ["--include-infra", "--all"])
     if not isinstance(rows, list):
         return [], [f"cannot read direct children for {epic}"]
@@ -271,7 +275,7 @@ def _direct_work_children(epic: str, main) -> tuple[list[dict], list[str]]:
         row
         for row in rows
         if str(row.get("issue_type") or "") not in ("gate", "molecule")
-        and not adopt.is_origin_report(row.get("labels"))
+        and not adopt.is_report_child(row)
     ]
     return children, []
 

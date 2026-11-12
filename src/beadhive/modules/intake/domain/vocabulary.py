@@ -16,7 +16,9 @@ The lifecycle states are modelled through native ``bd set-state <bead> <dim>=<va
   exactly as it fields an untriaged report. Only a report bound to an external issue can wait
   (a born-native report has no thread to reply on and no ``intake-hold:`` gate).
 - ``origin:<channel>`` is the CLOSED intake channel a bead entered through. ``intake`` is queue
-  membership (cleared on triage); ``origin`` is a durable source tag.
+  membership (cleared on triage); ``origin`` is a durable source tag. It is provenance only and
+  never decides a bead's role: whether an epic child is work or a report is read from the binding
+  and the ``intake`` value (``beadhive.adopt.report_role``, bh-l1m3p).
 
 Provenance has three orthogonal facets: the native ``source_system`` + ``external_ref`` pair
 (external mirrors only), the closed ``origin`` channel here, and the reporter identity on
