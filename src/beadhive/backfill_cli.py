@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import re
 import uuid
 from collections import Counter
@@ -444,6 +445,92 @@ def _render_timeline(plan: Plan) -> None:
     typer.echo(f"plan hash: {plan.plan_hash}")
 
 
+judge_app = typer.Typer(no_args_is_help=True, help="The opt-in haiku judge for reconcile.")
+app.add_typer(judge_app, name="judge")
+
+
+@judge_app.command("setup")
+def judge_setup(
+    dry_run: bool = typer.Option(False, "--dry-run", help="show each step; change nothing"),
+    install: bool = typer.Option(
+        False,
+        "--install",
+        help="install beadlog-sources[haiku] when missing (default: verify only)",
+    ),
+    enable: bool = typer.Option(
+        False, "--enable", help="set backfill.judge.enabled once every step passed"
+    ),
+    fnox_config: str | None = typer.Option(
+        None, "--fnox-config", help="absolute fnox config path holding ANTHROPIC_API_KEY"
+    ),
+    fnox_profile: str | None = typer.Option(None, "--fnox-profile", help="fnox profile"),
+    fnox_key: str | None = typer.Option(
+        None, "--fnox-key", help="fnox key name (a reference; the value is never stored)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="machine-readable report"),
+) -> None:
+    """Install or verify the extra, resolve the key from the secret store, probe once.
+
+    Never prints or stores the key. Config changes only with --enable and only after every
+    step passed.
+    """
+    from . import backfill_judge_setup as setup
+
+    cfg = config.load()
+    section = BackfillJudgeConfig.model_validate(
+        (cfg.get("backfill") or {}).get("judge") or {}
+    ).model_dump()
+    reference = None
+    if any((fnox_config, fnox_profile, fnox_key)):
+        reference = {
+            "config_path": fnox_config or "",
+            "profile": fnox_profile or "",
+            "key": fnox_key or "",
+        }
+        try:
+            from .modules.config.contracts import HqFnoxRef
+
+            HqFnoxRef.model_validate(reference)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from None
+        if not all(reference.values()):
+            raise typer.BadParameter("--fnox-config, --fnox-profile and --fnox-key go together")
+
+    def persist(ref: Mapping[str, str] | None) -> None:
+        # Only reached after the extra, key and probe all passed.
+        if reference:
+            for name, value in reference.items():
+                config.set_value(f"backfill.judge.credential.{name}", value)
+        config.set_value("backfill.judge.enabled", "true", as_json=True)
+
+    report = setup.run_setup(
+        section,
+        environ=os.environ,
+        dry_run=dry_run,
+        install=install,
+        enable=enable,
+        reference=reference,
+        persist=persist,
+    )
+    if as_json:
+        _emit(
+            {
+                "ok": report.ok,
+                "dry_run": report.dry_run,
+                "enabled": report.enabled,
+                "steps": [vars(step) for step in report.steps],
+            }
+        )
+    else:
+        for step in report.steps:
+            typer.echo(f"{step.name}: {step.status}" + (f" - {step.detail}" if step.detail else ""))
+        cost = section.get("cost_per_call_usd")
+        if report.ok and cost is not None:
+            typer.echo(f"cost: ~${cost} per call (backfill.judge.cost_per_call_usd)")
+    if not report.ok:
+        raise typer.Exit(1)
+
+
 @app.command("timeline")
 def timeline_cmd(
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
@@ -534,7 +621,44 @@ def judge_settings(cfg: Mapping[str, Any] | None = None) -> JudgeSettings:
     """The ``backfill.judge`` settings (disabled unless the config enables them)."""
     cfg = config.load() if cfg is None else cfg
     section = BackfillJudgeConfig.model_validate((cfg.get("backfill") or {}).get("judge") or {})
-    return JudgeSettings(**section.model_dump())
+    return JudgeSettings(**section.model_dump(exclude={"cost_per_call_usd", "credential"}))
+
+
+def _judge_runner(cfg: Mapping[str, Any] | None = None) -> Any:
+    """A judge runner that hands the command ``ANTHROPIC_API_KEY`` from the configured fnox
+    reference (``backfill.judge.credential``), or ``None`` to inherit the environment. The key
+    is resolved on the first call, passed to the child's environment only, never printed."""
+    from . import backfill_judge_setup as setup
+
+    cfg = config.load() if cfg is None else cfg
+    section = (cfg.get("backfill") or {}).get("judge") or {}
+    reference = setup.fnox_reference(section)
+    if reference is None:
+        return None
+    holder: dict[str, str] = {}
+
+    def runner(argv: Any, stdin: bytes, timeout: float) -> Any:
+        import os
+        import subprocess
+
+        from beadlog_sources.judges import CommandResult
+
+        if "key" not in holder:
+            try:
+                holder["key"] = setup.fnox_key(reference)
+            except KeyError:
+                return CommandResult(1, b"")  # fails closed to the deterministic engine
+        done = subprocess.run(  # noqa: S603 - the operator configures the command
+            list(argv),
+            input=stdin,
+            stdout=subprocess.PIPE,
+            env={**os.environ, setup.API_KEY_ENV: holder["key"]},
+            timeout=timeout,
+            check=False,
+        )
+        return CommandResult(done.returncode, done.stdout)
+
+    return runner
 
 
 def source_pass_for(
@@ -611,7 +735,7 @@ def _run_source(
                 **extra,
             )
             engine = BackfillEngine(groups=[group], passes=[pass_])
-            judge = build_judge(settings) if settings.enabled else None
+            judge = build_judge(settings, runner=_judge_runner()) if settings.enabled else None
             plan = engine.plan(pass_, store_loader(cwd, group=group.id), judge)
             _warn_incremental(plan)
             if plan_path is not None:

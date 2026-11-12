@@ -518,6 +518,24 @@
           "title": "Command",
           "type": "string"
         },
+        "cost_per_call_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Operator-estimated USD per judge call, used only to report a run's judge cost. Null (default): no cost is reported.",
+          "title": "Cost Per Call Usd"
+        },
+        "credential": {
+          "$ref": "#/$defs/HqFnoxRef",
+          "description": "Host-local fnox lookup (config_path, profile, key) for ANTHROPIC_API_KEY; a reference only, never the value. Empty (default): the key must already be in the environment."
+        },
         "enabled": {
           "default": false,
           "description": "Ask the judge command for the fuzzy residual.",

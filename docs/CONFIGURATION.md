@@ -814,6 +814,19 @@ the fallback. Verdicts are recorded in the plan and never asked again at apply t
 | `model` | `claude-haiku-5-5` | the model named in every request |
 | `auto_accept` | `{}` | judgment family (for reconcile, `reconcile.match`) → confidence `0..1` at or above which a judged verdict needs no review; empty means every judged verdict is reviewed |
 | `max_calls_per_run` | `100` | judge calls one run may make; past it the judge abstains |
+| `cost_per_call_usd` | `null` | operator-estimated USD per call; only reported by `bh backfill judge setup`, null reports nothing |
+| `credential` | empty | host-local fnox lookup (`config_path`, `profile`, `key`) for `ANTHROPIC_API_KEY`; a reference only, never the value. Empty: the key must already be in the environment |
+
+`bh backfill judge setup [--dry-run] [--install] [--enable] [--fnox-config P --fnox-profile N
+--fnox-key K]` enables the judge in one step: it verifies `beadlog-sources[haiku]` (a missing
+extra fails the step and prints the install command; only `--install` runs it),
+resolves `ANTHROPIC_API_KEY` through the host's fnox broker (the same seam as HQ's SQL transport)
+or the environment, and makes one `bh-judge/1` probe call that reports model and latency; an
+offline or rejected probe is a failure, not a fallback. The config changes only with `--enable`
+and only after every step passed (it then writes `backfill.judge.enabled` and, when given, the
+fnox reference). The key is never printed, logged or stored; `--dry-run` lists the steps and
+changes nothing. When `credential` is set, backfill runs pass the resolved key to the judge
+command's environment only.
 
 The `beadlog` CLI (no BeadHive needed; see [BeadLog CLI](BACKFILL.md#beadlog-cli); installed by
 `beadlog-sources` and by the `bh` wheel) takes the same keys
