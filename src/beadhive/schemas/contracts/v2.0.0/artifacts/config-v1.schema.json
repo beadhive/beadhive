@@ -473,7 +473,7 @@
     },
     "BackfillGapfillConfig": {
       "additionalProperties": false,
-      "description": "``backfill.timeline.gapfill`` — the opt-in, bounded ``dolt_history_*`` gap fill for beads\nthat have no ``created`` row in the events table (docs/BACKFILL.md \"Gap fill\"). Off by\ndefault: ``bh backfill export --history`` reads the events table only and no history scan\nruns. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with\n``timeout_seconds`` as its time limit.",
+      "description": "``backfill.timeline.gapfill`` — the opt-in, bounded ``dolt_history_*`` gap fill for beads\nthat have no ``created`` row in the events table (docs/BACKFILL.md \"Gap fill\"). Off by\ndefault: ``bh backfill export --history`` reads the events table only and no history scan\nruns. When enabled it issues read-only ``SELECT`` batches of ``batch_size`` beads, each with\n``timeout_seconds`` as its time limit. ``on_created`` (also off) instead gap-fills just the\nbeads one create-mode backfill apply created.",
       "properties": {
         "batch_size": {
           "default": 25,
@@ -486,6 +486,12 @@
           "default": false,
           "description": "Recover snapshot-level history for beads lacking a created event.",
           "title": "Enabled",
+          "type": "boolean"
+        },
+        "on_created": {
+          "default": false,
+          "description": "After a create-mode backfill apply, gap-fill only the beads that run created (bounded by batch_size / timeout_seconds); independent of enabled.",
+          "title": "On Created",
           "type": "boolean"
         },
         "timeout_seconds": {
