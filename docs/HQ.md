@@ -721,6 +721,9 @@ the copy.
 - [CONFIGURATION — Fleet + host config](CONFIGURATION.md#fleet-host) — how `fleet.yaml` merges
   with a host's own config, the override allowlist, `--scope`, and the flat-config migration.
 - [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.
+- [HQ lifecycle port](design/hq-lifecycle-port.md) — every place bh opens the HQ SQL server,
+  and the port (liveness, admission, reads, operator publication) that maps each one onto an
+  hq.lifecycle.v0 route for the hq-service adapter (ADR 0005), with the routes still missing.
 
 ## Signed-mode inbox retention
 
