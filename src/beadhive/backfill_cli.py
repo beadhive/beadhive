@@ -453,7 +453,9 @@ app.add_typer(judge_app, name="judge")
 def judge_setup(
     dry_run: bool = typer.Option(False, "--dry-run", help="show each step; change nothing"),
     install: bool = typer.Option(
-        True, "--install/--no-install", help="install beadlog-sources[haiku] when missing"
+        False,
+        "--install",
+        help="install beadlog-sources[haiku] when missing (default: verify only)",
     ),
     enable: bool = typer.Option(
         False, "--enable", help="set backfill.judge.enabled once every step passed"

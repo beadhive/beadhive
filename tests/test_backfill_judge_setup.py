@@ -84,15 +84,18 @@ def test_missing_extra_is_installed() -> None:
         present=present,
         resolve_key=lambda r: KEY,
         probe=lambda k, s: GOOD,
+        install=True,
     )
     assert report.ok and calls.installs == 1
 
 
 def test_missing_extra_with_no_install_or_failed_install_stops_unchanged() -> None:
     calls = Calls()
-    report = _run(calls, present=False, install=False, enable=True)
+    report = _run(calls, present=False, enable=True)  # default: verify only, never install
     assert not report.ok and [s.name for s in report.steps] == ["extra"] and calls.persisted == []
-    report = _run(calls, present=False, install_ok=False, enable=True)
+    assert calls.installs == 0 and "pip install" in report.steps[0].detail
+    assert "beadlog-sources[haiku]" in report.steps[0].detail
+    report = _run(calls, present=False, install_ok=False, install=True, enable=True)
     assert not report.ok and calls.installs == 1 and calls.persisted == []
 
 

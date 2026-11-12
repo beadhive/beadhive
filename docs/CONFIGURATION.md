@@ -817,8 +817,9 @@ the fallback. Verdicts are recorded in the plan and never asked again at apply t
 | `cost_per_call_usd` | `null` | operator-estimated USD per call; only reported by `bh backfill judge setup`, null reports nothing |
 | `credential` | empty | host-local fnox lookup (`config_path`, `profile`, `key`) for `ANTHROPIC_API_KEY`; a reference only, never the value. Empty: the key must already be in the environment |
 
-`bh backfill judge setup [--dry-run] [--no-install] [--enable] [--fnox-config P --fnox-profile N
---fnox-key K]` enables the judge in one step: it verifies (or installs) `beadlog-sources[haiku]`,
+`bh backfill judge setup [--dry-run] [--install] [--enable] [--fnox-config P --fnox-profile N
+--fnox-key K]` enables the judge in one step: it verifies `beadlog-sources[haiku]` (a missing
+extra fails the step and prints the install command; only `--install` runs it),
 resolves `ANTHROPIC_API_KEY` through the host's fnox broker (the same seam as HQ's SQL transport)
 or the environment, and makes one `bh-judge/1` probe call that reports model and latency; an
 offline or rejected probe is a failure, not a fallback. The config changes only with `--enable`

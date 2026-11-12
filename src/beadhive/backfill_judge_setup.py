@@ -3,7 +3,8 @@
 Steps, in order, each reported (and each a no-op under ``--dry-run``):
 
 1. **extra**: verify ``beadlog-sources[haiku]`` (the ``httpx`` dependency and the judge command)
-   and install it when missing (``--no-install`` only verifies);
+   and, only with an explicit ``--install``, install it when missing (otherwise a missing
+   extra fails the step and prints the install command);
 2. **key**: resolve ``ANTHROPIC_API_KEY`` through the host's fnox broker, the same seam HQ's SQL
    transport and the XTDB store password use (:class:`beadhive.hq_sql_transport.FnoxBroker`), or
    take it from the environment when no fnox reference is configured;
@@ -72,14 +73,17 @@ def extra_present(command: str) -> bool:
     return bool(importlib.util.find_spec("httpx") is not None and argv and shutil.which(argv[0]))
 
 
+def install_command() -> list[str]:
+    """The exact command that installs the extra into the interpreter running ``bh``."""
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "pip", "install", "--python", sys.executable, EXTRA_SPEC]
+    return [sys.executable, "-m", "pip", "install", EXTRA_SPEC]
+
+
 def pip_installer() -> tuple[bool, str]:
     """Install the extra into the interpreter running ``bh`` (uv when present, else pip)."""
-    uv = shutil.which("uv")
-    argv = (
-        [uv, "pip", "install", "--python", sys.executable, EXTRA_SPEC]
-        if uv
-        else [sys.executable, "-m", "pip", "install", EXTRA_SPEC]
-    )
+    argv = install_command()
     try:
         done = subprocess.run(  # noqa: S603 - fixed argv, no shell
             argv,
@@ -169,7 +173,7 @@ def run_setup(
     *,
     environ: Mapping[str, str],
     dry_run: bool = False,
-    install: bool = True,
+    install: bool = False,
     enable: bool = False,
     reference: dict[str, str] | None = None,
     installer: Installer | None = None,
@@ -197,11 +201,16 @@ def run_setup(
     # 1. the extra
     if present(command):
         steps.append(Step("extra", "ok", f"{EXTRA_SPEC} is installed"))
-    elif dry_run:
+    elif dry_run and install:
         steps.append(Step("extra", "planned", f"would install {EXTRA_SPEC}"))
     elif not install:
-        steps.append(Step("extra", "failed", f"{EXTRA_SPEC} is not installed (--no-install)"))
-        return report
+        hint = (
+            f"{EXTRA_SPEC} is not installed; run: {shlex.join(install_command())} "
+            "(or pass --install)"
+        )
+        steps.append(Step("extra", "planned" if dry_run else "failed", hint))
+        if not dry_run:
+            return report
     else:
         done, detail = installer()
         if not done or not present(command):
@@ -264,6 +273,7 @@ __all__ = [
     "extra_present",
     "fnox_key",
     "fnox_reference",
+    "install_command",
     "pip_installer",
     "probe_judge",
     "run_setup",
