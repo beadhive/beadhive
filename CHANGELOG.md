@@ -13,6 +13,65 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.36.0 (2026-11-12)
+
+### Feat
+
+- **backfill**: run the created-bead gap fill after bh backfill history apply
+- **backfill**: build the history pipeline on HistoryPass and backfill_create
+- **backfill**: HistoryPass takes the B5 runtime (judge, prior, cost preview)
+- **backfill**: bh backfill history / collate / view with history config models
+- **backfill**: timeline gapfill scoped to beads created by a backfill run
+- **backfill**: create mode needs no new_threshold; document converged-run reporting
+- **backfill**: create-mode options for a hive (origin:backfill, identity triplet, explicit prefix)
+- **backfill**: history pass collates and projects units, with opt-in create mode
+- **beadlog-sources**: align projector source labels with the existing corpus
+- **beadlog-sources**: project collation units to proposed BeadLog events
+- **beadlog-sources**: planning reader with PlanningFormat port, GSD and roadmap adapters
+- **beadlog-sources**: normalize doc status, date, owner and supersedes
+- **tracker-github**: snapshot fetch and github source reader
+- **backfill**: LedgerDirectory adapters for bd routes and the hive registry
+- **beadlog-sources**: HTML DocFormat adapter and HTML layout presets
+- **beadlog-sources**: docs reader with DocFormat port and markdown adapter
+- **beadlog-sources**: git reader for commits, merges and tags as change and release-marker artifacts
+- **backfill**: read the B5 collation verdict shape in backfill verdicts
+- **backfill**: bh backfill verdicts reviews recorded judge verdicts
+- **backfill**: bh backfill judge setup (extra, secret-store key, probe)
+- **beadlog-sources**: collate B5 identifies units against the baseline
+- **beadlog-sources**: collate B6 derives unit status, dates and status conflicts
+- **beadlog-sources**: collate B4 attaches design records to work units
+- **beadlog-sources**: record effective collate options in bdlg.collation/1
+- **beadlog-sources**: collate B3 clusters artifacts into work units and area epics
+- **beadlog-sources**: collate B1+B2 indexes and reference resolution
+- **beadlog-sources**: LedgerDirectory port for cross-ledger bead-id resolution
+- **beadlog-sources**: SourceReader port, beadlog.readers registry with built-in fallback
+- **beadlog-sources**: Artifact/Ref evidence model and bdlg.evidence/1 corpus (bh-ed0t3)
+
+### Fix
+
+- **beadlog-sources**: B5 treats a unit with no baseline candidate as NEW (derived)
+- **impact**: map the create-mode root test to the backfill libraries
+- **intake**: key the epic-child report role on binding and intake disposition, not origin:
+- **beadlog-sources**: keep roadmap plan-item keys stable across incidental edits
+- **beadlog-sources**: keep "superseded by" out of supersedes
+- **backfill**: register the ledger adapter tests for beadlog-sources impact
+- **backfill**: make judge setup install opt-in via --install
+- **beadlog-sources**: B5 verdicts mint no labels
+- **beadlog-sources**: make the B6 clock conflict rules opt-in
+- **hq**: keep session provisioning additive at an unchanged authority sequence
+- **onboard**: publish the bead database before registering the hive fleet-wide
+- **conformance**: skip hives whose frame_policy excludes this frame in hives-ready
+- **beadlog-sources**: version-stable evidence ids and day-precision declared dates (bh-ed0t3)
+- **beadlog-sources**: require an explicit id_prefix for minted ids; drop modal_prefix
+
+### Refactor
+
+- **beadlog-sources**: read the docs strategy's back-ref lines through the shared docs parser
+- **beadlog-sources**: read the git-commits strategy's history through the git reader
+- **beadlog-sources**: read the planning strategy's GSD tree through the reader's adapter
+- **beadlog-sources**: use shared tokens and record token_mode in git reader
+- **beadlog-sources**: share bead-token recognition and record token_mode
+
 ## v0.35.11 (2026-11-11)
 
 ### Fix
