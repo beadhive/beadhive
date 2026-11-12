@@ -1,0 +1,1 @@
+{"error":"SourceError","message":"cannot mint a bead id without an explicit id prefix (prefixes are never derived or guessed); pass option id_prefix"}
