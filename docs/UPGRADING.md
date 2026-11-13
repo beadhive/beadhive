@@ -5,6 +5,15 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.36.0 → 0.36.1 — patch fixes
+
+No action required.
+
+- **Python 3.11 loads again (bh-oyueb).** 0.33.0 through 0.36.0 crashed at command load on
+  Python 3.11 (`ValueError: mutable default <class 'mappingproxy'>`) because nine frozen-dataclass
+  fields used a shared `MappingProxyType` default; they now use `default_factory`. 3.12+ was
+  unaffected.
+
 ## 0.35.10 → 0.35.11 — patch fixes
 
 No action required. The new `bh doctor` findings are read-only: the two outbox ones are silent
