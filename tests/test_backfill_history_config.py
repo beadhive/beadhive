@@ -34,6 +34,20 @@ def test_defaults_are_inert_and_equal_the_library_defaults() -> None:
     assert options.status == StatusOptions()
 
 
+def test_doc_default_is_from_doc_and_reaches_the_status_options() -> None:
+    """bh-f4t6r: the default flips to from-doc; ``closed`` is the opt-out to 0.36 output."""
+    cfg = BackfillConfig()
+    assert cfg.collate.status.doc_default == "from-doc"
+    assert cfg.collate.status.doc_open == ["draft", "proposed"]
+    assert backfill_history.CollateOptions.from_config(cfg).status.doc_default == "from-doc"
+    closed = BackfillConfig.model_validate({"collate": {"status": {"doc_default": "closed"}}})
+    assert backfill_history.CollateOptions.from_config(closed).status.doc_default == "closed"
+    with pytest.raises(ValidationError):
+        BackfillConfig.model_validate({"collate": {"status": {"doc_default": "maybe"}}})
+    with pytest.raises(ValidationError):
+        BackfillConfig.model_validate({"collate": {"status": {"doc_open": ["wip"]}}})
+
+
 def test_the_section_is_additive_to_the_root_config() -> None:
     assert BeadhiveConfig().backfill is None
     assert BeadhiveConfig(backfill={}).backfill.history.run_dir == ""

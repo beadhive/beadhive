@@ -423,7 +423,7 @@
         },
         "create": {
           "default": "off",
-          "description": "off (default): link only, units that match no bead are reported and propose nothing. propose: a unit that matches no bead is proposed as a closed bead.",
+          "description": "off (default): link only, units that match no bead are reported and propose nothing. propose: a unit that matches no bead is proposed as a bead (closed, or open for a draft or proposed doc under status.doc_default).",
           "enum": [
             "off",
             "propose"
@@ -904,6 +904,34 @@
             "type": "string"
           },
           "title": "Design Only",
+          "type": "array"
+        },
+        "doc_default": {
+          "default": "from-doc",
+          "description": "Status of a unit with no evidential closure (only docs). from-doc (default): open when a doc declares a status in doc_open (or a design-only phrase), else closed; the add commit is then the unit's creation, never its close. closed: the add commit closes it (0.36 output for git-history runs). open: every such unit stays open. Evidence always wins.",
+          "enum": [
+            "closed",
+            "open",
+            "from-doc"
+          ],
+          "title": "Doc Default",
+          "type": "string"
+        },
+        "doc_open": {
+          "description": "Declared doc statuses that keep a unit open under doc_default = from-doc.",
+          "items": {
+            "enum": [
+              "proposed",
+              "draft",
+              "accepted",
+              "delivered",
+              "superseded",
+              "rejected",
+              "deprecated"
+            ],
+            "type": "string"
+          },
+          "title": "Doc Open",
           "type": "array"
         },
         "rules": {

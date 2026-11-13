@@ -7,13 +7,29 @@ exists for the releases where "read the changelog" isn't enough to act on.
 
 ## 0.36.x → 0.37.0 — backfill re-run control
 
-No action required.
-
 - **Docs and planning readers take `exclude` (bh-pieo5, #155).** Set
   `backfill.sources.docs.options.exclude` / `backfill.sources.planning.options.exclude` to a csv of
   globs (trailing `/` = subtree, no `/` = file name at any depth) to keep templates, archives or
   generated docs out of a backfill; an explicit file an exclude matches is dropped with a warning.
   Unset by default, so existing runs are unchanged.
+- **Default change: a backfilled doc bead is no longer closed by its add commit unless the doc
+  says it is done (bh-f4t6r, #153).** `backfill.collate.status.doc_default` is new and defaults
+  to `from-doc`. A doc-only unit (no merged or committed change, release, closed tracker item or
+  plan done marker behind it) whose doc declares `draft`, `proposed` (`status.doc_open`) or a
+  "design only" status is now created **open**, with its add commit as the creation moment and no
+  close event; other doc units still close, at the add commit or else the declared date. *Why:*
+  backfill writes a timeline, not a snapshot, so a draft doc's add commit must not be recorded
+  as a close that never happened. *Effect:* those beads now appear in `bd ready`; filter them with
+  `bd ready --exclude-label origin:backfill`. *Opt out:* set
+  `backfill.collate.status.doc_default = "closed"` for 0.36 output (identical for git-history
+  runs; a docs-only unit with a declared date now closes at that date in every mode but
+  `open`). **Existing beads are untouched**: only beads created by a run after the upgrade
+  follow the setting, and a created bead is never rewritten. A collation recorded by 0.36
+  reads back as `closed`.
+- **A docs-only `create = propose` run no longer creates beads from nothing (bh-uysl1).** A unit
+  with no evidence moment at all (no add commit, no declared date) is skipped and reported as
+  `skipped: no evidence moment` in the plan summary and `bh backfill view unit`, whatever
+  `doc_default` is. The default `git,docs,planning` run changes only as above.
 
 ## 0.36.0 → 0.36.1 — patch fixes
 

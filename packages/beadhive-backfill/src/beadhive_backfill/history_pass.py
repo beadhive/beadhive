@@ -11,10 +11,14 @@ applicable; what ``create`` decides is the NEW units.
 - ``create=False`` (the default, ``backfill.collate.create = "off"``): link only. Only the events
   that land on a bead the baseline already holds are proposed; every unit the baseline has no bead
   for is left alone, exactly as the link-only passes do.
-- ``create=True`` (``"propose"``): NEW units are also proposed as closed beads, labelled by
+- ``create=True`` (``"propose"``): NEW units are also proposed as beads, labelled by
   ``project_options.creation_labels`` (the caller passes ``origin:backfill`` and the hive identity
   triplet, see ``beadhive.backfill_create``) plus their ``source:`` label. They are reviewed through
-  the unchanged plan, verify and apply envelope.
+  the unchanged plan, verify and apply envelope. A NEW unit with no evidence moment at all (no add
+  commit, no declared date: a docs-only run over an undated doc) is **not** created: it is listed
+  under the report's ``no_moment`` and reported as ``skipped: no evidence moment`` (bh-uysl1).
+  Whether the other created beads are closed or open follows ``backfill.collate.status.doc_default``
+  (bh-f4t6r): a draft or proposed doc creates an open bead by default.
 
 **Converged runs.** Reconcile classifies only proposed events, so a run with nothing left to do
 has an empty ``by_class``. Its state is reported through the pass report's ``units`` counts (the
@@ -40,6 +44,7 @@ from typing import Any, ClassVar
 
 from beadlog import BeadEvent, BeadRef, BeadState
 from beadlog_sources import (
+    PROJECT_NOTE_NO_MOMENT,
     AttachOptions,
     ClusterOptions,
     EvidenceCorpus,
@@ -156,11 +161,13 @@ class HistoryPass:
             kept = tuple(event for event in events if event.bead in held)
             skipped = len({event.bead for event in events} - {event.bead for event in kept})
             events = kept
+        no_moment = [u.unit for u in projection.units if PROJECT_NOTE_NO_MOMENT in u.notes]
         self._report = {
             "create": self.create,
             "units": projection.counts(),
             "residual": list(projection.residual),
             "creates_skipped": skipped,
+            "no_moment": no_moment if self.create else [],
         }
         return events
 

@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from beadlog_sources import Collation, conflicts_of, read_collation
+from beadlog_sources import Collation, Lifecycle, conflicts_of, has_no_moment, read_collation
 
 from . import backfill_verdicts
 
@@ -76,6 +76,7 @@ def unit_view(path: Path, *, decision: Sequence[str] = ()) -> dict[str, Any]:
         if wanted and cls not in wanted:
             continue
         status = life.get(unit.key) or {}
+        no_moment = cls == "NEW" and bool(status) and has_no_moment(Lifecycle.from_json(status))
         units.append(
             {
                 "key": unit.key,
@@ -91,6 +92,7 @@ def unit_view(path: Path, *, decision: Sequence[str] = ()) -> dict[str, Any]:
                 "docs": len(collation.docs_of(unit.key)),
                 "status": status.get("status"),
                 "closed": (status.get("closed") or {}).get("at"),
+                "skipped": "no evidence moment" if no_moment else None,
             }
         )
     counts = Counter(u["decision"] for u in units)
@@ -195,6 +197,11 @@ def render_text(view: Mapping[str, Any]) -> list[str]:
             lines.append(
                 f"{unit['decision']:<8} {unit['key']}  [{unit['kind']}/{unit['rule']}] "
                 f"bead={bead} status={unit['status'] or '-'}  {unit['title']}"
+                + (
+                    f"  [skipped: {unit['skipped']} under create=propose]"
+                    if unit["skipped"]
+                    else ""
+                )
             )
         return lines
     if kind == "conflict":
