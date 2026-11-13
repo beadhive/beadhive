@@ -264,3 +264,25 @@ def test_get_without_hive_is_unchanged(bh_home):
     assert r.exit_code == 0
     assert json.loads(r.stdout) == {"core": "engine"}
     assert "layer" not in r.output
+
+
+def test_a_hive_overlay_turns_close_on_evidence_off_for_that_hive_only():
+    """bh-1vkff.3: the timeline settings resolve through the overlay, as the history run reads
+    them (``effective_cfg`` then ``CollateOptions.from_config``)."""
+    from beadhive import backfill_history
+
+    block = {
+        **HOST_BLOCK,
+        "hives": {"wd": {"collate": {"status": {"close_on_evidence": False}}}},
+    }
+    cfg = _cfg(block)
+
+    def status(entry):
+        eff = effective_cfg(cfg, entry)
+        return backfill_history.CollateOptions.from_config(
+            BackfillConfig.model_validate(eff["backfill"])
+        ).status
+
+    assert status(WIDGETS).close_on_evidence is False
+    assert status(GADGETS).close_on_evidence is True  # another hive keeps the host default
+    assert status(WIDGETS).in_progress_on_evidence is True  # only the overlaid key moved

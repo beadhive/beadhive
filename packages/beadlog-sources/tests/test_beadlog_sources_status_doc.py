@@ -172,6 +172,7 @@ def test_the_options_round_trip_and_old_records_read_back_as_closed() -> None:
     assert StatusOptions().doc_open == ("draft", "proposed")
     legacy = StatusOptions().to_json()
     del legacy["doc_default"], legacy["doc_open"]
+    del legacy["close_on_evidence"], legacy["in_progress_on_evidence"]
     assert StatusOptions.from_json(legacy).doc_default == "closed"
     with pytest.raises(StatusOptionsError):
         StatusOptions(doc_default="sometimes")
