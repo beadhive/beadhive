@@ -471,6 +471,23 @@ def roadmap_items(
     return out
 
 
+def _distinct_files(root: Path, names: tuple[str, ...]) -> list[str]:
+    """Existing ``names`` under ``root``, one per real file (first spelling wins).
+
+    On a case-insensitive filesystem ``ROADMAP.md`` and ``roadmap.md`` are one file;
+    de-duplicate by identity (samefile), not by spelling.
+    """
+    kept: list[str] = []
+    for name in names:
+        path = root / name
+        if not path.is_file():
+            continue
+        if any(path.samefile(root / seen) for seen in kept):
+            continue
+        kept.append(name)
+    return kept
+
+
 class RoadmapFormat:
     """Adapter: headed checklists and implementation-plan markdown (module doc)."""
 
@@ -488,7 +505,7 @@ class RoadmapFormat:
         for pattern in globs:
             found.update(p.relative_to(root).as_posix() for p in root.glob(pattern) if p.is_file())
         if not explicit and not globs:
-            found.update(name for name in ROADMAP_FILES if (root / name).is_file())
+            found.update(_distinct_files(root, ROADMAP_FILES))
         return sorted(found)
 
     def items(self, root: Path, options: Mapping[str, Any]) -> list[PlanItem]:

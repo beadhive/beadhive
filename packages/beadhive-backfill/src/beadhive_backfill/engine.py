@@ -47,6 +47,7 @@ from ._inverse import Stamper, has_inverse, inverse_of
 from ._judgments import JudgeTap, verdicts_to_json
 from ._projection import ALL_FACETS, Scope, bead_key, check_facets, projection_hash
 from .contracts import (
+    RETIRED_INSTRUCTION,
     AuditEntry,
     AuditProgress,
     AuditRecovery,
@@ -439,6 +440,7 @@ class BackfillEngine:
             current: dict[BeadRef, list[BeadEvent]] | None = _by_bead(reader.export())
         except BaseException:  # a failed read must never suppress best-effort rollback
             current = None
+        uncertain = entry.recovery.uncertain
         applied = [event for _, events in touched for event in events]
         seen = [*before, *applied, *(e for es in (current or {}).values() for e in es)]
         stamp = Stamper(self._clock(), seen)
@@ -460,7 +462,13 @@ class BackfillEngine:
                         now = current.setdefault(bead, [])
                         state_now = fold(now).get(bead)
                         if state_now is None and inverse.kind is not EventKind.CREATE:
-                            continue  # the bead was never written: nothing to undo
+                            if bead_key(bead) != uncertain:
+                                # a completed unit's bead is gone from the store: not "never
+                                # written", so the undo cannot be confirmed (bh-12hka)
+                                note = f"{bead.id}: missing from the store"
+                                if note not in residual:
+                                    residual.append(note)
+                            continue  # the uncertain unit may never have been written
                         if not changed_facets(state_now, fold([*now, inverse]).get(bead)):
                             continue
                     try:
@@ -473,13 +481,65 @@ class BackfillEngine:
                         continue
                     if current is not None:
                         current[bead].append(inverse)
+        retired = self._created_beads(reader, touched, prior_events, uncertain, residual)
         complete = not failures and not residual
+        instruction = RETIRED_INSTRUCTION if retired else entry.recovery.instruction
         return replace(
             entry,
             state=AuditState.ROLLED_BACK if complete else AuditState.ROLLBACK_FAILED,
             error=f"{type(exc).__name__}: {exc}",
             rollback_failures=(*entry.rollback_failures, *failures),
             rollback_residual=tuple(residual),
+            rollback_retired=retired,
             progress=replace(entry.progress, current=None),
-            recovery=replace(entry.recovery, uncertain=None, rollback_complete=complete),
+            recovery=replace(
+                entry.recovery,
+                uncertain=None,
+                rollback_complete=complete,
+                instruction=instruction,
+            ),
         )
+
+    def _created_beads(
+        self,
+        reader: StoreReader,
+        touched: Sequence[tuple[BeadRef, tuple[BeadEvent, ...]]],
+        prior_events: Mapping[BeadRef, list[BeadEvent]],
+        uncertain: str | None,
+        residual: list[str],
+    ) -> tuple[str, ...]:
+        """The ids of the beads this apply created that rollback retired.
+
+        Re-reads the store: a created bead that is not retired afterwards (still open, or
+        missing) is appended to ``residual`` rather than reported as undone, and when the read
+        fails every created bead is reported unverified.
+        """
+        created = sorted(
+            {
+                bead.id
+                for bead, events in touched
+                if any(e.kind is EventKind.CREATE for e in events)
+                and fold(prior_events.get(bead, [])).get(bead) is None
+            }
+        )
+        if not created:
+            return ()
+        group = {bead.id: bead for bead, _ in touched}
+        try:
+            states = fold(reader.export())
+        except BaseException:
+            residual.extend(
+                f"{ident}: retirement unverified (the store could not be read)" for ident in created
+            )
+            return ()
+        retired: list[str] = []
+        for ident in created:
+            state = states.get(group[ident])
+            if state is not None and state.phase == "retired":
+                retired.append(ident)
+            elif state is None and bead_key(group[ident]) == uncertain:
+                continue  # the interrupted create may never have been written
+            elif not any(item.startswith(f"{ident}:") for item in residual):
+                found = "missing from the store" if state is None else f"still {state.phase}"
+                residual.append(f"{ident}: created by the apply but {found} after rollback")
+        return tuple(retired)

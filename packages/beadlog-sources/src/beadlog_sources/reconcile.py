@@ -233,7 +233,7 @@ class ReconcilePlan:
     entries: tuple[PlanEntry, ...]
     corpus_hash: str
     proposed_hash: str
-    judge: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    judge: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, hash=False)
     calls: int = 0
 
     @property

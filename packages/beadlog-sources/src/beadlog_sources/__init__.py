@@ -299,6 +299,7 @@ from .lifecycle import (
 # --- end collate B6 ---
 # isort: split
 # --- project C (bh-rz6ys) ---
+from ._sources import ROLLBACK_REASON
 from .project import (
     DEFAULT_SOURCE_LABELS as PROJECT_DEFAULT_SOURCE_LABELS,
 )
@@ -549,6 +550,7 @@ __all__ = [
     "PROJECT_EVENT_KINDS",
     "Kept",
     "ProjectError",
+    "ROLLBACK_REASON",
     "ProjectOptions",
     "Projection",
     "UnitProjection",

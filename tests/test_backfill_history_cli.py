@@ -451,3 +451,49 @@ def test_on_created_gap_fills_only_the_created_beads(created_run, tmp_path, cfg_
     assert created and summary["stages"]["gapfill"]["beads"] == len(created)
     assert [i for batch in asked for i in batch] == sorted(created)
     assert not created & {"ag-infra-1", "ag-infra-2"}  # the existing beads were never asked
+
+
+# -- a failed create-mode apply (bh-12hka, #152) -------------------------------------------------
+
+
+def test_a_failed_create_apply_exits_nonzero_retires_what_it_created_and_a_rerun_revives_it(
+    created_run, hive, tmp_path, cfg_path
+) -> None:
+    store, _ = created_run
+    repo = hive[1]
+    _commit(repo, "feat(api): a third unrelated change", {"api/c.txt": "c"})
+    _config(cfg_path, collate={"create": "propose"})
+    imports: list[str] = []
+
+    def fail(op: str, bead: str) -> bool:
+        if op == "import" and bead not in store.rows:
+            imports.append(bead)
+            return len(imports) == 2  # the second created bead fails mid-apply
+        return False
+
+    store.fail = fail
+    before = set(store.rows)
+    result = _run(tmp_path, "--sources", "git", "--until", "apply", "--yes", code=1)
+    assert "apply failed" in result.output
+
+    created = set(store.rows) - before
+    assert created, "the first create landed before the failure"
+    assert {store.rows[i]["status"] for i in created} == {"closed"}
+    assert {store.rows[i].get("close_reason") for i in created} == {"backfill-rollback"}
+    audit = json.loads((tmp_path / "run" / "audit.json").read_text())
+    assert audit["state"] == "rolled_back"
+    assert set(audit["rollback_retired"]) == created
+    assert audit["rollback_retired_count"] == len(created)
+
+    store.fail = lambda op, bead: False
+    _run(tmp_path / "again", "--sources", "git", "--until", "apply", "--yes")
+    refs = [row.get("external_ref") for row in store.rows.values() if row.get("external_ref")]
+    assert len(refs) == len(set(refs)), "no duplicate external_ref after the re-run"
+    assert created <= set(store.rows)
+    assert not [i for i in created if store.rows[i]["status"] == "open"]
+    import beadlog
+
+    folded = beadlog.fold(
+        BdStoreLoader(store, group=backfill_cli.hive_group(ENTRY, repo).id).export()
+    )
+    assert {s.phase for r, s in folded.items() if r.id in created} == {"closed"}  # not retired
