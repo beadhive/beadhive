@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "latest": "2.29.0",
+  "latest": "2.30.0",
   "releases": [
     {
       "version": "1.0.0",
@@ -191,6 +191,11 @@
       "version": "2.29.0",
       "major": 2,
       "manifest": "v2.29.0/release.json"
+    },
+    {
+      "version": "2.30.0",
+      "major": 2,
+      "manifest": "v2.30.0/release.json"
     }
   ]
 }

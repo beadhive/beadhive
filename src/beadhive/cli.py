@@ -1881,8 +1881,10 @@ def _backfill_after_sync(plan) -> None:
         return
     try:
         cfg = config.load()
-        if (cfg.get("backfill") or {}).get("continuous", {}).get("enabled") is not True:
-            return  # off by default: nothing imported, nothing read
+        from .backfill_effective import continuous_may_run
+
+        if not continuous_may_run(cfg):
+            return  # off by default (host block and every hive overlay): nothing imported
         from . import backfill_cli, backfill_continuous
 
         hives = []
@@ -4006,7 +4008,33 @@ def _resolve_scope(scope: str) -> str | None:
 def config_get(
     key: str = typer.Argument(..., help="dotted.key path into the config"),
     scope: str = typer.Option("", "--scope", help=_SCOPE_HELP + " (default: merged view)"),
+    hive: str = typer.Option(
+        "",
+        "--hive",
+        help="read the value as this hive (id or registered prefix) sees it, with its "
+        "per-hive overlay applied; the layer it came from is named on stderr",
+    ),
 ):
+    if hive:
+        if scope:
+            typer.echo("✗ --hive and --scope cannot be combined", err=True)
+            raise typer.Exit(1)
+        from . import backfill_effective
+
+        try:
+            view, layer = backfill_effective.effective_view(
+                config.load(), hive, config._split_key(key)
+            )
+        except backfill_effective.BackfillHiveError as exc:
+            typer.echo(f"✗ {exc}", err=True)
+            raise typer.Exit(1) from None
+        res = config.get_value(key, cfg=view)
+        if not res["ok"]:
+            _echo_problems(res["problems"])
+            raise typer.Exit(1)
+        _echo_value(res["value"])
+        typer.echo(f"layer: {layer}", err=True)
+        return
     res = config.get_value(key, scope=_resolve_scope(scope))
     if not res["ok"]:
         _echo_problems(res["problems"])

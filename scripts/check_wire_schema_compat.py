@@ -831,6 +831,10 @@ _APPROVED_OPTIONAL_STRING_PARAMS: dict[str, tuple[str, ...]] = {
     # `beadlog.store` plugin.
     "backfill.apply": ("store",),
     "backfill.export": ("store",),
+    # operator approval 2026-11-13 (bh-g71fi, ADR bh-meuhp Q1 refinement posted on the bead):
+    # `bh config get <key> --hive <prefix>` appends one optional string. Without it the verb keeps
+    # its exact request, output and exit codes; with it the value is read as that hive sees it.
+    "config.get": ("hive",),
 }
 _OPTIONAL_STRING_PARAM = {
     "privilege": "inherited",

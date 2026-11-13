@@ -414,7 +414,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Per-hive area overrides: a key with a / is a path prefix, any other key renames a derived area.",
+          "description": "Area overrides (a hive's own: backfill.hives.<prefix>.collate.areas): a key with a / is a path prefix, any other key renames a derived area.",
           "title": "Areas",
           "type": "object"
         },
@@ -503,6 +503,14 @@
         "history": {
           "$ref": "#/$defs/BackfillHistoryConfig",
           "description": "bh backfill history: run directory, default sources, ledger restriction."
+        },
+        "hives": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BackfillHiveOverlay"
+          },
+          "description": "Per-hive overlays keyed by the hive's registered prefix (never derived): backfill.hives.<prefix>.<section>... overrides the host block for that hive. Host config only; judge is not overridable.",
+          "title": "Hives",
+          "type": "object"
         },
         "judge": {
           "$ref": "#/$defs/BackfillJudgeConfig",
@@ -738,6 +746,38 @@
         }
       },
       "title": "BackfillHistoryConfig",
+      "type": "object"
+    },
+    "BackfillHiveOverlay": {
+      "additionalProperties": false,
+      "description": "``backfill.hives.<prefix>`` — one hive's overlay of the host ``backfill`` block.\n\nEvery section of :class:`BackfillConfig` **except** ``judge`` (one host-wide credit-spending\ncommand stays one host-wide setting, so a ``judge`` key is rejected here) and ``hives``\nitself (overlays do not nest). Only the keys the operator wrote take effect: the overlay is\nmerged key by key over the host block (mappings merge, lists and scalars replace).",
+      "properties": {
+        "collate": {
+          "$ref": "#/$defs/BackfillCollateConfig",
+          "description": "Collation options (B3 to B6) and the create mode of bh backfill history."
+        },
+        "continuous": {
+          "$ref": "#/$defs/BackfillContinuousConfig",
+          "description": "Opt-in incremental backfill after merges and syncs."
+        },
+        "coverage": {
+          "$ref": "#/$defs/BackfillCoverageConfig",
+          "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
+        },
+        "history": {
+          "$ref": "#/$defs/BackfillHistoryConfig",
+          "description": "bh backfill history: run directory, default sources, ledger restriction."
+        },
+        "sources": {
+          "$ref": "#/$defs/BackfillSourcesConfig",
+          "description": "Per-reader settings of the history pipeline (docs formats, github opt-in)."
+        },
+        "timeline": {
+          "$ref": "#/$defs/BackfillTimelineConfig",
+          "description": "History/timeline export settings, including the opt-in dolt_history gap fill."
+        }
+      },
+      "title": "BackfillHiveOverlay",
       "type": "object"
     },
     "BackfillIdentifyConfig": {

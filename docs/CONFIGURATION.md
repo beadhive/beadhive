@@ -857,7 +857,7 @@ nothing runs it for you, and its default stop (`--until plan`) never writes to t
 | `backfill.collate.create` | `off` | `off` links only (a unit matching no bead projects nothing); `propose` makes beads from such units (closed history records; a draft or proposed doc is created open, see `doc_default`; a unit with no evidence moment is skipped) |
 | `backfill.collate.rules` | `[plan-item, local-bead, review, merge, commit]` | B3 claim rules, in order |
 | `backfill.collate.include_types` | `[feat]` | conventional-commit types the `commit` rule makes units of (`*` any) |
-| `backfill.collate.epics` / `areas` / `path_depth` / `min_epic_units` | `true` / `{}` / `1` / `2` | area epics and the per-hive area overrides |
+| `backfill.collate.epics` / `areas` / `path_depth` / `min_epic_units` | `true` / `{}` / `1` / `2` | area epics and area overrides (a hive's own: [`backfill.hives.<prefix>`](#backfill-hives)) |
 | `backfill.collate.attach.tiers` / `lexical_percent` / `lexical_min_tokens` / `standalone` | all four tiers / `60` / `2` / `true` | B4, attaching docs to units |
 | `backfill.collate.identify.new_threshold` / `max_candidates` | `null` / `5` | B5: a fuzzy score below `new_threshold` percent is NEW (off when null); candidates offered per match |
 | `backfill.collate.status.rules` / `design_only` / `summary_suffix` / `date_tolerance_days` / `clock_tolerance_seconds` | the four non-clock rules / `[design only]` / `-summary.md` / `1` / `86400` | B6 conflict rules (the `clock-*` rules are opt-in) and tolerances |
@@ -868,6 +868,30 @@ Every default equals the library's own, so an absent section changes nothing. `b
 the section (unknown keys, an unknown rule or tier and out-of-range numbers are refused). As with
 the rest of `backfill`, `BeadhiveConfig` forbids unknown keys: set these only after the schema has
 rotated to the host.
+
+### `backfill.hives.<prefix>` {#backfill-hives}
+
+A hive's own backfill settings. `backfill.hives.<prefix>.<section>...` in the **host** config
+overlays the host `backfill` block for the hive whose registered `prefix` is `<prefix>`; the
+prefix is never derived, so a hive without one cannot have an overlay (the error says to set the
+registry prefix). The overlay has the shape of `backfill` **without `judge`**: a `judge` key is
+refused, so the one credit-spending command stays host-wide. Merge rule, applied by one resolver at
+every backfill read site (history run and plan rebuild, coverage, gap fill, continuous backfill):
+mappings merge key by key (`collate.areas` keeps the host's entries unless the hive overrides that
+key), lists and scalars replace. A hive with no overlay behaves exactly as without this section;
+nothing is on by default.
+
+```sh
+bh config set backfill.hives.wd.collate.areas '{"ui": "frontend"}' --json
+bh config set backfill.hives.wd.collate.create propose
+bh config get backfill.collate.areas --hive wd        # the effective value ...
+# stderr: layer: backfill.hives.wd                     # ... and the layer it came from (or: host)
+```
+
+The overlay is host-owned: `--scope fleet` writes to `backfill.hives.*` are refused, so a fleet
+push cannot enable bead creation for a hive. `bh config get <key> --hive <hive>` reads a key as
+that hive sees it (`--scope` cannot be combined with it); keys outside `backfill` report the layer
+`config`.
 
 ### `backfill.timeline.gapfill` {#backfill-timeline-gapfill}
 

@@ -3084,6 +3084,14 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "hive",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "unprivileged-read",
@@ -3107,7 +3115,8 @@
           "parameter_map": {},
           "parameters": [
             "key",
-            "scope"
+            "scope",
+            "hive"
           ],
           "path": "config get",
           "progress": {

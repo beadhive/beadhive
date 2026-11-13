@@ -413,6 +413,31 @@ def test_create_propose_proposes_new_beads_with_the_creation_labels(
     assert store.writes == []
 
 
+def test_a_hive_overlay_decides_the_create_mode_of_its_own_hive(
+    hive, tmp_path, monkeypatch, cfg_path
+) -> None:
+    """bh-g71fi: ``backfill.hives.<prefix>`` over the host block reaches the history run; an
+    overlay of another hive, or none, leaves the host's ``create = off`` in force."""
+    from beadhive import backfill_create, registry
+    from beadlog_sources import ProjectOptions
+
+    labels = ("origin:backfill", *TRIPLET)
+    monkeypatch.setattr(
+        backfill_create,
+        "create_mode_options",
+        lambda h, c, m: ProjectOptions(creation_labels=labels),
+    )
+    monkeypatch.setattr(registry, "current_hive", lambda cfg: ENTRY)
+    _config(cfg_path, hives={"someone-else": {"collate": {"create": "propose"}}})
+    plan = json.loads(_run(tmp_path, "--sources", "git", "--json").stdout)["stages"]["plan"]
+    assert plan["create"] == "off"
+    _config(cfg_path, hives={ENTRY["prefix"]: {"collate": {"create": "propose"}}})
+    plan = json.loads(_run(tmp_path, "--sources", "git", "--refresh", "--json").stdout)["stages"][
+        "plan"
+    ]
+    assert plan["create"] == "propose"
+
+
 def test_the_plan_report_carries_unit_counts(hive, tmp_path) -> None:
     plan = json.loads(_run(tmp_path, "--sources", "git", "--json").stdout)["stages"]["plan"]
     assert set(plan["units"]) <= {"NEW", "PRESENT", "NOISE", "residual"}
