@@ -13,6 +13,23 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.37.0 (2026-11-13)
+
+### Feat
+
+- **backfill**: append in_progress and close transitions to open backfilled beads (bh-1vkff.3)
+- **backfill**: per-unit operator decisions recorded in the bead store and honoured by re-runs (bh-2sicb)
+- **backfill**: per-hive backfill config via backfill.hives.<prefix>
+- **backfill**: take a created doc bead's status from the doc (bh-f4t6r)
+- **backfill**: exclude patterns for the docs and planning readers (bh-pieo5)
+
+### Fix
+
+- **backfill**: a docs-only propose run skips units with no evidence moment (bh-uysl1)
+- **backfill**: collapse roadmap names that resolve to one file (bh-29lke)
+- **backfill**: report and revive the beads a failed create apply retires
+- **backfill**: use default_factory for Mapping field defaults so bh loads on Python 3.11
+
 ## v0.36.0 (2026-11-12)
 
 ### Feat
