@@ -19,6 +19,10 @@ No action required.
   `rollback_retired_count`), a created bead that is still open or missing after rollback is
   reported as `rollback_residual` (state `rollback_failed`) instead of being skipped, and a
   re-run revives a retired bead in place rather than matching it as already present.
+- **Roadmap is read once on case-insensitive filesystems (bh-29lke).** With no planning files or
+  globs configured, `ROADMAP.md` and `roadmap.md` resolved to the same file on macOS and every
+  item appeared twice; discovery now collapses names that are the same file. Explicit `files` and
+  `globs` are unchanged.
 
 ## 0.35.10 → 0.35.11 — patch fixes
 
