@@ -25,6 +25,7 @@ from beadlog_sources import (
     ProjectError,
     Projection,
     ProjectOptions,
+    StatusOptions,
     collate,
     dumps_collation,
     loads_collation,
@@ -73,7 +74,11 @@ def existing(ident: str, title: str, **fields: Any) -> beadlog.BeadEvent:
     )
 
 
-def run_collate(corpus: EvidenceCorpus, baseline: Sequence[beadlog.BeadEvent]) -> Collation:
+def run_collate(
+    corpus: EvidenceCorpus,
+    baseline: Sequence[beadlog.BeadEvent],
+    status: StatusOptions | None = None,
+) -> Collation:
     return collate(
         corpus,
         baseline,
@@ -81,14 +86,18 @@ def run_collate(corpus: EvidenceCorpus, baseline: Sequence[beadlog.BeadEvent]) -
         local="bh",
         options=ClusterOptions(),
         identify_options=IdentifyOptions(new_threshold=100),
+        status_options=status,
     )
 
 
 def run(
-    *artifacts, baseline: Sequence[beadlog.BeadEvent] = (), options: ProjectOptions | None = None
+    *artifacts,
+    baseline: Sequence[beadlog.BeadEvent] = (),
+    options: ProjectOptions | None = None,
+    status: StatusOptions | None = None,
 ) -> tuple[EvidenceCorpus, Collation, Projection]:
     corpus = ev.corpus(*artifacts)
-    col = run_collate(corpus, baseline)
+    col = run_collate(corpus, baseline, status)
     return (
         corpus,
         col,
@@ -545,6 +554,28 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             "doc:docs/design/queue.md",
             "label_add",
             {"label": "source:docs"},
+            "2026-02-03T00:00:00Z",
+            "day",
+            "derived",
+            None,
+            ["doc:docs/design/queue.md"],
+        ),
+        # bh-f4t6r: an accepted doc maps closed under the default from-doc, and with no add
+        # commit it closes at its declared date (0.36: it stayed open with no closing clock).
+        (
+            "doc:docs/design/queue.md",
+            "phase",
+            {"phase": "closed", "reason": "doc: doc:docs/design/queue.md"},
+            "2026-02-03T00:00:00.000001Z",
+            None,
+            "derived",
+            None,
+            ["doc:docs/design/queue.md"],
+        ),
+        (
+            "doc:docs/design/queue.md",
+            "set",
+            {"field": "metadata.lifecycle.closed_at", "value": "2026-02-03"},
             "2026-02-03T00:00:00Z",
             "day",
             "derived",
@@ -1088,7 +1119,10 @@ def test_new_creates_carry_the_b5_verdict() -> None:
 
 
 def test_day_precision_is_the_start_of_the_day_never_a_midnight_instant() -> None:
-    (_, _, projection), _ = scenario("design-record")
+    # pinned to ``open``: a declared, never-added doc kept open has no closing clock (the
+    # from-doc default closes an accepted doc at its declared date, see the status-doc tests)
+    built = SCENARIOS["design-record"]()
+    (_, _, projection) = run(*built["artifacts"], status=StatusOptions(doc_default="open"))
     record = projection.unit("doc:docs/design/queue.md")
     assert record is not None
     dated = [e for e in projection.events if e.bead.id == record.bead]

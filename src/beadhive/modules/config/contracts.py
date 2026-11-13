@@ -2377,6 +2377,22 @@ class BackfillStatusConfig(_Section):
     clock_tolerance_seconds: int = Field(
         86400, ge=0, description="Seconds a review may be merged before its first change."
     )
+    doc_default: Literal["closed", "open", "from-doc"] = Field(
+        "from-doc",
+        description="Status of a unit with no evidential closure (only docs). from-doc (default): "
+        "open when a doc declares a status in doc_open (or a design-only phrase), else closed; "
+        "the add commit is then the unit's creation, never its close. closed: the add commit "
+        "closes it (0.36 output for git-history runs). open: every such unit stays open. "
+        "Evidence always wins.",
+    )
+    doc_open: list[
+        Literal[
+            "proposed", "draft", "accepted", "delivered", "superseded", "rejected", "deprecated"
+        ]
+    ] = Field(
+        default_factory=lambda: ["draft", "proposed"],
+        description="Declared doc statuses that keep a unit open under doc_default = from-doc.",
+    )
 
 
 class BackfillCollateConfig(_Section):
@@ -2386,7 +2402,8 @@ class BackfillCollateConfig(_Section):
     create: Literal["off", "propose"] = Field(
         "off",
         description="off (default): link only, units that match no bead are reported and "
-        "propose nothing. propose: a unit that matches no bead is proposed as a closed bead.",
+        "propose nothing. propose: a unit that matches no bead is proposed as a bead (closed, "
+        "or open for a draft or proposed doc under status.doc_default).",
     )
     rules: list[Literal["plan-item", "local-bead", "review", "merge", "commit"]] = Field(
         default_factory=lambda: ["plan-item", "local-bead", "review", "merge", "commit"],

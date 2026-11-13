@@ -571,8 +571,9 @@ planned for 0.37.0 (bh-1vkff).
 
 ## Collation status and conflicts
 
-The collation derives each work unit's status and dates from history only (merged or committed
-is closed, a plan item follows its done marker) and lists conflicts between artifacts, never
+The collation derives each work unit's status and dates from history (merged or committed
+is closed, a plan item follows its done marker; a doc-only unit follows `doc_default`, below)
+and lists conflicts between artifacts, never
 resolving one. Four rules are on by default: a draft or proposed doc whose commit or PR also
 landed code, a "design only" doc with a `feat` change attached, a doc accepted after the last
 release with no code, and an open plan item whose summary exists. The two clock rules
@@ -580,6 +581,46 @@ release with no code, and an open plan item whose summary exists. The two clock 
 differ from add-commit days; enable them with the `rules` option of the `status` section
 (`beadlog_sources.StatusOptions`), and tune `date_tolerance_days` and
 `clock_tolerance_seconds`.
+
+### Doc units: `backfill.collate.status.doc_default` {#doc-status}
+
+A backfill writes a **timeline**, not a snapshot. A doc's add commit is when the doc was
+*created*; recording it as the close of a draft or proposed doc would invent a close event that
+never happened. The `doc_default` key (a `backfill.collate.status` option, recorded in the
+collation) decides the status of a unit that has **no evidential closure** (its `basis` is `doc`
+or `none`: only docs back it, no merged or committed change, release, closed tracker item or plan
+done marker):
+
+| `doc_default` | A doc-only unit is |
+|---|---|
+| `from-doc` (default) | **open** when a doc of the unit declares a status in `doc_open` (default `["draft", "proposed"]`) or a raw status matching `design_only` ("design only"); otherwise closed. |
+| `closed` | closed by its add commit (a doc dated but never added closes at its declared date): identical to 0.36 for git-history runs. |
+| `open` | open, whatever the doc declares. |
+
+- An **open** unit's add commit is only its `created` moment: no `closed` event is written.
+  A **closed** doc unit closes at its add commit, else at its declared date (day precision). A
+  dated doc with no declared status closes at its date under `from-doc`.
+- **Evidence wins.** A draft doc whose change also landed code stays closed (basis `committed`)
+  and `doc-draft-code-landed` still fires; every conflict rule runs as before, in every mode.
+- `accepted` is not in the default `doc_open`: an accepted ADR is a finished record. Add it to
+  `doc_open` to keep accepted docs open.
+- Only **newly created** beads follow the setting. A created bead is never rewritten, so a hive
+  that ran 0.36 keeps its closed doc beads.
+- Docs-only runs (`--sources docs`, no git reader) have no add commit. With `create = propose` a
+  unit with **no evidence moment at all** (no add commit, no declared date) is **not created**: it
+  is reported as `skipped: no evidence moment` in the plan summary (and the `no_moment` list of the
+  plan report) and in `bh backfill view unit`. A dated draft/proposed doc is created open at its
+  declared date; a dated doc that maps closed closes at that date. `create = off` is unchanged.
+- Doc checklists are out of scope here (the docs reader has no checklist model); name a roadmap
+  file in the planning reader's `files` to get its unchecked items as open plan items.
+
+**Open backfilled beads show up as ready work.** An open bead is available work to `bd ready` and
+to dispatchers, which a closed historical record never was. Backfilled beads carry the
+`origin:backfill` label (and a `source:docs` label for docs), so filter them out with
+`bd ready --exclude-label origin:backfill`, or list just them with
+`bd list --label origin:backfill --status open`. Whether a hive hides them by default is a
+hive-side choice; backfill does not change it. To restore closed-by-add-commit records for new
+runs, set `backfill.collate.status.doc_default = "closed"`.
 
 ## Judged residuals
 

@@ -123,7 +123,9 @@
         "design_only": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Normalized phrases that make a raw declared status design only."},
         "summary_suffix": {"type": "string", "minLength": 1},
         "date_tolerance_days": {"type": "integer", "minimum": 0},
-        "clock_tolerance_seconds": {"type": "integer", "minimum": 0}
+        "clock_tolerance_seconds": {"type": "integer", "minimum": 0},
+        "doc_default": {"enum": ["closed", "open", "from-doc"], "description": "Status of a unit with no evidential closure; absent in a record written before 0.37 (read back as closed)."},
+        "doc_open": {"type": "array", "uniqueItems": true, "items": {"enum": ["proposed", "draft", "accepted", "delivered", "superseded", "rejected", "deprecated"]}, "description": "Declared doc statuses that keep a unit open under from-doc."}
       }
     },
     "moment": {

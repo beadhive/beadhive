@@ -854,13 +854,15 @@ nothing runs it for you, and its default stop (`--until plan`) never writes to t
 | `backfill.sources.docs.layouts` | `[]` | docs layout presets; empty: the reader's presets |
 | `backfill.sources.github.enabled` | `false` | allow the `github` reader (an offline read of a snapshot; needs `plugins.tracker-github.enabled`) |
 | `backfill.sources.github.snapshot` | `github-snapshot.json` | the snapshot file, relative to the checkout |
-| `backfill.collate.create` | `off` | `off` links only (a unit matching no bead projects nothing); `propose` makes closed beads from such units |
+| `backfill.collate.create` | `off` | `off` links only (a unit matching no bead projects nothing); `propose` makes beads from such units (closed history records; a draft or proposed doc is created open, see `doc_default`; a unit with no evidence moment is skipped) |
 | `backfill.collate.rules` | `[plan-item, local-bead, review, merge, commit]` | B3 claim rules, in order |
 | `backfill.collate.include_types` | `[feat]` | conventional-commit types the `commit` rule makes units of (`*` any) |
 | `backfill.collate.epics` / `areas` / `path_depth` / `min_epic_units` | `true` / `{}` / `1` / `2` | area epics and the per-hive area overrides |
 | `backfill.collate.attach.tiers` / `lexical_percent` / `lexical_min_tokens` / `standalone` | all four tiers / `60` / `2` / `true` | B4, attaching docs to units |
 | `backfill.collate.identify.new_threshold` / `max_candidates` | `null` / `5` | B5: a fuzzy score below `new_threshold` percent is NEW (off when null); candidates offered per match |
 | `backfill.collate.status.rules` / `design_only` / `summary_suffix` / `date_tolerance_days` / `clock_tolerance_seconds` | the four non-clock rules / `[design only]` / `-summary.md` / `1` / `86400` | B6 conflict rules (the `clock-*` rules are opt-in) and tolerances |
+| `backfill.collate.status.doc_default` | `from-doc` | Status of a unit backed only by docs: `from-doc` (open when a doc declares a `doc_open` status or a design-only phrase, else closed), `closed` (0.36: the add commit closes it) or `open`. Evidence always wins; only newly created beads follow it. See [BACKFILL.md](BACKFILL.md#doc-status) |
+| `backfill.collate.status.doc_open` | `[draft, proposed]` | Declared doc statuses that keep a unit open under `from-doc` |
 
 Every default equals the library's own, so an absent section changes nothing. `bh config` validates
 the section (unknown keys, an unknown rule or tier and out-of-range numbers are refused). As with
