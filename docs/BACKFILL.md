@@ -328,7 +328,24 @@ otherwise, with identical results). Options (`--option key=value`): `layouts` (p
 (`docs/reviews`, review-tool HTML exports); `none`), `globs`, `files` (any extension a format
 detects), `formats` (`markdown` by default; add `html` to read `.html`/`.htm` docs: title from
 `<title>` else the first `<h1>`, `<meta name=...>` as metadata, a visible `Status:` line, `h1`-`h6`
-sections; stdlib `html.parser` only, script/style ignored), `namespaces`, `first_add`, `git`.
+sections; stdlib `html.parser` only, script/style ignored), `exclude` (below), `namespaces`,
+`first_add`, `git`.
+
+**Excluding files (`exclude`, docs and planning readers).** `exclude` is a comma-separated list of
+globs over repo-relative posix paths (`**`, `*`, `?`, `[..]`; `*` and `?` stay within one path
+segment, `**` crosses them). A trailing `/` matches the whole subtree below a directory. Like
+gitignore, a pattern with no other `/` matches by name at any depth: `archive/` excludes
+`archive/x.md` and `docs/archive/x.md` (not `docs/archived/x.md`) and `template.md` excludes that
+file name anywhere. A pattern with an inner `/` is anchored at the repository root
+(`docs/archive/` does not match `other/docs/archive/`). It is applied last, over layouts, `globs`,
+the conventional roadmap names and `files`. An explicitly named `files` entry that an exclude
+matches is dropped with a warning naming the file and the pattern. A leading `!` is a validation
+error (reserved for a later negation syntax). The default is empty (nothing excluded, output
+unchanged). The option is part of the run header, so changing it invalidates reused evidence. In a
+hive, set it per reader, for example `backfill.sources.docs.options = { exclude =
+"docs/archive/,template.md" }` and `backfill.sources.planning.options = { exclude =
+"docs/plans/generated/" }`. For the planning reader it also applies to GSD plan files; a phase
+whose plans are all excluded is dropped.
 
 Bead-token recognition is shared (`beadlog_sources.tokens`). With `namespaces` (id prefixes, for
 example `bh,hq`) every `<ns>-<id>` is a token. Without them a generic shape is used (a short

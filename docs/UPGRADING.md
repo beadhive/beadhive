@@ -5,6 +5,16 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.36.x → 0.37.0 — backfill re-run control
+
+No action required.
+
+- **Docs and planning readers take `exclude` (bh-pieo5, #155).** Set
+  `backfill.sources.docs.options.exclude` / `backfill.sources.planning.options.exclude` to a csv of
+  globs (trailing `/` = subtree, no `/` = file name at any depth) to keep templates, archives or
+  generated docs out of a backfill; an explicit file an exclude matches is dropped with a warning.
+  Unset by default, so existing runs are unchanged.
+
 ## 0.36.0 → 0.36.1 — patch fixes
 
 No action required.

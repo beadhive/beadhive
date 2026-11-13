@@ -849,6 +849,7 @@ nothing runs it for you, and its default stop (`--until plan`) never writes to t
 | `backfill.history.sources` | `[git, docs, planning]` | readers used without `--sources`; `github` is allowed here only with the next section's switch |
 | `backfill.history.ledgers` | `[]` | ledger names (registered prefixes) whose id sets resolve foreign bead tokens; empty reads every registered ledger (one `bd export` each, announced on stderr); the hive's own ledger is always read |
 | `backfill.sources.git.options` / `.planning.options` | `{}` | reader options passed verbatim (strings); an `options` key wins over a typed key |
+| `backfill.sources.docs.options` / `.planning.options` `exclude` | unset (nothing excluded) | csv of globs over repo-relative paths dropped from the docs / planning readers, applied last (trailing `/` = subtree; no `/` = file name at any depth; leading `!` is an error); see [BACKFILL.md](BACKFILL.md) |
 | `backfill.sources.docs.formats` | `[markdown]` | doc formats read; **`html` is opt-in** |
 | `backfill.sources.docs.layouts` | `[]` | docs layout presets; empty: the reader's presets |
 | `backfill.sources.github.enabled` | `false` | allow the `github` reader (an offline read of a snapshot; needs `plugins.tracker-github.enabled`) |

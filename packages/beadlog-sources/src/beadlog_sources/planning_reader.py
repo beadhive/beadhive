@@ -32,6 +32,13 @@ Options (``ReadRequest.options``; lists are comma-separated):
 - ``planning``: the GSD tree (default ``.planning``).
 - ``files``: explicit roadmap files; ``globs``: extra roadmap globs relative to the root. Without
   either, the conventional names of :data:`ROADMAP_FILES` are read when present.
+- ``exclude``: globs (repo-relative posix paths; ``**``, ``*``, ``?``, ``[..]``) whose files are
+  dropped, applied last over the GSD tree, ``globs``, ``files`` and the conventional names. A
+  trailing ``/`` matches that subtree; a pattern with no other ``/`` matches a name at any depth
+  (gitignore-like), one with an inner ``/`` is root-anchored.
+  An explicit ``files`` entry an exclude matches is dropped with a warning naming the file and
+  the pattern; a GSD phase whose plans are all excluded is dropped. A leading ``!`` is an error
+  (reserved). Default empty: nothing is excluded.
 - ``namespaces``: bead id prefixes anchoring tokens; ``header_options`` records ``token_mode``.
 - ``first_add``: record the first-add commit time (default true); ``git``: the git executable.
 
@@ -53,10 +60,12 @@ from ._sources import (
     SourceError,
     csv,
     doc_title,
+    exclude_matcher,
     first_adds,
     is_git_repo,
     split_frontmatter,
     truthy,
+    warn_explicit_excluded,
 )
 from .evidence import Artifact, Category, Ref
 from .readers import ReadRequest
@@ -313,7 +322,20 @@ class GsdFormat:
 
     def phases(self, root: Path, options: Mapping[str, Any]) -> list[Phase]:
         """The phases of the tree (option ``planning``), each with its plans."""
-        return scan_tree(root, self._tree(options))
+        phases = scan_tree(root, self._tree(options))
+        exclude = exclude_matcher(options.get("exclude", ""))
+        if not exclude:
+            return phases
+        kept: list[Phase] = []
+        for phase in phases:
+            if exclude.match(phase.path, directory=True) is not None:
+                continue
+            plans = [p for p in phase.plans if exclude.match(p.path) is None]
+            if phase.plans and not plans:
+                continue  # every plan excluded: the phase is gone too
+            phase.plans = plans
+            kept.append(phase)
+        return kept
 
     def items(self, root: Path, options: Mapping[str, Any]) -> list[PlanItem]:
         items = _gsd_items(self.phases(root, options))
@@ -494,19 +516,26 @@ class RoadmapFormat:
     name = "roadmap"
 
     @staticmethod
-    def discover(root: Path, options: Mapping[str, Any]) -> list[str]:
+    def discover(root: Path, options: Mapping[str, Any], *, warn: bool = True) -> list[str]:
         found: set[str] = set()
+        exclude = exclude_matcher(options.get("exclude", ""))
         explicit = csv(options.get("files", ""))
         globs = csv(options.get("globs", ""))
         for name in explicit:
             if not (root / name).is_file():
                 raise SourceError(f"planning file {name!r} does not exist under {root}")
-            found.add((root / name).relative_to(root).as_posix())
+            relative = (root / name).relative_to(root).as_posix()
+            hit = exclude.match(relative)
+            if hit is not None:
+                if warn:
+                    warn_explicit_excluded("planning", relative, hit)
+                continue
+            found.add(relative)
         for pattern in globs:
             found.update(p.relative_to(root).as_posix() for p in root.glob(pattern) if p.is_file())
         if not explicit and not globs:
             found.update(_distinct_files(root, ROADMAP_FILES))
-        return sorted(found)
+        return sorted(p for p in found if exclude.match(p) is None)
 
     def items(self, root: Path, options: Mapping[str, Any]) -> list[PlanItem]:
         pattern = bead_token_pattern(csv(options.get("namespaces", "")))
@@ -517,7 +546,7 @@ class RoadmapFormat:
         return out
 
     def pathspecs(self, root: Path, options: Mapping[str, Any]) -> list[str]:
-        return self.discover(root, options)
+        return self.discover(root, options, warn=False)
 
 
 BUILTIN_FORMATS: Mapping[str, Callable[[], PlanningFormat]] = {

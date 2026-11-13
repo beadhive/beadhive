@@ -17,6 +17,7 @@ from beadlog_sources import (
     ReadRequest,
     discover_readers,
 )
+from beadlog_sources._sources import SourceError
 from beadlog_sources.evidence import Category, build_corpus, dumps_evidence
 from beadlog_sources.planning_reader import roadmap_items, slugify
 from beadlog_sources.readers import load_reader
@@ -260,3 +261,57 @@ def test_roadmap_single_h1_is_title_but_several_are_items() -> None:
         ("plan:R.md#one/a", "plan:R.md#one"),
         ("plan:R.md#two", None),
     ]
+
+
+# -- exclude -------------------------------------------------------------------------------
+
+
+def _akeys(artifacts: list) -> list[str]:
+    return [a.key for a in artifacts]
+
+
+def test_exclude_default_empty_is_unchanged(gsd: Path) -> None:
+    (gsd / "ROADMAP.md").write_text(ROADMAP, encoding="utf-8")
+    assert _read(gsd) == _read(gsd, exclude="")
+
+
+def test_exclude_gsd_plans_and_phases(gsd: Path) -> None:
+    got = _akeys(_read(gsd, exclude="01-02-PLAN.md"))
+    assert not any("01-02" in k for k in got) and any("01-01" in k for k in got)
+    got = _akeys(_read(gsd, exclude=f"{TREE}/02-features/"))
+    assert not any("02-features" in k for k in got) and any("01-foundation" in k for k in got)
+    # a phase whose plans are all excluded goes with them; an empty phase stays
+    got = _akeys(_read(gsd, exclude="*-PLAN.md"))
+    assert not any("01-foundation" in k or "02-features" in k for k in got)
+    assert any("03-empty" in k for k in got)
+    assert not any(
+        "01-foundation" in k for k in _akeys(_read(gsd, exclude=f"{TREE}/01-foundation/"))
+    )
+
+
+def test_exclude_over_conventional_names_and_globs(tmp_path: Path) -> None:
+    _write(
+        tmp_path, {"ROADMAP.md": ROADMAP, "docs/plans/a.md": "- [ ] A\n", "docs/b.md": "- [ ] B\n"}
+    )
+    assert _akeys(_read(tmp_path))
+    assert _read(tmp_path, exclude="ROADMAP.md") == []
+    got = _akeys(_read(tmp_path, globs="docs/**/*.md", exclude="docs/plans/"))
+    assert got and all("docs/b.md" in k for k in got)
+
+
+def test_exclude_of_an_explicit_file_warns_and_drops(tmp_path: Path) -> None:
+    _write(tmp_path, {"ROADMAP.md": ROADMAP, "docs/b.md": "- [ ] B\n"})
+    with pytest.warns(UserWarning, match=r"ROADMAP\.md.*'\*\.md'") as record:
+        got = _akeys(_read(tmp_path, files="ROADMAP.md", exclude="*.md"))
+    assert got == [] and len(record) == 1
+
+
+def test_exclude_negation_is_rejected(tmp_path: Path) -> None:
+    _write(tmp_path, {"ROADMAP.md": ROADMAP})
+    with pytest.raises(SourceError, match="negation"):
+        _read(tmp_path, exclude="!ROADMAP.md")
+
+
+def test_exclude_is_part_of_header_options() -> None:
+    assert PlanningReader.header_options({"exclude": "a/"})["exclude"] == "a/"
+    assert PlanningReader.header_options({}) != PlanningReader.header_options({"exclude": "a/"})
