@@ -65,7 +65,7 @@ call. With the judge off nothing is previewed and nothing is ever sent anywhere.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -543,7 +543,10 @@ class _Baseline:
         return scored[:limit]
 
 
-def _ref_keys(unit: Unit) -> list[str]:
+def _ref_keys(unit: Unit, attached: Sequence[str] = ()) -> list[str]:
+    """The keys a baseline bead's ``external_ref`` may carry for ``unit``: its own, then (last, so
+    an own key always wins) those of the docs B4 attached to it, since a doc that first made a
+    bead of its own and later attached to a change is still that bead's evidence (bh-1vkff.3)."""
     keys = [unit.key]
     if unit.key.startswith("doc:"):
         keys.append(unit.key[4:])
@@ -551,6 +554,8 @@ def _ref_keys(unit: Unit) -> list[str]:
         keys.append(artifact)
         if artifact.startswith("doc:"):
             keys.append(artifact[4:])
+    for doc in attached:
+        keys.extend((doc, doc[4:]) if doc.startswith("doc:") else (doc,))
     return list(dict.fromkeys(keys))
 
 
@@ -639,8 +644,10 @@ def identify_units(
     baseline: Iterable[BeadEvent],
     options: IdentifyOptions | None = None,
     run: IdentifyRun | None = None,
+    attached: Mapping[str, Sequence[str]] | None = None,
 ) -> IdentifyResult:
-    """B5 over ``units`` (see the module doc); pure apart from the judge and the preview sink."""
+    """B5 over ``units`` (see the module doc); pure apart from the judge and the preview sink.
+    ``attached`` maps a unit key to the keys of the docs B4 attached to it."""
     options = options or IdentifyOptions()
     run = run or IdentifyRun()
     base = _Baseline(baseline)
@@ -682,7 +689,14 @@ def identify_units(
                 f"decision {decision.kind} on {unit.key} (bead {decision.bead}) not applied: {why}"
             )
         # 1. external_ref / source key.
-        hit = next(((k, base.refs[k]) for k in _ref_keys(unit) if k in base.refs), None)
+        hit = next(
+            (
+                (k, base.refs[k])
+                for k in _ref_keys(unit, (attached or {}).get(unit.key, ()))
+                if k in base.refs
+            ),
+            None,
+        )
         if hit is not None:
             ref, ids = hit
             note = f"; also carried by {', '.join(ids[1:])}" if len(ids) > 1 else ""
@@ -852,7 +866,10 @@ def identify(
 ) -> Collation:
     """B5: ``collation`` with ``verdicts``, ``residual`` and ``options.identify`` filled."""
     options = options or IdentifyOptions()
-    result = identify_units(collation.units, baseline, options, run)
+    docs: dict[str, list[str]] = {}
+    for found in collation.attachments:
+        docs.setdefault(found.unit, []).append(found.doc)
+    result = identify_units(collation.units, baseline, options, run, docs)
     return replace(
         collation,
         verdicts=result.verdicts,
