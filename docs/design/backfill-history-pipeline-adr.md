@@ -10,6 +10,14 @@
   note pointing here. The BeadLog format ([`beadlog-format-adr.md`](beadlog-format-adr.md)) is
   unchanged.
 - **Grounded in:** main `0a3ff9b9` (0.35.11).
+- **Amended by:** [`backfill-rerun-control-adr.md`](backfill-rerun-control-adr.md)
+  (`bh-meuhp`, 0.37.0): Phase C "NEW creates closed beads" and B6 "a design record's
+  `declared_status` never sets a status" change (Q2: `doc_default` defaults to `from-doc`, so a
+  draft/proposed doc is created open and its add commit is a creation moment, not a close; a
+  docs-only run never creates an evidence-free open bead); the Phase C rule that PRESENT never
+  touches `phase` is narrowed so a re-run may append evidence-timestamped close events to open
+  `origin:backfill` beads; B5 gains a step 0 that consults operator decisions kept in the ledger
+  (Q3); the per-hive `areas` override of B3 is realised by a host-owned per-hive overlay (Q1).
 
 ## Context
 

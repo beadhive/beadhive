@@ -419,3 +419,78 @@ def test_html_layout_presets_and_globs(tmp_path: Path) -> None:
     assert set(reviews) == {"doc:docs/reviews/export.html"}
     extra = _read_html(root, formats="html", layouts="none", globs="docs/guides/*.html")
     assert set(extra) == {"doc:docs/guides/nested.html"}
+
+
+# -- exclude -------------------------------------------------------------------------------
+
+
+def _paths(artifacts: list) -> list[str]:
+    return [a.key.removeprefix("doc:") for a in artifacts]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path", "hit"),
+    [
+        ("docs/design/", "docs/design/a/b.md", True),
+        ("docs/design/", "docs/design", False),
+        ("docs/design/", "x/docs/design/b.md", False),
+        ("archive/", "archive/x.md", True),
+        ("archive/", "docs/archive/x.md", True),
+        ("archive/", "docs/archived/x.md", False),
+        ("archive/", "docs/archive", False),
+        ("docs/archive/", "other/docs/archive/x.md", False),
+        ("*.draft.md", "docs/a/x.draft.md", True),
+        ("template.md", "a/b/template.md", True),
+        ("template.md", "a/b/template.md.bak", False),
+        ("docs/**/old-*.md", "docs/old-1.md", True),
+        ("docs/**/old-*.md", "docs/a/b/old-1.md", True),
+        ("docs/*.md", "docs/a/b.md", False),
+        ("docs/?.md", "docs/a.md", True),
+        ("docs/[ab].md", "docs/c.md", False),
+        ("docs/[!ab].md", "docs/c.md", True),
+        ("docs/a.b", "docs/aXb", False),
+    ],
+)
+def test_exclude_matcher_semantics(pattern: str, path: str, hit: bool) -> None:
+    got = sources.exclude_matcher(pattern).match(path)
+    assert got == (pattern if hit else None)
+
+
+def test_exclude_matcher_directory_and_validation() -> None:
+    assert sources.exclude_matcher("a/b/").match("a/b", directory=True) == "a/b/"
+    assert sources.exclude_matcher("archive/").match("docs/archive", directory=True) == "archive/"
+    assert sources.exclude_matcher("archive/").match("docs/archived", directory=True) is None
+    assert not sources.exclude_matcher("")
+    with pytest.raises(sources.SourceError, match="negation"):
+        sources.exclude_matcher("docs/x.md, !keep.md")
+
+
+def test_exclude_default_empty_is_unchanged(tree: Path) -> None:
+    assert _normal(_read(tree)) == _normal(_read(tree, exclude=""))
+
+
+def test_exclude_applies_over_layouts_globs_and_names(tree: Path) -> None:
+    base = _paths(_read(tree, globs="docs/other/*.md"))
+    assert "docs/other/ignored.md" in base and "docs/design/feature.md" in base
+    got = _paths(_read(tree, globs="docs/other/*.md", exclude="docs/design/, ignored.md,**/0002-*"))
+    assert "docs/design/feature.md" not in got and "docs/design/untitled.md" not in got
+    assert "docs/other/ignored.md" not in got and "docs/decisions/nested/0002-deep.md" not in got
+    assert "docs/decisions/0001-use-beads.md" in got
+
+
+def test_exclude_of_an_explicit_file_warns_and_drops(tree: Path) -> None:
+    with pytest.warns(UserWarning, match=r"README\.md.*'READ\*'"):
+        got = _paths(
+            _read(tree, layouts="none", files="README.md,docs/design/feature.md", exclude="READ*")
+        )
+    assert got == ["docs/design/feature.md"]
+
+
+def test_exclude_negation_is_rejected(tree: Path) -> None:
+    with pytest.raises(sources.SourceError, match="negation"):
+        _read(tree, exclude="!docs/design/")
+
+
+def test_exclude_is_part_of_header_options() -> None:
+    assert DocsReader.header_options({"exclude": "a/"})["exclude"] == "a/"
+    assert DocsReader.header_options({}) != DocsReader.header_options({"exclude": "a/"})

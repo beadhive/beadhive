@@ -5,6 +5,54 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.36.x → 0.37.0 — backfill re-run control
+
+- **Docs and planning readers take `exclude` (bh-pieo5, #155).** Set
+  `backfill.sources.docs.options.exclude` / `backfill.sources.planning.options.exclude` to a csv of
+  globs (trailing `/` = subtree, no `/` = file name at any depth) to keep templates, archives or
+  generated docs out of a backfill; an explicit file an exclude matches is dropped with a warning.
+  Unset by default, so existing runs are unchanged.
+- **Default change: a backfilled doc bead is no longer closed by its add commit unless the doc
+  says it is done (bh-f4t6r, #153).** `backfill.collate.status.doc_default` is new and defaults
+  to `from-doc`. A doc-only unit (no merged or committed change, release, closed tracker item or
+  plan done marker behind it) whose doc declares `draft`, `proposed` (`status.doc_open`) or a
+  "design only" status is now created **open**, with its add commit as the creation moment and no
+  close event; other doc units still close, at the add commit or else the declared date. *Why:*
+  backfill writes a timeline, not a snapshot, so a draft doc's add commit must not be recorded
+  as a close that never happened. *Effect:* those beads now appear in `bd ready`; filter them with
+  `bd ready --exclude-label origin:backfill`. *Opt out:* set
+  `backfill.collate.status.doc_default = "closed"` for 0.36 output (identical for git-history
+  runs; a docs-only unit with a declared date now closes at that date in every mode but
+  `open`). **Existing beads are untouched**: only beads created by a run after the upgrade
+  follow the setting, and a created bead is never rewritten. A collation recorded by 0.36
+  reads back as `closed`.
+- **A docs-only `create = propose` run no longer creates beads from nothing (bh-uysl1).** A unit
+  with no evidence moment at all (no add commit, no declared date) is skipped and reported as
+  `skipped: no evidence moment` in the plan summary and `bh backfill view unit`, whatever
+  `doc_default` is. The default `git,docs,planning` run changes only as above.
+- **Per-hive backfill config (bh-g71fi, #156).** `backfill.hives.<prefix>.*` in the host config
+  overlays the `backfill` block for one hive (`BackfillConfig` minus `judge`; mappings merge, lists
+  and scalars replace), so `collate.areas`, `collate.create` and the readers' options can differ
+  per hive. `bh config get <key> --hive <prefix>` prints the effective value and its layer. Off by
+  default: a hive with no overlay behaves as before. See
+  [CONFIGURATION.md](CONFIGURATION.md#backfill-hives).
+- **`bh backfill decide` records per-unit decisions (bh-2sicb, #155).** `decide <unit-key>
+  skip|noise|link [<bead>]` (and `decide --deleted <bead-id> skip` for a bead already deleted)
+  writes one closed `decision` bead per unit into the hive's bead store; re-runs honour it, and
+  `backfill.decisions.on_delete = ignore|report|skip` (default `ignore`) can detect deleted beads.
+  A collation holding a decision uses the new `decision` step and `SKIP` class, which a pre-0.37.0
+  reader rejects; without decisions nothing changes.
+- **A re-run now appends the later transitions of a bead it created (bh-1vkff.3).** With
+  `from-doc` creating open beads, a re-run moves an open `origin:backfill` bead to `in_progress`
+  when its unit has an opened review, and closes it when closing evidence appears (a merged
+  review or change, a release, a closed tracker item, a plan done marker), each at the evidence's
+  own time and never rewriting an earlier event. A closed bead, a hand-made bead and a bead a
+  person moved are never touched. New `backfill.collate.status.close_on_evidence` and
+  `in_progress_on_evidence` (both default `true`; `false` keeps the current phase). Newly
+  created beads whose unit has an opened review start `in_progress` instead of `open`. A doc
+  bead now also matches the change its doc later attaches to, instead of a duplicate bead. See
+  [BACKFILL.md](BACKFILL.md#timeline).
+
 ## 0.36.0 → 0.36.1 — patch fixes
 
 No action required.

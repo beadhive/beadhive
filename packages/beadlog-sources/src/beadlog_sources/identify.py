@@ -4,6 +4,13 @@
 BeadLog it was collated against (``docs/design/backfill-history-pipeline-adr.md``, B5). Every
 unit, in key order, goes through these steps; the first that decides wins:
 
+0. ``decision``: an operator decision recorded in the bead store (:mod:`beadlog_sources.decisions`,
+   ``bh backfill decide``) for the unit's key: ``link`` is PRESENT against the named bead,
+   ``noise`` is NOISE against the named epic, ``skip`` is class ``SKIP`` (projected to nothing,
+   never residual); provenance ``derived``, review ``none``. A ``link`` / ``noise`` whose target
+   is gone (or, for ``noise``, is not an epic) is stale: reported through :attr:`IdentifyRun.warn`
+   and not applied, the unit goes on to step 1. Decision beads themselves are never candidates and
+   never answer an ``external_ref`` lookup.
 1. ``external-ref``: a live baseline bead whose ``external_ref`` is the unit's key, the path of a
    ``doc:<path>`` key, or one of the unit's artifact keys: PRESENT, provenance ``derived``.
 2. ``explicit-id``: an ``attach`` unit names its local bead (B2/B3 resolved it): PRESENT.
@@ -58,7 +65,7 @@ call. With the judge off nothing is previewed and nothing is ever sent anywhere.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -67,6 +74,7 @@ from beadlog import BeadEvent, BeadState, fold
 from ._sources import ROLLBACK_REASON
 from .collate import ATTACH, Collation, CollationFormatError, Unit
 from .contracts import ABSTAIN, ChoiceQuery, Fallback, Judgment, JudgmentPort
+from .decisions import LINK, NOISE, SKIP, Decision, decisions_of, is_decision
 from .docs import ask
 from .judges import (
     DEFAULT_MAX_CALLS_PER_RUN,
@@ -96,6 +104,7 @@ QUESTION = (
     "'new' means no existing bead represents it; 'abstain' means you cannot tell."
 )
 
+STEP_DECISION = "decision"
 STEP_EXTERNAL_REF = "external-ref"
 STEP_EXPLICIT_ID = "explicit-id"
 STEP_LEXICAL = "lexical"
@@ -103,6 +112,7 @@ STEP_JUDGE = "judge"
 STEP_NO_CANDIDATE = "no-candidate"
 STEP_THRESHOLD = "threshold"
 STEPS = (
+    STEP_DECISION,
     STEP_EXTERNAL_REF,
     STEP_EXPLICIT_ID,
     STEP_NO_CANDIDATE,
@@ -111,7 +121,13 @@ STEPS = (
     STEP_THRESHOLD,
 )
 
-CLASSES = (str(ReconcileClass.NEW), str(ReconcileClass.PRESENT), str(ReconcileClass.NOISE))
+CLASS_SKIP = "SKIP"  # an operator decision (step 0): nothing is projected, the unit is not residual
+CLASSES = (
+    str(ReconcileClass.NEW),
+    str(ReconcileClass.PRESENT),
+    str(ReconcileClass.NOISE),
+    CLASS_SKIP,
+)
 PROVENANCES = ("derived", "inferred")
 REVIEWS = tuple(str(r) for r in Review)
 
@@ -259,6 +275,7 @@ class IdentifyRun:
     - ``cost_per_call_usd``: the per-call estimate for the preview (passed in by the caller).
     - ``confirm``: allow a run whose pending calls exceed the cap (it still spends at most the cap).
     - ``preview``: where the :class:`CostPreview` goes (default :func:`print_preview`).
+    - ``warn``: where a stale operator decision is reported (default: a line on stderr).
     """
 
     judge: JudgmentPort | None = None
@@ -268,6 +285,7 @@ class IdentifyRun:
     cost_per_call_usd: float | None = None
     confirm: bool = False
     preview: Callable[[CostPreview], None] | None = None
+    warn: Callable[[str], None] | None = None
 
     def __post_init__(self) -> None:
         if self.max_calls_per_run is not None and self.max_calls_per_run < 0:
@@ -494,9 +512,15 @@ class _Baseline:
     def __init__(self, baseline: Iterable[BeadEvent]) -> None:
         beads: dict[str, _Bead] = {}
         refs: dict[str, list[str]] = {}
-        for ref, state in sorted(fold(baseline).items(), key=lambda item: item[0]):
+        states = fold(baseline)
+        self.decisions: dict[str, Decision] = decisions_of(states)
+        self.live: dict[str, bool] = {}  # live non-decision bead id -> is an epic
+        for ref, state in sorted(states.items(), key=lambda item: item[0]):
             if not state.exists or state.deleted or state.erased:
                 continue
+            if is_decision(state):
+                continue  # a decision record is never a candidate and never an external_ref
+            self.live[ref.id] = state.type == "epic"
             external = state.fields.get("external_ref")
             if isinstance(external, str) and external:
                 refs.setdefault(external, []).append(ref.id)
@@ -519,7 +543,10 @@ class _Baseline:
         return scored[:limit]
 
 
-def _ref_keys(unit: Unit) -> list[str]:
+def _ref_keys(unit: Unit, attached: Sequence[str] = ()) -> list[str]:
+    """The keys a baseline bead's ``external_ref`` may carry for ``unit``: its own, then (last, so
+    an own key always wins) those of the docs B4 attached to it, since a doc that first made a
+    bead of its own and later attached to a change is still that bead's evidence (bh-1vkff.3)."""
     keys = [unit.key]
     if unit.key.startswith("doc:"):
         keys.append(unit.key[4:])
@@ -527,6 +554,8 @@ def _ref_keys(unit: Unit) -> list[str]:
         keys.append(artifact)
         if artifact.startswith("doc:"):
             keys.append(artifact[4:])
+    for doc in attached:
+        keys.extend((doc, doc[4:]) if doc.startswith("doc:") else (doc,))
     return list(dict.fromkeys(keys))
 
 
@@ -568,6 +597,46 @@ class IdentifyResult:
     calls: int = 0
     reused: int = 0
     preview: CostPreview | None = None
+    stale: tuple[str, ...] = ()
+
+
+def _print_warning(line: str) -> None:
+    sys.stderr.write(f"identify: {line}\n")
+    sys.stderr.flush()
+
+
+def _decided(unit: str, decision: Decision) -> dict[str, Any]:
+    """The step 0 verdict of a (non-stale) operator decision."""
+    reason = f": {decision.reason}" if decision.reason else ""
+    by = f" by {decision.decided_by}" if decision.decided_by else ""
+    note = f"operator decision {decision.kind}{by} (bead {decision.bead}){reason}"
+    cls = {
+        LINK: str(ReconcileClass.PRESENT),
+        NOISE: str(ReconcileClass.NOISE),
+        SKIP: CLASS_SKIP,
+    }[decision.kind]
+    return _verdict_json(
+        unit,
+        STEP_DECISION,
+        _bridge(note, decision.kind if decision.target is None else decision.target),
+        cls=cls,
+        bead=decision.target,
+        provenance="derived",
+        review=Review.NONE,
+        score=None,
+    )
+
+
+def _stale(decision: Decision, base: _Baseline) -> str | None:
+    """Why a ``link`` / ``noise`` decision cannot be applied (``None`` when it can)."""
+    if decision.kind == SKIP:
+        return None
+    target = decision.target
+    if target is None or target not in base.live:
+        return f"its target bead {target} is no longer in the store"
+    if decision.kind == NOISE and not base.live[target]:
+        return f"its covering bead {target} is not an epic"
+    return None
 
 
 def identify_units(
@@ -575,8 +644,10 @@ def identify_units(
     baseline: Iterable[BeadEvent],
     options: IdentifyOptions | None = None,
     run: IdentifyRun | None = None,
+    attached: Mapping[str, Sequence[str]] | None = None,
 ) -> IdentifyResult:
-    """B5 over ``units`` (see the module doc); pure apart from the judge and the preview sink."""
+    """B5 over ``units`` (see the module doc); pure apart from the judge and the preview sink.
+    ``attached`` maps a unit key to the keys of the docs B4 attached to it."""
     options = options or IdentifyOptions()
     run = run or IdentifyRun()
     base = _Baseline(baseline)
@@ -605,9 +676,27 @@ def identify_units(
             family=FAMILY,
         )
 
+    stale: list[str] = []
     for unit in sorted(units, key=lambda u: u.key):
+        # 0. an operator decision from the bead store.
+        decision = base.decisions.get(unit.key)
+        if decision is not None:
+            why = _stale(decision, base)
+            if why is None:
+                put(unit.key, STEP_DECISION, _decided(unit.key, decision))
+                continue
+            stale.append(
+                f"decision {decision.kind} on {unit.key} (bead {decision.bead}) not applied: {why}"
+            )
         # 1. external_ref / source key.
-        hit = next(((k, base.refs[k]) for k in _ref_keys(unit) if k in base.refs), None)
+        hit = next(
+            (
+                (k, base.refs[k])
+                for k in _ref_keys(unit, (attached or {}).get(unit.key, ()))
+                if k in base.refs
+            ),
+            None,
+        )
         if hit is not None:
             ref, ids = hit
             note = f"; also carried by {', '.join(ids[1:])}" if len(ids) > 1 else ""
@@ -757,12 +846,15 @@ def identify_units(
                 "candidates": list(item.candidates),
             }
         )
+    for line in stale:
+        (run.warn or _print_warning)(line)
     return IdentifyResult(
         verdicts=tuple(verdicts[k] for k in sorted(verdicts)),
         residual=tuple(residual),
         calls=calls,
         reused=reused,
         preview=preview,
+        stale=tuple(stale),
     )
 
 
@@ -774,7 +866,10 @@ def identify(
 ) -> Collation:
     """B5: ``collation`` with ``verdicts``, ``residual`` and ``options.identify`` filled."""
     options = options or IdentifyOptions()
-    result = identify_units(collation.units, baseline, options, run)
+    docs: dict[str, list[str]] = {}
+    for found in collation.attachments:
+        docs.setdefault(found.unit, []).append(found.doc)
+    result = identify_units(collation.units, baseline, options, run, docs)
     return replace(
         collation,
         verdicts=result.verdicts,
@@ -785,11 +880,13 @@ def identify(
 
 __all__ = [
     "CLASSES",
+    "CLASS_SKIP",
     "FAMILY",
     "OPTION_MEMBERS",
     "RESIDUAL_MEMBERS",
     "RESIDUAL_REASONS",
     "STEPS",
+    "STEP_DECISION",
     "VERDICT_MEMBERS",
     "CostPreview",
     "IdentifyConfirmationRequired",

@@ -44,8 +44,8 @@
       "description": "One B5 verdict: the answer of one identify step for one unit.",
       "properties": {
         "unit": {"type": "string", "minLength": 1, "description": "Key of the unit."},
-        "step": {"enum": ["external-ref", "explicit-id", "no-candidate", "lexical", "judge", "threshold"]},
-        "class": {"enum": ["NEW", "PRESENT", "NOISE", null], "description": "The identification; null for a judge abstention (the unit goes on to the threshold or the residual)."},
+        "step": {"enum": ["decision", "external-ref", "explicit-id", "no-candidate", "lexical", "judge", "threshold"]},
+        "class": {"enum": ["NEW", "PRESENT", "NOISE", "SKIP", null], "description": "The identification; SKIP is an operator decision (step decision): nothing is projected and the unit is not residual; null for a judge abstention (the unit goes on to the threshold or the residual)."},
         "bead": {"type": ["string", "null"], "description": "The matched baseline bead (PRESENT) or covering epic (NOISE)."},
         "provenance": {"enum": ["derived", "inferred"], "description": "derived for bridges and the lexical engine; inferred for the judge and the threshold."},
         "review": {"enum": ["none", "auto", "required"]},
@@ -123,7 +123,11 @@
         "design_only": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Normalized phrases that make a raw declared status design only."},
         "summary_suffix": {"type": "string", "minLength": 1},
         "date_tolerance_days": {"type": "integer", "minimum": 0},
-        "clock_tolerance_seconds": {"type": "integer", "minimum": 0}
+        "clock_tolerance_seconds": {"type": "integer", "minimum": 0},
+        "doc_default": {"enum": ["closed", "open", "from-doc"], "description": "Status of a unit with no evidential closure; absent in a record written before 0.37 (read back as closed)."},
+        "doc_open": {"type": "array", "uniqueItems": true, "items": {"enum": ["proposed", "draft", "accepted", "delivered", "superseded", "rejected", "deprecated"]}, "description": "Declared doc statuses that keep a unit open under from-doc."},
+        "close_on_evidence": {"type": "boolean", "description": "A re-run closes an open backfilled bead on closing evidence; absent in a record written before 0.37 (read back as true)."},
+        "in_progress_on_evidence": {"type": "boolean", "description": "A unit with an opened review gets an in_progress transition; absent in a record written before 0.37 (read back as true)."}
       }
     },
     "moment": {
@@ -147,7 +151,8 @@
         "status": {"enum": ["open", "closed"]},
         "basis": {"enum": ["plan-item", "merged", "committed", "released", "tracker", "review", "doc", "children", "none"]},
         "created": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}]},
-        "closed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "Null unless the unit is closed."}
+        "closed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "Null unless the unit is closed."},
+        "started": {"$ref": "#/$defs/moment", "description": "Moment of the unit's in-progress evidence (an opened review); written only when present, and strictly between created and closed on a closed unit."}
       }
     },
     "conflict_source": {

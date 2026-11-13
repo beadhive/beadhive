@@ -52,6 +52,7 @@ backfill collate|hive:string:o,sources:string:o,run_dir:string:o,refresh:boolean
 backfill commits|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o,since_cursor:boolean:o
 backfill complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backfill coverage|hive:string:o,refresh:boolean:o,as_json:boolean:o
+backfill decide|unit_key:string:r,kind:string:o,bead:string:o,deleted:string:o,reason:string:o,hive:string:o,dry_run:boolean:o,as_json:boolean:o
 backfill docs|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o
 backfill export|hive:string:o,out:string:o,as_json:boolean:o,history:boolean:o,store:string:o
 backfill history|hive:string:o,sources:string:o,until:string:o,run_dir:string:o,refresh:boolean:o,yes:boolean:o,as_json:boolean:o
@@ -63,6 +64,7 @@ backfill verdicts|path:string:r,verdict_class:array:o,engine:string:o,min_confid
 backfill verify|path:string:r,as_json:boolean:o
 backfill view conflict|path:string:r,as_json:boolean:o
 backfill view cost|path:string:r,as_json:boolean:o
+backfill view decisions|hive:string:o,as_json:boolean:o
 backfill view unit|path:string:r,decision:array:o,as_json:boolean:o
 backfill view verdicts|path:string:r,as_json:boolean:o
 backfill view xref|path:string:r,as_json:boolean:o
@@ -77,7 +79,7 @@ backup usage|as_json:boolean:o
 backup verify|set_ref:string:o,hive:string:o,hq:boolean:o,restore_test:boolean:o,as_json:boolean:o
 bd|
 checkpoint run|bead:string:r,key:string:r,value:string:r,step:string:o,hive:string:o
-config get|key:string:r,scope:string:o
+config get|key:string:r,scope:string:o,hive:string:o
 config init|force:boolean:o
 config path|
 config schema|as_json:boolean:o
@@ -349,6 +351,7 @@ _READ_PATHS = {
     "backfill verify",
     "backfill view conflict",
     "backfill view cost",
+    "backfill view decisions",
     "backfill view unit",
     "backfill view verdicts",
     "backfill view xref",

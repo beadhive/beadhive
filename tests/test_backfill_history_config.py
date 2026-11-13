@@ -34,6 +34,20 @@ def test_defaults_are_inert_and_equal_the_library_defaults() -> None:
     assert options.status == StatusOptions()
 
 
+def test_doc_default_is_from_doc_and_reaches_the_status_options() -> None:
+    """bh-f4t6r: the default flips to from-doc; ``closed`` is the opt-out to 0.36 output."""
+    cfg = BackfillConfig()
+    assert cfg.collate.status.doc_default == "from-doc"
+    assert cfg.collate.status.doc_open == ["draft", "proposed"]
+    assert backfill_history.CollateOptions.from_config(cfg).status.doc_default == "from-doc"
+    closed = BackfillConfig.model_validate({"collate": {"status": {"doc_default": "closed"}}})
+    assert backfill_history.CollateOptions.from_config(closed).status.doc_default == "closed"
+    with pytest.raises(ValidationError):
+        BackfillConfig.model_validate({"collate": {"status": {"doc_default": "maybe"}}})
+    with pytest.raises(ValidationError):
+        BackfillConfig.model_validate({"collate": {"status": {"doc_open": ["wip"]}}})
+
+
 def test_the_section_is_additive_to_the_root_config() -> None:
     assert BeadhiveConfig().backfill is None
     assert BeadhiveConfig(backfill={}).backfill.history.run_dir == ""
@@ -102,3 +116,19 @@ def test_existing_source_verbs_keep_their_options() -> None:
         for flag in ("--apply", "--dry-run", "--plan", "--pre-state", "--audit", "--option"):
             assert flag in text, (name, flag)
     assert backfill_cli.SOURCE_PASS_NAMES == ("commits", "docs", "planning")
+
+
+def test_timeline_settings_default_on_and_reach_the_status_options() -> None:
+    """bh-1vkff.3: a re-run closes and starts backfilled beads on evidence unless told not to."""
+    cfg = BackfillConfig()
+    assert cfg.collate.status.close_on_evidence is True
+    assert cfg.collate.status.in_progress_on_evidence is True
+    status = backfill_history.CollateOptions.from_config(cfg).status
+    assert status.close_on_evidence and status.in_progress_on_evidence
+    off = BackfillConfig.model_validate(
+        {"collate": {"status": {"close_on_evidence": False, "in_progress_on_evidence": False}}}
+    )
+    status = backfill_history.CollateOptions.from_config(off).status
+    assert not status.close_on_evidence and not status.in_progress_on_evidence
+    with pytest.raises(ValidationError):
+        BackfillConfig.model_validate({"collate": {"status": {"close_on_evidence": "sometimes"}}})

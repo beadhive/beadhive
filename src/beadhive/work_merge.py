@@ -1562,12 +1562,16 @@ def post_merge_backfill(cfg, entry, main, base, integration, beads, since, *, ho
     merge's commits start). Shared by the bead, molecule and group merges."""
     if base != integration:
         return
-    section = (cfg.get("backfill") or {}).get("continuous") or {}
-    if not isinstance(section, dict) or section.get("enabled") is not True:
-        return  # off by default: no import, no bd call, no git call
+    from .backfill_effective import continuous_may_run  # light: no engine import
+
+    if not continuous_may_run(cfg):
+        return  # off by default (host block and every hive overlay): no import, no bd/git call
     try:
         # lazy: only a hive that enabled it pays for the imports
         from . import backfill_cli, backfill_continuous
+
+        if not backfill_continuous.settings(cfg, entry).enabled:
+            return  # this hive neither enabled it nor overlays it on
 
         backfill_continuous.on_work_merged(
             cfg,

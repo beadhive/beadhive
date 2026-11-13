@@ -409,7 +409,7 @@ def gapfill(hive, monkeypatch):
     """Enable the gap fill with one-bead batches over the fake Dolt; returns the fake."""
     dolt = Dolt()
     settings = BackfillGapfillConfig(enabled=True, batch_size=1, timeout_seconds=5)
-    monkeypatch.setattr(backfill_cli, "gapfill_settings", lambda cfg=None: settings)
+    monkeypatch.setattr(backfill_cli, "gapfill_settings", lambda cfg=None, hive=None: settings)
 
     def reader(cwd: Path, settings: BackfillGapfillConfig) -> GapfillReader:
         return GapfillReader(cwd, batch_size=settings.batch_size, runner=dolt)

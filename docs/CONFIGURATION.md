@@ -849,22 +849,52 @@ nothing runs it for you, and its default stop (`--until plan`) never writes to t
 | `backfill.history.sources` | `[git, docs, planning]` | readers used without `--sources`; `github` is allowed here only with the next section's switch |
 | `backfill.history.ledgers` | `[]` | ledger names (registered prefixes) whose id sets resolve foreign bead tokens; empty reads every registered ledger (one `bd export` each, announced on stderr); the hive's own ledger is always read |
 | `backfill.sources.git.options` / `.planning.options` | `{}` | reader options passed verbatim (strings); an `options` key wins over a typed key |
+| `backfill.sources.docs.options` / `.planning.options` `exclude` | unset (nothing excluded) | csv of globs over repo-relative paths dropped from the docs / planning readers, applied last (trailing `/` = subtree; no `/` = file name at any depth; leading `!` is an error); see [BACKFILL.md](BACKFILL.md) |
 | `backfill.sources.docs.formats` | `[markdown]` | doc formats read; **`html` is opt-in** |
 | `backfill.sources.docs.layouts` | `[]` | docs layout presets; empty: the reader's presets |
 | `backfill.sources.github.enabled` | `false` | allow the `github` reader (an offline read of a snapshot; needs `plugins.tracker-github.enabled`) |
 | `backfill.sources.github.snapshot` | `github-snapshot.json` | the snapshot file, relative to the checkout |
-| `backfill.collate.create` | `off` | `off` links only (a unit matching no bead projects nothing); `propose` makes closed beads from such units |
+| `backfill.collate.create` | `off` | `off` links only (a unit matching no bead projects nothing); `propose` makes beads from such units (closed history records; a draft or proposed doc is created open, see `doc_default`; a unit with no evidence moment is skipped) |
+| `backfill.decisions.on_delete` | `ignore` | `ignore`: a deleted backfilled bead's unit is proposed again; `report`: a re-run lists the beads its last apply created that are gone; `skip`: also records a skip decision for each (on an `--until apply` run); see [BACKFILL.md](BACKFILL.md#operator-decisions) |
 | `backfill.collate.rules` | `[plan-item, local-bead, review, merge, commit]` | B3 claim rules, in order |
 | `backfill.collate.include_types` | `[feat]` | conventional-commit types the `commit` rule makes units of (`*` any) |
-| `backfill.collate.epics` / `areas` / `path_depth` / `min_epic_units` | `true` / `{}` / `1` / `2` | area epics and the per-hive area overrides |
+| `backfill.collate.epics` / `areas` / `path_depth` / `min_epic_units` | `true` / `{}` / `1` / `2` | area epics and area overrides (a hive's own: [`backfill.hives.<prefix>`](#backfill-hives)) |
 | `backfill.collate.attach.tiers` / `lexical_percent` / `lexical_min_tokens` / `standalone` | all four tiers / `60` / `2` / `true` | B4, attaching docs to units |
 | `backfill.collate.identify.new_threshold` / `max_candidates` | `null` / `5` | B5: a fuzzy score below `new_threshold` percent is NEW (off when null); candidates offered per match |
 | `backfill.collate.status.rules` / `design_only` / `summary_suffix` / `date_tolerance_days` / `clock_tolerance_seconds` | the four non-clock rules / `[design only]` / `-summary.md` / `1` / `86400` | B6 conflict rules (the `clock-*` rules are opt-in) and tolerances |
+| `backfill.collate.status.doc_default` | `from-doc` | Status of a unit backed only by docs: `from-doc` (open when a doc declares a `doc_open` status or a design-only phrase, else closed), `closed` (0.36: the add commit closes it) or `open`. Evidence always wins; only newly created beads follow it. See [BACKFILL.md](BACKFILL.md#doc-status) |
+| `backfill.collate.status.doc_open` | `[draft, proposed]` | Declared doc statuses that keep a unit open under `from-doc` |
+| `backfill.collate.status.close_on_evidence` | `true` | A re-run closes an open (or backfill-started) `origin:backfill` bead whose unit now has closing evidence, at the evidence's time; `false` keeps its phase. See [BACKFILL.md](BACKFILL.md#timeline) |
+| `backfill.collate.status.in_progress_on_evidence` | `true` | A unit with an opened review gets an `in_progress` transition at the review's time, on creation and on a re-run; `false` writes none |
 
 Every default equals the library's own, so an absent section changes nothing. `bh config` validates
 the section (unknown keys, an unknown rule or tier and out-of-range numbers are refused). As with
 the rest of `backfill`, `BeadhiveConfig` forbids unknown keys: set these only after the schema has
 rotated to the host.
+
+### `backfill.hives.<prefix>` {#backfill-hives}
+
+A hive's own backfill settings. `backfill.hives.<prefix>.<section>...` in the **host** config
+overlays the host `backfill` block for the hive whose registered `prefix` is `<prefix>`; the
+prefix is never derived, so a hive without one cannot have an overlay (the error says to set the
+registry prefix). The overlay has the shape of `backfill` **without `judge`**: a `judge` key is
+refused, so the one credit-spending command stays host-wide. Merge rule, applied by one resolver at
+every backfill read site (history run and plan rebuild, coverage, gap fill, continuous backfill):
+mappings merge key by key (`collate.areas` keeps the host's entries unless the hive overrides that
+key), lists and scalars replace. A hive with no overlay behaves exactly as without this section;
+nothing is on by default.
+
+```sh
+bh config set backfill.hives.wd.collate.areas '{"ui": "frontend"}' --json
+bh config set backfill.hives.wd.collate.create propose
+bh config get backfill.collate.areas --hive wd        # the effective value ...
+# stderr: layer: backfill.hives.wd                     # ... and the layer it came from (or: host)
+```
+
+The overlay is host-owned: `--scope fleet` writes to `backfill.hives.*` are refused, so a fleet
+push cannot enable bead creation for a hive. `bh config get <key> --hive <hive>` reads a key as
+that hive sees it (`--scope` cannot be combined with it); keys outside `backfill` report the layer
+`config`.
 
 ### `backfill.timeline.gapfill` {#backfill-timeline-gapfill}
 

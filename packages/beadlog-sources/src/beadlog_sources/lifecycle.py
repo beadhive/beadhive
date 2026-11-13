@@ -10,7 +10,15 @@ with :func:`lifecycles` / :func:`conflicts_of` / :func:`lifecycle_of`); the unit
 review, a committed change, a released tag, an add commit or a closed tracker item is ``closed``;
 an unmerged review, an open tracker item or a plan item not done is ``open``; a unit that claims
 nothing evidential (an area epic) is ``closed`` when it has children and all are. A design
-record's own claim (``declared_status``) never sets a status.
+record's own claim (``declared_status``) never sets a status **against evidence**: only a unit
+with no evidential closure (``basis`` ``doc`` or ``none``) consults it, through
+:attr:`StatusOptions.doc_default` (``from-doc`` by default): backfill writes a timeline, so a
+draft or proposed doc's add commit is the unit's creation, never a recorded close.
+
+**In progress** (bh-1vkff.3): a unit with an opened, not abandoned, review has a ``started``
+moment (the review's ``opened_at``, see :data:`IN_PROGRESS_SIGNALS`); on a closed unit only a start
+strictly between ``created`` and ``closed`` is kept, so a unit reads created -> in_progress ->
+closed. Status stays ``open``/``closed``; the projector turns ``started`` into the transition.
 
 **Dates**: ``created`` is the earliest of the first change, the review's open, the doc's add
 commit and the tracker item's open (a doc with no add commit falls back to its declared date); a
@@ -51,7 +59,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from .collate import Collation, CollationFormatError, Indexes, Unit
-from .evidence import Artifact, Category
+from .evidence import DECLARED_STATUSES, Artifact, Category
 
 STATUS_OPEN = "open"
 STATUS_CLOSED = "closed"
@@ -89,13 +97,22 @@ CONFLICT_RULES = (
 # The rules on by default; the clock rules are opt-in (``StatusOptions(rules=CONFLICT_RULES)``).
 DEFAULT_RULES = tuple(r for r in CONFLICT_RULES if not r.startswith("clock-"))
 
-OPTION_MEMBERS = (
+DOC_DEFAULTS = ("closed", "open", "from-doc")
+DEFAULT_DOC_OPEN = ("draft", "proposed")
+
+# The options recorded before ``doc_default`` existed; a record that lacks the last two was
+# derived with today's closed-by-add-commit rule, so it reads back as ``doc_default = "closed"``.
+_LEGACY_OPTION_MEMBERS = (
     "rules",
     "design_only",
     "summary_suffix",
     "date_tolerance_days",
     "clock_tolerance_seconds",
 )
+_DOC_OPTION_MEMBERS = (*_LEGACY_OPTION_MEMBERS, "doc_default", "doc_open")
+# ``close_on_evidence`` / ``in_progress_on_evidence`` (bh-1vkff.3) steer the projector's writes
+# on a re-run; a record written before them reads back with both on, the default.
+OPTION_MEMBERS = (*_DOC_OPTION_MEMBERS, "close_on_evidence", "in_progress_on_evidence")
 DOC_PREFIX = "doc:"
 
 
@@ -127,6 +144,21 @@ class StatusOptions:
       hand, in any zone).
     - ``clock_tolerance_seconds``: how long before its first change a review may be merged before
       the clocks disagree (default 86400).
+    - ``doc_default``: what a unit with no evidential closure (``basis`` ``doc`` or ``none``)
+      becomes: ``from-doc`` (default) is open when a doc of the unit declares a status in
+      ``doc_open`` or a raw status matching ``design_only``, else closed; ``closed`` is the 0.36
+      behaviour (the add commit closes the unit, else its declared date); ``open`` leaves every
+      such unit open. Evidence
+      (a merged or committed change, a release, a closed tracker item, a plan done marker) always
+      wins, and every conflict rule still fires.
+    - ``doc_open``: the declared statuses (:data:`~beadlog_sources.evidence.DECLARED_STATUSES`)
+      that keep a doc unit open under ``from-doc`` (default ``("draft", "proposed")``).
+    - ``close_on_evidence`` (default ``True``): a re-run appends the ``closed`` transition to an
+      open (or in-progress) ``origin:backfill`` bead whose unit now has closing evidence, at the
+      evidence's own moment. ``False`` leaves such a bead in its current phase.
+    - ``in_progress_on_evidence`` (default ``True``): a unit with in-progress evidence (an opened
+      review, see :data:`IN_PROGRESS_SIGNALS`) gets an ``in_progress`` transition at the
+      evidence's own moment, on creation and on a re-run. ``False`` writes none.
     """
 
     rules: tuple[str, ...] = DEFAULT_RULES
@@ -134,6 +166,10 @@ class StatusOptions:
     summary_suffix: str = "-summary.md"
     date_tolerance_days: int = 1
     clock_tolerance_seconds: int = 86400
+    doc_default: str = "from-doc"
+    doc_open: tuple[str, ...] = DEFAULT_DOC_OPEN
+    close_on_evidence: bool = True
+    in_progress_on_evidence: bool = True
 
     def __post_init__(self) -> None:
         rules = self.rules
@@ -162,6 +198,24 @@ class StatusOptions:
             raise StatusOptionsError("date_tolerance_days must be a non-negative integer")
         if not _is_int(self.clock_tolerance_seconds, 0):
             raise StatusOptionsError("clock_tolerance_seconds must be a non-negative integer")
+        if self.doc_default not in DOC_DEFAULTS:
+            raise StatusOptionsError(f"doc_default must be one of {DOC_DEFAULTS}")
+        opens = self.doc_open
+        if isinstance(opens, str) or not isinstance(opens, Iterable):
+            raise StatusOptionsError("doc_open must be a list of strings")
+        opens = tuple(opens)
+        if (
+            not all(isinstance(o, str) for o in opens)
+            or any(o not in DECLARED_STATUSES for o in opens)
+            or len(set(opens)) != len(opens)
+        ):
+            raise StatusOptionsError(
+                f"doc_open must be distinct names from {DECLARED_STATUSES}, got {list(opens)}"
+            )
+        object.__setattr__(self, "doc_open", opens)
+        for name in ("close_on_evidence", "in_progress_on_evidence"):
+            if not isinstance(getattr(self, name), bool):
+                raise StatusOptionsError(f"{name} must be a boolean")
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> StatusOptions:
@@ -176,11 +230,21 @@ class StatusOptions:
             "summary_suffix": self.summary_suffix,
             "date_tolerance_days": self.date_tolerance_days,
             "clock_tolerance_seconds": self.clock_tolerance_seconds,
+            "doc_default": self.doc_default,
+            "doc_open": list(self.doc_open),
+            "close_on_evidence": self.close_on_evidence,
+            "in_progress_on_evidence": self.in_progress_on_evidence,
         }
 
     @classmethod
     def from_json(cls, raw: Any) -> StatusOptions:
-        """Parse :meth:`to_json` output; missing or unknown members are refused."""
+        """Parse :meth:`to_json` output; unknown members are refused. A record written before
+        ``doc_default`` existed (exactly the legacy members) reads back as ``closed``, the rule
+        it was derived under."""
+        if isinstance(raw, dict) and sorted(raw) == sorted(_LEGACY_OPTION_MEMBERS):
+            return cls(**raw, doc_default="closed")
+        if isinstance(raw, dict) and sorted(raw) == sorted(_DOC_OPTION_MEMBERS):
+            return cls(**raw)
         if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_MEMBERS):
             raise StatusOptionsError(f"status options must have exactly {OPTION_MEMBERS}")
         return cls(**raw)
@@ -246,19 +310,40 @@ class Moment:
         return cls(raw["at"], raw["precision"], raw["source"])
 
 
+def has_no_moment(life: Lifecycle) -> bool:
+    """Whether a unit has no evidence moment at all (no add commit, no declared date, no change):
+    ``create = propose`` does not create it (bh-uysl1), since an open bead minted from nothing
+    would pass for live work."""
+    return life.created is None and life.closed is None and life.basis in ("none", "doc")
+
+
 _LIFECYCLE_MEMBERS = ("unit", "status", "basis", "created", "closed")
+# The signals that put a unit in progress (bh-1vkff.3), by what the evidence's own moment is. A
+# commit that references the unit is not one: a committed change closes the unit (basis
+# ``committed``). A tracker item carries no dated in-progress event (its labels and assignee
+# have no time), so it is not one either; a plan item has only a done marker.
+IN_PROGRESS_SIGNALS = ("review-opened",)
+# The bases a re-run may close an open or in-progress backfilled bead on: a merged review or
+# change, a committed change, a release, a closed tracker item, a plan done marker, or an epic
+# whose children all closed. A doc's add commit (``doc``) is never closing evidence.
+CLOSING_BASES = ("merged", "committed", "released", "tracker", "plan-item", "children")
 
 
 @dataclass(frozen=True)
 class Lifecycle:
     """One unit's derived status and dates. ``basis`` (:data:`BASES`) says what the status
-    rests on; ``closed`` is ``None`` unless the unit is closed (or has no clock for it)."""
+    rests on; ``closed`` is ``None`` unless the unit is closed (or has no clock for it).
+    ``started`` is the moment of the unit's in-progress evidence (:data:`IN_PROGRESS_SIGNALS`),
+    or ``None``; on a closed unit it lies strictly between ``created`` and ``closed``, else it is
+    dropped (the unit then reads created -> closed). It is written to the record only when set,
+    so a record without one is unchanged."""
 
     unit: str
     status: str
     basis: str
     created: Moment | None = None
     closed: Moment | None = None
+    started: Moment | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.unit, str) or not self.unit:
@@ -272,25 +357,34 @@ class Lifecycle:
 
     def to_json(self) -> dict[str, Any]:
         """The record as a JSON object."""
-        return {
+        out: dict[str, Any] = {
             "unit": self.unit,
             "status": self.status,
             "basis": self.basis,
             "created": None if self.created is None else self.created.to_json(),
             "closed": None if self.closed is None else self.closed.to_json(),
         }
+        if self.started is not None:
+            out["started"] = self.started.to_json()
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> Lifecycle:
         """Parse a record object; unknown or missing members are refused."""
-        if not isinstance(raw, dict) or sorted(raw) != sorted(_LIFECYCLE_MEMBERS):
-            raise CollationFormatError(f"lifecycle must have exactly {_LIFECYCLE_MEMBERS}")
+        if not isinstance(raw, dict) or sorted(raw) not in (
+            sorted(_LIFECYCLE_MEMBERS),
+            sorted((*_LIFECYCLE_MEMBERS, "started")),
+        ):
+            raise CollationFormatError(
+                f"lifecycle must have exactly {_LIFECYCLE_MEMBERS}, plus an optional started"
+            )
         return cls(
             unit=raw["unit"],
             status=raw["status"],
             basis=raw["basis"],
             created=None if raw["created"] is None else Moment.from_json(raw["created"]),
             closed=None if raw["closed"] is None else Moment.from_json(raw["closed"]),
+            started=None if raw.get("started") is None else Moment.from_json(raw["started"]),
         )
 
 
@@ -384,6 +478,7 @@ class _Evidence:
     basis: str = "none"
     created: list[Moment] | None = None
     closed: list[tuple[int, Moment]] | None = None
+    started: list[Moment] | None = None
 
 
 def _is_doc(art: Artifact) -> bool:
@@ -456,6 +551,21 @@ class _Deriver:
 
     # -- status and dates ------------------------------------------------------------------
 
+    def _doc_open(self, unit: Unit) -> bool:
+        """Whether ``doc_default`` keeps the unit's doc open (when no evidence closes the unit)."""
+        mode = self.options.doc_default
+        if mode == "closed":
+            return False
+        if mode == "open":
+            return True
+        for doc in self._docs(unit):
+            if doc.attrs["declared_status"] in self.options.doc_open:
+                return True
+            raw = self._raw(doc, "declared_status")
+            if isinstance(raw, str) and _words(raw) in self.options.design_only:
+                return True
+        return False
+
     def own(self, unit: Unit) -> _Evidence:
         """What the unit's own artifacts say, in the priority the module doc gives."""
         created: list[Moment] = []
@@ -464,6 +574,10 @@ class _Deriver:
         plan: Artifact | None = None
         merged = released = tracker_closed = doc_added = False
         open_review = open_tracker = False
+        doc_open = self._doc_open(unit)
+        doc_kept_open = False
+        deferred: list[tuple[int, Moment]] = []
+        started: list[Moment] = []
         for art in self._artifacts(unit):
             cat = art.category
             if cat is Category.CHANGE:
@@ -483,6 +597,10 @@ class _Deriver:
                     closing.append((0, m))
                 elif art.attrs["state"] == "open":
                     open_review = True
+                if (began := self._moment(art, "opened_at")) is not None and art.attrs[
+                    "state"
+                ] != "closed":  # review-opened: an opened, not abandoned, review is work under way
+                    started.append(began)
             elif cat is Category.TRACKER_ITEM:
                 if (m := self._moment(art, "opened_at")) is not None:
                     created.append(m)
@@ -501,12 +619,23 @@ class _Deriver:
                         closing.append((4, m))
             elif cat is Category.DESIGN_RECORD:
                 add = self._add_moment(art)
+                declared = self._moment(art, "declared_date")
                 if add is not None:
-                    doc_added = True
                     created.append(add)
-                    closing.append((6, add))
-                elif (m := self._moment(art, "declared_date")) is not None:
-                    created.append(m)
+                    if doc_open:  # a timeline: the add commit creates it, it does not close it
+                        doc_kept_open = True
+                        deferred.append((6, add))
+                    else:
+                        doc_added = True
+                        closing.append((6, add))
+                elif declared is not None:
+                    created.append(declared)
+                    if doc_open:
+                        doc_kept_open = True
+                        deferred.append((6, declared))
+                    else:
+                        doc_added = True  # no add commit: the declared date is the moment
+                        closing.append((6, declared))
             elif (
                 cat is Category.RELEASE_MARKER
                 and (m := self._moment(art, "released_at")) is not None
@@ -517,7 +646,7 @@ class _Deriver:
         lasts = [m for a in changes if (m := self._moment(a, "committed_at")) is not None]
         if lasts:
             closing.append((5, max(lasts, key=lambda m: m.sort_key)))
-        ev = _Evidence(created=created, closed=closing)
+        ev = _Evidence(created=created, closed=closing, started=started)
         if plan is not None:
             ev.status = STATUS_CLOSED if plan.attrs["done_marker"] else STATUS_OPEN
             ev.basis = "plan-item"
@@ -533,6 +662,10 @@ class _Deriver:
             ev.status, ev.basis = STATUS_OPEN, "review"
         elif open_tracker:
             ev.status, ev.basis = STATUS_OPEN, "tracker"
+        elif doc_kept_open:
+            ev.status, ev.basis = STATUS_OPEN, "doc"
+        if ev.status == STATUS_CLOSED:  # evidence closed it: the doc's moment may still close it
+            closing.extend(deferred)
         return ev
 
     def lifecycle(self, key: str) -> Lifecycle:
@@ -571,7 +704,12 @@ class _Deriver:
                 closed = max((m for p, m in ev.closed if p == best), key=lambda m: m.sort_key)
             if created is None and closed is not None:
                 created = closed
-            life = Lifecycle(key, ev.status, ev.basis, created, closed)
+            began = min(ev.started or [], key=lambda m: m.sort_key, default=None)
+            if began is not None and closed is not None:
+                # created -> in_progress -> closed: only a start strictly between the two counts
+                inside = created is not None and began.after(created) and closed.after(began)
+                began = began if inside else None
+            life = Lifecycle(key, ev.status, ev.basis, created, closed, began)
         self._life[key] = life
         return life
 
@@ -749,8 +887,10 @@ def validate_lifecycle(collation: Collation) -> None:
 
 __all__ = [
     "BASES",
+    "CLOSING_BASES",
     "CONFLICT_RULES",
     "DEFAULT_RULES",
+    "IN_PROGRESS_SIGNALS",
     "OPTION_MEMBERS",
     "STATUSES",
     "Conflict",

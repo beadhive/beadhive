@@ -2377,6 +2377,34 @@ class BackfillStatusConfig(_Section):
     clock_tolerance_seconds: int = Field(
         86400, ge=0, description="Seconds a review may be merged before its first change."
     )
+    doc_default: Literal["closed", "open", "from-doc"] = Field(
+        "from-doc",
+        description="Status of a unit with no evidential closure (only docs). from-doc (default): "
+        "open when a doc declares a status in doc_open (or a design-only phrase), else closed; "
+        "the add commit is then the unit's creation, never its close. closed: the add commit "
+        "closes it (0.36 output for git-history runs). open: every such unit stays open. "
+        "Evidence always wins.",
+    )
+    doc_open: list[
+        Literal[
+            "proposed", "draft", "accepted", "delivered", "superseded", "rejected", "deprecated"
+        ]
+    ] = Field(
+        default_factory=lambda: ["draft", "proposed"],
+        description="Declared doc statuses that keep a unit open under doc_default = from-doc.",
+    )
+    close_on_evidence: bool = Field(
+        True,
+        description="A re-run appends the closed transition to an open (or backfill-started) "
+        "origin:backfill bead whose unit now has closing evidence (a merged change or review, a "
+        "release, a closed tracker item, a plan done marker), at the evidence's own time. false "
+        "leaves such beads in their current phase.",
+    )
+    in_progress_on_evidence: bool = Field(
+        True,
+        description="A unit with in-progress evidence (an opened review) gets an in_progress "
+        "transition at the evidence's own time, on creation and on a re-run. false writes none.",
+    )
 
 
 class BackfillCollateConfig(_Section):
@@ -2386,7 +2414,8 @@ class BackfillCollateConfig(_Section):
     create: Literal["off", "propose"] = Field(
         "off",
         description="off (default): link only, units that match no bead are reported and "
-        "propose nothing. propose: a unit that matches no bead is proposed as a closed bead.",
+        "propose nothing. propose: a unit that matches no bead is proposed as a bead (closed, "
+        "or open for a draft or proposed doc under status.doc_default).",
     )
     rules: list[Literal["plan-item", "local-bead", "review", "merge", "commit"]] = Field(
         default_factory=lambda: ["plan-item", "local-bead", "review", "merge", "commit"],
@@ -2399,8 +2428,8 @@ class BackfillCollateConfig(_Section):
     epics: bool = Field(True, description="Group units into area epics.")
     areas: dict[str, str] = Field(
         default_factory=dict,
-        description="Per-hive area overrides: a key with a / is a path prefix, any other key "
-        "renames a derived area.",
+        description="Area overrides (a hive's own: backfill.hives.<prefix>.collate.areas): a key "
+        "with a / is a path prefix, any other key renames a derived area.",
     )
     path_depth: int = Field(1, ge=1, description="Directory segments of a path-derived area.")
     min_epic_units: int = Field(2, ge=1, description="Fewest units an area needs for an epic.")
@@ -2409,13 +2438,26 @@ class BackfillCollateConfig(_Section):
     status: BackfillStatusConfig = Field(default_factory=BackfillStatusConfig)
 
 
-class BackfillConfig(_Section):
-    """``backfill`` — shared backfill engine settings (every behavior off by default)."""
+class BackfillDecisionsConfig(_Section):
+    """``backfill.decisions`` — how a re-run treats a backfilled bead that was deleted."""
 
-    judge: BackfillJudgeConfig = Field(
-        default_factory=BackfillJudgeConfig,
-        description="Opt-in bh-judge/1 command judge for reconcile; deterministic when off.",
+    on_delete: Literal["ignore", "report", "skip"] = Field(
+        "ignore",
+        description="ignore (default): a deleted backfilled bead's unit is proposed again. "
+        "report: a re-run lists the beads the last apply created that are gone now. skip: also "
+        "records a skip decision for each (`bh backfill decide --deleted <bead> skip` does the "
+        "same one bead at a time, whatever this says).",
     )
+
+
+class BackfillHiveOverlay(_Section):
+    """``backfill.hives.<prefix>`` — one hive's overlay of the host ``backfill`` block.
+
+    Every section of :class:`BackfillConfig` **except** ``judge`` (one host-wide credit-spending
+    command stays one host-wide setting, so a ``judge`` key is rejected here) and ``hives``
+    itself (overlays do not nest). Only the keys the operator wrote take effect: the overlay is
+    merged key by key over the host block (mappings merge, lists and scalars replace)."""
+
     timeline: BackfillTimelineConfig = Field(
         default_factory=BackfillTimelineConfig,
         description="History/timeline export settings, including the opt-in dolt_history gap fill.",
@@ -2439,6 +2481,25 @@ class BackfillConfig(_Section):
     collate: BackfillCollateConfig = Field(
         default_factory=BackfillCollateConfig,
         description="Collation options (B3 to B6) and the create mode of bh backfill history.",
+    )
+    decisions: BackfillDecisionsConfig = Field(
+        default_factory=BackfillDecisionsConfig,
+        description="Operator decisions (bh backfill decide): what a deleted bead's unit becomes.",
+    )
+
+
+class BackfillConfig(BackfillHiveOverlay):
+    """``backfill`` — shared backfill engine settings (every behavior off by default)."""
+
+    judge: BackfillJudgeConfig = Field(
+        default_factory=BackfillJudgeConfig,
+        description="Opt-in bh-judge/1 command judge for reconcile; deterministic when off.",
+    )
+    hives: dict[str, BackfillHiveOverlay] = Field(
+        default_factory=dict,
+        description="Per-hive overlays keyed by the hive's registered prefix (never derived): "
+        "backfill.hives.<prefix>.<section>... overrides the host block for that hive. Host "
+        "config only; judge is not overridable.",
     )
 
 
