@@ -42,7 +42,7 @@ class ExtractRequest:
     group: str
     extracted_at: str
     baseline: tuple[BeadEvent, ...] = ()
-    options: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    options: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, hash=False)
     judge: JudgmentPort | None = field(default=None, hash=False, compare=False)
 
 

@@ -221,7 +221,7 @@ class AuditEntry:
     completed: tuple[str, ...] = ()
     rollback_failures: tuple[str, ...] = ()
     rollback_residual: tuple[str, ...] = ()
-    losses: Mapping[str, int] = field(default=_EMPTY, hash=False)
+    losses: Mapping[str, int] = field(default_factory=lambda: _EMPTY, hash=False)
     verification: Mapping[str, Any] | None = field(default=None, hash=False)
 
     def to_json(self) -> dict[str, Any]:
