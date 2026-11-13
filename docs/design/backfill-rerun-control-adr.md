@@ -1,7 +1,7 @@
 # ADR: Backfill re-run control — per-hive config, doc status mode, ledger decisions, reader excludes
 
-- **Status:** Proposed (awaiting operator approval of this ADR's review gate; Q1 and Q2 carry
-  explicit operator recommendations).
+- **Status:** Revised 2026-11-13 after the operator's changes-requested decisions (Q1 = (a) keyed
+  by prefix; Q2 = S2 with re-run close events); awaiting operator approval of the new review gate.
 - **Date:** 2026-11-13
 - **Decision owner:** Beadhive maintainers (operator approves; not delegated)
 - **Related work:** molecule `bh-1vkff` (0.37.0); this design bead `bh-meuhp`; implementation
@@ -46,7 +46,7 @@ a documented output change.
 | # | Question | Recommendation |
 |---|---|---|
 | Q1 | Where per-hive backfill settings live | **(a)** a host-config overlay `backfill.hives.<prefix>.*`, merged over the host block; `judge` stays host-only. |
-| Q2 | Created doc bead status | Add opt-in `backfill.collate.status.doc_default = closed\|open\|from-doc` (default **`closed`**, today's output). In `create=propose`, never mint an open bead without evidence: a doc unit with no closing moment is **skipped and reported** unless the mode says open. Do **not** change the default in 0.37.0. |
+| Q2 | Created doc bead status | **Operator decision: S2.** `backfill.collate.status.doc_default = closed\|open\|from-doc`, default **`from-doc`** (draft/proposed/design-only doc units are created open; the add commit is a creation moment, never a close). Re-runs **append** close events to open `origin:backfill` beads when closing evidence appears (additive, evidence-timestamped), as a **new child bead**. A doc-only unit with no evidence moment is skipped and reported. |
 | Q3 | Ledger shape of per-unit decisions | A **dedicated closed decision bead per unit key** (type `decision`, `source:decision`), written by `bh backfill decide skip\|noise\|link`; identify consults it as a new step 0. A deleted bead becomes a tombstone only through an explicit `--deleted <id>` path or the opt-in `backfill.decisions.on_delete`; default is today's behaviour. |
 | Q4 | Reader exclude syntax | A new `exclude` option (comma list of globs, same glob language as `globs`) on both readers; **no negation in v1** (a leading `!` is rejected so negation can be added compatibly). Exclude wins over explicit `files`, with a warning. |
 
@@ -172,56 +172,129 @@ reach. Hives with unstable prefix registration lose overlays until registered.
 in `create = propose`; (2) warn at plan time and require `--yes`; (3) make git mandatory with
 docs under `propose`.
 
+### Operator decision (2026-11-13, on the bounce of this ADR)
+
+**S2: `from-doc` is the default**, with `closed` and `open` remaining selectable. Reason: backfill
+writes a **timeline into an event ledger**, not a current-state snapshot. Recording a doc's add
+commit as its closing moment fabricates a close event for a draft or proposed doc. In addition,
+a re-run must **append** later lifecycle transitions to an existing open backfilled bead when
+closing evidence appears, timestamped with the evidence's own time, additive only. The sections
+below are the design that follows; the earlier S1 recommendation is superseded.
+
 ### Recommendation
 
-1. **S1, default `closed`; do not change the default in 0.37.0.** The key lives in
-   `StatusOptions` / `BackfillStatusConfig` beside the other B6 options (so it is recorded in the
-   collation and replays). Values:
-   - `closed` -- today.
-   - `open` -- a unit whose status rests only on a doc (`basis` `doc` or `none`) is open.
-   - `from-doc` -- such a unit is open when a doc attached to it declares a status in
-     `status.doc_open` (default **`["draft", "proposed"]`**, i.e. M1) or a raw status matching
-     `design_only` (M2, always on in this mode); closed otherwise.
-   Add `status.doc_open` as a list so an operator can add `accepted` (M3) without a code
-   change. `accepted` is **not** in the default list: an accepted ADR is a finished decision
-   record, and the existing `doc-accepted-no-code` conflict already flags the suspicious case.
-2. **Evidence outranks the declaration.** `from-doc` applies only when the unit has no
+1. **S2: `backfill.collate.status.doc_default = closed | open | from-doc`, default
+   `from-doc`.** The key lives in `StatusOptions` / `BackfillStatusConfig` beside the other B6
+   options (so it is recorded in the collation and replays). Values:
+   - `from-doc` (default) -- a unit whose status rests only on a doc (`basis` `doc` or `none`)
+     is **open** when a doc attached to it declares a status in `status.doc_open` (default
+     **`["draft", "proposed"]`**) or a raw status matching `design_only`; otherwise closed.
+   - `closed` -- today's behaviour (the add commit closes the unit). The opt-out that restores
+     0.36 output.
+   - `open` -- every doc-only unit is open.
+   `accepted` is **not** in the default `doc_open`: an accepted ADR is a finished decision record
+   (and `doc-accepted-no-code` already flags the suspicious case); an operator can add it.
+2. **A closing moment must be real evidence.** For a unit that `from-doc` leaves closed, the
+   moment is the doc's add commit when git change artifacts exist, else the doc's own
+   `declared_date`; with neither the unit has no closing moment (item 5). For a unit `from-doc`
+   makes open, the add commit is the unit's **creation** moment only (`created`), never its
+   close, and no `closed` is written. This stops the ledger from recording a close event that
+   never happened.
+3. **Evidence outranks the declaration.** `from-doc` applies only when the unit has no
    evidential closure (no merged/committed change, release, closed tracker item, plan done
-   marker). A draft doc whose change also landed code stays closed and the existing
-   `doc-draft-code-landed` conflict still fires. `declared_status` therefore gains a narrow
-   role -- it can choose open for evidence-free doc units under an opt-in mode -- and still
-   never overrides evidence. This amends the pipeline ADR's "never sets a status" sentence.
-3. **Unchecked checklist items in docs: out of scope.** The docs reader has no checklist model;
-   an operator who wants roadmap items to be open names that file in the planning reader
-   (`files`), as the maintainers already advised on #153. Documented in `docs/BACKFILL.md`.
-4. **Docs-only runs: option 1, mode-aware.** In `create = propose`, a unit with no closing
-   moment is **not created**; it appears in `bh backfill inspect` and the plan summary as
-   `skipped: no closing moment (add commit unavailable; include the git reader)`. Exceptions
-   are explicit, never silent: mode `open`, and mode `from-doc` for a doc whose declared status
-   maps open, both of which *intend* an open bead. Option 2 (`--yes`) turns a plan-time fact
-   into a prompt and breaks unattended runs; option 3 forbids legitimate docs-only link runs
-   (`create = off`). In `create = off` nothing is created, so nothing changes.
-   This is a deliberate **output change** (a bug fix): today's docs-only `propose` run mints
-   open beads. A test covers it; the default `git,docs,planning` run is byte-identical.
-5. **Report-only is the safe floor.** Conflicts are reported exactly as today in every mode.
+   marker). A draft doc whose change also landed code stays closed and `doc-draft-code-landed`
+   still fires; all conflict rules are reported exactly as today. `declared_status` thus gains a
+   narrow role and still never overrides evidence. This amends the pipeline ADR's "never sets a
+   status" sentence.
+4. **Re-runs append later transitions (additive close events).** When a later run finds a
+   baseline bead that is **open and carries `origin:backfill`** and the unit's B6 status is now
+   `closed` on closing evidence (a merged change or review, a release, a closed tracker item, a
+   plan done marker -- the same evidence set B6 already uses, `lifecycle.py:517-531`), the
+   projector emits a `phase` closed event for that bead with `occurred_at` = the evidence's own
+   moment (the B6 `closed` moment, with its precision) and the usual `metadata.lifecycle.closed_at`
+   stamp. The store loader already writes `closed_at` from a phase event's `occurred_at`
+   (`backfill_bd.py:783-786`). Rules:
+   - **Additive only:** nothing earlier is rewritten or removed; the open period stays in the
+     bead's history; no `compact`/`flatten`; no overwrite of a different `closed_at`.
+   - **Only open `origin:backfill` beads** are ever transitioned. A bead a human opened, edited
+     or closed is never touched: a hand-made bead, or a backfilled bead whose phase an operator
+     already changed (detected by the bead no longer being open), is left alone. This narrows,
+     and does not remove, the "PRESENT never touches `phase`" rule of `project.py`'s module doc
+     (`origin:backfill` labelling: `backfill_create.py:31,71-90`).
+   - **Deterministic and idempotent:** the event identity is derived from the bead, the target
+     phase and the evidence key, so the engine's second dry run (the idempotency proof in
+     `backfill_history.py` "One apply path") finds nothing more to do.
+   - **A doc status change is not closing evidence by itself.** A doc moving from `draft` to
+     `accepted` is a conflict-rule matter (`doc-accepted-no-code`); closure on it would be
+     inference. Only the four evidence kinds above close an open bead. (If the operator wants
+     `accepted` to close a bead too, that is one more entry in the evidence set, listed here as
+     an open question below.)
+   - Controlled by `backfill.collate.status.close_on_evidence = true|false`, default `true`
+     (the operator-approved behaviour; `false` leaves open beads open for operators who want
+     the first run's result frozen).
+   - `reconcile.py` already folds a changed `phase` facet into DRIFT ("the proposal changes
+     facets, its missing events go into the plan", `reconcile.py:9-10,386`); the child's work is
+     the projector emitting it for PRESENT units under these conditions and the guard above.
+5. **Docs-only runs (`bh-uysl1`).** In `create = propose`, a unit with **no creation or closing
+   moment evidence at all** is not created and is reported as `skipped: no evidence moment`
+   (the unit has neither an add commit nor a declared date). A doc with a declared
+   `draft`/`proposed` status creates an open bead (intended under `from-doc`/`open`), created
+   at the doc's declared date when there is no add commit; a doc whose status maps closed and
+   whose only moment is the declared date closes at that date; anything else is skipped and
+   reported. No path creates an open bead *silently*: every open creation is the stated result of
+   the mode. `create = off` is unchanged.
+6. **Unchecked checklist items in docs: out of scope** (the docs reader has no checklist model;
+   name the file in the planning reader's `files`, as advised on #153).
 
-### The default-change alternative (S2) -- for the operator
-
-Making `from-doc` the default would make a draft or proposed ADR come in open, which is the more
-truthful reading of "draft". Against it: it changes the output of every future run on every hive
-(goldens, `bd ready` contents, dispatcher-visible open work from a bulk backfill of a large doc
-corpus), it contradicts the documented "backfill creates closed historical records" principle
-and the `bh-uysl1` rationale, and the mapping (is an accepted-but-unbuilt ADR open?) has no
-field evidence yet. Because the key exists, flipping the default later is a one-line change plus
-a documented `UPGRADING` entry, so deferring costs nothing. **Recommend S1 now; revisit the
-default after a release of use.** The ADR is the place for the operator to choose S2 instead; if
-chosen, `bh-f4t6r` updates the goldens and `docs/UPGRADING.md` documents the change.
+**Open question for the operator (small):** should a doc declaring `accepted` also count as
+closing evidence for an already-open backfilled bead (item 4)? Recommended no, for the reason
+given; it is a one-line addition to the evidence set if wanted.
 
 ### Trade-offs
 
-Opt-in means the reporter's hive must set one key (per hive, via Q1) to get the behaviour.
-Skip-and-report in docs-only `propose` changes today's (buggy) output and makes an unattended
-docs-only run produce fewer beads than before; the report line explains why.
+- **Output change (goldens).** The default flips, so a new `git,docs,planning` run now creates
+  draft/proposed doc beads open instead of closed, and a docs-only `propose` run skips
+  evidence-free units. Goldens and equivalence tests that cover doc units change with a
+  documented output change in `bh-f4t6r`; `doc_default = closed` reproduces 0.36 output
+  exactly and is the one-line opt-out. `docs/UPGRADING.md` carries the default-change entry in
+  the single `## 0.36.x -> 0.37.0` section: what changes, why (timeline, not snapshot), the
+  opt-out key, and that existing beads are not rewritten by the default flip alone.
+- **Existing beads are untouched by the flip.** PRESENT never re-opens a closed bead; only open
+  `origin:backfill` beads receive the new close transitions. A hive that ran 0.36 has its docs
+  beads closed already; nothing changes for them.
+- **`bd ready` visibility.** Open backfilled doc beads (draft/proposed ADRs) appear in `bd ready`
+  and to dispatchers as available work, which a closed record never did. Mitigations: they carry
+  `origin:backfill` (a work-neutral origin, `plan.py:448`) and `source:docs`, so an operator or
+  dispatcher filters them out with `bd ready --exclude-label origin:backfill`, or lists only them
+  with `bd list --label origin:backfill --status open`; `docs/BACKFILL.md` and `UPGRADING`
+  document this. Whether a hive should hide them by default is a hive-side configuration choice,
+  not something backfill changes. This is the main operational cost of S2.
+- **Evidence-driven closure instead of add-commit closure.** The ledger no longer shows a
+  draft doc "closed" on its add date; instead its timeline reads created -> (later) closed at
+  the merge or release that actually completed it. More truthful, at the price of a second write
+  path in re-runs (item 4) and of beads that stay open until evidence appears (or forever, for a
+  design that was never built -- which is the accurate state).
+- **Skipping evidence-free docs-only units** means an unattended docs-only run creates fewer
+  beads than before; the report line explains why.
+- **If the operator prefers the earlier S1** (default `closed`, `from-doc` opt-in) the key and
+  mapping are unchanged and only the default and the goldens/UPGRADING entry differ; item 4 would
+  then apply only to hives that opted in.
+
+### Where the re-run close events belong: a new child bead
+
+Recommendation: **a new child bead, not part of `bh-f4t6r`.** Reasons: (1) different code
+path -- `bh-f4t6r` (with `bh-uysl1`) is B6 lifecycle/status plus config, in one branch
+(`batch:status`), whereas re-run close events live in the projector/reconcile PRESENT path and
+read baseline bead state (phase, labels), a distinct seam with its own tests; (2) a separate
+change keeps the default flip reviewable and bisectable from the new write behaviour (the only
+part of 0.37.0 that transitions existing beads); (3) it can be reviewed on its own against the
+"additive only, only open `origin:backfill` beads" guard. Constraint: it **must land in the same
+0.37.0 release** as `bh-f4t6r`, since with `from-doc` the default, open beads are created that
+would otherwise never close; it depends on `bh-f4t6r` (needs the open creations and
+`StatusOptions`), and the release is gated on both. Proposed bead (not filed by this ADR):
+
+- **Title:** `feat(backfill): append close transitions to open backfilled beads on closing evidence`
+- **Acceptance:** see "Proposed new child" at the end of this document.
 
 ## Q3 -- Ledger shape of per-unit operator decisions (#155 part 2)
 
@@ -392,14 +465,18 @@ shared by both readers (one helper in `_sources.py`).
 ## Consequences and cross-references
 
 - `backfill-history-pipeline-adr.md` gets an "Amendments" pointer: Phase C "NEW creates closed
-  beads" and B6 "`declared_status` never sets a status" are amended by Q2; B5 gains step 0
+  beads", B6 "`declared_status` never sets a status" and the Phase C rule that PRESENT never
+  touches `phase` (narrowed to open `origin:backfill` beads) are amended by Q2; B5 gains step 0
   (decisions) by Q3; the "per-hive override map" of B3 is realised by Q1.
 - Docs the children update: `docs/BACKFILL.md`, `docs/CONFIGURATION.md`, one
   `## 0.36.x -> 0.37.0` section in `docs/UPGRADING.md`, `CHANGELOG`. The `lifecycle.py` and
   `identify.py` module docs change with their code.
-- Operator-visible output changes in 0.37.0 if this ADR is approved as recommended: **one** --
-  a docs-only `create = propose` run skips evidence-free doc units instead of creating them open
-  (Q2 item 4). Everything else is opt-in.
+- Operator-visible output changes in 0.37.0 if this ADR is approved: (1) `doc_default` flips to
+  `from-doc`, so draft/proposed/design-only doc units are created open (opt-out
+  `doc_default = closed`), with goldens updated and a default-change entry in `UPGRADING`;
+  (2) a docs-only `create = propose` run skips evidence-free units instead of creating them open;
+  (3) re-runs append close events to open `origin:backfill` beads when closing evidence appears
+  (opt-out `close_on_evidence = false`). Everything else (Q1, Q3, Q4) is opt-in.
 
 ## Child acceptance refinements
 
@@ -445,20 +522,68 @@ They are recorded here, not posted yet.
 > No compact/flatten, no history rewrite. Depends on `bh-pieo5` (as filed) and Q1 for the
 > `decisions` setting.
 
-**`bh-f4t6r` (status from the doc):**
-> ADR bh-meuhp Q2 refinement: key `backfill.collate.status.doc_default = closed|open|from-doc`
-> (default `closed` = today, unless the operator approved a default change) plus
-> `status.doc_open` (default `["draft","proposed"]`; `from-doc` also treats a raw status matching
-> `design_only` as open). Add to `StatusOptions` (round-trips through the collation record) and
-> `BackfillStatusConfig`. Applies only to a unit with no evidential closure (`basis` `doc` or
-> `none`); evidence still wins and `doc-draft-code-landed` etc. still fire. Doc checklists are
-> out of scope (planning reader). Tests: git-history run and docs-only run in each mode,
-> including the reporter's three example docs; no mode changes an existing bead.
+**`bh-f4t6r` (status from the doc; scope revised after the operator's S2 decision):**
+> ADR bh-meuhp Q2 refinement: key `backfill.collate.status.doc_default = closed|open|from-doc`,
+> **default `from-doc`** (operator decision: backfill writes a timeline, so a doc's add commit
+> must not be recorded as a close for a draft/proposed doc), plus `status.doc_open` (default
+> `["draft","proposed"]`; `from-doc` also treats a raw status matching `design_only` as open).
+> Add to `StatusOptions` (round-trips through the collation record) and `BackfillStatusConfig`.
+> Applies only to a unit with no evidential closure (`basis` `doc` or `none`); evidence still
+> wins and all conflict rules still fire. For an open unit the add commit is `created` only and
+> no `closed` moment is written; a closed doc unit closes at its add commit, else its declared
+> date. `closed` reproduces 0.36 output exactly. Documented output change: update the affected
+> goldens/equivalence tests; one default-change entry in the `## 0.36.x -> 0.37.0` section of
+> `docs/UPGRADING.md` (what changes, why, opt-out key, existing beads untouched); document in
+> `docs/BACKFILL.md` that open backfilled beads appear in `bd ready` and how to filter
+> (`--exclude-label origin:backfill`; `bd list --label origin:backfill --status open`). Doc
+> checklists are out of scope (planning reader). Tests: git-history and docs-only runs in each
+> mode, including the reporter's three example docs; no mode changes an existing bead. Re-run
+> close events are NOT in this bead: they are the new child below, which must land in the same
+> release.
 
-**`bh-uysl1` (docs-only runs):**
-> ADR bh-meuhp Q2 item 4 refinement: in `create = propose`, a unit with no closing moment
-> (`lifecycle.py:564-566`) is not created: it is reported as `skipped: no closing moment` in the
-> plan summary and `inspect`, in modes `closed`; in `open`, and in `from-doc` for a doc whose
-> declared status maps open, creating the open bead is intended. `create = off` unchanged.
-> Default `git,docs,planning` output byte-identical. Test: docs-only propose creates no open
-> bead silently in each mode.
+**`bh-uysl1` (docs-only runs; revised):**
+> ADR bh-meuhp Q2 item 5 refinement: in `create = propose`, a unit with no evidence moment at all
+> (no add commit and no declared date, `lifecycle.py:564-566`) is not created: it is reported as
+> `skipped: no evidence moment` in the plan summary and `inspect`. A doc declaring
+> `draft`/`proposed` creates an open bead (created at the declared date when there is no add
+> commit) under `from-doc`/`open`; a doc whose status maps closed and whose only moment is the
+> declared date closes at that date. No path creates an open bead silently. `create = off`
+> unchanged. Same branch and consistent semantics as `bh-f4t6r` (`batch:status`). Tests: docs-only
+> propose in each mode (including a doc with no moment and no declared status); default
+> `git,docs,planning` output differs from 0.36 only as `bh-f4t6r` documents.
+
+## Proposed new child (not filed; the operator approves the ADR first)
+
+**Title:** `feat(backfill): append close transitions to open backfilled beads on closing evidence`
+
+**Type/labels:** feature, `component:backfill`, `complexity:MEDIUM`; parent `bh-1vkff`; depends on
+`bh-f4t6r`; same 0.37.0 release (release is gated on both).
+
+**Description:** With `from-doc` the default (ADR bh-meuhp Q2), backfill creates open beads for
+draft/proposed docs. When a later run finds closing evidence for such a bead, it must append the
+transition instead of leaving the bead open forever, using the evidence's own timestamp and never
+rewriting earlier events. Amends the "PRESENT never touches `phase`" rule of `project.py` for open
+`origin:backfill` beads only.
+
+**Acceptance:**
+
+- A re-run over a baseline bead that is open, carries `origin:backfill` and whose unit now has
+  closing evidence (merged change or review, release, closed tracker item, plan done marker)
+  emits a `phase` closed event with `occurred_at` = the evidence's moment (precision kept) and the
+  `metadata.lifecycle.closed_at` stamp; the stored bead's `closed_at` equals that moment, not the
+  run time.
+- Additive only: earlier events are not rewritten or removed; no `compact`/`flatten`; a bead
+  that is not open, lacks `origin:backfill`, or was changed by a human is never transitioned; an
+  existing different `closed_at` is never overwritten (reported instead).
+- Deterministic and idempotent: the second dry run is empty; running twice appends once
+  (test); a run with no new evidence changes nothing.
+- A doc status change alone (`draft` -> `accepted`) does not close a bead; conflicts are
+  reported as today.
+- Setting `backfill.collate.status.close_on_evidence` (default `true`); `false` leaves open beads
+  open (test); hive overlay works via `bh-g71fi`.
+- Tests: create open from a draft doc, then a later run with a merged feat change closes it at the
+  commit's time; release and closed-tracker-item and plan-done cases; hand-made and
+  human-closed beads untouched; reconcile sees DRIFT for the phase facet, not NEW.
+- `docs/BACKFILL.md` describes the timeline (created -> closed) and the guard;
+  `docs/UPGRADING.md` 0.37.0 bullet (in the single `## 0.36.x -> 0.37.0` section); CHANGELOG entry;
+  `feat(backfill)` commit(s).
