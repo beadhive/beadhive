@@ -59,7 +59,7 @@ class BeadState:
     erased: bool = False
     type: str | None = None
     phase: str | None = None
-    fields: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    fields: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, hash=False)
     labels: tuple[str, ...] = ()
     edges: tuple[Edge, ...] = ()
     retired: Mapping[str, Any] | None = field(default=None, hash=False)
