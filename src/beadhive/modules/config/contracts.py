@@ -2393,6 +2393,18 @@ class BackfillStatusConfig(_Section):
         default_factory=lambda: ["draft", "proposed"],
         description="Declared doc statuses that keep a unit open under doc_default = from-doc.",
     )
+    close_on_evidence: bool = Field(
+        True,
+        description="A re-run appends the closed transition to an open (or backfill-started) "
+        "origin:backfill bead whose unit now has closing evidence (a merged change or review, a "
+        "release, a closed tracker item, a plan done marker), at the evidence's own time. false "
+        "leaves such beads in their current phase.",
+    )
+    in_progress_on_evidence: bool = Field(
+        True,
+        description="A unit with in-progress evidence (an opened review) gets an in_progress "
+        "transition at the evidence's own time, on creation and on a re-run. false writes none.",
+    )
 
 
 class BackfillCollateConfig(_Section):

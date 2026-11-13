@@ -864,6 +864,8 @@ nothing runs it for you, and its default stop (`--until plan`) never writes to t
 | `backfill.collate.status.rules` / `design_only` / `summary_suffix` / `date_tolerance_days` / `clock_tolerance_seconds` | the four non-clock rules / `[design only]` / `-summary.md` / `1` / `86400` | B6 conflict rules (the `clock-*` rules are opt-in) and tolerances |
 | `backfill.collate.status.doc_default` | `from-doc` | Status of a unit backed only by docs: `from-doc` (open when a doc declares a `doc_open` status or a design-only phrase, else closed), `closed` (0.36: the add commit closes it) or `open`. Evidence always wins; only newly created beads follow it. See [BACKFILL.md](BACKFILL.md#doc-status) |
 | `backfill.collate.status.doc_open` | `[draft, proposed]` | Declared doc statuses that keep a unit open under `from-doc` |
+| `backfill.collate.status.close_on_evidence` | `true` | A re-run closes an open (or backfill-started) `origin:backfill` bead whose unit now has closing evidence, at the evidence's time; `false` keeps its phase. See [BACKFILL.md](BACKFILL.md#timeline) |
+| `backfill.collate.status.in_progress_on_evidence` | `true` | A unit with an opened review gets an `in_progress` transition at the review's time, on creation and on a re-run; `false` writes none |
 
 Every default equals the library's own, so an absent section changes nothing. `bh config` validates
 the section (unknown keys, an unknown rule or tier and out-of-range numbers are refused). As with

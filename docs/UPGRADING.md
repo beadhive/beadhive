@@ -42,6 +42,16 @@ exists for the releases where "read the changelog" isn't enough to act on.
   `backfill.decisions.on_delete = ignore|report|skip` (default `ignore`) can detect deleted beads.
   A collation holding a decision uses the new `decision` step and `SKIP` class, which a pre-0.37.0
   reader rejects; without decisions nothing changes.
+- **A re-run now appends the later transitions of a bead it created (bh-1vkff.3).** With
+  `from-doc` creating open beads, a re-run moves an open `origin:backfill` bead to `in_progress`
+  when its unit has an opened review, and closes it when closing evidence appears (a merged
+  review or change, a release, a closed tracker item, a plan done marker), each at the evidence's
+  own time and never rewriting an earlier event. A closed bead, a hand-made bead and a bead a
+  person moved are never touched. New `backfill.collate.status.close_on_evidence` and
+  `in_progress_on_evidence` (both default `true`; `false` keeps the current phase). Newly
+  created beads whose unit has an opened review start `in_progress` instead of `open`. A doc
+  bead now also matches the change its doc later attaches to, instead of a duplicate bead. See
+  [BACKFILL.md](BACKFILL.md#timeline).
 
 ## 0.36.0 → 0.36.1 — patch fixes
 

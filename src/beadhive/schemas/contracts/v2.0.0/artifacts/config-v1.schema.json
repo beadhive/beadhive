@@ -958,6 +958,12 @@
           "title": "Clock Tolerance Seconds",
           "type": "integer"
         },
+        "close_on_evidence": {
+          "default": true,
+          "description": "A re-run appends the closed transition to an open (or backfill-started) origin:backfill bead whose unit now has closing evidence (a merged change or review, a release, a closed tracker item, a plan done marker), at the evidence's own time. false leaves such beads in their current phase.",
+          "title": "Close On Evidence",
+          "type": "boolean"
+        },
         "date_tolerance_days": {
           "default": 1,
           "description": "Days a doc's declared date may differ from its add commit.",
@@ -1000,6 +1006,12 @@
           },
           "title": "Doc Open",
           "type": "array"
+        },
+        "in_progress_on_evidence": {
+          "default": true,
+          "description": "A unit with in-progress evidence (an opened review) gets an in_progress transition at the evidence's own time, on creation and on a re-run. false writes none.",
+          "title": "In Progress On Evidence",
+          "type": "boolean"
         },
         "rules": {
           "description": "Conflict rules run. The clock-* rules are opt-in.",

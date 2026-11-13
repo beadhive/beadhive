@@ -125,7 +125,9 @@
         "date_tolerance_days": {"type": "integer", "minimum": 0},
         "clock_tolerance_seconds": {"type": "integer", "minimum": 0},
         "doc_default": {"enum": ["closed", "open", "from-doc"], "description": "Status of a unit with no evidential closure; absent in a record written before 0.37 (read back as closed)."},
-        "doc_open": {"type": "array", "uniqueItems": true, "items": {"enum": ["proposed", "draft", "accepted", "delivered", "superseded", "rejected", "deprecated"]}, "description": "Declared doc statuses that keep a unit open under from-doc."}
+        "doc_open": {"type": "array", "uniqueItems": true, "items": {"enum": ["proposed", "draft", "accepted", "delivered", "superseded", "rejected", "deprecated"]}, "description": "Declared doc statuses that keep a unit open under from-doc."},
+        "close_on_evidence": {"type": "boolean", "description": "A re-run closes an open backfilled bead on closing evidence; absent in a record written before 0.37 (read back as true)."},
+        "in_progress_on_evidence": {"type": "boolean", "description": "A unit with an opened review gets an in_progress transition; absent in a record written before 0.37 (read back as true)."}
       }
     },
     "moment": {
@@ -149,7 +151,8 @@
         "status": {"enum": ["open", "closed"]},
         "basis": {"enum": ["plan-item", "merged", "committed", "released", "tracker", "review", "doc", "children", "none"]},
         "created": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}]},
-        "closed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "Null unless the unit is closed."}
+        "closed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "Null unless the unit is closed."},
+        "started": {"$ref": "#/$defs/moment", "description": "Moment of the unit's in-progress evidence (an opened review); written only when present, and strictly between created and closed on a closed unit."}
       }
     },
     "conflict_source": {
