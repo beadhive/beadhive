@@ -23,6 +23,9 @@ No action required.
   globs configured, `ROADMAP.md` and `roadmap.md` resolved to the same file on macOS and every
   item appeared twice; discovery now collapses names that are the same file. Explicit `files` and
   `globs` are unchanged.
+- **Re-run behaviour documented (bh-muu6r).** `docs/BACKFILL.md` gains "Re-running after hand edits":
+  a re-run matches by `external_ref`, never rewrites an edited, closed or reopened backfilled bead
+  and proposes a deleted one again as NEW, so close unwanted beads rather than deleting them.
 
 ## 0.35.10 → 0.35.11 — patch fixes
 

@@ -524,6 +524,34 @@ and `PRESENT-in-sync` is PRESENT. For `git-commits` there is no per-doc status: 
 `git.commits` gains shas is DRIFT, and a stored value that is not a JSON array of strings is
 reported as DRIFT with no event.
 
+## Re-running after hand edits {#re-running-after-hand-edits}
+
+A re-run of `bh backfill history` re-reads the hive (`bd export --all`, so closed beads are part of
+the baseline; a `tombstone` row is skipped, `beadlog_sources/bd.py`), folds it, and identifies every
+unit again (B5, `beadlog_sources/identify.py`). Matching is by, in order: the unit key against a
+baseline bead's `external_ref` (`identify.py`, step 1; the key was stamped on the bead by the
+earlier run), an explicit bead id the evidence names (step 2), then the lexical title engine and
+the judge (steps 3 and 4). A matched unit is PRESENT and projects only appends and stamps, never
+an overwrite and never a `create`, `phase`, label or edge (`beadlog_sources/project.py`, the
+**PRESENT** paragraph of the module doc). The edited fields are not part of any proposal, so
+reconcile sees no changed facet and nothing is reported as DRIFT (`reconcile.py` classes DRIFT
+only from facets the proposal changes). So a re-run never writes back to a hand-edited bead.
+
+| What was done to a backfilled bead | Next `bh backfill history` run |
+|---|---|
+| Title or description edited | Still matched by `external_ref` (the title is not consulted) and PRESENT; the edit is kept and nothing is proposed. A bead that lost its `external_ref` as well is matched lexically on its *new* title, so a rename can turn a PRESENT into a NEW or a residual. |
+| Status changed: closed, or reopened | Closed beads stay in the baseline and match as above. The status is not compared, so a human close or reopen is not DRIFT and is not undone; a unit that B6 dates as closed does not reopen or re-close it. |
+| Label or dependency added or removed | Kept. A PRESENT bead gets no label or edge events, so the next run neither restores a removed label nor reports an added one. |
+| Deleted (`bd delete`, hard or tombstoned) | The bead is gone from the baseline (`identify.py` skips deleted and erased beads; a hard-deleted bead is not in the export at all), so its unit matches nothing and is NEW: the run proposes a fresh `create`. Nothing records that the unit was once backfilled. |
+| Retired by a rolled-back apply (`backfill-rollback`) | Not a human edit. Such a bead is left out of title matching and revived in place (reopened with reason `backfill-revive`, labels and edges re-applied) when its `external_ref` equals the unit key, so there is no second bead (bh-12hka; `identify.py` `_Baseline`, `project.py` `revive`). |
+
+Close an unwanted backfilled bead rather than deleting it: a closed bead keeps its `external_ref`,
+so the run keeps matching it, whereas a delete makes the next run propose the same bead again.
+`tests/test_beadlog_sources_project.py::test_a_rerun_after_hand_edits_matches_by_external_ref_and_proposes_nothing`
+and `::test_a_rerun_after_a_backfilled_bead_is_deleted_proposes_it_again_as_new` pin the first and
+fourth rows. Per-unit decisions and skip tombstones, so a deleted unit can stay skipped, are
+planned for 0.37.0 (bh-1vkff).
+
 ## Collation status and conflicts
 
 The collation derives each work unit's status and dates from history only (merged or committed
