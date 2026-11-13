@@ -1140,6 +1140,65 @@ def test_project_apply_and_project_again_proposes_zero_events(name: str) -> None
     assert {u.decision for u in again.units if u.unit in projected} == {"PRESENT"}
 
 
+def _hand_event(kind: str, bead: beadlog.BeadRef, data: dict[str, Any], at: str):
+    return beadlog.mint_event(
+        kind,
+        bead,
+        data,
+        occurred_at=at,
+        recorded_at=at,
+        extracted_at="2026-11-13T00:00:00Z",
+        source=("bd", f"bd:{kind}/{bead.id}"),
+        provenance="observed",
+    )
+
+
+def _rerun(corpus: EvidenceCorpus, baseline: Sequence[beadlog.BeadEvent]) -> Projection:
+    return project(
+        run_collate(corpus, baseline),
+        corpus,
+        baseline,
+        prefix=PREFIX,
+        group=GROUP,
+        extracted_at="2026-11-14T00:00:00Z",
+    )
+
+
+def test_a_rerun_after_hand_edits_matches_by_external_ref_and_proposes_nothing() -> None:
+    """docs/BACKFILL.md "Re-running after hand edits": an edited, closed or reopened bead is still
+    PRESENT through its ``external_ref`` and is never rewritten or re-created."""
+    (corpus, _, first), baseline = scenario("design-record")
+    created = apply(baseline, reconcile(first.events, baseline).events)
+    bead = next(u.bead for u in first.units if u.unit == "doc:docs/design/queue.md")
+    ref = beadlog.BeadRef(GROUP, bead)
+    edits = [
+        _hand_event("set", ref, {"field": "title", "value": "Renamed"}, "2026-11-13T01:00:00Z"),
+        _hand_event("set", ref, {"field": "description", "value": "new"}, "2026-11-13T01:00:00Z"),
+        _hand_event("label_add", ref, {"label": "hand-added"}, "2026-11-13T01:00:00Z"),
+        _hand_event("phase", ref, {"phase": "open"}, "2026-11-13T02:00:00Z"),
+    ]
+    edited = [*created, *edits]
+    again = _rerun(corpus, edited)
+    assert again.events == ()
+    (record,) = [u for u in again.units if u.unit == "doc:docs/design/queue.md"]
+    assert record.decision == "PRESENT" and record.bead == bead
+
+
+def test_a_rerun_after_a_backfilled_bead_is_deleted_proposes_it_again_as_new() -> None:
+    """docs/BACKFILL.md: a deleted (soft or hard) bead leaves the baseline, so its unit is NEW."""
+    (corpus, _, first), baseline = scenario("design-record")
+    created = list(apply(baseline, reconcile(first.events, baseline).events))
+    bead = next(u.bead for u in first.units if u.unit == "doc:docs/design/queue.md")
+    ref = beadlog.BeadRef(GROUP, bead)
+    hard = [e for e in created if e.bead != ref]
+    soft = [*created, _hand_event("delete", ref, {}, "2026-11-13T01:00:00Z")]
+    for baseline_after in (hard, soft):
+        again = _rerun(corpus, baseline_after)
+        (record,) = [u for u in again.units if u.unit == "doc:docs/design/queue.md"]
+        assert record.decision == "NEW"
+        assert [str(e.kind) for e in again.events if e.bead.id == record.bead][0] == "create"
+
+
 def test_projected_beads_fold_to_closed_history() -> None:
     (_, _, projection), _ = scenario("plan-item")
     states = beadlog.fold(projection.events)

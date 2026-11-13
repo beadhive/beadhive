@@ -177,6 +177,27 @@ def test_roadmap_files_option_and_missing_file(tmp_path: Path) -> None:
         _read(tmp_path, formats="zzz")
 
 
+def test_roadmap_discovery_collapses_names_for_one_file(tmp_path: Path) -> None:
+    """A case-insensitive filesystem makes both spellings one file; simulate with a hard link."""
+    from beadlog_sources.planning_reader import RoadmapFormat
+
+    (tmp_path / "ROADMAP.md").write_text("- [ ] a\n- [x] b\n", encoding="utf-8")
+    os.link(tmp_path / "ROADMAP.md", tmp_path / "roadmap.md")
+    assert RoadmapFormat.discover(tmp_path, {}) == ["ROADMAP.md"]
+    arts = _read(tmp_path, formats="roadmap", first_add="false")
+    assert sorted(a.title for a in arts) == ["a", "b"]
+
+
+def test_roadmap_discovery_keeps_distinct_files(tmp_path: Path) -> None:
+    from beadlog_sources.planning_reader import RoadmapFormat
+
+    (tmp_path / "ROADMAP.md").write_text("- [ ] a\n", encoding="utf-8")
+    (tmp_path / "roadmap.md").write_text("- [ ] b\n", encoding="utf-8")
+    if (tmp_path / "ROADMAP.md").samefile(tmp_path / "roadmap.md"):
+        pytest.skip("case-insensitive host filesystem")
+    assert RoadmapFormat.discover(tmp_path, {}) == ["ROADMAP.md", "roadmap.md"]
+
+
 def test_output_is_deterministic_and_valid_evidence(gsd: Path) -> None:
     (gsd / "ROADMAP.md").write_text(ROADMAP, encoding="utf-8")
     one, two = _read(gsd), _read(gsd)

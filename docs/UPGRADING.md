@@ -5,6 +5,28 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.36.0 → 0.36.1 — patch fixes
+
+No action required.
+
+- **Python 3.11 loads again (bh-oyueb).** 0.33.0 through 0.36.0 crashed at command load on
+  Python 3.11 (`ValueError: mutable default <class 'mappingproxy'>`) because nine frozen-dataclass
+  fields used a shared `MappingProxyType` default; they now use `default_factory`. 3.12+ was
+  unaffected.
+- **A rolled-back backfill apply no longer hides what it created (bh-12hka).** Rolling back a
+  failed create-mode `bh backfill history` apply still retires the created beads (closed, reason
+  `backfill-rollback`; never deleted), but the audit now names them (`rollback_retired`,
+  `rollback_retired_count`), a created bead that is still open or missing after rollback is
+  reported as `rollback_residual` (state `rollback_failed`) instead of being skipped, and a
+  re-run revives a retired bead in place rather than matching it as already present.
+- **Roadmap is read once on case-insensitive filesystems (bh-29lke).** With no planning files or
+  globs configured, `ROADMAP.md` and `roadmap.md` resolved to the same file on macOS and every
+  item appeared twice; discovery now collapses names that are the same file. Explicit `files` and
+  `globs` are unchanged.
+- **Re-run behaviour documented (bh-muu6r).** `docs/BACKFILL.md` gains "Re-running after hand edits":
+  a re-run matches by `external_ref`, never rewrites an edited, closed or reopened backfilled bead
+  and proposes a deleted one again as NEW, so close unwanted beads rather than deleting them.
+
 ## 0.35.10 → 0.35.11 — patch fixes
 
 No action required. The new `bh doctor` findings are read-only: the two outbox ones are silent

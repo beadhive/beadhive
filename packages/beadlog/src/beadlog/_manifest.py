@@ -165,9 +165,9 @@ class Manifest:
     generator: Generator
     groups: tuple[Group, ...]
     capabilities: Capabilities
-    redaction: Mapping[str, Any] = field(default=_NO_REDACTION, hash=False)
+    redaction: Mapping[str, Any] = field(default_factory=lambda: _NO_REDACTION, hash=False)
     files: tuple[Mapping[str, Any], ...] = field(default=(), hash=False)
-    counts: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    counts: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, hash=False)
     created_at: str | None = None
     description: str | None = None
     plan: Mapping[str, Any] | None = field(default=None, hash=False)
