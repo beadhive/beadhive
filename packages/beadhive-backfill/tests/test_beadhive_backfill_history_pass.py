@@ -217,3 +217,75 @@ def test_create_mode_needs_no_new_threshold_and_off_still_writes_nothing() -> No
         assert event.provenance == "derived" and event.confidence is None
     off = make_pass(create=False, prefix=None)
     assert not engine(off).plan(off, store).applicable_events()
+
+
+# -- a failed create-mode apply (bh-12hka, #152) ----------------------------------------------
+
+
+class FailingFoldStore(FoldStore):
+    """A fold store that raises on the nth non-inverse write (every later write works)."""
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]] = (), *, fail_at: int = 0) -> None:
+        super().__init__(rows)
+        self.fail_at = fail_at
+        self.seen = 0
+
+    def load(self, events: Sequence[beadlog.BeadEvent], *, dry_run: bool) -> Mapping[str, Any]:
+        if not dry_run and self.fail_at and events[0].source.system != "beadhive-backfill":
+            self.seen += 1
+            if self.seen == self.fail_at:
+                raise RuntimeError("injected mid-apply failure")
+        return super().load(events, dry_run=dry_run)
+
+
+def _rolled_back_store() -> tuple[FailingFoldStore, Any, ListSink]:
+    store = FailingFoldStore([_row("fx-seed")], fail_at=4)
+    pass_ = make_pass(create=True)
+    eng = engine(pass_)
+    plan = eng.plan(pass_, store)
+    sink = ListSink()
+    with pytest.raises(BackfillError, match="apply failed and was audited"):
+        eng.apply(plan, store, store, sink, pre_state=store)
+    return store, eng, sink
+
+
+def _created(store: FoldStore) -> dict[str, beadlog.BeadState]:
+    return {ref.id: s for ref, s in beadlog.fold(store.export()).items() if ref.id != "fx-seed"}
+
+
+def test_a_rolled_back_apply_retires_every_created_bead_and_the_audit_names_them() -> None:
+    store, _, sink = _rolled_back_store()
+    created = _created(store)
+    assert created, "the failure happened after some beads were created"
+    assert {s.phase for s in created.values()} == {"retired"}  # none left open
+
+    final = sink.entries[-1]
+    assert final.state.value == "rolled_back"
+    assert set(final.rollback_retired) == set(created)
+    body = final.to_json()
+    assert body["rollback_retired_count"] == len(created)
+    assert sorted(body["rollback_retired"]) == sorted(created)
+    assert "retired" in body["recovery"]["instruction"]
+
+
+def test_a_rerun_after_a_rollback_revives_the_retired_beads_without_duplicates() -> None:
+    store, _, _ = _rolled_back_store()
+    retired = _created(store)
+    assert {s.phase for s in retired.values()} == {"retired"}
+
+    pass_ = make_pass(create=True)
+    eng = engine(pass_)
+    plan = eng.plan(pass_, store)
+    assert plan.applicable_events(), "a retired leftover must not read as already present"
+    entry = eng.apply(plan, store, store, ListSink(), pre_state=store)
+    assert entry.state.value == "applied"
+
+    states = {ref.id: s for ref, s in beadlog.fold(store.export()).items() if ref.id != "fx-seed"}
+    assert set(retired) <= set(states) and len(states) == 6  # revived in place, none re-minted
+    assert "retired" not in {s.phase for s in states.values()}
+    assert {s.phase for s in states.values() if s.type == "feature"} == {"closed"}
+    for state in states.values():
+        assert set(LABELS) <= set(state.labels)
+    refs = [s.fields.get("external_ref") for s in states.values()]
+    assert len(refs) == len(set(refs)), "no duplicate external_ref"
+    assert decisions(eng.plan(make_pass(create=True), store)) == {"PRESENT": 6}

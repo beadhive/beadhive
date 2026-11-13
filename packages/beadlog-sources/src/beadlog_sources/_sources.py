@@ -141,6 +141,10 @@ def follow_add(root: Path | str, path: str, git: str = "git") -> AddRecord | Non
 # -- the baseline --------------------------------------------------------------------------
 
 
+# The retire reason a rolled-back backfill create leaves on its bead (bh-12hka).
+ROLLBACK_REASON = "backfill-rollback"
+
+
 def live_beads(states: Mapping[BeadRef, BeadState], group: str) -> dict[str, BeadState]:
     """Id -> folded state for the beads of ``group`` that exist and are not erased."""
     return {

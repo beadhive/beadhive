@@ -22,6 +22,11 @@ _EMPTY: Mapping[str, Any] = MappingProxyType({})
 
 # What an operator does with an ``applying`` or ``rollback_failed`` audit.
 RECOVERY_INSTRUCTION = "restore the exported pre-state before retrying an incomplete apply"
+# What a rolled-back apply that created beads leaves behind: retired beads, not an empty store.
+RETIRED_INSTRUCTION = (
+    "rollback retired the beads the apply created (closed, reason backfill-rollback; never "
+    "deleted): they remain in the store, and a re-run revives them in place"
+)
 
 
 @runtime_checkable
@@ -202,7 +207,9 @@ class AuditEntry:
 
     ``planned`` / ``attempted`` / ``completed`` list unit keys. ``rollback_failures`` are
     inverse writes that raised; ``rollback_residual`` lists applied events with no inverse by
-    design (``comment``, ``tombstone``). ``losses`` counts the loader's dry-run loss codes;
+    design (``comment``, ``tombstone``) or whose undo could not be confirmed. ``rollback_retired``
+    names the beads the apply created that rollback retired (they stay in the store, closed,
+    never deleted). ``losses`` counts the loader's dry-run loss codes;
     ``verification`` holds the post-apply proof (pass errors, second dry-run changes,
     unrecorded judgments).
     """
@@ -221,6 +228,7 @@ class AuditEntry:
     completed: tuple[str, ...] = ()
     rollback_failures: tuple[str, ...] = ()
     rollback_residual: tuple[str, ...] = ()
+    rollback_retired: tuple[str, ...] = ()
     losses: Mapping[str, int] = field(default_factory=lambda: _EMPTY, hash=False)
     verification: Mapping[str, Any] | None = field(default=None, hash=False)
 
@@ -239,6 +247,8 @@ class AuditEntry:
             "completed": list(self.completed),
             "rollback_failures": list(self.rollback_failures),
             "rollback_residual": list(self.rollback_residual),
+            "rollback_retired": list(self.rollback_retired),
+            "rollback_retired_count": len(self.rollback_retired),
             "losses": dict(sorted(self.losses.items())),
             "verification": None if self.verification is None else dict(self.verification),
             "progress": self.progress.to_json(),
@@ -257,6 +267,7 @@ class AuditSink(Protocol):
 
 __all__ = [
     "RECOVERY_INSTRUCTION",
+    "RETIRED_INSTRUCTION",
     "AuditEntry",
     "AuditProgress",
     "AuditRecovery",

@@ -64,6 +64,7 @@ from typing import Any
 
 from beadlog import BeadEvent, BeadState, fold
 
+from ._sources import ROLLBACK_REASON
 from .collate import ATTACH, Collation, CollationFormatError, Unit
 from .contracts import ABSTAIN, ChoiceQuery, Fallback, Judgment, JudgmentPort
 from .docs import ask
@@ -499,6 +500,8 @@ class _Baseline:
             external = state.fields.get("external_ref")
             if isinstance(external, str) and external:
                 refs.setdefault(external, []).append(ref.id)
+            if (state.retired or {}).get("reason") == ROLLBACK_REASON:
+                continue  # only an exact external_ref names a rolled-back create (bh-12hka)
             title = _title(state)
             if title:
                 beads[ref.id] = _Bead(ref.id, title, state.type == "epic", tokens(title))
