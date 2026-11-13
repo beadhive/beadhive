@@ -5,7 +5,9 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
-## 0.36.x → 0.37.0 — backfill re-run control
+## 0.36.0 → 0.37.0 — backfill re-run control
+
+There is no 0.36.1: the fixes planned for it ship here (see *Fixes* below).
 
 - **Docs and planning readers take `exclude` (bh-pieo5, #155).** Set
   `backfill.sources.docs.options.exclude` / `backfill.sources.planning.options.exclude` to a csv of
@@ -53,9 +55,7 @@ exists for the releases where "read the changelog" isn't enough to act on.
   bead now also matches the change its doc later attaches to, instead of a duplicate bead. See
   [BACKFILL.md](BACKFILL.md#timeline).
 
-## 0.36.0 → 0.36.1 — patch fixes
-
-No action required.
+### Fixes (no action required)
 
 - **Python 3.11 loads again (bh-oyueb).** 0.33.0 through 0.36.0 crashed at command load on
   Python 3.11 (`ValueError: mutable default <class 'mappingproxy'>`) because nine frozen-dataclass
