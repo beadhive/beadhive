@@ -32,6 +32,9 @@ bh backfill coverage     [--hive H] [--refresh] [--json]
 bh backfill history      [--hive H] [--sources S,...] [--until parse|collate|plan|apply] [--run-dir D] [--refresh] [--yes] [--json]
 bh backfill collate      [--hive H] [--sources S,...] [--run-dir D] [--refresh] [--yes] [--json]
 bh backfill view         unit|conflict|xref|cost|verdicts RUN_DIR|COLLATION.json [--json]
+bh backfill view         decisions [--hive H] [--json]
+bh backfill decide       UNIT_KEY skip|noise|link [BEAD] [--reason R] [--hive H] [--dry-run] [--json]
+bh backfill decide       --deleted BEAD_ID skip [--reason R] [--hive H] [--dry-run] [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--store bd|xtdb] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verdicts     F.bdlg|COLLATION.json [--class C]... [--engine E] [--min-confidence X] [--max-confidence X] [--json]
@@ -259,6 +262,7 @@ wire contract:
 | `xref` | references to other ledgers' beads and to tracker items |
 | `cost` | judge calls recorded and their estimated cost |
 | `verdicts` | the judge verdicts, the same view as `bh backfill verdicts` |
+| `decisions [--hive H]` | the operator decisions recorded in the hive's bead store (no run directory needed) |
 
 `--json` emits `beadhive.backfill.view/1` (`view`, `path`, counts and the records).
 
@@ -572,12 +576,56 @@ only from facets the proposal changes). So a re-run never writes back to a hand-
 | Deleted (`bd delete`, hard or tombstoned) | The bead is gone from the baseline (`identify.py` skips deleted and erased beads; a hard-deleted bead is not in the export at all), so its unit matches nothing and is NEW: the run proposes a fresh `create`. Nothing records that the unit was once backfilled. |
 | Retired by a rolled-back apply (`backfill-rollback`) | Not a human edit. Such a bead is left out of title matching and revived in place (reopened with reason `backfill-revive`, labels and edges re-applied) when its `external_ref` equals the unit key, so there is no second bead (bh-12hka; `identify.py` `_Baseline`, `project.py` `revive`). |
 
-Close an unwanted backfilled bead rather than deleting it: a closed bead keeps its `external_ref`,
-so the run keeps matching it, whereas a delete makes the next run propose the same bead again.
+Close an unwanted backfilled bead rather than deleting it, or record a decision (below): a closed
+bead keeps its `external_ref`, so the run keeps matching it, whereas a delete makes the next run
+propose the same bead again.
 `tests/test_beadlog_sources_project.py::test_a_rerun_after_hand_edits_matches_by_external_ref_and_proposes_nothing`
 and `::test_a_rerun_after_a_backfilled_bead_is_deleted_proposes_it_again_as_new` pin the first and
-fourth rows. Per-unit decisions and skip tombstones, so a deleted unit can stay skipped, are
-planned for 0.37.0 (bh-1vkff).
+fourth rows. Per-unit decisions and the deleted-bead tombstone follow.
+
+### Operator decisions (`bh backfill decide`) {#operator-decisions}
+
+`bh backfill decide <unit-key> skip|noise|link [<bead>] [--reason R] [--hive H] [--dry-run]`
+records what the operator decided about one unit, in the hive's own bead store, and every later
+run honours it (bh-2sicb; ADR `design/backfill-rerun-control-adr.md`, Q3). The unit key is the
+unit's stable source key (`doc:<path>`, `gh:pr/<n>`, an area key ...; see `bh backfill view unit`).
+
+| Decision | A later run |
+|---|---|
+| `skip` | The unit is never proposed. It projects nothing and is not residual (`skipped (operator)` in views, counted as `skip`). |
+| `noise <epic>` | The unit is NOISE against that epic (a live `epic` bead is required, as reconcile's covering rule). |
+| `link <bead>` | The unit is PRESENT against that live bead: the usual appends and stamps, nothing overwritten (the unit key is stamped as `external_ref` only when the bead has none). |
+
+A decision is **one closed `decision`-type bead per unit key**: id `mint_bead_id(prefix, group,
+"decision:" + key)` (deterministic, so deciding the same unit again updates the same bead; bd keeps
+the earlier answer in its history), labels `origin:backfill`, the hive identity triplet and
+`source:decision`, `external_ref = bfdec:<key>` (a namespace no unit key uses), and metadata
+`backfill.decision`, `backfill.unit`, `backfill.target` (the bead for `link`, the epic for `noise`),
+`backfill.reason`, `backfill.decided_by` and `backfill.decided_at`. It is an ordinary issue row, so
+it survives `bd export`/import and every BeadLog loader; nothing compacts, flattens or rewrites
+history. `--dry-run` prints the exact bead (id, labels, fields) and writes nothing. Decision beads
+are excluded from the baseline candidates and `external_ref` lookups, so they never match a unit
+by title. List them with `bd list --label source:decision` or `bh backfill view decisions`.
+
+A `link` or `noise` whose target is no longer there (or, for `noise`, is not an epic) is **stale**:
+the run reports it (`identify: decision ... not applied`) and identifies the unit normally.
+
+**Deleted backfilled beads.** A hard delete leaves no trace in `bd export`, so the unit would be
+proposed again (see the table above). Record the skip instead of deleting, or after the fact:
+
+- `bh backfill decide --deleted <bead-id> skip` reads that one bead's `external_ref` with a single
+  `bd history <bead-id>` call (it must carry `origin:backfill`; the bead must be gone) and records
+  the skip for its unit. Always available.
+- `backfill.decisions.on_delete = ignore | report | skip` (default `ignore`, today's behaviour)
+  makes `bh backfill history` compare the beads its previous *applied* plan created (the run
+  directory's `plan.bdlg`) with the store: `report` lists the ones that are gone, `skip` also
+  records a skip decision for each, on a run that reaches `--until apply`. This needs the previous
+  run directory (host-local); the decision it records protects every host.
+
+**Collation vocabulary.** Step 0 adds `decision` to the identify steps and `SKIP` to the verdict
+classes of `bdlg.collation/1` (`schemas/bdlg-collation-v1.schema.json`); the projector gains a
+`skip` decision. A reader older than 0.37.0 rejects a collation holding them (the strict loader);
+a run with no decisions writes exactly what it did before.
 
 ## Collation status and conflicts
 

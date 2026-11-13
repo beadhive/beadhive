@@ -36,6 +36,12 @@ exists for the releases where "read the changelog" isn't enough to act on.
   per hive. `bh config get <key> --hive <prefix>` prints the effective value and its layer. Off by
   default: a hive with no overlay behaves as before. See
   [CONFIGURATION.md](CONFIGURATION.md#backfill-hives).
+- **`bh backfill decide` records per-unit decisions (bh-2sicb, #155).** `decide <unit-key>
+  skip|noise|link [<bead>]` (and `decide --deleted <bead-id> skip` for a bead already deleted)
+  writes one closed `decision` bead per unit into the hive's bead store; re-runs honour it, and
+  `backfill.decisions.on_delete = ignore|report|skip` (default `ignore`) can detect deleted beads.
+  A collation holding a decision uses the new `decision` step and `SKIP` class, which a pre-0.37.0
+  reader rejects; without decisions nothing changes.
 
 ## 0.36.0 → 0.36.1 — patch fixes
 
