@@ -2426,6 +2426,18 @@ class BackfillCollateConfig(_Section):
     status: BackfillStatusConfig = Field(default_factory=BackfillStatusConfig)
 
 
+class BackfillDecisionsConfig(_Section):
+    """``backfill.decisions`` — how a re-run treats a backfilled bead that was deleted."""
+
+    on_delete: Literal["ignore", "report", "skip"] = Field(
+        "ignore",
+        description="ignore (default): a deleted backfilled bead's unit is proposed again. "
+        "report: a re-run lists the beads the last apply created that are gone now. skip: also "
+        "records a skip decision for each (`bh backfill decide --deleted <bead> skip` does the "
+        "same one bead at a time, whatever this says).",
+    )
+
+
 class BackfillHiveOverlay(_Section):
     """``backfill.hives.<prefix>`` — one hive's overlay of the host ``backfill`` block.
 
@@ -2457,6 +2469,10 @@ class BackfillHiveOverlay(_Section):
     collate: BackfillCollateConfig = Field(
         default_factory=BackfillCollateConfig,
         description="Collation options (B3 to B6) and the create mode of bh backfill history.",
+    )
+    decisions: BackfillDecisionsConfig = Field(
+        default_factory=BackfillDecisionsConfig,
+        description="Operator decisions (bh backfill decide): what a deleted bead's unit becomes.",
     )
 
 

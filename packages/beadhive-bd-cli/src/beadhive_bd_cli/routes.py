@@ -328,6 +328,12 @@ class CliRoutes:
             args.append("--all")
         return self._bd.run(args, self._cwd, capture=True)
 
+    def issue_history(self, bead: str) -> Any:
+        """Captured ``bd history <bead> --json``: the commit snapshots of one issue, newest first.
+        The one targeted read that still knows a hard-deleted bead (``bd export`` does not); a
+        caller reads one bead, never a scan (``bd history`` is slow)."""
+        return self._bd.run(["history", bead, "--json"], self._cwd, capture=True)
+
     def issue_apply_changes(
         self,
         bead: str,

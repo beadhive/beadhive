@@ -24,6 +24,7 @@ SCHEMA = "beadhive.backfill.view/1"
 VIEWS = ("unit", "conflict", "xref", "cost", "verdicts")
 COLLATION_FILE = "collation.json"
 RESIDUAL = "residual"
+SKIP = "SKIP"  # an operator decision (bh backfill decide)
 _DECISIONS = ("NEW", "PRESENT", "NOISE", RESIDUAL)
 
 
@@ -96,10 +97,13 @@ def unit_view(path: Path, *, decision: Sequence[str] = ()) -> dict[str, Any]:
             }
         )
     counts = Counter(u["decision"] for u in units)
+    shown = {name: counts.get(name, 0) for name in _DECISIONS}
+    if counts.get(SKIP):  # an operator skip only shows once there is one (byte-identical else)
+        shown[SKIP] = counts[SKIP]
     return _envelope(
         "unit",
         path,
-        counts={name: counts.get(name, 0) for name in _DECISIONS},
+        counts=shown,
         units=units,
     )
 
@@ -191,12 +195,13 @@ def render_text(view: Mapping[str, Any]) -> list[str]:
     kind = view.get("view")
     if kind == "unit":
         counts = view["counts"]
-        lines = ["decisions: " + ", ".join(f"{k}={counts[k]}" for k in _DECISIONS)]
+        lines = ["decisions: " + ", ".join(f"{k}={v}" for k, v in counts.items())]
         for unit in view["units"]:
             bead = unit["bead"] or "-"
+            operator = "  (operator)" if unit["step"] == "decision" else ""
             lines.append(
                 f"{unit['decision']:<8} {unit['key']}  [{unit['kind']}/{unit['rule']}] "
-                f"bead={bead} status={unit['status'] or '-'}  {unit['title']}"
+                f"bead={bead} status={unit['status'] or '-'}  {unit['title']}{operator}"
                 + (
                     f"  [skipped: {unit['skipped']} under create=propose]"
                     if unit["skipped"]

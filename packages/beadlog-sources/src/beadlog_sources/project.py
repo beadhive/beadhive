@@ -38,6 +38,9 @@ today).
   :data:`NOTE_NO_MOMENT`.
 - **NOISE** (covered by a coarser epic) and **residual** (no decision): nothing is projected; the
   unit is reported (:attr:`Projection.residual` lists the residual units).
+- **skip** (an operator decision, B5 step 0): nothing is projected and the unit is not residual;
+  it counts under ``skip`` only when some unit was skipped, so a run with no decisions reports
+  exactly what it did before.
 
 **The facts** (``set`` events, the same rule for NEW and PRESENT):
 
@@ -128,6 +131,7 @@ from .collate import (
 )
 from .commits import dump_linkage, just_after, parse_linkage
 from .evidence import Artifact, Category, EvidenceCorpus
+from .identify import CLASS_SKIP
 from .ledger import BEAD_TOKEN, FOREIGN
 from .lifecycle import STATUS_CLOSED, Lifecycle, Moment, conflicts_of, has_no_moment, lifecycles
 from .reconcile import ReconcileClass
@@ -154,6 +158,7 @@ DECISION_NEW = str(ReconcileClass.NEW)
 DECISION_PRESENT = str(ReconcileClass.PRESENT)
 DECISION_NOISE = str(ReconcileClass.NOISE)
 DECISION_RESIDUAL = "residual"
+DECISION_SKIP = "skip"  # an operator decision (B5 step 0): projects nothing, never residual
 DECISIONS = (DECISION_NEW, DECISION_PRESENT, DECISION_NOISE, DECISION_RESIDUAL)
 
 # The B6 bases whose closing record states the closure itself.
@@ -315,7 +320,7 @@ class Projection:
     def counts(self) -> dict[str, int]:
         out = dict.fromkeys(DECISIONS, 0)
         for item in self.units:
-            out[item.decision] += 1
+            out[item.decision] = out.get(item.decision, 0) + 1  # skip only when decided
         return out
 
     def to_json(self) -> dict[str, Any]:
@@ -516,6 +521,8 @@ class _Projector:
         if record is None:
             return [], UnitProjection(unit.key, DECISION_RESIDUAL)
         cls = record["class"]
+        if cls == CLASS_SKIP:
+            return [], UnitProjection(unit.key, DECISION_SKIP)
         if cls == DECISION_NOISE:
             return [], UnitProjection(unit.key, DECISION_NOISE, record["bead"])
         if unit.key not in self.beads:
@@ -910,6 +917,7 @@ __all__ = [
     "CONFLICT",
     "CREATED_AT",
     "DECISIONS",
+    "DECISION_SKIP",
     "DEFAULT_SOURCE_LABELS",
     "DEFAULT_TYPES",
     "EVENT_KINDS",

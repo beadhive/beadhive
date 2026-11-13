@@ -500,6 +500,10 @@
           "$ref": "#/$defs/BackfillCoverageConfig",
           "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
         },
+        "decisions": {
+          "$ref": "#/$defs/BackfillDecisionsConfig",
+          "description": "Operator decisions (bh backfill decide): what a deleted bead's unit becomes."
+        },
         "history": {
           "$ref": "#/$defs/BackfillHistoryConfig",
           "description": "bh backfill history: run directory, default sources, ledger restriction."
@@ -610,6 +614,25 @@
         }
       },
       "title": "BackfillCoverageConfig",
+      "type": "object"
+    },
+    "BackfillDecisionsConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.decisions`` — how a re-run treats a backfilled bead that was deleted.",
+      "properties": {
+        "on_delete": {
+          "default": "ignore",
+          "description": "ignore (default): a deleted backfilled bead's unit is proposed again. report: a re-run lists the beads the last apply created that are gone now. skip: also records a skip decision for each (`bh backfill decide --deleted <bead> skip` does the same one bead at a time, whatever this says).",
+          "enum": [
+            "ignore",
+            "report",
+            "skip"
+          ],
+          "title": "On Delete",
+          "type": "string"
+        }
+      },
+      "title": "BackfillDecisionsConfig",
       "type": "object"
     },
     "BackfillDocsSourceConfig": {
@@ -763,6 +786,10 @@
         "coverage": {
           "$ref": "#/$defs/BackfillCoverageConfig",
           "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
+        },
+        "decisions": {
+          "$ref": "#/$defs/BackfillDecisionsConfig",
+          "description": "Operator decisions (bh backfill decide): what a deleted bead's unit becomes."
         },
         "history": {
           "$ref": "#/$defs/BackfillHistoryConfig",

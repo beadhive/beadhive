@@ -855,6 +855,7 @@ nothing runs it for you, and its default stop (`--until plan`) never writes to t
 | `backfill.sources.github.enabled` | `false` | allow the `github` reader (an offline read of a snapshot; needs `plugins.tracker-github.enabled`) |
 | `backfill.sources.github.snapshot` | `github-snapshot.json` | the snapshot file, relative to the checkout |
 | `backfill.collate.create` | `off` | `off` links only (a unit matching no bead projects nothing); `propose` makes beads from such units (closed history records; a draft or proposed doc is created open, see `doc_default`; a unit with no evidence moment is skipped) |
+| `backfill.decisions.on_delete` | `ignore` | `ignore`: a deleted backfilled bead's unit is proposed again; `report`: a re-run lists the beads its last apply created that are gone; `skip`: also records a skip decision for each (on an `--until apply` run); see [BACKFILL.md](BACKFILL.md#operator-decisions) |
 | `backfill.collate.rules` | `[plan-item, local-bead, review, merge, commit]` | B3 claim rules, in order |
 | `backfill.collate.include_types` | `[feat]` | conventional-commit types the `commit` rule makes units of (`*` any) |
 | `backfill.collate.epics` / `areas` / `path_depth` / `min_epic_units` | `true` / `{}` / `1` / `2` | area epics and area overrides (a hive's own: [`backfill.hives.<prefix>`](#backfill-hives)) |
