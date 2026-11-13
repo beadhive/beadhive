@@ -787,6 +787,10 @@
           "$ref": "#/$defs/BackfillCoverageConfig",
           "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
         },
+        "decisions": {
+          "$ref": "#/$defs/BackfillDecisionsConfig",
+          "description": "Operator decisions (bh backfill decide): what a deleted bead's unit becomes."
+        },
         "history": {
           "$ref": "#/$defs/BackfillHistoryConfig",
           "description": "bh backfill history: run directory, default sources, ledger restriction."
