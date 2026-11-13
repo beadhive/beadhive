@@ -10,6 +10,11 @@
   note pointing here. The BeadLog format ([`beadlog-format-adr.md`](beadlog-format-adr.md)) is
   unchanged.
 - **Grounded in:** main `0a3ff9b9` (0.35.11).
+- **Amended by:** [`backfill-rerun-control-adr.md`](backfill-rerun-control-adr.md)
+  (`bh-meuhp`, 0.37.0): Phase C "NEW creates closed beads" and B6 "a design record's
+  `declared_status` never sets a status" gain an opt-in status mode and a docs-only guard (Q2);
+  B5 gains a step 0 that consults operator decisions kept in the ledger (Q3); the per-hive
+  `areas` override of B3 is realised by a host-owned per-hive overlay (Q1).
 
 ## Context
 
