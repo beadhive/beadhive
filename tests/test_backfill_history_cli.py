@@ -349,6 +349,31 @@ def test_unit_view_filters_by_decision_and_reads_the_collation_file(collated) ->
     assert {u["decision"] for u in only["units"]} <= {"NEW"}
 
 
+def test_unit_view_reports_a_new_unit_with_no_evidence_moment_as_skipped(
+    collated, tmp_path
+) -> None:
+    """bh-uysl1: a NEW unit with no add commit and no declared date is not created."""
+    from dataclasses import replace
+
+    from beadlog_sources import Lifecycle, read_collation, write_collation
+
+    collation = read_collation(collated / "collation.json")
+    new = {v["unit"] for v in collation.verdicts if v["class"] == "NEW"}
+    assert new
+    target = sorted(new)[0]
+    bare = [
+        Lifecycle(r["unit"], "open", "none") if r["unit"] == target else Lifecycle.from_json(r)
+        for r in collation.lifecycle
+    ]
+    edited = tmp_path / "edited.json"
+    write_collation(replace(collation, lifecycle=tuple(x.to_json() for x in bare)), edited)
+    view = json.loads(_invoke("backfill", "view", "unit", str(edited), "--json").stdout)
+    skipped = {u["key"]: u["skipped"] for u in view["units"] if u["skipped"]}
+    assert skipped == {target: "no evidence moment"}
+    text = _invoke("backfill", "view", "unit", str(edited)).stdout
+    assert "skipped: no evidence moment" in text
+
+
 def test_view_of_an_empty_directory_is_a_clear_error(tmp_path) -> None:
     result = _invoke("backfill", "view", "unit", str(tmp_path), code=1)
     assert "no collation" in result.output

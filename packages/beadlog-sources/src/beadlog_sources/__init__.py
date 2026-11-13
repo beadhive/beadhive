@@ -292,6 +292,7 @@ from .lifecycle import (
     StatusOptionsError,
     conflicts_of,
     derive_lifecycle,
+    has_no_moment,
     lifecycle_of,
     lifecycles,
 )
@@ -308,6 +309,9 @@ from .project import (
 )
 from .project import (
     EVENT_KINDS as PROJECT_EVENT_KINDS,
+)
+from .project import (
+    NOTE_NO_MOMENT as PROJECT_NOTE_NO_MOMENT,
 )
 from .project import (
     Kept,
@@ -541,6 +545,8 @@ __all__ = [
     "StatusOptionsError",
     "conflicts_of",
     "derive_lifecycle",
+    "has_no_moment",
+    "PROJECT_NOTE_NO_MOMENT",
     "lifecycle_of",
     "lifecycles",
     # --- end collate B6 ---

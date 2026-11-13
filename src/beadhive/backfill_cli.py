@@ -1142,6 +1142,7 @@ def _history_run(
             "create": options.create,
             "units": plan.report.get("units") or {},
             "creates_skipped": plan.report.get("creates_skipped", 0),
+            "no_moment": list(plan.report.get("no_moment") or ()),
         }
         summary["stages"]["plan"] = manifest["plan"]
         backfill_history.write_manifest(run, manifest)
@@ -1246,6 +1247,13 @@ def _history_done(summary: dict[str, Any], files: Mapping[str, Path], as_json: b
         if plan["creates_skipped"]:
             typer.echo(
                 f"create is off: {plan['creates_skipped']} units matching no bead were not proposed"
+            )
+        if plan.get("no_moment"):
+            shown = ", ".join(plan["no_moment"][:5])
+            more = ", ..." if len(plan["no_moment"]) > 5 else ""
+            typer.echo(
+                f"skipped: no evidence moment: {len(plan['no_moment'])} units were not created "
+                f"({shown}{more})"
             )
         typer.echo(f"plan hash: {plan['plan_hash']}")
     if applied := stages.get("apply"):

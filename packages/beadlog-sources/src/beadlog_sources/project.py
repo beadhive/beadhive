@@ -33,6 +33,9 @@ today).
   bead has none. A stamp whose field already holds another value is not emitted; it is reported
   in :attr:`UnitProjection.kept`. No ``create``, ``phase``, label or edge ever touches an
   existing bead (it may be hand-made).
+  A NEW unit with no evidence moment at all (:func:`~beadlog_sources.lifecycle.has_no_moment`:
+  no add commit, no declared date) is not created: it projects nothing and carries the note
+  :data:`NOTE_NO_MOMENT`.
 - **NOISE** (covered by a coarser epic) and **residual** (no decision): nothing is projected; the
   unit is reported (:attr:`Projection.residual` lists the residual units).
 
@@ -126,7 +129,7 @@ from .collate import (
 from .commits import dump_linkage, just_after, parse_linkage
 from .evidence import Artifact, Category, EvidenceCorpus
 from .ledger import BEAD_TOKEN, FOREIGN
-from .lifecycle import STATUS_CLOSED, Lifecycle, Moment, conflicts_of, lifecycles
+from .lifecycle import STATUS_CLOSED, Lifecycle, Moment, conflicts_of, has_no_moment, lifecycles
 from .reconcile import ReconcileClass
 
 SOURCE_SYSTEM = "collate"
@@ -184,6 +187,7 @@ OPTION_MEMBERS = ("creation_labels", "types", "source_labels")
 NOTE_CLOSED_UNDATED = "closed-undated"
 NOTE_PHASE_RAISED = "phase-raised"
 NOTE_NO_BEAD = "missing-bead"
+NOTE_NO_MOMENT = "skipped: no evidence moment"
 NOTE_PARENT_SKIPPED = "parent-skipped"
 NOTE_DEPENDENCY_SKIPPED = "dependency-skipped"
 
@@ -517,6 +521,10 @@ class _Projector:
         if unit.key not in self.beads:
             return [], UnitProjection(unit.key, cls, record["bead"], notes=(NOTE_NO_BEAD,))
         ident = self.beads[unit.key]
+        life = self.life.get(unit.key)
+        if cls == DECISION_NEW and life is not None and has_no_moment(life):
+            # nothing dates it: never mint an open bead from no evidence (bh-uysl1)
+            return [], UnitProjection(unit.key, cls, None, notes=(NOTE_NO_MOMENT,))
         writer = _Writer(self, unit, record, BeadRef(self.group, ident))
         if cls == DECISION_NEW:
             writer.create()
