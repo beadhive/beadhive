@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -247,3 +248,100 @@ __all__ = [
     "split_frontmatter",
     "truthy",
 ]
+
+
+# -- exclude patterns ------------------------------------------------------------------------
+#
+# One matcher for the ``exclude`` option of the file-reading readers (``docs``, ``planning``).
+# Patterns are globs over repo-relative posix paths: ``*`` and ``?`` stay within one path
+# segment, ``**`` crosses segments, ``[..]`` is a character class. A trailing ``/`` matches the
+# subtree below that directory. A pattern with no ``/`` other than a trailing one matches a file
+# name (or, with the trailing ``/``, a directory name) at any depth, like gitignore; a pattern
+# with an inner ``/`` (``docs/archive/``) is anchored at the root. Implemented with ``re`` (no
+# ``PurePath.full_match``: it needs Python 3.13).
+
+
+def _glob_regex(pattern: str) -> str:
+    """The regex source (no anchors) of one glob ``pattern``."""
+    out: list[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "*":
+            if pattern.startswith("**", i):
+                i += 2
+                if pattern.startswith("/", i):  # ``**/`` is zero or more directories
+                    i += 1
+                    out.append("(?:.*/)?")
+                else:
+                    out.append(".*")
+                continue
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        elif char == "[":
+            end = pattern.find("]", i + 2 if pattern.startswith(("[!", "[^"), i) else i + 2)
+            if end == -1:
+                out.append(re.escape(char))
+            else:
+                body = pattern[i + 1 : end]
+                negate = body[:1] in ("!", "^")
+                body = body[1:] if negate else body
+                body = body.replace("\\", "\\\\")
+                out.append(f"[{'^/' if negate else ''}{body}]")
+                i = end
+        else:
+            out.append(re.escape(char))
+        i += 1
+    return "".join(out)
+
+
+@dataclass(frozen=True)
+class ExcludeMatcher:
+    """The compiled ``exclude`` option: :meth:`match` names the first pattern a path hits."""
+
+    rules: tuple[tuple[str, re.Pattern[str], bool, bool], ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.rules)
+
+    def match(self, path: str, *, directory: bool = False) -> str | None:
+        """The first pattern that excludes repo-relative posix ``path`` (``None``: none does).
+
+        ``directory`` marks ``path`` as a directory, which a subtree pattern matches too.
+        """
+        name = path.rsplit("/", 1)[-1]
+        for pattern, regex, subtree, by_name in self.rules:
+            if by_name:
+                if regex.fullmatch(name):
+                    return pattern
+            elif regex.fullmatch(path) or (subtree and directory and regex.fullmatch(path + "/x")):
+                return pattern
+        return None
+
+
+def exclude_matcher(value: Any) -> ExcludeMatcher:
+    """Compile the ``exclude`` option (csv of globs). A leading ``!`` is a :class:`SourceError`
+    (reserved for later negation)."""
+    rules: list[tuple[str, re.Pattern[str], bool, bool]] = []
+    for pattern in csv(value):
+        if pattern.startswith("!"):
+            raise SourceError(f"exclude pattern {pattern!r}: a leading '!' (negation) is reserved")
+        subtree = pattern.endswith("/")
+        body = pattern.rstrip("/")
+        if not body:
+            raise SourceError(f"exclude pattern {pattern!r} is empty")
+        by_name = "/" not in body and not subtree
+        anywhere = "/" not in body and subtree  # ``archive/``: that directory at any depth
+        source = ("(?:.*/)?" if anywhere else "") + _glob_regex(body) + ("/.+" if subtree else "")
+        rules.append((pattern, re.compile(source, re.DOTALL), subtree, by_name))
+    return ExcludeMatcher(tuple(rules))
+
+
+def warn_explicit_excluded(kind: str, path: str, pattern: str) -> None:
+    """Report that an explicitly named file was dropped by an ``exclude`` pattern."""
+    warnings.warn(
+        f"{kind} file {path!r} is explicitly named but excluded by pattern {pattern!r}; dropped",
+        UserWarning,
+        stacklevel=3,
+    )
