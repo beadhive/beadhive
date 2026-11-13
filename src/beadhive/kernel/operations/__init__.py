@@ -77,7 +77,7 @@ backup usage|as_json:boolean:o
 backup verify|set_ref:string:o,hive:string:o,hq:boolean:o,restore_test:boolean:o,as_json:boolean:o
 bd|
 checkpoint run|bead:string:r,key:string:r,value:string:r,step:string:o,hive:string:o
-config get|key:string:r,scope:string:o
+config get|key:string:r,scope:string:o,hive:string:o
 config init|force:boolean:o
 config path|
 config schema|as_json:boolean:o

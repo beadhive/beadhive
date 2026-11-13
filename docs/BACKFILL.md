@@ -262,6 +262,16 @@ wire contract:
 
 `--json` emits `beadhive.backfill.view/1` (`view`, `path`, counts and the records).
 
+#### Per-hive settings
+
+Every `backfill` setting can differ per hive: `backfill.hives.<prefix>.*` in the host config
+overlays the host block for the hive with that registered prefix (mappings merge key by key, lists
+and scalars replace; `judge` stays host-wide and is rejected inside an overlay). `collate.areas`
+is therefore truly per hive, and so are the readers' `options`, `collate.create`, the coverage,
+gap fill and continuous settings. A hive with no overlay runs as before. See
+[CONFIGURATION.md](CONFIGURATION.md#backfill-hives); `bh config get <key> --hive <prefix>` shows
+the effective value and the layer it came from.
+
 ### `bh backfill verify`
 
 Verifies every member's size and SHA-256, part order, the manifest counts, duplicate ids and the

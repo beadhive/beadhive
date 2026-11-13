@@ -101,6 +101,7 @@ from . import (
     registry,
 )
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
+from .backfill_effective import BackfillHiveError, effective_backfill, effective_cfg
 from .backfill_gapfill import created_ids, gapfill_created, on_created_enabled
 from .modules.beadlog_store.contracts import BUILTIN_STORE, BeadlogStoreError
 from .modules.config.contracts import BackfillConfig, BackfillGapfillConfig, BackfillJudgeConfig
@@ -145,6 +146,7 @@ _ERRORS = (
     BdReadError,
     ArchiveError,
     ManifestError,
+    BackfillHiveError,
     OSError,
     ValueError,
 )
@@ -319,7 +321,7 @@ def refresh_coverage_after_apply(hive: str, quiet: bool = False) -> None:
     later passes call it too). The apply has already succeeded and is audited, so a refresh
     that fails only warns on stderr. ``quiet`` keeps stdout pure JSON."""
     try:
-        cfg = config.load()
+        cfg = effective_cfg(config.load(), hive)
         if not backfill_coverage.refresh_enabled(cfg):
             return
         cwd, group = _target(hive)
@@ -341,6 +343,7 @@ def refresh_coverage_at(
 ) -> None:
     """:func:`refresh_coverage_after_apply` for a hive the caller already resolved (the
     post-merge hook, which holds the hive entry and the branch it just merged onto)."""
+    cfg = effective_cfg(cfg, entry)
     if not backfill_coverage.refresh_enabled(cfg):
         return
     path = backfill_coverage.state_path(entry, cwd, config.home())
@@ -372,10 +375,13 @@ if refresh_coverage_after_apply not in complexity_backfill.APPLIED_HOOKS:
     complexity_backfill.APPLIED_HOOKS.append(refresh_coverage_after_apply)
 
 
-def gapfill_settings(cfg: Mapping[str, Any] | None = None) -> BackfillGapfillConfig:
-    """The ``backfill.timeline.gapfill`` settings (disabled unless the config enables them)."""
+def gapfill_settings(
+    cfg: Mapping[str, Any] | None = None, hive: str | None = None
+) -> BackfillGapfillConfig:
+    """The ``backfill.timeline.gapfill`` settings (disabled unless the config enables them),
+    as the hive's overlay (``backfill.hives.<prefix>``) resolves them when ``hive`` is given."""
     cfg = config.load() if cfg is None else cfg
-    section = (cfg.get("backfill") or {}).get("timeline") or {}
+    section = effective_backfill(cfg, hive).get("timeline") or {}
     return BackfillGapfillConfig.model_validate(section.get("gapfill") or {})
 
 
@@ -1009,6 +1015,7 @@ def history_pass_for_plan(plan: Plan, group: Group, hive: str, *, cfg: Mapping[s
             f"the history plan's run directory {str(run_dir)!r} no longer holds its evidence and "
             "collation; rerun `bh backfill history` to plan again"
         )
+    cfg = effective_cfg(cfg, hive)
     backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
     collation = read_collation(files["collation"])
     recorded = collation.options
@@ -1042,9 +1049,10 @@ def _history_run(
     as_json: bool,
 ) -> None:
     cfg = config.load()
-    backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
     summary: dict[str, Any] = {"until": until}
     try:
+        cfg = effective_cfg(cfg, hive)
+        backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
         last = backfill_history.stage_index(until)
         cwd, group = _target(hive)
         prefix = hive_prefix(hive)
@@ -1167,7 +1175,7 @@ def _history_run(
         }
         summary["stages"]["apply"] = manifest["apply"]
         backfill_history.write_manifest(run, manifest)
-        gap = _gapfill_after_apply(cwd, group, plan, run)
+        gap = _gapfill_after_apply(cwd, group, plan, run, hive)
         if gap is not None:
             summary["stages"]["gapfill"] = gap
             manifest["gapfill"] = gap
@@ -1181,11 +1189,13 @@ def _history_run(
     _history_done(summary, files, as_json)
 
 
-def _gapfill_after_apply(cwd: Path, group: Group, plan: Plan, run: Path) -> dict[str, Any] | None:
+def _gapfill_after_apply(
+    cwd: Path, group: Group, plan: Plan, run: Path, hive: str | None = None
+) -> dict[str, Any] | None:
     """The ``backfill.timeline.gapfill.on_created`` pass: gap-fill exactly the beads this apply
     created (``None`` when it is off or nothing was created). The derived events go to
     ``<run>/gapfill.bdlg``; the store is only read."""
-    settings = gapfill_settings()
+    settings = gapfill_settings(hive=hive)
     created = created_ids(e for e in plan.applicable_events() if e.bead.group == group.id)
     if not on_created_enabled(settings) or not created:
         return None
@@ -1400,7 +1410,7 @@ def export_cmd(
         out = out if out is not None else Path(default)
         state = None
         if history:
-            settings = gapfill_settings()
+            settings = gapfill_settings(hive=hive)
             state = gapfill_state_path(out) if settings.enabled else None
             events, annotations = _history_archive(
                 cwd, group, tuple(events), gapfill=settings, state=state
@@ -1869,7 +1879,7 @@ def coverage_cmd(
         cwd, group = _target(hive)
         cfg = config.load()
         path, ref = _coverage_target(cfg, hive, cwd)
-        settings = backfill_coverage.coverage_settings(cfg)
+        settings = backfill_coverage.coverage_settings(effective_cfg(cfg, hive))
         current = backfill_coverage.measure_hive(
             cwd,
             reader=store_loader(cwd, group=group.id),

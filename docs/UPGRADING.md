@@ -30,6 +30,12 @@ exists for the releases where "read the changelog" isn't enough to act on.
   with no evidence moment at all (no add commit, no declared date) is skipped and reported as
   `skipped: no evidence moment` in the plan summary and `bh backfill view unit`, whatever
   `doc_default` is. The default `git,docs,planning` run changes only as above.
+- **Per-hive backfill config (bh-g71fi, #156).** `backfill.hives.<prefix>.*` in the host config
+  overlays the `backfill` block for one hive (`BackfillConfig` minus `judge`; mappings merge, lists
+  and scalars replace), so `collate.areas`, `collate.create` and the readers' options can differ
+  per hive. `bh config get <key> --hive <prefix>` prints the effective value and its layer. Off by
+  default: a hive with no overlay behaves as before. See
+  [CONFIGURATION.md](CONFIGURATION.md#backfill-hives).
 
 ## 0.36.0 → 0.36.1 — patch fixes
 

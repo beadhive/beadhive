@@ -59,6 +59,7 @@ from beadhive_backfill import (
 from beadhive_backfill.incremental import INCREMENTAL_KEY
 
 from . import backfill_coverage
+from .backfill_effective import effective_backfill
 from .modules.config.contracts import BackfillContinuousConfig
 
 TRIGGER_POST_MERGE = "post-merge"
@@ -79,10 +80,17 @@ class ContinuousSettings:
         return self.enabled and trigger in self.triggers and bool(self.passes)
 
 
-def settings(cfg: Mapping[str, Any]) -> ContinuousSettings:
-    """The settings of a loaded config. Off when absent; a section that does not validate is
-    off too (a trigger must never fail what started it - ``bh config`` reports the error)."""
-    section = (cfg.get("backfill") or {}).get("continuous") or {}
+def settings(
+    cfg: Mapping[str, Any], hive: Mapping[str, Any] | str | None = None
+) -> ContinuousSettings:
+    """The settings of a loaded config, as the hive's overlay (``backfill.hives.<prefix>``)
+    resolves them when ``hive`` is given. Off when absent; a section that does not validate (or
+    an overlay that cannot resolve) is off too (a trigger must never fail what started it -
+    ``bh config`` reports the error)."""
+    try:
+        section = effective_backfill(cfg, hive).get("continuous") or {}
+    except ValueError:
+        return ContinuousSettings()
     try:
         model = BackfillContinuousConfig.model_validate(dict(section))
     except (ValidationError, TypeError, ValueError):
@@ -313,7 +321,7 @@ def on_work_merged(
 
     ``since`` is the integration tip before the merge (where the commits of this merge start)."""
     try:
-        conf = settings(cfg)
+        conf = settings(cfg, entry)
         if not conf.runs_on(TRIGGER_POST_MERGE):
             return
         outcomes = run(
@@ -347,11 +355,11 @@ def after_sync(
     run from their cursors only; a pass with no usable cursor says so and waits for one
     ``--since-cursor`` run. Never fails the sync."""
     try:
-        conf = settings(cfg)
-        if not conf.runs_on(TRIGGER_SYNC):
-            return
         for entry, cwd, ref in hives:
             try:
+                conf = settings(cfg, entry)
+                if not conf.runs_on(TRIGGER_SYNC):
+                    continue
                 outcomes = run(
                     cfg,
                     entry,

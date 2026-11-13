@@ -2416,8 +2416,8 @@ class BackfillCollateConfig(_Section):
     epics: bool = Field(True, description="Group units into area epics.")
     areas: dict[str, str] = Field(
         default_factory=dict,
-        description="Per-hive area overrides: a key with a / is a path prefix, any other key "
-        "renames a derived area.",
+        description="Area overrides (a hive's own: backfill.hives.<prefix>.collate.areas): a key "
+        "with a / is a path prefix, any other key renames a derived area.",
     )
     path_depth: int = Field(1, ge=1, description="Directory segments of a path-derived area.")
     min_epic_units: int = Field(2, ge=1, description="Fewest units an area needs for an epic.")
@@ -2426,13 +2426,14 @@ class BackfillCollateConfig(_Section):
     status: BackfillStatusConfig = Field(default_factory=BackfillStatusConfig)
 
 
-class BackfillConfig(_Section):
-    """``backfill`` — shared backfill engine settings (every behavior off by default)."""
+class BackfillHiveOverlay(_Section):
+    """``backfill.hives.<prefix>`` — one hive's overlay of the host ``backfill`` block.
 
-    judge: BackfillJudgeConfig = Field(
-        default_factory=BackfillJudgeConfig,
-        description="Opt-in bh-judge/1 command judge for reconcile; deterministic when off.",
-    )
+    Every section of :class:`BackfillConfig` **except** ``judge`` (one host-wide credit-spending
+    command stays one host-wide setting, so a ``judge`` key is rejected here) and ``hives``
+    itself (overlays do not nest). Only the keys the operator wrote take effect: the overlay is
+    merged key by key over the host block (mappings merge, lists and scalars replace)."""
+
     timeline: BackfillTimelineConfig = Field(
         default_factory=BackfillTimelineConfig,
         description="History/timeline export settings, including the opt-in dolt_history gap fill.",
@@ -2456,6 +2457,21 @@ class BackfillConfig(_Section):
     collate: BackfillCollateConfig = Field(
         default_factory=BackfillCollateConfig,
         description="Collation options (B3 to B6) and the create mode of bh backfill history.",
+    )
+
+
+class BackfillConfig(BackfillHiveOverlay):
+    """``backfill`` — shared backfill engine settings (every behavior off by default)."""
+
+    judge: BackfillJudgeConfig = Field(
+        default_factory=BackfillJudgeConfig,
+        description="Opt-in bh-judge/1 command judge for reconcile; deterministic when off.",
+    )
+    hives: dict[str, BackfillHiveOverlay] = Field(
+        default_factory=dict,
+        description="Per-hive overlays keyed by the hive's registered prefix (never derived): "
+        "backfill.hives.<prefix>.<section>... overrides the host block for that hive. Host "
+        "config only; judge is not overridable.",
     )
 
 
