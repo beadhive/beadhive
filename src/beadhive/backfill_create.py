@@ -78,6 +78,13 @@ def identity_labels(entry: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(f"{key}:{entry[key]}" for key in keys)
 
 
+def creation_labels(
+    hive: str | Mapping[str, Any] | None, cfg: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """The labels every bead backfill writes: ``origin:backfill`` plus the hive identity triplet."""
+    return (ORIGIN_LABEL, *identity_labels(_entry(hive, cfg)))
+
+
 def create_mode_options(
     hive: str | Mapping[str, Any] | None, cfg: Mapping[str, Any], create: Any
 ) -> ProjectOptions:
@@ -86,8 +93,7 @@ def create_mode_options(
     projector's)."""
     if parse_create(create) == CREATE_OFF:
         return ProjectOptions()
-    entry = _entry(hive, cfg)
-    return ProjectOptions(creation_labels=(ORIGIN_LABEL, *identity_labels(entry)))
+    return ProjectOptions(creation_labels=creation_labels(hive, cfg))
 
 
 __all__ = [
@@ -97,6 +103,7 @@ __all__ = [
     "ORIGIN_LABEL",
     "create_mode_options",
     "create_mode_prefix",
+    "creation_labels",
     "identity_labels",
     "parse_create",
 ]

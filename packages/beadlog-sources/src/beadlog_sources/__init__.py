@@ -267,6 +267,25 @@ from .collate import ATTACH_REASONS, Attachment
 # --- end collate B4 ---
 # isort: split
 # --- collate B5 (bh-h8vxt) ---
+from .decisions import (
+    BEAD_TYPE as DECISION_BEAD_TYPE,
+)
+from .decisions import (
+    KINDS as DECISION_KINDS,
+)
+from .decisions import (
+    REF_PREFIX as DECISION_REF_PREFIX,
+)
+from .decisions import (
+    SOURCE_LABEL as DECISION_SOURCE_LABEL,
+)
+from .decisions import (
+    Decision,
+    DecisionError,
+    decision_events,
+    decision_id,
+    read_decisions,
+)
 from .identify import (
     CostPreview,
     IdentifyConfirmationRequired,
@@ -441,6 +460,15 @@ __all__ = [
     "HistoryEvents",
     "HistoryRead",
     "GitCommitsStrategy",
+    "DECISION_BEAD_TYPE",
+    "DECISION_KINDS",
+    "DECISION_REF_PREFIX",
+    "DECISION_SOURCE_LABEL",
+    "Decision",
+    "DecisionError",
+    "decision_events",
+    "decision_id",
+    "read_decisions",
     "JudgeProtocolError",
     "JsonCursorFile",
     "JudgeSettings",
