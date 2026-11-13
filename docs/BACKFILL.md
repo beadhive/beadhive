@@ -901,7 +901,11 @@ Every apply, whatever the pass, does this in order:
    plan's recorded judgments must propose nothing.
 7. **Rollback.** On any failure or interruption every touched bead is restored by replaying the
    loader inverses in reverse; the audit ends `rolled_back`, or `rollback_failed` with the writes
-   that could not be undone. Undoing a create retires the bead; it never deletes.
+   that could not be undone. Undoing a create retires the bead; it never deletes. Rollback then
+   re-reads the store: a created bead that is not retired (still open, or missing) is recorded in
+   `rollback_residual` and fails the rollback rather than passing silently. The audit names the
+   retired beads in `rollback_retired` (with `rollback_retired_count`). A re-run revives a
+   rollback-retired bead in place (no second bead, no duplicate `external_ref`).
 
 ## Recovery
 
@@ -909,8 +913,10 @@ Keep the plan, the pre-state and the audit together until the audit says `state=
 
 - **`applied`**: done. Check `second_dry_run_changes=0` (and, for complexity,
   `post_apply_complexity_errors=[]` and `model_labels_preserved=true`).
-- **`rolled_back`**: nothing to recover. Read `error`, fix the cause, run a fresh dry run and
-  plan; do not reuse the old plan if the corpus changed.
+- **`rolled_back`**: the writes were undone, but beads the apply created are **retired, not
+  gone**: they stay in the store, closed with reason `backfill-rollback`, and `rollback_retired`
+  lists them. Read `error`, fix the cause, run a fresh dry run and plan (do not reuse the old plan
+  if the corpus changed); the re-run revives the retired beads in place.
 - **`rollback_failed`**: stop writers to the hive. The audit lists every write that could not be
   undone (`rollback_failures`, plus `rollback_residual` for engine plans). Restore those beads from
   the pre-state export, then run the dry run again.

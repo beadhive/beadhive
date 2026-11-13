@@ -111,7 +111,7 @@ from beadlog import (
     sort_events,
 )
 
-from ._sources import commit_time, floors, live_beads, mint_bead_id
+from ._sources import ROLLBACK_REASON, commit_time, floors, live_beads, mint_bead_id
 from .collate import (
     ARTIFACT,
     ATTACH,
@@ -520,6 +520,8 @@ class _Projector:
         writer = _Writer(self, unit, record, BeadRef(self.group, ident))
         if cls == DECISION_NEW:
             writer.create()
+        elif writer.revivable():
+            writer.revive()
         elif unit.kind != ATTACH:  # an attach unit's key names its bead: nothing to stamp
             writer.link()
         writer.facts()
@@ -645,6 +647,52 @@ class _Writer:
             self.emit("label_add", {"label": label}, self.create_at, label_evidence, DERIVED)
         self.edges(keys)
         self.phase(create)
+
+    def revivable(self) -> bool:
+        """A matched bead a failed apply's rollback retired: the earlier create of this unit."""
+        state = self.state
+        return (
+            state is not None
+            and state.phase == "retired"
+            and (state.retired or {}).get("reason") == ROLLBACK_REASON
+            and state.fields.get(EXTERNAL_REF) == self.unit.key
+        )
+
+    def revive(self) -> None:
+        """Re-open a rollback-retired bead in place and re-apply what the create projected, so
+        a re-run lands the planned state with no second bead and no duplicate ``external_ref``."""
+        assert self.state is not None
+        floor = max(
+            (
+                stamp
+                for event in self.p.baseline
+                if event.bead == self.bead
+                for stamp in (event.occurred_at, event.recorded_at)
+                if stamp is not None
+            ),
+            key=instant,
+            default=None,
+        )
+        self.create_at = self.create_at.after(floor)
+        reopened = self.emit(
+            "phase",
+            {"phase": "open", "reason": "backfill-revive"},
+            self.create_at,
+            self.p.evidence_keys(self.unit),
+            DERIVED,
+        )
+        keys = self.p.evidence_keys(self.unit)
+        anchor = self.p.anchor(self.unit)
+        source = self.p.options.source_label(
+            anchor.kind if anchor is not None else None,
+            anchor.category.value if anchor is not None else None,
+            self.unit.rule,
+        )
+        label_evidence = [anchor.key] if anchor is not None else keys
+        for label in dict.fromkeys([source, *self.p.options.creation_labels]):
+            self.emit("label_add", {"label": label}, self.create_at, label_evidence, DERIVED)
+        self.edges(keys)
+        self.phase(reopened)
 
     def edges(self, keys: list[str]) -> None:
         unit = self.unit

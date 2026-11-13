@@ -13,6 +13,12 @@ No action required.
   Python 3.11 (`ValueError: mutable default <class 'mappingproxy'>`) because nine frozen-dataclass
   fields used a shared `MappingProxyType` default; they now use `default_factory`. 3.12+ was
   unaffected.
+- **A rolled-back backfill apply no longer hides what it created (bh-12hka).** Rolling back a
+  failed create-mode `bh backfill history` apply still retires the created beads (closed, reason
+  `backfill-rollback`; never deleted), but the audit now names them (`rollback_retired`,
+  `rollback_retired_count`), a created bead that is still open or missing after rollback is
+  reported as `rollback_residual` (state `rollback_failed`) instead of being skipped, and a
+  re-run revives a retired bead in place rather than matching it as already present.
 
 ## 0.35.10 → 0.35.11 — patch fixes
 
