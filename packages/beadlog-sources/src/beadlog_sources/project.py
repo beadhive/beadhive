@@ -231,6 +231,10 @@ class ProjectError(ValueError):
     """A projection that cannot be made (a missing prefix, an invalid option)."""
 
 
+# ``bd create``'s own default priority (P2), the priority a NEW bead is stamped with.
+DEFAULT_CREATE_PRIORITY = 2
+
+
 @dataclass(frozen=True)
 class ProjectOptions:
     """Phase C options.
@@ -242,13 +246,23 @@ class ProjectOptions:
       the create-mode caller passes ``origin:backfill``, decision D1).
     - ``types``: category to the bead type of a NEW non-epic unit (default
       :data:`DEFAULT_TYPES`; a given mapping overrides those keys only). Epic units are ``epic``.
+    - ``create_priority``: the ``priority`` field every NEW bead's ``create`` carries, epics and
+      doc units included (default :data:`DEFAULT_CREATE_PRIORITY`, ``bd create``'s own default;
+      without it ``bd import`` would store P0 and rank backfilled beads first).
     """
 
+    create_priority: int = DEFAULT_CREATE_PRIORITY
     creation_labels: tuple[str, ...] = ()
     types: Mapping[str, str] = field(default_factory=dict, hash=False)
     source_labels: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.create_priority, bool)
+            or not isinstance(self.create_priority, int)
+            or not 0 <= self.create_priority <= 4
+        ):
+            raise ProjectError("create_priority must be an integer from 0 to 4")
         labels = self.creation_labels
         if isinstance(labels, str) or not isinstance(labels, Iterable):
             raise ProjectError("creation_labels must be a list of strings")
@@ -288,6 +302,7 @@ class ProjectOptions:
     def to_json(self) -> dict[str, Any]:
         """The effective options as a JSON object."""
         return {
+            "create_priority": self.create_priority,
             "creation_labels": list(self.creation_labels),
             "types": dict(self.types),
             "source_labels": dict(self.source_labels),
@@ -698,6 +713,7 @@ class _Writer:
                     "title": unit.title,
                     EXTERNAL_REF: unit.key,
                     "description": f"Reconstructed from {unit.key}.",
+                    "priority": self.p.options.create_priority,
                 },
             },
             self.create_at,
