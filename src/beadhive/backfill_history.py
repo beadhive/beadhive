@@ -222,6 +222,7 @@ class CollateOptions:
     identify: IdentifyOptions
     status: StatusOptions
     create: str = "off"
+    create_priority: int = 2
 
     @classmethod
     def from_config(cls, backfill: Backfill) -> CollateOptions:
@@ -235,6 +236,7 @@ class CollateOptions:
             IdentifyOptions.from_mapping(section.identify.model_dump()),
             StatusOptions.from_mapping(section.status.model_dump()),
             section.create,
+            section.create_priority,
         )
 
 

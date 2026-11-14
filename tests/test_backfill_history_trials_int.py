@@ -26,7 +26,7 @@ from tests.test_backfill_history_cli import (
     _run,
 )
 
-from beadhive import backfill_cli, backfill_create
+from beadhive import backfill_cli, backfill_create, registry
 from beadhive.backfill_bd import BdStoreLoader
 
 pytestmark = pytest.mark.integration
@@ -219,6 +219,44 @@ def test_commit_only_hive_gets_epics_and_feat_issues(cfg_path, monkeypatch, tmp_
     assert {r["status"] for r in rows} == {"closed"}
     _assert_converged(first, second, store, first["stages"]["apply"]["completed"])
     assert second["stages"]["collate"]["units"] == len(store.rows)
+
+
+def test_created_beads_carry_the_configured_priority_not_bd_import_p0(
+    cfg_path,
+    monkeypatch,
+    tmp_path,  # noqa: F811
+) -> None:
+    """GitHub #164: every created bead (epics included) is stored at the default P2, never P0, and
+    the converged second run proposes nothing (the fold and the row agree on the priority)."""
+    repo = tmp_path / "repo"
+    commits, _ = _commit_only_history(60)
+    _fast_import(repo, commits)
+    store = _wire(monkeypatch, repo, [])
+    _config(cfg_path, collate={"create": "propose"})
+
+    first, second = _converge(tmp_path, "git")
+
+    assert any(r["issue_type"] == "epic" for r in store.rows.values())
+    assert {r["priority"] for r in store.rows.values()} == {2}
+    _assert_converged(first, second, store, first["stages"]["apply"]["completed"])
+
+
+def test_a_hive_overlay_overrides_the_created_priority(cfg_path, monkeypatch, tmp_path) -> None:  # noqa: F811
+    repo = tmp_path / "repo"
+    commits, _ = _commit_only_history(60)
+    _fast_import(repo, commits)
+    store = _wire(monkeypatch, repo, [])
+    monkeypatch.setattr(registry, "current_hive", lambda cfg: ENTRY)
+    _config(
+        cfg_path,
+        collate={"create": "propose", "create_priority": 1},
+        hives={ENTRY["prefix"]: {"collate": {"create_priority": 3}}},
+    )
+
+    first, second = _converge(tmp_path, "git")
+
+    assert store.rows and {r["priority"] for r in store.rows.values()} == {3}
+    _assert_converged(first, second, store, first["stages"]["apply"]["completed"])
 
 
 # -- docs-heavy, judge off, threshold (#143.2) ---------------------------------------------------

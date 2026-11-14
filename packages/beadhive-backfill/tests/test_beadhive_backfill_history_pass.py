@@ -84,9 +84,19 @@ class ListSink:
         self.entries.append(entry)
 
 
-def make_pass(*, create: bool, prefix: str | None = "fx") -> HistoryPass:
+def web_db_corpus() -> Any:
+    """Two areas whose hashed ids put a child before its epic (the #163 shape)."""
+    return ev.corpus(
+        commit(1, 1, "feat", "web/a.py"),
+        commit(2, 2, "feat", "web/b.py"),
+        commit(3, 3, "feat", "db/c.py"),
+        commit(4, 4, "feat", "db/d.py"),
+    )
+
+
+def make_pass(*, create: bool, prefix: str | None = "fx", evidence: Any = None) -> HistoryPass:
     return HistoryPass(
-        corpus(),
+        evidence if evidence is not None else corpus(),
         CachedLedgerDirectory({}),
         local="fx",
         group=GROUP.id,
@@ -289,3 +299,69 @@ def test_a_rerun_after_a_rollback_revives_the_retired_beads_without_duplicates()
     refs = [s.fields.get("external_ref") for s in states.values()]
     assert len(refs) == len(set(refs)), "no duplicate external_ref"
     assert decisions(eng.plan(make_pass(create=True), store)) == {"PRESENT": 6}
+
+
+class PerUnitBdStore(FoldStore):
+    """A store with bd's per-load edge rule: an edge to a bead absent from the store AND from
+    this load's creates is dropped, and the loader reports ``edge.dangling-target`` for it."""
+
+    def load(self, events: Sequence[beadlog.BeadEvent], *, dry_run: bool) -> Mapping[str, Any]:
+        present = {ref_.id for ref_ in beadlog.fold(self.events)}
+        present |= {e.bead.id for e in events if e.kind.value == "create"}
+        kept, losses = [], []
+        for event in events:
+            if event.kind.value == "edge_add" and event.data["target"]["id"] not in present:
+                losses.append({"event_id": event.id, "code": "edge.dangling-target"})
+                if not dry_run:
+                    continue
+            kept.append(event)
+        if not dry_run:
+            self.events.extend(kept)
+        # the dry run loads the whole plan at once, so it sees no dangling target
+        return {"losses": [] if dry_run else losses}
+
+
+def _edges(store: FoldStore) -> set[tuple[str, str]]:
+    return {
+        (e.bead.id, e.data["target"]["id"]) for e in store.export() if e.kind.value == "edge_add"
+    }
+
+
+def test_create_apply_writes_every_epic_before_its_children_so_no_edge_is_dropped() -> None:
+    """#163: units come in bead-id order, so a child can sort before its epic."""
+    store = PerUnitBdStore([_row("fx-seed")])
+    pass_ = make_pass(create=True, evidence=web_db_corpus())
+    eng = engine(pass_)
+    plan = eng.plan(pass_, store)
+    planned = {
+        (e.bead.id, e.data["target"]["id"])
+        for e in plan.applicable_events()
+        if e.kind.value == "edge_add"
+    }
+    assert planned and any(child < parent for child, parent in planned)  # the #163 shape
+    entry = eng.apply(plan, store, store, ListSink(), pre_state=store)
+    assert entry.state.value == "applied"
+    assert _edges(store) == planned
+    assert decisions(eng.plan(make_pass(create=True, evidence=web_db_corpus()), store)) == {
+        "PRESENT": 6
+    }
+
+
+def test_an_unexpected_loss_in_a_real_load_fails_the_apply_naming_bead_and_edge() -> None:
+    class Dropping(FoldStore):
+        def load(self, events, *, dry_run):
+            if dry_run:
+                return {"losses": []}
+            report = {"losses": []}
+            for event in events:
+                if event.kind.value == "edge_add":
+                    report["losses"].append({"event_id": event.id, "code": "edge.dangling-target"})
+            return report
+
+    store = Dropping([_row("fx-seed")])
+    pass_ = make_pass(create=True, evidence=web_db_corpus())
+    eng = engine(pass_)
+    sink = ListSink()
+    with pytest.raises(BackfillError, match=r"edge\.dangling-target.*fx-"):
+        eng.apply(eng.plan(pass_, store), store, store, sink, pre_state=store)
+    assert sink.entries[-1].state.value != "applied"

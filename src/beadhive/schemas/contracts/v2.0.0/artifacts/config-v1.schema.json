@@ -431,6 +431,14 @@
           "title": "Create",
           "type": "string"
         },
+        "create_priority": {
+          "default": 2,
+          "description": "Priority (0 = highest, 4 = lowest) every bead a create-mode apply makes carries, epics and doc units included; 2 matches `bd create`. Beads made by earlier runs keep what they were stored with.",
+          "maximum": 4,
+          "minimum": 0,
+          "title": "Create Priority",
+          "type": "integer"
+        },
         "epics": {
           "default": true,
           "description": "Group units into area epics.",

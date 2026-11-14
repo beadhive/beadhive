@@ -87,6 +87,70 @@ def _loss_counts(report: Mapping[str, Any]) -> dict[str, int]:
     return {code: count for code, count in sorted(counts.items()) if code and count}
 
 
+def _parents_first(
+    units: Sequence[tuple[BeadRef, tuple[BeadEvent, ...]]],
+) -> list[tuple[BeadRef, tuple[BeadEvent, ...]]]:
+    """Order ``units`` so a bead an edge points at is written before the bead carrying the edge.
+
+    A real load resolves an edge only against the store and that load's own creates, so a child
+    written before its epic (units come in bead-id order) would lose the edge. Stable: units keep
+    their order except where an edge forces a target earlier; an edge cycle falls back to the
+    original order for the beads on it (the per-unit loss report then fails the apply).
+    """
+    by_ref = {bead: (bead, events) for bead, events in units}
+    needs: dict[BeadRef, list[BeadRef]] = {
+        bead: [
+            target
+            for event in events
+            if event.kind is EventKind.EDGE_ADD
+            and (target := _edge_target(event, bead.group)) in by_ref
+            and target != bead
+        ]
+        for bead, events in units
+    }
+    ordered: list[tuple[BeadRef, tuple[BeadEvent, ...]]] = []
+    state: dict[BeadRef, bool] = {}  # False = visiting, True = placed
+
+    def place(bead: BeadRef) -> None:
+        if bead in state:
+            return
+        state[bead] = False
+        for target in needs[bead]:
+            place(target)
+        state[bead] = True
+        ordered.append(by_ref[bead])
+
+    for bead, _ in units:
+        place(bead)
+    return ordered
+
+
+def _edge_target(event: BeadEvent, default_group: str) -> BeadRef:
+    target = event.data["target"]
+    return BeadRef(str(target.get("group") or default_group), str(target["id"]))
+
+
+def _unexpected_losses(
+    report: Mapping[str, Any],
+    expected: set[tuple[str, str]],
+    events: Sequence[BeadEvent],
+    bead: BeadRef,
+) -> list[str]:
+    """Losses in a real per-unit load the dry run did not announce, one line each."""
+    by_id = {event.id: event for event in events}
+    lines = []
+    for loss in report.get("losses") or ():
+        event_id, code = str(loss.get("event_id", "")), str(loss.get("code", ""))
+        if not code or (event_id, code) in expected:
+            continue
+        event = by_id.get(event_id)
+        what = ""
+        if event is not None and event.kind is EventKind.EDGE_ADD:
+            what = f" {event.data.get('type')} edge -> {event.data['target'].get('id')}"
+        lines.append(f"{code} on {bead_key(bead)}{what} (event {event_id})")
+    return lines
+
+
 def _by_bead(events: Iterable[BeadEvent]) -> dict[BeadRef, list[BeadEvent]]:
     grouped: dict[BeadRef, list[BeadEvent]] = {}
     for event in events:
@@ -281,12 +345,18 @@ class BackfillEngine:
                 " — rerun dry-run"
             )
 
-        units = plan.units()
+        units = _parents_first(plan.units())
         applicable = plan.applicable_events()
         expected_after = self._verification_hash(pass_, fold(union_merge([before, applicable])))
         losses: dict[str, int] = {}
+        announced: set[tuple[str, str]] = set()
         if applicable:
-            losses = _loss_counts(loader.load(applicable, dry_run=True))
+            dry = loader.load(applicable, dry_run=True)
+            losses = _loss_counts(dry)
+            announced = {
+                (str(loss.get("event_id", "")), str(loss.get("code", "")))
+                for loss in dry.get("losses") or ()
+            }
             if losses.get(ERASURE_INCOMPLETE) and not acknowledge_erasure:
                 raise BackfillError(
                     f"loader reports {ERASURE_INCOMPLETE} for {losses[ERASURE_INCOMPLETE]} "
@@ -333,7 +403,13 @@ class BackfillEngine:
                 )
                 audit.record(entry)
                 touched.append((bead, events))
-                loader.load(events, dry_run=False)
+                report = loader.load(events, dry_run=False)
+                unexpected = _unexpected_losses(report, announced, events, bead)
+                if unexpected:
+                    raise BackfillError(
+                        "the loader reported a loss the dry run did not announce: "
+                        + "; ".join(unexpected)
+                    )
                 entry = replace(
                     entry,
                     completed=(*entry.completed, key),
