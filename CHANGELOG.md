@@ -13,6 +13,19 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.38.0 (2026-11-14)
+
+### Feat
+
+- **wire**: publish wire 2.32.0 for the backfill decide --select parameters and allow them in the compat gate (bh-espkv)
+- **backfill**: document decide --select and backfill.decisions.select_max (#162)
+- **backfill**: bh backfill decide --select records one decision for many units (#162)
+- **backfill**: the merge fallback never releases an operator decision (#154)
+- **backfill**: hidden-commit reporting, opt-in merge fallback and commit-based merge identity (#154)
+- **backfill**: doc attachment cap, rename guard, candidate ranking and opt-in own-add tier (#157)
+- **backfill**: merge-unit titles, merge types, merge_types and branch-sync noise (#154)
+- **backfill**: git reader exclude_revs boundary, tag scope and filters, explicit since_date (#159)
+
 ## v0.37.1 (2026-11-14)
 
 ### Fix
