@@ -5,6 +5,15 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.37.0 → 0.37.1 — backfill apply ordering
+
+- **Fix: a create-mode `bh backfill history --until apply` no longer drops epic edges (bh-dvb8s,
+  #163).** The apply wrote one bead per load in bead-id order, so a child whose id sorted before
+  its epic lost its parent-child edge, and verification then failed with "unexpected corpus
+  drift" and rolled back. The apply now writes a bead's edge targets first, and a loss the
+  loader reports during a real write that the dry run did not announce fails the apply naming the
+  bead and edge. Nothing to run; re-run a backfill that rolled back.
+
 ## 0.36.0 → 0.37.0 — backfill re-run control
 
 There is no 0.36.1: the fixes planned for it ship here (see *Fixes* below).
