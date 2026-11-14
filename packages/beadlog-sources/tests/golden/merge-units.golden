@@ -1,0 +1,307 @@
+{
+  "default": [
+    {
+      "artifacts": 2,
+      "key": "64",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Body title",
+      "type": null
+    },
+    {
+      "artifacts": 3,
+      "key": "c8",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Oldest change",
+      "type": null
+    },
+    {
+      "artifacts": 2,
+      "key": "12c",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Render crash",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "190",
+      "noise": "branch-sync",
+      "rule": "merge",
+      "step": "branch-sync",
+      "title": "Merge branch 'main' into next",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "191",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "Synced change",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "1f4",
+      "noise": "branch-sync",
+      "rule": "merge",
+      "step": "branch-sync",
+      "title": "Merge remote-tracking branch 'origin/main'",
+      "type": null
+    }
+  ],
+  "merge-types-fix": [
+    {
+      "artifacts": 1,
+      "key": "62",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/0000000000000000000000000000000000000062",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "63",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/0000000000000000000000000000000000000063",
+      "type": null
+    },
+    {
+      "artifacts": 2,
+      "key": "64",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Body title",
+      "type": "fix"
+    },
+    {
+      "artifacts": 1,
+      "key": "c6",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/00000000000000000000000000000000000000c6",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "c7",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/00000000000000000000000000000000000000c7",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "c9",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "Oldest change",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "ca",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "Newer change",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "12a",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/000000000000000000000000000000000000012a",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "12b",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/000000000000000000000000000000000000012b",
+      "type": null
+    },
+    {
+      "artifacts": 2,
+      "key": "12c",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Render crash",
+      "type": "fix"
+    },
+    {
+      "artifacts": 1,
+      "key": "18e",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/000000000000000000000000000000000000018e",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "18f",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/000000000000000000000000000000000000018f",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "191",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "Synced change",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "1f2",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/00000000000000000000000000000000000001f2",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "1f3",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "git:commit/00000000000000000000000000000000000001f3",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "1f5",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "Other",
+      "type": null
+    }
+  ],
+  "merge-types-star": [
+    {
+      "artifacts": 2,
+      "key": "64",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Body title",
+      "type": "fix"
+    },
+    {
+      "artifacts": 3,
+      "key": "c8",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Oldest change",
+      "type": "feat"
+    },
+    {
+      "artifacts": 2,
+      "key": "12c",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Render crash",
+      "type": "fix"
+    },
+    {
+      "artifacts": 1,
+      "key": "190",
+      "noise": "branch-sync",
+      "rule": "merge",
+      "step": "branch-sync",
+      "title": "Merge branch 'main' into next",
+      "type": "feat"
+    },
+    {
+      "artifacts": 1,
+      "key": "191",
+      "noise": null,
+      "rule": "commit",
+      "step": "no-candidate",
+      "title": "Synced change",
+      "type": null
+    },
+    {
+      "artifacts": 1,
+      "key": "1f4",
+      "noise": "branch-sync",
+      "rule": "merge",
+      "step": "branch-sync",
+      "title": "Merge remote-tracking branch 'origin/main'",
+      "type": "docs"
+    }
+  ],
+  "subject-and-no-noise": [
+    {
+      "artifacts": 2,
+      "key": "64",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Merge pull request #7 from o/fix/x",
+      "type": null
+    },
+    {
+      "artifacts": 3,
+      "key": "c8",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Merge pull request #8 from o/feature/y",
+      "type": null
+    },
+    {
+      "artifacts": 2,
+      "key": "12c",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Merge pull request #9 from o/fix/render-crash",
+      "type": null
+    },
+    {
+      "artifacts": 2,
+      "key": "190",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Merge branch 'main' into next",
+      "type": null
+    },
+    {
+      "artifacts": 2,
+      "key": "1f4",
+      "noise": null,
+      "rule": "merge",
+      "step": "no-candidate",
+      "title": "Merge remote-tracking branch 'origin/main'",
+      "type": null
+    }
+  ]
+}

@@ -158,6 +158,10 @@
         },
         "trailers": {
           "type": "object"
+        },
+        "body_head": {
+          "$ref": "#/$defs/string_or_null",
+          "description": "Merge commits only, and only under the reader option merge_body: the first non-empty body line (the pull request title on GitHub), else null."
         }
       }
     },

@@ -164,6 +164,8 @@ def source_options(name: str, backfill: Backfill, namespaces: Sequence[str]) -> 
             options["layouts"] = _csv(backfill.sources.docs.layouts)
     elif name == "github":
         options["snapshot"] = backfill.sources.github.snapshot
+    if name == "git" and backfill.collate.merge_titles == "derived":
+        options["merge_body"] = "true"  # the merge body's first line titles a merge unit
     options.update(getattr(section, "options", {}) or {})
     if namespaces and "namespaces" not in options:
         options["namespaces"] = _csv(namespaces)
@@ -245,7 +247,17 @@ class CollateOptions:
     def from_config(cls, backfill: Backfill) -> CollateOptions:
         section = backfill.collate
         cluster = section.model_dump(
-            include={"rules", "include_types", "epics", "areas", "path_depth", "min_epic_units"}
+            include={
+                "rules",
+                "include_types",
+                "epics",
+                "areas",
+                "path_depth",
+                "min_epic_units",
+                "merge_types",
+                "merge_titles",
+                "noise",
+            }
         )
         return cls(
             ClusterOptions.from_mapping(cluster),

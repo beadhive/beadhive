@@ -280,7 +280,42 @@ def test_namespaces_come_from_the_ledgers_and_options_win() -> None:
     from beadhive.modules.config.contracts import BackfillConfig
 
     chosen = BackfillConfig.model_validate({"sources": {"git": {"options": {"namespaces": "x"}}}})
-    assert backfill_history.source_options("git", chosen, ["a"]) == {"namespaces": "x"}
+    got = backfill_history.source_options("git", chosen, ["a"])
+    assert got == {"merge_body": "true", "namespaces": "x"}
+
+
+def test_merge_body_follows_merge_titles_and_options_win() -> None:
+    from beadhive.modules.config.contracts import BackfillConfig
+
+    derived = BackfillConfig()  # merge_titles defaults to derived: the reader records body_head
+    assert backfill_history.source_options("git", derived, [])["merge_body"] == "true"
+    assert "merge_body" not in backfill_history.source_options("docs", derived, [])
+    subject = BackfillConfig.model_validate({"collate": {"merge_titles": "subject"}})
+    assert "merge_body" not in backfill_history.source_options("git", subject, [])
+    explicit = BackfillConfig.model_validate(
+        {"sources": {"git": {"options": {"merge_body": "false"}}}}
+    )
+    assert backfill_history.source_options("git", explicit, [])["merge_body"] == "false"
+
+
+def test_collate_options_carry_the_merge_options_and_overlay_per_hive() -> None:
+    from beadhive.modules.config.contracts import BackfillConfig
+
+    default = backfill_history.CollateOptions.from_config(BackfillConfig()).cluster
+    assert (default.merge_types, default.merge_titles, default.noise) == (
+        None,
+        "derived",
+        ("branch-sync",),
+    )
+    chosen = BackfillConfig.model_validate(
+        {"collate": {"merge_types": ["fix", "*"], "merge_titles": "subject", "noise": []}}
+    )
+    cluster = backfill_history.CollateOptions.from_config(chosen).cluster
+    assert (cluster.merge_types, cluster.merge_titles, cluster.noise) == (
+        ("fix", "*"),
+        "subject",
+        (),
+    )
 
 
 # -- cost and prior wiring ---------------------------------------------------------------------
@@ -372,6 +407,70 @@ def test_unit_view_reports_a_new_unit_with_no_evidence_moment_as_skipped(
     assert skipped == {target: "no evidence moment"}
     text = _invoke("backfill", "view", "unit", str(edited)).stdout
     assert "skipped: no evidence moment" in text
+
+
+def _merge_history(repo: Path) -> None:
+    """A PR-style merge (with a body line) and a branch sync, on top of the fixture."""
+    _git(repo, "checkout", "-q", "-b", "side")
+    _commit(repo, "feat(side): add the side thing", {"side/a.txt": "a"})
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, "chore: mainline moves on", {"main.txt": "m"})
+    _git(
+        repo,
+        "merge",
+        "-q",
+        "--no-ff",
+        "side",
+        "-m",
+        "Merge pull request #5 from x/feat/side\n\nAdd the side thing",
+    )
+    _git(repo, "checkout", "-q", "-b", "next", "HEAD~1")
+    _commit(repo, "feat(next): a feature on next", {"next/a.txt": "n"})
+    _git(repo, "merge", "-q", "--no-ff", "main", "-m", "Merge branch 'main' into next")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "-q", "--no-ff", "next", "-m", "Merge remote-tracking branch 'origin/next'")
+
+
+def test_merge_titles_noise_and_types_through_the_real_reader(hive, tmp_path, cfg_path) -> None:
+    _, repo = hive
+    _merge_history(repo)
+    _config(cfg_path, collate={"merge_types": ["*"]})
+    _run(tmp_path, "--sources", "git", "--until", "collate")
+    view = json.loads(_invoke("backfill", "view", "unit", str(tmp_path / "run"), "--json").stdout)
+    merges = [u for u in view["units"] if u["rule"] == "merge"]
+    titles = {u["title"]: u for u in merges}
+    pr = titles["Add the side thing"]  # the merge body's first line, not the merge subject
+    assert pr["type"] == "feat" and "noise" not in pr
+    syncs = [u for u in merges if u.get("noise") == "branch-sync"]
+    assert len(syncs) == 1 and {u["decision"] for u in syncs} == {"SKIP"}
+    assert {u["step"] for u in syncs} == {"branch-sync"}
+    assert view["counts"]["SKIP"] == 1
+    text = _invoke("backfill", "view", "unit", str(tmp_path / "run")).stdout
+    assert "[noise: branch-sync]" in text and "[type: feat]" in text
+    document = json.loads((tmp_path / "run" / "collation.json").read_text())
+    assert document["options"]["cluster"]["noise"] == ["branch-sync"]
+
+
+def test_opting_out_restores_the_0_37_merge_output(hive, tmp_path, cfg_path) -> None:
+    _, repo = hive
+    _merge_history(repo)
+    _config(cfg_path, collate={"noise": [], "merge_titles": "subject"})
+    _run(tmp_path, "--sources", "git", "--until", "collate")
+    document = json.loads((tmp_path / "run" / "collation.json").read_text())
+    assert set(document["options"]["cluster"]) == {
+        "rules",
+        "include_types",
+        "epics",
+        "areas",
+        "path_depth",
+        "min_epic_units",
+    }
+    merges = [u for u in document["units"] if u["rule"] == "merge"]
+    assert merges and all(u["title"].startswith("Merge ") for u in merges)
+    assert not any({"type", "noise"} & set(u) for u in document["units"])
+    assert not any(v["step"] == "branch-sync" for v in document["verdicts"])
+    evidence = (tmp_path / "run" / "evidence.jsonl").read_text()
+    assert "body_head" not in evidence  # the reader option is off with the subject titles
 
 
 def test_view_of_an_empty_directory_is_a_clear_error(tmp_path) -> None:

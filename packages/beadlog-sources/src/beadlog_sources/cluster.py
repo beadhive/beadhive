@@ -21,6 +21,11 @@ that claims an artifact wins, so an artifact belongs to at most one unit
    its free second-parent commits (nested merges included), in commit order. A merge whose
    second-parent commits are all claimed by one unit joins that unit instead; one with none,
    or split across units, stays free.
+   ``merge_types`` (opt-in) limits which merges make units and records each one's derived type
+   (a filtered-out merge releases its commits to the ``commit`` rule). A merge whose subject is a
+   branch sync (``collate.noise``, on by default) is flagged ``noise``: it claims only itself, its
+   commits stay free, and identify skips it. Under ``merge_titles = derived`` (default) its title
+   is the merge body's first line, else the first commit's subject, else a readable branch name.
 5. ``commit``: every free non-merge change whose ``cc_type`` is in ``include_types`` (default
    ``feat``; ``*`` matches any type, untyped commits included) is a unit of its own.
 
@@ -45,6 +50,7 @@ give the same units, byte for byte.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -76,7 +82,33 @@ UNRELEASED = "unreleased"
 # The rules whose units are grouped into area epics.
 GROUPED_RULES = (RULE_REVIEW, RULE_MERGE, RULE_COMMIT)
 # The ``backfill.collate`` config members :meth:`ClusterOptions.from_mapping` reads.
-OPTION_MEMBERS = ("rules", "include_types", "epics", "areas", "path_depth", "min_epic_units")
+# The six members every collation's ``options.cluster`` has, then the ones it writes only when they
+# differ from the 0.37 behaviour (D9): a collation without them reads back as 0.37 made it.
+BASE_OPTION_MEMBERS = ("rules", "include_types", "epics", "areas", "path_depth", "min_epic_units")
+NEW_OPTION_MEMBERS = ("merge_types", "merge_titles", "noise")
+OPTION_MEMBERS = (*BASE_OPTION_MEMBERS, *NEW_OPTION_MEMBERS)
+TITLES_DERIVED = "derived"
+TITLES_SUBJECT = "subject"
+MERGE_TITLES = (TITLES_DERIVED, TITLES_SUBJECT)
+NOISE_BRANCH_SYNC = "branch-sync"
+NOISE_SHAPES = (NOISE_BRANCH_SYNC,)
+UNTYPED = "untyped"
+# Conventional types by significance (D2), most significant first; ``feature`` / ``bugfix`` /
+# ``hotfix`` are the only aliases a branch prefix may use.
+TYPE_SIGNIFICANCE = (
+    "feat",
+    "fix",
+    "perf",
+    "refactor",
+    "revert",
+    "build",
+    "ci",
+    "docs",
+    "test",
+    "style",
+    "chore",
+)
+TYPE_ALIASES = {"feature": "feat", "bugfix": "fix", "hotfix": "fix"}
 
 
 class ClusterOptionsError(ValueError):
@@ -104,6 +136,14 @@ class ClusterOptions:
       the named area; any other key renames a derived area (a scope or directory name).
     - ``path_depth``: directory segments of a path-derived area (``1``: top-level directory).
     - ``min_epic_units``: the fewest units an area needs to get an epic.
+    - ``merge_types``: ``None`` (default) makes a unit of every free merge and derives no type. A
+      list of merge types (a conventional type, ``untyped``, or ``*`` for any) limits the merge
+      rule to those merges and records each unit's ``type``; ``*`` records without filtering.
+      ``include_types`` stays commit-only.
+    - ``merge_titles``: ``derived`` (default) titles a merge unit from its body, first commit or
+      branch name; ``subject`` keeps the merge subject (0.37).
+    - ``noise``: the merge subject shapes flagged as noise (default ``branch-sync``); ``[]`` flags
+      none (0.37).
     """
 
     rules: tuple[str, ...] = CLAIM_RULES
@@ -112,6 +152,9 @@ class ClusterOptions:
     areas: Mapping[str, str] = field(default_factory=dict, hash=False)
     path_depth: int = 1
     min_epic_units: int = 2
+    merge_types: tuple[str, ...] | None = None
+    merge_titles: str = TITLES_DERIVED
+    noise: tuple[str, ...] = (NOISE_BRANCH_SYNC,)
 
     def __post_init__(self) -> None:
         rules = _strings(self.rules, "rules")
@@ -133,6 +176,22 @@ class ClusterOptions:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ClusterOptionsError(f"{name} must be a positive integer")
+        if self.merge_types is not None:
+            types = _strings(self.merge_types, "merge_types")
+            known = {ANY_TYPE, UNTYPED, *TYPE_SIGNIFICANCE}
+            unknown = [t for t in types if t not in known]
+            if unknown:
+                raise ClusterOptionsError(
+                    f"merge_types must be conventional types, {UNTYPED!r} or {ANY_TYPE!r}, "
+                    f"got {unknown}"
+                )
+            object.__setattr__(self, "merge_types", types)
+        if self.merge_titles not in MERGE_TITLES:
+            raise ClusterOptionsError(f"merge_titles must be one of {MERGE_TITLES}")
+        noise = _strings(self.noise, "noise")
+        if any(n not in NOISE_SHAPES for n in noise) or len(set(noise)) != len(noise):
+            raise ClusterOptionsError(f"noise must be distinct names from {NOISE_SHAPES}")
+        object.__setattr__(self, "noise", noise)
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> ClusterOptions:
@@ -142,7 +201,7 @@ class ClusterOptions:
     def to_json(self) -> dict[str, Any]:
         """The effective options as a JSON object (every member, the collation's
         ``options.cluster``)."""
-        return {
+        out: dict[str, Any] = {
             "rules": list(self.rules),
             "include_types": list(self.include_types),
             "epics": self.epics,
@@ -150,13 +209,34 @@ class ClusterOptions:
             "path_depth": self.path_depth,
             "min_epic_units": self.min_epic_units,
         }
+        # The three newer members are written only when they differ from 0.37 (D9): a run that
+        # opts out of the defaults (``noise = []``, ``merge_titles = subject``) writes 0.37 bytes.
+        if self.merge_types is not None:
+            out["merge_types"] = list(self.merge_types)
+        if self.merge_titles == TITLES_DERIVED:
+            out["merge_titles"] = TITLES_DERIVED
+        if self.noise:
+            out["noise"] = list(self.noise)
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> ClusterOptions:
-        """Parse :meth:`to_json` output; missing or unknown members are refused."""
-        if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_MEMBERS):
-            raise ClusterOptionsError(f"cluster options must have exactly {OPTION_MEMBERS}")
-        return cls(**raw)
+        """Parse :meth:`to_json` output: the six base members plus any subset of the newer ones
+        (an absent one reads as 0.37 behaved: no merge types, subject titles, no noise); missing
+        or unknown members are refused."""
+        if not isinstance(raw, dict) or not (
+            set(BASE_OPTION_MEMBERS) <= set(raw) <= set(OPTION_MEMBERS)
+        ):
+            raise ClusterOptionsError(
+                f"cluster options must have exactly {BASE_OPTION_MEMBERS} plus any of "
+                f"{NEW_OPTION_MEMBERS}"
+            )
+        return cls(
+            **{name: raw[name] for name in BASE_OPTION_MEMBERS},
+            merge_types=raw.get("merge_types"),
+            merge_titles=raw.get("merge_titles", TITLES_SUBJECT),
+            noise=raw.get("noise", ()),
+        )
 
 
 @dataclass
@@ -171,6 +251,8 @@ class _Draft:
     parent: str | None = None
     children: list[str] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
+    type: str | None = None
+    noise: str | None = None
 
     def freeze(self) -> Unit:
         return Unit(
@@ -184,11 +266,69 @@ class _Draft:
             parent=self.parent,
             children=tuple(sorted(self.children)),
             depends_on=tuple(sorted(self.depends_on)),
+            type=self.type,
+            noise=self.noise,
         )
 
 
 def _is_merge(artifact: Artifact) -> bool:
     return len(artifact.attrs["parents"]) >= 2
+
+
+# -- merge subjects ----------------------------------------------------------------------------
+
+# Subject shapes (case-sensitive, anchored). A pull-request merge names ``<owner>/<branch>``; a
+# branch merge ``'<branch>'`` (``'<remote>/<branch>'`` for a remote-tracking one), optionally
+# ``into <target>``. Only the last two are branch syncs, and only when no pull request is named.
+_PR_MERGE = re.compile(r"^Merge pull request #\d+ from (?P<head>\S+)")
+_BRANCH_MERGE = re.compile(r"^Merge branch '(?P<branch>[^']+)'(?P<rest>.*)$")
+_REMOTE_MERGE = re.compile(r"^Merge remote-tracking branch '(?P<branch>[^']+)'(?P<rest>.*)$")
+_INTO = re.compile(r"^( into \S.*)?$")
+
+
+def merge_branch(subject: str) -> str | None:
+    """The branch a merge subject names, or ``None``: ``Merge pull request #N from org/<branch>``,
+    ``Merge branch '<branch>'`` and ``Merge remote-tracking branch '<remote>/<branch>'``."""
+    if match := _PR_MERGE.match(subject):
+        head = match["head"]
+        return head.partition("/")[2] or None
+    if match := _BRANCH_MERGE.match(subject):
+        return match["branch"]
+    if match := _REMOTE_MERGE.match(subject):
+        return match["branch"].partition("/")[2] or None
+    return None
+
+
+def branch_sync(artifact: Artifact) -> bool:
+    """Whether the merge is a branch sync: ``Merge branch '<x>'`` (optionally ``into <y>``) or
+    ``Merge remote-tracking branch '<x>'``, with no pull request named. A PR merge never is."""
+    if any(ref.kind == "pr" for ref in artifact.refs):
+        return False
+    for shape in (_BRANCH_MERGE, _REMOTE_MERGE):
+        match = shape.match(artifact.title)
+        if match is not None and _INTO.match(match["rest"]):
+            return True
+    return False
+
+
+def _branch_type(branch: str | None) -> str | None:
+    """The conventional type a branch's first path segment names (or aliases), else ``None``."""
+    if branch is None or "/" not in branch:
+        return None
+    prefix = branch.partition("/")[0].lower()
+    prefix = TYPE_ALIASES.get(prefix, prefix)
+    return prefix if prefix in TYPE_SIGNIFICANCE else None
+
+
+def _readable_branch(branch: str | None) -> str | None:
+    """``fix/render-crash`` -> ``Render crash``: drop a type prefix, dashes and underscores to
+    spaces, first letter capitalised (``None`` when nothing is left)."""
+    if not branch:
+        return None
+    if _branch_type(branch) is not None:
+        branch = branch.partition("/")[2]
+    text = re.sub(r"[-_]+", " ", branch).strip()
+    return (text[:1].upper() + text[1:]) if text else None
 
 
 class _Clusterer:
@@ -310,13 +450,80 @@ class _Clusterer:
             self.sweep(self.ix.pr_commits.get(review.key, ()), draft.key)
             self.sweep(self.merges_of_review.get(review.key, ()), draft.key)
 
+    def merge_type(self, merge: Artifact, kids: Iterable[str]) -> str:
+        """D2: the branch prefix, else the most significant conventional type among the merge's
+        free commits (breaking counts as ``feat``), else ``untyped``."""
+        named = _branch_type(merge_branch(merge.title))
+        if named is not None:
+            return named
+        found: set[str] = set()
+        for key in kids:
+            art = self.arts.get(key)
+            if art is None or art.category is not Category.CHANGE or _is_merge(art):
+                continue
+            cc_type = art.attrs["cc_type"]
+            if art.attrs.get("breaking"):
+                found.add("feat")
+            elif isinstance(cc_type, str) and cc_type.lower() in TYPE_SIGNIFICANCE:
+                found.add(cc_type.lower())
+        return next((t for t in TYPE_SIGNIFICANCE if t in found), UNTYPED)
+
+    def merge_title(self, merge: Artifact, kids: Iterable[str]) -> str:
+        """D4: the merge body's first line, else the oldest commit's subject, else a readable
+        branch name, else the merge subject."""
+        head = merge.attrs.get("body_head")
+        if isinstance(head, str) and head.strip() and not head.startswith("Merge "):
+            return head.strip()
+        commits = [
+            self.arts[k]
+            for k in kids
+            if k in self.arts and self.arts[k].category is Category.CHANGE
+            if not _is_merge(self.arts[k])
+        ]
+        commits.sort(key=lambda a: self.rank.get(a.key, -1))
+        if commits and commits[0].title.strip():
+            return commits[0].title
+        return _readable_branch(merge_branch(merge.title)) or merge.title
+
+    def _released_merges(self, kids: Iterable[str]) -> list[Artifact]:
+        """The merges inside a merge that released its commits, oldest first: they were nested
+        (not first-parent), so without this they would never get a unit of their own."""
+        nested = [self.arts[k] for k in kids if k in self.arts and _is_merge(self.arts[k])]
+        return sorted(nested, key=lambda a: (self.rank.get(a.key, -1), a.key))
+
     def rule_merge(self) -> None:
-        for merge in self.mainline_merges:
+        options = self.options
+        queue = list(self.mainline_merges)
+        position = 0
+        while position < len(queue):
+            merge = queue[position]
+            position += 1
             if not self.free(merge.key):
                 continue
             kids = self.ix.merge_children.get(merge.key, ())
-            if any(self.free(k) for k in kids):
+            free_kids = [k for k in kids if self.free(k)]
+            if free_kids:
+                typed = (
+                    self.merge_type(merge, free_kids) if options.merge_types is not None else None
+                )
+                if (
+                    typed is not None
+                    and ANY_TYPE not in (options.merge_types or ())
+                    and typed not in (options.merge_types or ())
+                ):
+                    # filtered out: its commits stay free for the commit rule, and the merges
+                    # inside it are looked at next, as first-parent merges of their own
+                    queue[position:position] = self._released_merges(free_kids)
+                    continue
                 draft = self.new_unit(merge, RULE_MERGE)
+                draft.type = typed
+                if NOISE_BRANCH_SYNC in options.noise and branch_sync(merge):
+                    # claims only itself: its commits stay free, its inner merges get a look
+                    draft.noise = NOISE_BRANCH_SYNC
+                    queue[position:position] = self._released_merges(free_kids)
+                    continue
+                if options.merge_titles == TITLES_DERIVED:
+                    draft.title = self.merge_title(merge, free_kids)
                 self.sweep(kids, draft.key)
                 continue
             owners = {self.claimed[k] for k in kids if k in self.claimed}
@@ -411,8 +618,8 @@ class _Clusterer:
         cited: dict[str, set[str]] = {}
         for key in sorted(self.units):
             draft = self.units[key]
-            if draft.rule not in GROUPED_RULES:
-                continue
+            if draft.rule not in GROUPED_RULES or draft.noise:
+                continue  # a noise unit projects nothing: it never joins (or founds) an epic
             area, release = self.area_of(draft, releases)
             if area is None:
                 continue
@@ -462,9 +669,20 @@ def cluster(collation: Collation, options: ClusterOptions | None = None) -> Coll
 
 __all__ = [
     "ANY_TYPE",
+    "BASE_OPTION_MEMBERS",
     "GROUPED_RULES",
+    "MERGE_TITLES",
+    "NEW_OPTION_MEMBERS",
+    "NOISE_BRANCH_SYNC",
+    "NOISE_SHAPES",
     "OPTION_MEMBERS",
+    "TITLES_DERIVED",
+    "TITLES_SUBJECT",
+    "TYPE_SIGNIFICANCE",
     "UNRELEASED",
+    "UNTYPED",
+    "branch_sync",
+    "merge_branch",
     "ClusterOptions",
     "ClusterOptionsError",
     "cluster",

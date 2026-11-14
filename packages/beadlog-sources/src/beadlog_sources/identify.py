@@ -14,6 +14,11 @@ unit, in key order, goes through these steps; the first that decides wins:
 1. ``external-ref``: a live baseline bead whose ``external_ref`` is the unit's key, the path of a
    ``doc:<path>`` key, or one of the unit's artifact keys: PRESENT, provenance ``derived``.
 2. ``explicit-id``: an ``attach`` unit names its local bead (B2/B3 resolved it): PRESENT.
+   ``branch-sync``: a unit B3 flagged ``noise`` (a merge whose subject is a branch sync,
+   ``collate.noise``, on by default) is class ``SKIP``, provenance ``derived``, review ``none``:
+   nothing is projected and it is not residual, but the unit stays in the collation. It comes
+   after steps 0 and 1, so an operator decision still wins and a bead an earlier run made for the
+   unit stays linked.
 3. ``no-candidate``: the baseline holds no bead (and no epic) sharing a title token with the unit,
    so there is nothing it could be present as or covered by: NEW, provenance ``derived``,
    confidence null (a rule decided it, nothing was estimated), always reviewed. Units WITH a
@@ -107,6 +112,7 @@ QUESTION = (
 STEP_DECISION = "decision"
 STEP_EXTERNAL_REF = "external-ref"
 STEP_EXPLICIT_ID = "explicit-id"
+STEP_BRANCH_SYNC = "branch-sync"
 STEP_LEXICAL = "lexical"
 STEP_JUDGE = "judge"
 STEP_NO_CANDIDATE = "no-candidate"
@@ -115,13 +121,16 @@ STEPS = (
     STEP_DECISION,
     STEP_EXTERNAL_REF,
     STEP_EXPLICIT_ID,
+    STEP_BRANCH_SYNC,
     STEP_NO_CANDIDATE,
     STEP_LEXICAL,
     STEP_JUDGE,
     STEP_THRESHOLD,
 )
 
-CLASS_SKIP = "SKIP"  # an operator decision (step 0): nothing is projected, the unit is not residual
+# SKIP: nothing is projected and the unit is not residual (an operator decision, step 0, or a
+# unit B3 flagged as branch-sync noise)
+CLASS_SKIP = "SKIP"
 CLASSES = (
     str(ReconcileClass.NEW),
     str(ReconcileClass.PRESENT),
@@ -732,6 +741,27 @@ def identify_units(
                 ),
             )
             continue
+        # 2b. B3 flagged the unit as noise (a branch sync): nothing to project, nothing to ask.
+        if unit.noise == STEP_BRANCH_SYNC:
+            put(
+                unit.key,
+                STEP_BRANCH_SYNC,
+                _verdict_json(
+                    unit.key,
+                    STEP_BRANCH_SYNC,
+                    _bridge(
+                        f"the merge is a branch sync ({unit.title!r}); nothing is projected "
+                        "(collate.noise = [] turns this off)",
+                        STEP_BRANCH_SYNC,
+                    ),
+                    cls=CLASS_SKIP,
+                    bead=None,
+                    provenance="derived",
+                    review=Review.NONE,
+                    score=None,
+                ),
+            )
+            continue
         # 3. the deterministic lexical engine over the match query (PRESENT / NOISE only).
         subject = tokens(unit.title)
         present = base.ranked(subject, options.max_candidates, epics=False)
@@ -886,6 +916,7 @@ __all__ = [
     "RESIDUAL_MEMBERS",
     "RESIDUAL_REASONS",
     "STEPS",
+    "STEP_BRANCH_SYNC",
     "STEP_DECISION",
     "VERDICT_MEMBERS",
     "CostPreview",

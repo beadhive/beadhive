@@ -104,6 +104,26 @@ def test_overlay_wins_key_by_key_and_hides_the_hives_map():
     assert BackfillConfig.model_validate(eff).collate.areas["ui"] == "frontend"
 
 
+def test_merge_options_overlay_per_hive_and_opt_outs_replace_the_defaults():
+    cfg = _cfg(
+        {
+            "hives": {
+                "wd": {
+                    "collate": {
+                        "merge_types": ["fix", "untyped"],
+                        "merge_titles": "subject",
+                        "noise": [],
+                    }
+                }
+            }
+        }
+    )
+    wd = BackfillConfig.model_validate(effective_backfill(cfg, "wd")).collate
+    assert (wd.merge_types, wd.merge_titles, wd.noise) == (["fix", "untyped"], "subject", [])
+    gd = BackfillConfig.model_validate(effective_backfill(cfg, "gd")).collate
+    assert (gd.merge_types, gd.merge_titles, gd.noise) == (None, "derived", ["branch-sync"])
+
+
 def test_overlay_by_entry_and_by_cwd_hive(monkeypatch):
     cfg = _cfg({"hives": {"wd": {"collate": {"epics": False}}}})
     assert effective_backfill(cfg, WIDGETS)["collate"]["epics"] is False

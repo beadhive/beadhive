@@ -2441,6 +2441,27 @@ class BackfillCollateConfig(_Section):
     )
     path_depth: int = Field(1, ge=1, description="Directory segments of a path-derived area.")
     min_epic_units: int = Field(2, ge=1, description="Fewest units an area needs for an epic.")
+    merge_types: list[str] | None = Field(
+        None,
+        description="Opt-in. Unset (default): the merge rule makes a unit of every merge and "
+        "derives no type. A list of merge types (conventional types, untyped, or * for any) "
+        "limits the merge rule to those merges and records each unit's type; a merge left out "
+        "releases its commits to the commit rule. * records the type without filtering. "
+        "include_types stays commit-only.",
+    )
+    merge_titles: Literal["derived", "subject"] = Field(
+        "derived",
+        description="derived (default since 0.38): a merge unit is titled from the merge body's "
+        "first line, else its first commit's subject, else a readable branch name. subject: "
+        "the merge subject (0.37 titles).",
+    )
+    noise: list[Literal["branch-sync"]] = Field(
+        default_factory=lambda: ["branch-sync"],
+        description="Merge subject shapes flagged as noise (default since 0.38: branch-sync, "
+        "Merge branch 'x' [into y] and Merge remote-tracking branch 'x', never a pull request "
+        "merge). A flagged merge stays visible in view unit, is skipped by identify and "
+        "releases its commits to the commit rule. [] flags none (0.37).",
+    )
     attach: BackfillAttachConfig = Field(default_factory=BackfillAttachConfig)
     identify: BackfillIdentifyConfig = Field(default_factory=BackfillIdentifyConfig)
     status: BackfillStatusConfig = Field(default_factory=BackfillStatusConfig)

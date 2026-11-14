@@ -15,6 +15,35 @@ exists for the releases where "read the changelog" isn't enough to act on.
   `backfill.hives.<prefix>.sources.git.options`. Nothing changes unless you set them. A fork that
   rebases onto upstream changes its shas and so its unit keys. See
   [BACKFILL.md](BACKFILL.md).
+- **Behaviour change: a branch-sync merge no longer makes a bead (#154, bh-8h2k8).** A merge whose
+  subject is `Merge branch '<x>'` (optionally `into <y>`) or `Merge remote-tracking branch '<x>'`,
+  and that names no pull request, used to become a unit like any merge; in one real repository 127
+  of 169 merge units were such syncs, each proposed as a bead. Such a merge is now flagged
+  `noise: branch-sync` and identify gives it a derived `SKIP` verdict, so a default run projects
+  nothing for it. The unit stays listed by `bh backfill view unit`; the commits it brings in are
+  released to the `commit` rule (so a `feat` commit becomes a commit unit as it would on a plain
+  history); an operator `decide` and an existing `external_ref` still win; a pull request merge is
+  never flagged. Beads an earlier run already made for a sync merge stay linked and are not
+  removed. Opt out with `backfill.collate.noise = []`.
+- **Behaviour change: merge units are titled from the pull request, not the merge subject (#154,
+  bh-8h2k8).** Most merge subjects read `Merge pull request #N from org/branch`, which says
+  nothing about the work. A merge unit is now titled by the first of: the merge body's first line,
+  the subject of the oldest commit it brings in, a readable branch name, else the merge subject.
+  Titles feed identify's lexical step, so verdicts of merge units can shift, and the git reader
+  now records `body_head` on merge artifacts, so the first run re-reads the evidence once. Unit
+  keys (the merge sha) do not change: a bead created earlier stays PRESENT through its
+  `external_ref` and is never retitled. Opt out with `backfill.collate.merge_titles = subject`.
+- **To get the 0.37.1 output back**, set both in the host config (or per hive under
+  `backfill.hives.<prefix>.collate`): `noise = []` and `merge_titles = subject`.
+- **New, opt-in: `backfill.collate.merge_types`.** Unset (the default) changes nothing. A list of
+  merge types (conventional types, `untyped`, or `*`) limits the `merge` rule to merges of those
+  types, derived from the branch prefix, then the merge's commits, and records each unit's `type`
+  (see [BACKFILL.md](BACKFILL.md)).
+- **Collation files.** `bdlg.collation/1` gained members, written only when used (no version
+  bump); a 0.37 collation still reads. A default 0.38 run over a repository with branch-sync
+  merges writes the new vocabulary, which a `bh` older than 0.38.0 refuses, so do not read a 0.38
+  run directory with an older `bh`. With both opt-outs above and no other new option the run
+  writes the 0.37.1 collation byte for byte.
 
 ## 0.37.0 → 0.37.1 — backfill apply fixes
 
