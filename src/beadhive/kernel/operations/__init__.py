@@ -52,7 +52,7 @@ backfill collate|hive:string:o,sources:string:o,run_dir:string:o,refresh:boolean
 backfill commits|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o,since_cursor:boolean:o
 backfill complexity|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,as_json:boolean:o
 backfill coverage|hive:string:o,refresh:boolean:o,as_json:boolean:o
-backfill decide|unit_key:string:r,kind:string:o,bead:string:o,deleted:string:o,reason:string:o,hive:string:o,dry_run:boolean:o,as_json:boolean:o
+backfill decide|unit_key:string:r,kind:string:o,bead:string:o,deleted:string:o,reason:string:o,hive:string:o,dry_run:boolean:o,as_json:boolean:o,select:array:o,run_dir:string:o,max_units:integer:o,yes:boolean:o
 backfill docs|hive:string:o,apply:boolean:o,dry_run:boolean:o,plan_path:string:o,pre_state:string:o,audit:string:o,option:array:o,as_json:boolean:o
 backfill export|hive:string:o,out:string:o,as_json:boolean:o,history:boolean:o,store:string:o
 backfill history|hive:string:o,sources:string:o,until:string:o,run_dir:string:o,refresh:boolean:o,yes:boolean:o,as_json:boolean:o
