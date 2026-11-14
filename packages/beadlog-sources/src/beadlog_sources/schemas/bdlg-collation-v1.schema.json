@@ -34,7 +34,9 @@
       "description": "B5 IdentifyOptions (beadlog_sources.identify).",
       "properties": {
         "new_threshold": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "description": "Percent: a unit nothing else decided whose fuzzy score is below it is NEW (inferred); null turns the threshold step off."},
-        "max_candidates": {"type": "integer", "minimum": 1, "description": "Baseline beads (and, separately, epics) offered by the match query."}
+        "max_candidates": {"type": "integer", "minimum": 1, "description": "Baseline beads (and, separately, epics) offered by the match query."},
+        "merge_fallback": {"const": "commits", "description": "Written only when commits (0.38, opt-in): a merge unit that ends residual, NOISE or SKIP was replaced by the commit-rule units of its commits. Absent: none, as 0.37."},
+        "merge_identity": {"const": "commits", "description": "Written only when commits (0.38, opt-in): a merge none of whose commits has a baseline candidate is NEW. Absent: unit, as 0.37."}
       }
     },
     "identify_verdict": {
@@ -44,8 +46,8 @@
       "description": "One B5 verdict: the answer of one identify step for one unit.",
       "properties": {
         "unit": {"type": "string", "minLength": 1, "description": "Key of the unit."},
-        "step": {"enum": ["external-ref", "explicit-id", "no-candidate", "lexical", "judge", "threshold"]},
-        "class": {"enum": ["NEW", "PRESENT", "NOISE", null], "description": "The identification; null for a judge abstention (the unit goes on to the threshold or the residual)."},
+        "step": {"enum": ["decision", "external-ref", "explicit-id", "branch-sync", "no-candidate", "lexical", "judge", "threshold"]},
+        "class": {"enum": ["NEW", "PRESENT", "NOISE", "SKIP", null], "description": "The identification; SKIP is an operator decision (step decision) or a branch-sync merge (step branch-sync): nothing is projected and the unit is not residual; null for a judge abstention (the unit goes on to the threshold or the residual)."},
         "bead": {"type": ["string", "null"], "description": "The matched baseline bead (PRESENT) or covering epic (NOISE)."},
         "provenance": {"enum": ["derived", "inferred"], "description": "derived for bridges and the lexical engine; inferred for the judge and the threshold."},
         "review": {"enum": ["none", "auto", "required"]},
@@ -71,7 +73,8 @@
             }
           ],
           "description": "Why the configured engine did not answer (timeout, exit, malformed, ...)."
-        }
+        },
+        "commit_candidates": {"$ref": "#/$defs/commit_candidates"}
       }
     },
     "identify_residual": {
@@ -84,7 +87,18 @@
         "reason": {"enum": ["no-match", "judge-abstained", "judge-failed", "judge-budget"], "description": "judge-budget: the call cap stopped the run before this unit; the next run continues."},
         "score": {"type": "integer", "minimum": 0, "maximum": 100},
         "query_hash": {"type": ["string", "null"]},
-        "candidates": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "The baseline bead ids the match query offered, best first."}
+        "candidates": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "The baseline bead ids the match query offered, best first."},
+        "commit_candidates": {"$ref": "#/$defs/commit_candidates"}
+      }
+    },
+    "commit_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["with_candidate", "without_candidate"],
+      "description": "Written only for a merge unit judged under merge_identity = commits (0.38): the keys of its non-merge commits that share a title token with a baseline bead, and those that do not.",
+      "properties": {
+        "with_candidate": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "without_candidate": {"type": "array", "items": {"type": "string", "minLength": 1}}
       }
     },
     "cluster_options": {
@@ -98,7 +112,10 @@
         "epics": {"type": "boolean", "description": "Whether the area rule grouped units into area epics."},
         "areas": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}, "description": "Override map: a key with / is a path prefix, any other key renames a derived area."},
         "path_depth": {"type": "integer", "minimum": 1},
-        "min_epic_units": {"type": "integer", "minimum": 1}
+        "min_epic_units": {"type": "integer", "minimum": 1},
+        "merge_types": {"type": "array", "items": {"enum": ["feat", "fix", "perf", "refactor", "revert", "build", "ci", "docs", "test", "style", "chore", "untyped", "*"]}, "description": "Written only when set (0.38): the merge types the merge rule makes units of; * records the type without filtering. Absent: every merge, no type derived."},
+        "merge_titles": {"const": "derived", "description": "Written only when derived (0.38, the default): merge units are titled from the merge body, first commit or branch name. Absent: the merge subject, as 0.37."},
+        "noise": {"type": "array", "uniqueItems": true, "minItems": 1, "items": {"enum": ["branch-sync"]}, "description": "Written only when non-empty (0.38, default [branch-sync]): the merge subject shapes flagged as noise. Absent: none, as 0.37."}
       }
     },
     "attach_options": {
@@ -107,10 +124,13 @@
       "required": ["tiers", "lexical_percent", "lexical_min_tokens", "standalone"],
       "description": "B4 AttachOptions (beadlog_sources.attach).",
       "properties": {
-        "tiers": {"type": "array", "uniqueItems": true, "items": {"enum": ["explicit", "same-change", "shared-path", "lexical"]}, "description": "The attach tiers run, in order."},
+        "tiers": {"type": "array", "uniqueItems": true, "items": {"enum": ["explicit", "same-change", "own-add", "shared-path", "lexical"]}, "description": "The attach tiers run, in order; own-add is opt-in (0.38)."},
         "lexical_percent": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Minimum overlap coefficient (percent) of the lexical tier."},
         "lexical_min_tokens": {"type": "integer", "minimum": 1},
-        "standalone": {"type": "boolean", "description": "Whether an unattached doc became a doc-unit."}
+        "standalone": {"type": "boolean", "description": "Whether an unattached doc became a doc-unit."},
+        "max_per_unit": {"type": "integer", "minimum": 1, "description": "Written only when set (0.38): the most attachments a unit takes from the shared-path and lexical tiers; explicit and same-change are exempt. Absent: no cap."},
+        "rename_guard": {"const": true, "description": "Written only when on (0.38): a doc moved by its first-add commit is not attached through that commit. Absent: off."},
+        "rank": {"const": "proximity", "description": "Written only when proximity (0.38): shared-path candidates rank by time distance, subject overlap, edit size, then key, and the attachment records a runner_up. Absent: evidence."}
       }
     },
     "status_options": {
@@ -123,7 +143,11 @@
         "design_only": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Normalized phrases that make a raw declared status design only."},
         "summary_suffix": {"type": "string", "minLength": 1},
         "date_tolerance_days": {"type": "integer", "minimum": 0},
-        "clock_tolerance_seconds": {"type": "integer", "minimum": 0}
+        "clock_tolerance_seconds": {"type": "integer", "minimum": 0},
+        "doc_default": {"enum": ["closed", "open", "from-doc"], "description": "Status of a unit with no evidential closure; absent in a record written before 0.37 (read back as closed)."},
+        "doc_open": {"type": "array", "uniqueItems": true, "items": {"enum": ["proposed", "draft", "accepted", "delivered", "superseded", "rejected", "deprecated"]}, "description": "Declared doc statuses that keep a unit open under from-doc."},
+        "close_on_evidence": {"type": "boolean", "description": "A re-run closes an open backfilled bead on closing evidence; absent in a record written before 0.37 (read back as true)."},
+        "in_progress_on_evidence": {"type": "boolean", "description": "A unit with an opened review gets an in_progress transition; absent in a record written before 0.37 (read back as true)."}
       }
     },
     "moment": {
@@ -147,7 +171,8 @@
         "status": {"enum": ["open", "closed"]},
         "basis": {"enum": ["plan-item", "merged", "committed", "released", "tracker", "review", "doc", "children", "none"]},
         "created": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}]},
-        "closed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "Null unless the unit is closed."}
+        "closed": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/moment"}], "description": "Null unless the unit is closed."},
+        "started": {"$ref": "#/$defs/moment", "description": "Moment of the unit's in-progress evidence (an opened review); written only when present, and strictly between created and closed on a closed unit."}
       }
     },
     "conflict_source": {
@@ -184,8 +209,20 @@
       "properties": {
         "doc": {"type": "string", "minLength": 1, "description": "The design record's key, doc:<path>."},
         "unit": {"type": "string", "minLength": 1, "description": "Key of the unit it attaches to (the doc itself for standalone)."},
-        "reason": {"enum": ["explicit", "same-change", "shared-path", "lexical", "standalone"]},
-        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Artifact keys behind the decision (empty for standalone)."}
+        "reason": {"enum": ["explicit", "same-change", "own-add", "shared-path", "lexical", "standalone"], "description": "own-add (0.38, opt-in): the doc is a doc-unit of its own, its evidence the add commit no unit claimed."},
+        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Artifact keys behind the decision (empty for standalone)."},
+        "runner_up": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unit", "distance", "overlap", "paths"],
+          "description": "Written only when set (0.38, attach.rank = proximity): the candidate that ranked next.",
+          "properties": {
+            "unit": {"type": "string", "minLength": 1},
+            "distance": {"type": ["integer", "null"], "minimum": 0, "description": "Seconds from the doc's add commit to the unit's anchor; null if unknown."},
+            "overlap": {"type": "integer", "minimum": 0, "description": "Subject tokens shared with the doc."},
+            "paths": {"type": "integer", "minimum": 0, "description": "Paths the unit's changes touched (the edit size)."}
+          }
+        }
       }
     },
     "unit": {
@@ -202,7 +239,9 @@
         "area": {"type": ["string", "null"], "description": "The area a grouped unit falls in."},
         "parent": {"type": ["string", "null"], "description": "Key of the parent unit (area epic or parent plan item)."},
         "children": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Keys of the child units, sorted."},
-        "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Keys of the units a plan item depends on, sorted."}
+        "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Keys of the units a plan item depends on, sorted."},
+        "type": {"type": "string", "minLength": 1, "description": "Written only when set (0.38): the derived type of a merge unit (a conventional type or untyped), recorded when collate.merge_types is set."},
+        "noise": {"enum": ["branch-sync"], "description": "Written only when set (0.38): the subject shape that marks a merge unit as noise; identify gives it a SKIP verdict."}
       }
     },
     "resolved_ref": {

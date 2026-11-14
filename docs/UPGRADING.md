@@ -5,6 +5,176 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.37.1 → 0.38.0 — backfill for merge-heavy and forked repositories
+
+- **New, opt-in: the git reader's fork boundary and tag filters (bh-19q4u, #159).** The `git`
+  reader options `exclude_revs` (refs resolved on every run and excluded, so a fork reads only its
+  own commits and follows upstream with no config edit), `tag_scope = range`, `tag_include` /
+  `tag_exclude` (globs, exclude wins) and `since_date` (an explicit date; `since` is unchanged)
+  are set under `backfill.sources.git.options` or per hive in
+  `backfill.hives.<prefix>.sources.git.options`. Nothing changes unless you set them. A fork that
+  rebases onto upstream changes its shas and so its unit keys. See
+  [BACKFILL.md](BACKFILL.md).
+- **Behaviour change: a branch-sync merge no longer makes a bead (#154, bh-8h2k8).** A merge whose
+  subject is `Merge branch '<x>'` (optionally `into <y>`) or `Merge remote-tracking branch '<x>'`,
+  and that names no pull request, used to become a unit like any merge; in one real repository 127
+  of 169 merge units were such syncs, each proposed as a bead. Such a merge is now flagged
+  `noise: branch-sync` and identify gives it a derived `SKIP` verdict, so a default run projects
+  nothing for it. The unit stays listed by `bh backfill view unit`; the commits it brings in are
+  released to the `commit` rule (so a `feat` commit becomes a commit unit as it would on a plain
+  history); an operator `decide` and an existing `external_ref` still win; a pull request merge is
+  never flagged. Beads an earlier run already made for a sync merge stay linked and are not
+  removed. Opt out with `backfill.collate.noise = []`.
+- **Behaviour change: merge units are titled from the pull request, not the merge subject (#154,
+  bh-8h2k8).** Most merge subjects read `Merge pull request #N from org/branch`, which says
+  nothing about the work. A merge unit is now titled by the first of: the merge body's first line,
+  the subject of the oldest commit it brings in, a readable branch name, else the merge subject.
+  Titles feed identify's lexical step, so verdicts of merge units can shift, and the git reader
+  now records `body_head` on merge artifacts, so the first run re-reads the evidence once. Unit
+  keys (the merge sha) do not change: a bead created earlier stays PRESENT through its
+  `external_ref` and is never retitled. Opt out with `backfill.collate.merge_titles = subject`.
+- **To get the 0.37.1 output back**, set both in the host config (or per hive under
+  `backfill.hives.<prefix>.collate`): `noise = []` and `merge_titles = subject`.
+- **New, opt-in: `backfill.collate.merge_types`.** Unset (the default) changes nothing. A list of
+  merge types (conventional types, `untyped`, or `*`) limits the `merge` rule to merges of those
+  types, derived from the branch prefix, then the merge's commits, and records each unit's `type`
+  (see [BACKFILL.md](BACKFILL.md)).
+- **New, opt-in: doc attachment for merge-heavy repositories (#157, bh-dviao).** Nothing changes
+  unless you set them; each is also per hive under `backfill.hives.<prefix>.collate.attach`.
+  `max_per_unit` caps what one unit takes from the `shared-path` and `lexical` tiers (`explicit`
+  and `same-change` are exempt; the overflow goes to the next tier, then stands alone).
+  `rename_guard` keeps a reorganising merge from collecting the docs it moved (the git reader then
+  records a `renamed` attr, so the first run after turning it on re-reads the evidence). `own-add`,
+  added to `tiers` after `same-change`, makes a unit of a doc a `docs:` commit added when no unit
+  claimed that commit. `rank = proximity` picks the `shared-path` unit nearest in time to the doc's
+  add commit and records the runner-up, shown by `bh backfill view unit`. `related` links are not
+  part of 0.38.0. See [BACKFILL.md](BACKFILL.md).
+- **New in reports: hidden commits (#154, bh-yg3ae).** A merge unit that ended residual (or NOISE,
+  or an operator SKIP) used to swallow the commits it brought in: they were in no unit, child or
+  link, so the plan silently lacked that work. The plan summary of `bh backfill history` now
+  carries `hidden_commits` (`count`, `units`), `bh backfill view unit --json` a top-level
+  `hidden_commits` with each unit's commit shas and a `hidden_commits` list on each affected unit
+  row, and the text view prints them. The keys appear only when something is hidden; a run that
+  hid nothing is byte-identical, and created beads do not change. Nothing to opt out of.
+- **New, opt-in: `backfill.collate.identify.merge_fallback = commits` (#154, bh-yg3ae).** Replaces a
+  merge unit that ends residual, NOISE or SKIP by the `commit`-rule units of its commits, in the
+  same run. Default `none`. It gives up the one-bead-per-PR grouping for those merges, and never
+  releases a merge an operator decided (`skip` or `noise`). To keep the old behaviour leave it
+  unset.
+- **New, opt-in: `backfill.collate.identify.merge_identity = commits` (#154, bh-yg3ae).** A merge
+  none of whose commits has a baseline candidate is NEW instead of residual on a weak candidate its
+  title matched; a merge whose commits partly match keeps the existing flow and the collation
+  records which commits matched (`commit_candidates`). Default `unit`. Both options can be set per
+  hive under `backfill.hives.<prefix>.collate.identify`.
+- **New: `bh backfill decide --select` decides many units at once (bh-espkv, #162).** Repeat
+  `--select <field><op><value>` (`=` or `~` regex, ANDed; fields `rule`, `kind`, `area`, `title`,
+  `key`, `decision`, `status`, `type`, `noise`) instead of a unit key, for example
+  `bh backfill decide --select noise=branch-sync skip`. It reads the run's `collation.json`
+  (`--run-dir`), skips attach units and units that already have a live bead, supports
+  `--dry-run`, and refuses more than `--max` matches (new `backfill.decisions.select_max`,
+  default `200`, per hive under `backfill.hives.<prefix>.decisions`) without `--yes`. All
+  decisions are written in one batch, each its own decision bead with the selector as its reason.
+  The single-unit form is unchanged and nothing changes unless you pass `--select`. See
+  [BACKFILL.md](BACKFILL.md#operator-decisions).
+- **Collation files.** `bdlg.collation/1` gained members, written only when used (no version
+  bump); a 0.37 collation still reads. A default 0.38 run over a repository with branch-sync
+  merges writes the new vocabulary, which a `bh` older than 0.38.0 refuses, so do not read a 0.38
+  run directory with an older `bh`. With both opt-outs above and no other new option the run
+  writes the 0.37.1 collation byte for byte (as long as the attach options above stay unset). The
+  identify options `merge_fallback` and `merge_identity` and the record member `commit_candidates`
+  are written only when the opt-ins are on.
+
+## 0.37.0 → 0.37.1 — backfill apply fixes
+
+- **Fix: a create-mode `bh backfill history --until apply` no longer drops epic edges (bh-dvb8s,
+  #163).** The apply wrote one bead per load in bead-id order, so a child whose id sorted before
+  its epic lost its parent-child edge, and verification then failed with "unexpected corpus
+  drift" and rolled back. The apply now writes a bead's edge targets first, and a loss the
+  loader reports during a real write that the dry run did not announce fails the apply naming the
+  bead and edge. Nothing to run; re-run a backfill that rolled back.
+- **Fix: beads a create-mode backfill makes are no longer all P0 (bh-ohzms, #164).** `bd import`
+  fills priority 0 when a record omits it, so every created bead (area epics and doc units
+  included) ranked first for `ready` and `schedule`. Each create now states a priority from the
+  new `backfill.collate.create_priority` (default `2`, `bd create`'s own default; `0`-`4`),
+  overridable per hive under `backfill.hives.<prefix>.collate`. Beads created by earlier runs keep
+  P0, since a matched bead is never rewritten. To find and re-prioritise the open ones, review the
+  list first, then run the following (it also catches an `origin:backfill` bead you deliberately
+  set to P0):
+
+  ```sh
+  bd list --label origin:backfill --priority 0 --status open,in_progress --limit 0 --json | jq -r '.[].id' | xargs -r bd update --priority 2
+  ```
+
+## 0.36.0 → 0.37.0 — backfill re-run control
+
+There is no 0.36.1: the fixes planned for it ship here (see *Fixes* below).
+
+- **Docs and planning readers take `exclude` (bh-pieo5, #155).** Set
+  `backfill.sources.docs.options.exclude` / `backfill.sources.planning.options.exclude` to a csv of
+  globs (trailing `/` = subtree, no `/` = file name at any depth) to keep templates, archives or
+  generated docs out of a backfill; an explicit file an exclude matches is dropped with a warning.
+  Unset by default, so existing runs are unchanged.
+- **Default change: a backfilled doc bead is no longer closed by its add commit unless the doc
+  says it is done (bh-f4t6r, #153).** `backfill.collate.status.doc_default` is new and defaults
+  to `from-doc`. A doc-only unit (no merged or committed change, release, closed tracker item or
+  plan done marker behind it) whose doc declares `draft`, `proposed` (`status.doc_open`) or a
+  "design only" status is now created **open**, with its add commit as the creation moment and no
+  close event; other doc units still close, at the add commit or else the declared date. *Why:*
+  backfill writes a timeline, not a snapshot, so a draft doc's add commit must not be recorded
+  as a close that never happened. *Effect:* those beads now appear in `bd ready`; filter them with
+  `bd ready --exclude-label origin:backfill`. *Opt out:* set
+  `backfill.collate.status.doc_default = "closed"` for 0.36 output (identical for git-history
+  runs; a docs-only unit with a declared date now closes at that date in every mode but
+  `open`). **Existing beads are untouched**: only beads created by a run after the upgrade
+  follow the setting, and a created bead is never rewritten. A collation recorded by 0.36
+  reads back as `closed`.
+- **A docs-only `create = propose` run no longer creates beads from nothing (bh-uysl1).** A unit
+  with no evidence moment at all (no add commit, no declared date) is skipped and reported as
+  `skipped: no evidence moment` in the plan summary and `bh backfill view unit`, whatever
+  `doc_default` is. The default `git,docs,planning` run changes only as above.
+- **Per-hive backfill config (bh-g71fi, #156).** `backfill.hives.<prefix>.*` in the host config
+  overlays the `backfill` block for one hive (`BackfillConfig` minus `judge`; mappings merge, lists
+  and scalars replace), so `collate.areas`, `collate.create` and the readers' options can differ
+  per hive. `bh config get <key> --hive <prefix>` prints the effective value and its layer. Off by
+  default: a hive with no overlay behaves as before. See
+  [CONFIGURATION.md](CONFIGURATION.md#backfill-hives).
+- **`bh backfill decide` records per-unit decisions (bh-2sicb, #155).** `decide <unit-key>
+  skip|noise|link [<bead>]` (and `decide --deleted <bead-id> skip` for a bead already deleted)
+  writes one closed `decision` bead per unit into the hive's bead store; re-runs honour it, and
+  `backfill.decisions.on_delete = ignore|report|skip` (default `ignore`) can detect deleted beads.
+  A collation holding a decision uses the new `decision` step and `SKIP` class, which a pre-0.37.0
+  reader rejects; without decisions nothing changes.
+- **A re-run now appends the later transitions of a bead it created (bh-1vkff.3).** With
+  `from-doc` creating open beads, a re-run moves an open `origin:backfill` bead to `in_progress`
+  when its unit has an opened review, and closes it when closing evidence appears (a merged
+  review or change, a release, a closed tracker item, a plan done marker), each at the evidence's
+  own time and never rewriting an earlier event. A closed bead, a hand-made bead and a bead a
+  person moved are never touched. New `backfill.collate.status.close_on_evidence` and
+  `in_progress_on_evidence` (both default `true`; `false` keeps the current phase). Newly
+  created beads whose unit has an opened review start `in_progress` instead of `open`. A doc
+  bead now also matches the change its doc later attaches to, instead of a duplicate bead. See
+  [BACKFILL.md](BACKFILL.md#timeline).
+
+### Fixes (no action required)
+
+- **Python 3.11 loads again (bh-oyueb).** 0.33.0 through 0.36.0 crashed at command load on
+  Python 3.11 (`ValueError: mutable default <class 'mappingproxy'>`) because nine frozen-dataclass
+  fields used a shared `MappingProxyType` default; they now use `default_factory`. 3.12+ was
+  unaffected.
+- **A rolled-back backfill apply no longer hides what it created (bh-12hka).** Rolling back a
+  failed create-mode `bh backfill history` apply still retires the created beads (closed, reason
+  `backfill-rollback`; never deleted), but the audit now names them (`rollback_retired`,
+  `rollback_retired_count`), a created bead that is still open or missing after rollback is
+  reported as `rollback_residual` (state `rollback_failed`) instead of being skipped, and a
+  re-run revives a retired bead in place rather than matching it as already present.
+- **Roadmap is read once on case-insensitive filesystems (bh-29lke).** With no planning files or
+  globs configured, `ROADMAP.md` and `roadmap.md` resolved to the same file on macOS and every
+  item appeared twice; discovery now collapses names that are the same file. Explicit `files` and
+  `globs` are unchanged.
+- **Re-run behaviour documented (bh-muu6r).** `docs/BACKFILL.md` gains "Re-running after hand edits":
+  a re-run matches by `external_ref`, never rewrites an edited, closed or reopened backfilled bead
+  and proposes a deleted one again as NEW, so close unwanted beads rather than deleting them.
+
 ## 0.35.10 → 0.35.11 — patch fixes
 
 No action required. The new `bh doctor` findings are read-only: the two outbox ones are silent

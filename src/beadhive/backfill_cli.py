@@ -33,10 +33,12 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import json
 import os
 import re
+import time
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -72,10 +74,20 @@ from beadhive_backfill.coverage import (
 )
 from beadhive_backfill.source_passes import SOURCE_PASS_NAMES, parse_options
 from beadhive_backfill.timeline import PASS_NAME as TIMELINE_PASS
-from beadlog import ArchiveError, ArchiveReader, Generator, Group, ManifestError, write_archive
+from beadlog import (
+    ArchiveError,
+    ArchiveReader,
+    BeadRef,
+    Generator,
+    Group,
+    ManifestError,
+    fold,
+    write_archive,
+)
 from beadlog_sources import (
     HISTORY_ANNOTATION,
     BdReadError,
+    DecisionError,
     GapfillReader,
     HistoryRead,
     IdentifyConfirmationRequired,
@@ -101,6 +113,7 @@ from . import (
     registry,
 )
 from .backfill_bd import BdLoadError, BdStoreLoader, bd_store_loader, default_pre_state_path
+from .backfill_effective import BackfillHiveError, effective_backfill, effective_cfg
 from .backfill_gapfill import created_ids, gapfill_created, on_created_enabled
 from .modules.beadlog_store.contracts import BUILTIN_STORE, BeadlogStoreError
 from .modules.config.contracts import BackfillConfig, BackfillGapfillConfig, BackfillJudgeConfig
@@ -143,8 +156,10 @@ _ERRORS = (
     CoverageError,
     BdLoadError,
     BdReadError,
+    DecisionError,
     ArchiveError,
     ManifestError,
+    BackfillHiveError,
     OSError,
     ValueError,
 )
@@ -319,7 +334,7 @@ def refresh_coverage_after_apply(hive: str, quiet: bool = False) -> None:
     later passes call it too). The apply has already succeeded and is audited, so a refresh
     that fails only warns on stderr. ``quiet`` keeps stdout pure JSON."""
     try:
-        cfg = config.load()
+        cfg = effective_cfg(config.load(), hive)
         if not backfill_coverage.refresh_enabled(cfg):
             return
         cwd, group = _target(hive)
@@ -341,6 +356,7 @@ def refresh_coverage_at(
 ) -> None:
     """:func:`refresh_coverage_after_apply` for a hive the caller already resolved (the
     post-merge hook, which holds the hive entry and the branch it just merged onto)."""
+    cfg = effective_cfg(cfg, entry)
     if not backfill_coverage.refresh_enabled(cfg):
         return
     path = backfill_coverage.state_path(entry, cwd, config.home())
@@ -372,10 +388,13 @@ if refresh_coverage_after_apply not in complexity_backfill.APPLIED_HOOKS:
     complexity_backfill.APPLIED_HOOKS.append(refresh_coverage_after_apply)
 
 
-def gapfill_settings(cfg: Mapping[str, Any] | None = None) -> BackfillGapfillConfig:
-    """The ``backfill.timeline.gapfill`` settings (disabled unless the config enables them)."""
+def gapfill_settings(
+    cfg: Mapping[str, Any] | None = None, hive: str | None = None
+) -> BackfillGapfillConfig:
+    """The ``backfill.timeline.gapfill`` settings (disabled unless the config enables them),
+    as the hive's overlay (``backfill.hives.<prefix>``) resolves them when ``hive`` is given."""
     cfg = config.load() if cfg is None else cfg
-    section = (cfg.get("backfill") or {}).get("timeline") or {}
+    section = effective_backfill(cfg, hive).get("timeline") or {}
     return BackfillGapfillConfig.model_validate(section.get("gapfill") or {})
 
 
@@ -970,6 +989,10 @@ def _history_pass(
         if create == backfill_create.CREATE_PROPOSE
         else None
     )
+    if project_options is not None:
+        project_options = dataclasses.replace(
+            project_options, create_priority=options.create_priority
+        )
     return backfill_history.HistoryPass(
         corpus,
         directory,
@@ -1009,6 +1032,7 @@ def history_pass_for_plan(plan: Plan, group: Group, hive: str, *, cfg: Mapping[s
             f"the history plan's run directory {str(run_dir)!r} no longer holds its evidence and "
             "collation; rerun `bh backfill history` to plan again"
         )
+    cfg = effective_cfg(cfg, hive)
     backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
     collation = read_collation(files["collation"])
     recorded = collation.options
@@ -1018,6 +1042,7 @@ def history_pass_for_plan(plan: Plan, group: Group, hive: str, *, cfg: Mapping[s
         IdentifyOptions.from_json(recorded["identify"]),
         StatusOptions.from_json(recorded["status"]),
         str(report.get("create_mode") or "off"),
+        backfill.collate.create_priority,
     )
     return _history_pass(
         cfg,
@@ -1032,6 +1057,54 @@ def history_pass_for_plan(plan: Plan, group: Group, hive: str, *, cfg: Mapping[s
     )
 
 
+def _on_delete(
+    mode: str,
+    cwd: Path,
+    group: Group,
+    prefix: str,
+    hive: str,
+    cfg: Mapping[str, Any],
+    files: Mapping[str, Path],
+    manifest: Mapping[str, Any],
+    baseline: tuple[Any, ...],
+    last: int,
+    summary: dict[str, Any],
+) -> tuple[Any, ...]:
+    """``backfill.decisions.on_delete``: list (``report``) or also record as skip decisions
+    (``skip``, only on a run that reaches the apply stage) the beads the last apply created that
+    are gone now. ``ignore`` (default) does nothing, so a deleted bead's unit is proposed again.
+    Returns the baseline to collate against (re-read when decisions were written)."""
+    if mode == "ignore":
+        return baseline
+    from . import backfill_create, backfill_decisions
+
+    gone = backfill_decisions.deleted_units(files["plan"], baseline, applied="apply" in manifest)
+    if not gone:
+        return baseline
+    summary["deleted_since_apply"] = [{"unit": key, "bead": ident} for key, ident in gone]
+    for key, ident in gone:
+        typer.echo(f"! {ident} (unit {key}) was deleted since the last apply", err=True)
+    if mode == "report" or last < backfill_history.stage_index("apply"):
+        typer.echo(
+            "! `bh backfill decide --deleted <bead> skip` records each as a skip decision",
+            err=True,
+        )
+        return baseline
+    loader = store_loader(cwd, group=group.id)
+    labels = backfill_create.creation_labels(hive, cfg)
+    for key, _ in gone:
+        backfill_decisions.record_decision(
+            loader,
+            prefix=prefix,
+            labels=labels,
+            key=key,
+            kind="skip",
+            reason="deleted since the last apply (backfill.decisions.on_delete = skip)",
+            clock=decision_clock,
+        )
+    return tuple(loader.export())
+
+
 def _history_run(
     hive: str,
     sources: str | None,
@@ -1042,9 +1115,10 @@ def _history_run(
     as_json: bool,
 ) -> None:
     cfg = config.load()
-    backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
     summary: dict[str, Any] = {"until": until}
     try:
+        cfg = effective_cfg(cfg, hive)
+        backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
         last = backfill_history.stage_index(until)
         cwd, group = _target(hive)
         prefix = hive_prefix(hive)
@@ -1061,9 +1135,10 @@ def _history_run(
 
         # parse
         namespaces = list(directory.ledgers())
-        key = backfill_history.parse_key(
-            cwd, [(n, backfill_history.source_options(n, backfill, namespaces)) for n in names]
-        )
+        plan_options = [
+            (n, backfill_history.source_options(n, backfill, namespaces)) for n in names
+        ]
+        key = backfill_history.parse_key(cwd, plan_options)
         reused = (
             not refresh
             and files["evidence"].is_file()
@@ -1075,6 +1150,8 @@ def _history_run(
             corpus = backfill_history.read_sources(cwd, chosen, backfill, namespaces)
             backfill_history.write_evidence(corpus, files["evidence"])
         manifest["parse"] = {"key": key, "artifacts": len(corpus.artifacts), "reused": reused}
+        if boundary := backfill_history.exclude_boundary(cwd, plan_options):
+            manifest["parse"]["exclude_revs"] = boundary  # the shas this run's boundary resolved to
         summary["stages"]["parse"] = manifest["parse"]
         backfill_history.write_manifest(run, manifest)
         if last == 0:
@@ -1083,6 +1160,10 @@ def _history_run(
         # collate
         loader = store_loader(cwd, group=group.id)
         baseline = tuple(loader.export())
+        baseline = _on_delete(
+            backfill.decisions.on_delete, cwd, group, prefix, hive, cfg, files, manifest,
+            baseline, last, summary,
+        )  # fmt: skip
         prior, note = (
             backfill_history.load_prior(files["collation"])
             if backfill.judge.resume
@@ -1142,6 +1223,12 @@ def _history_run(
             "create": options.create,
             "units": plan.report.get("units") or {},
             "creates_skipped": plan.report.get("creates_skipped", 0),
+            "no_moment": list(plan.report.get("no_moment") or ()),
+            **(
+                {"hidden_commits": plan.report["hidden_commits"]}
+                if plan.report.get("hidden_commits")
+                else {}
+            ),
         }
         summary["stages"]["plan"] = manifest["plan"]
         backfill_history.write_manifest(run, manifest)
@@ -1166,7 +1253,7 @@ def _history_run(
         }
         summary["stages"]["apply"] = manifest["apply"]
         backfill_history.write_manifest(run, manifest)
-        gap = _gapfill_after_apply(cwd, group, plan, run)
+        gap = _gapfill_after_apply(cwd, group, plan, run, hive)
         if gap is not None:
             summary["stages"]["gapfill"] = gap
             manifest["gapfill"] = gap
@@ -1180,11 +1267,13 @@ def _history_run(
     _history_done(summary, files, as_json)
 
 
-def _gapfill_after_apply(cwd: Path, group: Group, plan: Plan, run: Path) -> dict[str, Any] | None:
+def _gapfill_after_apply(
+    cwd: Path, group: Group, plan: Plan, run: Path, hive: str | None = None
+) -> dict[str, Any] | None:
     """The ``backfill.timeline.gapfill.on_created`` pass: gap-fill exactly the beads this apply
     created (``None`` when it is off or nothing was created). The derived events go to
     ``<run>/gapfill.bdlg``; the store is only read."""
-    settings = gapfill_settings()
+    settings = gapfill_settings(hive=hive)
     created = created_ids(e for e in plan.applicable_events() if e.bead.group == group.id)
     if not on_created_enabled(settings) or not created:
         return None
@@ -1247,6 +1336,19 @@ def _history_done(summary: dict[str, Any], files: Mapping[str, Path], as_json: b
             typer.echo(
                 f"create is off: {plan['creates_skipped']} units matching no bead were not proposed"
             )
+        if plan.get("no_moment"):
+            shown = ", ".join(plan["no_moment"][:5])
+            more = ", ..." if len(plan["no_moment"]) > 5 else ""
+            typer.echo(
+                f"skipped: no evidence moment: {len(plan['no_moment'])} units were not created "
+                f"({shown}{more})"
+            )
+        if hidden := plan.get("hidden_commits"):
+            typer.echo(
+                f"hidden: {hidden['count']} commits in {hidden['units']} units that project "
+                "nothing (residual, NOISE or SKIP); see `bh backfill view unit`, or set "
+                "backfill.collate.identify.merge_fallback = commits"
+            )
         typer.echo(f"plan hash: {plan['plan_hash']}")
     if applied := stages.get("apply"):
         typer.echo(
@@ -1281,6 +1383,259 @@ def history_cmd(
     plan/verify/apply envelope as the other passes.
     """
     _history_run(hive, sources, until, run_dir, refresh, yes, as_json)
+
+
+def decision_clock() -> str:
+    """``decided_at`` of a decision (the seam tests replace with a fixed clock)."""
+    return system_clock()
+
+
+def _decide_args(
+    first: str, kind: str | None, bead: str | None, deleted: str | None
+) -> tuple[str | None, str, str | None]:
+    """``(unit key or None, kind, target)`` from the positionals of ``decide``; with ``--deleted``
+    the only positional is the decision (it arrives in ``first``)."""
+    if deleted is not None:
+        if kind is not None or bead is not None:
+            raise BackfillError("usage: bh backfill decide --deleted <bead-id> skip")
+        return None, first, None
+    if kind is None:
+        raise BackfillError("usage: bh backfill decide <unit-key> skip|noise|link [<bead>]")
+    return first, kind, bead
+
+
+def _decide_run(
+    args: tuple[str, str | None, str | None],
+    deleted: str | None,
+    reason: str,
+    hive: str,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    from . import backfill_create, backfill_decisions
+
+    try:
+        key, kind, target = _decide_args(*args, deleted)
+        cfg = config.load()
+        cwd, group = _target(hive)
+        prefix = hive_prefix(hive)
+        if not prefix:
+            raise BackfillError("the hive has no registered prefix (prefixes are never derived)")
+        if deleted is not None:
+            if kind != "skip":
+                raise BackfillError("--deleted records a skip decision only")
+            baseline = fold(store_loader(cwd, group=group.id).export())
+            if baseline.get(BeadRef(group.id, deleted)) is not None:
+                raise BackfillError(
+                    f"{deleted} still exists; decide on its unit key, or delete it first"
+                )
+            key = backfill_decisions.deleted_ref(cwd, deleted)
+        assert key is not None
+        loader = store_loader(cwd, group=group.id)
+        out = backfill_decisions.record_decision(
+            loader,
+            prefix=prefix,
+            labels=backfill_create.creation_labels(hive, cfg),
+            key=key,
+            kind=kind,
+            target=target,
+            reason=reason,
+            dry_run=dry_run,
+            clock=decision_clock,
+        )
+    except (*_ERRORS, DecisionError) as exc:
+        raise _fail(exc) from None
+    if as_json:
+        _emit(out)
+        return
+    verb = "would record" if dry_run else "recorded"
+    fields = out["fields"]
+    typer.echo(f"{verb} {out['action']} {out['bead']}: {fields.get('title', '')}")
+    typer.echo(f"  labels: {', '.join(out['labels'])}")
+    for name in sorted(fields):
+        if name.startswith("metadata.backfill."):
+            typer.echo(f"  {name}: {fields[name]}")
+    if dry_run:
+        typer.echo("  (dry run: nothing written)")
+
+
+def selection_now() -> float:
+    """Seconds since the epoch, for the age of the collation ``decide --select`` reads (the seam
+    tests replace, so no test depends on the wall clock)."""
+    return time.time()
+
+
+def _age(seconds: float) -> str:
+    """``seconds`` as a short age (``45s``, ``12m``, ``3h``, ``2d``)."""
+    seconds = max(0, int(seconds))
+    for limit, unit, size in ((60, "s", 1), (3600, "m", 60), (86400, "h", 3600)):
+        if seconds < limit:
+            return f"{seconds // size}{unit}"
+    return f"{seconds // 86400}d"
+
+
+def _select_args(first: str, kind: str | None, bead: str | None) -> tuple[str, str | None]:
+    """``(kind, target)`` of ``decide --select``: the positionals are ``skip|noise|link [<bead>]``
+    (a unit key among them is the usage error: a key and a selector are two ways to name units)."""
+    from beadlog_sources.decisions import KINDS
+
+    if first not in KINDS:
+        raise BackfillError(
+            "usage: --select replaces the unit key: bh backfill decide --select <field><op><value> "
+            "skip|noise|link [<bead>]"
+        )
+    if bead is not None:
+        raise BackfillError("usage: bh backfill decide --select <...> skip|noise|link [<bead>]")
+    return first, kind
+
+
+def _decide_select(
+    args: tuple[str, str | None, str | None],
+    select: list[str],
+    run_dir: Path | None,
+    max_units: int | None,
+    yes: bool,
+    reason: str,
+    hive: str,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    from . import backfill_create, backfill_decisions, backfill_select, backfill_views
+
+    try:
+        kind, target = _select_args(*args)
+        clauses = backfill_select.parse_clauses(select)
+        cfg = effective_cfg(config.load(), hive)
+        backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
+        cwd, group = _target(hive)
+        prefix = hive_prefix(hive)
+        if not prefix:
+            raise BackfillError("the hive has no registered prefix (prefixes are never derived)")
+        run = _run_dir_for(hive, backfill, run_dir)
+        try:
+            path = backfill_views.collation_path(run)
+        except backfill_views.ViewInputError:
+            raise BackfillError(
+                f"{run}: no collation; run `bh backfill collate` (or `bh backfill history`) first"
+            ) from None
+        age = selection_now() - path.stat().st_mtime
+        collation = backfill_views.load(path)
+        if not as_json:
+            typer.echo(f"collation: {path} (age {_age(age)})")
+        if max_units is not None and max_units < 1:
+            raise BackfillError("usage: --max must be at least 1")
+        limit = None if yes else (backfill.decisions.select_max if max_units is None else max_units)
+
+        def choose(states: Mapping[Any, Any]) -> tuple[list[str], list[tuple[str, str]]]:
+            found = backfill_select.select_units(
+                collation, clauses, backfill_select.live_external_refs(states)
+            )
+            return list(found.matched), list(found.excluded)
+
+        out = backfill_decisions.record_decisions(
+            store_loader(cwd, group=group.id),
+            prefix=prefix,
+            labels=backfill_create.creation_labels(hive, cfg),
+            choose=choose,
+            kind=kind,
+            target=target,
+            reason=backfill_select.selector_reason(clauses, reason),
+            dry_run=dry_run,
+            clock=decision_clock,
+            limit=limit,
+        )
+    except (
+        *_ERRORS,
+        DecisionError,
+        backfill_select.SelectError,
+        backfill_views.ViewInputError,
+    ) as exc:
+        raise _fail(exc) from None
+    out["collation"] = {"path": str(path), "age_seconds": int(age)}
+    out["select"] = [c.raw for c in clauses]
+    out["max"] = limit
+    if as_json:
+        _emit(out)
+        return
+    verb = "would record" if dry_run else "recorded"
+    typer.echo(f"select: {' AND '.join(out['select'])}")
+    for item in out["decisions"]:
+        typer.echo(f"  {verb} {kind} {item['bead']} ({item['action']}): {item['unit']}")
+        if dry_run:
+            for name in sorted(item["fields"]):
+                if name.startswith("metadata.backfill.") or name == "title":
+                    typer.echo(f"      {name}: {item['fields'][name]}")
+    for item in out["excluded"]:
+        typer.echo(f"  excluded {item['unit']}: {item['reason']}")
+    typer.echo(f"{len(out['decisions'])} unit(s) matched, {len(out['excluded'])} excluded")
+    if out["over_limit"]:
+        typer.echo(f"! more than {limit} matches: a real run needs --yes or a higher --max")
+    if dry_run:
+        typer.echo("(dry run: nothing written)")
+
+
+_SELECT_OPTION = typer.Option(
+    None,
+    "--select",
+    help="decide every unit of the run's collation that matches <field><op><value> "
+    "(repeatable, ANDed; op '=' exact or '~' regex; fields rule, kind, area, title, key, "
+    "decision, status, type, noise) instead of one unit key",
+)
+_MAX_OPTION = typer.Option(
+    None,
+    "--max",
+    help="with --select: refuse to decide more units than this (default "
+    "backfill.decisions.select_max, 200) unless --yes",
+)
+_YES_OPTION = typer.Option(False, "--yes", help="with --select: allow more matches than --max")
+_DECIDE_UNIT = typer.Argument(..., help="the unit key (with --deleted: just `skip`)")
+_DECIDE_KIND = typer.Argument(None, help="skip, noise or link")
+_DECIDE_BEAD = typer.Argument(None, help="the bead a link / noise decision names")
+
+
+@app.command("decide")
+def decide_cmd(
+    unit_key: str = _DECIDE_UNIT,
+    kind: str | None = _DECIDE_KIND,
+    bead: str | None = _DECIDE_BEAD,
+    deleted: str | None = typer.Option(
+        None,
+        "--deleted",
+        help="a deleted backfilled bead whose unit becomes a skip (its external_ref is read "
+        "with one `bd history <id>`)",
+    ),
+    reason: str = typer.Option("", "--reason", help="why (recorded on the decision)"),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="print the decision bead that would be written; write nothing"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit the decision as JSON"),
+    select: list[str] | None = _SELECT_OPTION,
+    run_dir: Path | None = _RUN_DIR_OPTION,
+    max_units: int | None = typer.Option(
+        None,
+        "--max",
+        help="with --select: refuse to decide more units than this (default "
+        "backfill.decisions.select_max, 200) unless --yes",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="with --select: allow more matches than --max"),
+) -> None:
+    """Record a per-unit decision in the hive's bead store, kept across re-runs.
+
+    skip: the unit is never proposed. noise: it is covered by the named epic. link: it is the
+    named existing bead. One closed `decision` bead per unit key (re-deciding updates it);
+    `bh backfill view decisions` lists them.
+
+    With --select the units come from the run's collation instead of one key: every match gets
+    the decision (attach units and units with a live bead are excluded), in one batched write;
+    each decision's reason is the selector.
+    """
+    if select:
+        _decide_select(
+            (unit_key, kind, bead), select, run_dir, max_units, yes, reason, hive, dry_run, as_json
+        )
+        return
+    _decide_run((unit_key, kind, bead), deleted, reason, hive, dry_run, as_json)
 
 
 @app.command("collate")
@@ -1357,6 +1712,26 @@ def view_cost_cmd(
     _show_view(lambda: backfill_views.cost_view(path, _cost_per_call()), as_json)
 
 
+@view_app.command("decisions")
+def view_decisions_cmd(
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+    as_json: bool = typer.Option(False, "--json", help="emit the view as JSON"),
+) -> None:
+    """The operator decisions recorded in the hive's bead store (`bh backfill decide`)."""
+    from . import backfill_decisions
+
+    try:
+        cwd, group = _target(hive)
+        view = backfill_decisions.list_decisions(store_loader(cwd, group=group.id))
+    except _ERRORS as exc:
+        raise _fail(exc) from None
+    if as_json:
+        _emit(view)
+        return
+    for line in backfill_decisions.render_decisions(view):
+        typer.echo(line)
+
+
 @view_app.command("verdicts")
 def view_verdicts_cmd(
     path: Path = _VIEW_PATH,
@@ -1392,7 +1767,7 @@ def export_cmd(
         out = out if out is not None else Path(default)
         state = None
         if history:
-            settings = gapfill_settings()
+            settings = gapfill_settings(hive=hive)
             state = gapfill_state_path(out) if settings.enabled else None
             events, annotations = _history_archive(
                 cwd, group, tuple(events), gapfill=settings, state=state
@@ -1861,7 +2236,7 @@ def coverage_cmd(
         cwd, group = _target(hive)
         cfg = config.load()
         path, ref = _coverage_target(cfg, hive, cwd)
-        settings = backfill_coverage.coverage_settings(cfg)
+        settings = backfill_coverage.coverage_settings(effective_cfg(cfg, hive))
         current = backfill_coverage.measure_hive(
             cwd,
             reader=store_loader(cwd, group=group.id),

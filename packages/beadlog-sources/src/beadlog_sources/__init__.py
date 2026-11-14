@@ -267,6 +267,25 @@ from .collate import ATTACH_REASONS, Attachment
 # --- end collate B4 ---
 # isort: split
 # --- collate B5 (bh-h8vxt) ---
+from .decisions import (
+    BEAD_TYPE as DECISION_BEAD_TYPE,
+)
+from .decisions import (
+    KINDS as DECISION_KINDS,
+)
+from .decisions import (
+    REF_PREFIX as DECISION_REF_PREFIX,
+)
+from .decisions import (
+    SOURCE_LABEL as DECISION_SOURCE_LABEL,
+)
+from .decisions import (
+    Decision,
+    DecisionError,
+    decision_events,
+    decision_id,
+    read_decisions,
+)
 from .identify import (
     CostPreview,
     IdentifyConfirmationRequired,
@@ -274,6 +293,8 @@ from .identify import (
     IdentifyOptionsError,
     IdentifyResult,
     IdentifyRun,
+    hidden_commits,
+    hidden_summary,
     identify,
     identify_units,
 )
@@ -292,6 +313,7 @@ from .lifecycle import (
     StatusOptionsError,
     conflicts_of,
     derive_lifecycle,
+    has_no_moment,
     lifecycle_of,
     lifecycles,
 )
@@ -299,6 +321,7 @@ from .lifecycle import (
 # --- end collate B6 ---
 # isort: split
 # --- project C (bh-rz6ys) ---
+from ._sources import ROLLBACK_REASON
 from .project import (
     DEFAULT_SOURCE_LABELS as PROJECT_DEFAULT_SOURCE_LABELS,
 )
@@ -307,6 +330,9 @@ from .project import (
 )
 from .project import (
     EVENT_KINDS as PROJECT_EVENT_KINDS,
+)
+from .project import (
+    NOTE_NO_MOMENT as PROJECT_NOTE_NO_MOMENT,
 )
 from .project import (
     Kept,
@@ -436,6 +462,15 @@ __all__ = [
     "HistoryEvents",
     "HistoryRead",
     "GitCommitsStrategy",
+    "DECISION_BEAD_TYPE",
+    "DECISION_KINDS",
+    "DECISION_REF_PREFIX",
+    "DECISION_SOURCE_LABEL",
+    "Decision",
+    "DecisionError",
+    "decision_events",
+    "decision_id",
+    "read_decisions",
     "JudgeProtocolError",
     "JsonCursorFile",
     "JudgeSettings",
@@ -525,6 +560,8 @@ __all__ = [
     "IdentifyOptionsError",
     "IdentifyResult",
     "IdentifyRun",
+    "hidden_commits",
+    "hidden_summary",
     "identify",
     "identify_prior_verdicts",
     "identify_units",
@@ -540,6 +577,8 @@ __all__ = [
     "StatusOptionsError",
     "conflicts_of",
     "derive_lifecycle",
+    "has_no_moment",
+    "PROJECT_NOTE_NO_MOMENT",
     "lifecycle_of",
     "lifecycles",
     # --- end collate B6 ---
@@ -549,6 +588,7 @@ __all__ = [
     "PROJECT_EVENT_KINDS",
     "Kept",
     "ProjectError",
+    "ROLLBACK_REASON",
     "ProjectOptions",
     "Projection",
     "UnitProjection",

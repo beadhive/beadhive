@@ -32,7 +32,10 @@ never imports `beadhive`.
   `include_types` (default `feat`). `review`/`merge`/`commit` units are grouped into area epics
   by path-prefix override, else majority CC scope, else top-level directory, else release
   window, with the `areas` override map. Each `Unit` keeps its key (the later `external_ref`),
-  rule and claimed artifact keys; release markers never make units.
+  rule and claimed artifact keys; release markers never make units. A merge unit is titled from
+  the merge body, its first commit or its branch name (`merge_titles`), is flagged `noise` when
+  its subject is a branch sync (`noise`; identify skips it), and with `merge_types` set carries
+  a derived `type` and is filtered by it.
   The collation's `options.cluster` records the effective `ClusterOptions`, so other options
   give other bytes.
 - **`bd` baseline strategy** (`beadlog_sources.bd`, entry point `bd`): one `bd -C <root> export

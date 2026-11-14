@@ -72,7 +72,7 @@ class ReadRequest:
     """
 
     root: Path
-    options: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    options: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, hash=False)
     cursor: Any = field(default=None, hash=False)
 
 

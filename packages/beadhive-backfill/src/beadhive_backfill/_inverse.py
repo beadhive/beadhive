@@ -28,8 +28,8 @@ from beadlog import (
     instant,
     mint_event,
 )
+from beadlog_sources import ROLLBACK_REASON
 
-ROLLBACK_REASON = "backfill-rollback"
 ROLLBACK_SYSTEM = "beadhive-backfill"
 _NO_INVERSE = frozenset({EventKind.COMMENT, EventKind.TOMBSTONE})
 

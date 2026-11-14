@@ -878,6 +878,28 @@ def test_new_beads_apply_and_create_rolls_back_by_retiring_never_deleting() -> N
     assert sink.entries[-1].state is AuditState.ROLLED_BACK
 
 
+def test_a_created_bead_that_vanishes_from_the_store_is_residual_not_silently_skipped() -> None:
+    """bh-12hka: an inverse skipped because the fresh read lacks a completed unit's bead (a
+    loader that re-minted the id) is a residual and a failed rollback, never a clean one."""
+    store = FakeStore(bead("h-old", title="Existing unrelated work"))
+    eng = engine()
+    pass_ = CreatePass({"h-a": "Brand new alpha item", "h-b": "Brand new beta item"})
+    plan = eng.plan(pass_, store)
+    store.fail = lambda event: event.bead.id == "h-b" and event.kind == "label_add"
+
+    class Lossy:
+        def export(self) -> tuple[beadlog.BeadEvent, ...]:
+            return tuple(e for e in store.events if e.bead.id != "h-a")
+
+    sink = ListSink()
+    with pytest.raises(BackfillError, match="rollback was incomplete"):
+        apply(eng, plan, store, sink, reader=Lossy(), pass_=pass_)  # type: ignore[arg-type]
+    final = sink.entries[-1]
+    assert final.state is AuditState.ROLLBACK_FAILED
+    assert any("h-a" in item and "missing" in item for item in final.rollback_residual)
+    assert final.recovery.rollback_complete is False
+
+
 def test_new_beads_apply_and_converge() -> None:
     store = FakeStore(bead("h-old", title="Existing unrelated work"))
     eng = engine()

@@ -14,6 +14,12 @@ Options (``ReadRequest.options``; every value may be a string, lists are comma-s
 - ``globs``: extra glob patterns relative to the root (``docs/**/*.md``), routed by detection.
 - ``files``: explicit files of any extension, routed by ``DocFormat.detect`` (no format detects
   one: an error).
+- ``exclude``: globs (repo-relative posix paths; ``**``, ``*``, ``?``, ``[..]``) whose files are
+  dropped, applied last over layouts, ``globs`` and ``files``. A trailing ``/`` matches that
+  subtree; a pattern with no other ``/`` matches a name at any depth (gitignore-like), one with
+  an inner ``/`` is root-anchored. An explicit ``files`` entry
+  an exclude matches is dropped with a warning naming the file and the pattern. A leading ``!``
+  is an error (reserved). Default empty: nothing is excluded.
 - ``formats``: enabled format names (``markdown``, ``html``; default ``markdown``).
 - ``namespaces``: bead id prefixes that make a token bead-looking (``bh,hq``), see
   :mod:`beadlog_sources.tokens`; without them a generic shape is used (it misses digit-free ids).
@@ -36,7 +42,15 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from ._sources import SourceError, csv, first_adds, is_git_repo, truthy
+from ._sources import (
+    SourceError,
+    csv,
+    exclude_matcher,
+    first_adds,
+    is_git_repo,
+    truthy,
+    warn_explicit_excluded,
+)
 from .doc_formats import BUILTIN_FORMATS, DocFormat, ParsedDoc
 from .doc_metadata import normalize_doc_metadata
 from .evidence import Artifact, Category, Ref
@@ -134,11 +148,14 @@ class DocsReader:
     ) -> dict[str, tuple[DocFormat, str]]:
         """Repo-relative posix path -> (format, git pathspec that covers it)."""
         found: dict[str, tuple[DocFormat, str]] = {}
+        exclude = exclude_matcher(options.get("exclude", ""))
 
         def add(path: Path, spec: str) -> None:
             if not path.is_file():
                 return
             relative = path.relative_to(root).as_posix()
+            if exclude.match(relative) is not None:
+                return
             doc_format = _detect(formats, relative)
             if doc_format is not None:
                 found.setdefault(relative, (doc_format, spec))
@@ -165,6 +182,10 @@ class DocsReader:
             if not path.is_file():
                 raise SourceError(f"docs file {name!r} does not exist under {root}")
             relative = path.relative_to(root).as_posix()
+            hit = exclude.match(relative)
+            if hit is not None:
+                warn_explicit_excluded("docs", relative, hit)
+                continue
             doc_format = _detect(formats, relative)
             if doc_format is None:
                 raise SourceError(f"no enabled doc format detects {name!r}")

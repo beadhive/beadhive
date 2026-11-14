@@ -363,7 +363,7 @@ class Artifact:
     title: str
     occurred_at: str | None
     attrs: Mapping[str, Any] = field(hash=False)
-    raw_attrs: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    raw_attrs: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, hash=False)
     refs: tuple[Ref, ...] = ()
     provenance: str = OBSERVED
     reader: str
@@ -487,7 +487,7 @@ class ReaderHeader:
 
     name: str
     version: str
-    options: Mapping[str, Any] = field(default=_EMPTY, hash=False)
+    options: Mapping[str, Any] = field(default_factory=lambda: _EMPTY, hash=False)
     cursor: Any = field(default=None, hash=False)
 
     def __post_init__(self) -> None:

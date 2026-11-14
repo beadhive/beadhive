@@ -382,6 +382,36 @@
           "title": "Lexical Percent",
           "type": "integer"
         },
+        "max_per_unit": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opt-in. Unset (default): no cap. The most docs a unit takes from the guessing tiers (shared-path, lexical); explicit and same-change attachments are exempt. A doc over the cap falls to the next tier, then stands alone.",
+          "title": "Max Per Unit"
+        },
+        "rank": {
+          "default": "evidence",
+          "description": "How shared-path picks among candidate units. evidence (default): most evidence, then key. proximity: nearest in time to the doc's add commit, then subject overlap, then edit size (paths touched), then key; the runner-up is recorded.",
+          "enum": [
+            "evidence",
+            "proximity"
+          ],
+          "title": "Rank",
+          "type": "string"
+        },
+        "rename_guard": {
+          "default": false,
+          "description": "Opt-in. A doc moved by its first-add commit (a rename) is not attached through that commit, so a reorganising merge does not collect the docs it moved. Makes the git reader keep rename status.",
+          "title": "Rename Guard",
+          "type": "boolean"
+        },
         "standalone": {
           "default": true,
           "description": "Make a doc-unit of a doc no tier attached.",
@@ -389,11 +419,12 @@
           "type": "boolean"
         },
         "tiers": {
-          "description": "Attach tiers run, in order; drop one to turn it off.",
+          "description": "Attach tiers run, in order; drop one to turn it off. own-add is opt-in (not in the default list): a doc whose first-add commit no unit claimed becomes a doc-unit of its own, evidenced by that commit; place it after same-change.",
           "items": {
             "enum": [
               "explicit",
               "same-change",
+              "own-add",
               "shared-path",
               "lexical"
             ],
@@ -414,7 +445,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Per-hive area overrides: a key with a / is a path prefix, any other key renames a derived area.",
+          "description": "Area overrides (a hive's own: backfill.hives.<prefix>.collate.areas): a key with a / is a path prefix, any other key renames a derived area.",
           "title": "Areas",
           "type": "object"
         },
@@ -423,13 +454,21 @@
         },
         "create": {
           "default": "off",
-          "description": "off (default): link only, units that match no bead are reported and propose nothing. propose: a unit that matches no bead is proposed as a closed bead.",
+          "description": "off (default): link only, units that match no bead are reported and propose nothing. propose: a unit that matches no bead is proposed as a bead (closed, or open for a draft or proposed doc under status.doc_default).",
           "enum": [
             "off",
             "propose"
           ],
           "title": "Create",
           "type": "string"
+        },
+        "create_priority": {
+          "default": 2,
+          "description": "Priority (0 = highest, 4 = lowest) every bead a create-mode apply makes carries, epics and doc units included; 2 matches `bd create`. Beads made by earlier runs keep what they were stored with.",
+          "maximum": 4,
+          "minimum": 0,
+          "title": "Create Priority",
+          "type": "integer"
         },
         "epics": {
           "default": true,
@@ -448,12 +487,47 @@
           "title": "Include Types",
           "type": "array"
         },
+        "merge_titles": {
+          "default": "derived",
+          "description": "derived (default since 0.38): a merge unit is titled from the merge body's first line, else its first commit's subject, else a readable branch name. subject: the merge subject (0.37 titles).",
+          "enum": [
+            "derived",
+            "subject"
+          ],
+          "title": "Merge Titles",
+          "type": "string"
+        },
+        "merge_types": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opt-in. Unset (default): the merge rule makes a unit of every merge and derives no type. A list of merge types (conventional types, untyped, or * for any) limits the merge rule to those merges and records each unit's type; a merge left out releases its commits to the commit rule. * records the type without filtering. include_types stays commit-only.",
+          "title": "Merge Types"
+        },
         "min_epic_units": {
           "default": 2,
           "description": "Fewest units an area needs for an epic.",
           "minimum": 1,
           "title": "Min Epic Units",
           "type": "integer"
+        },
+        "noise": {
+          "description": "Merge subject shapes flagged as noise (default since 0.38: branch-sync, Merge branch 'x' [into y] and Merge remote-tracking branch 'x', never a pull request merge). A flagged merge stays visible in view unit, is skipped by identify and releases its commits to the commit rule. [] flags none (0.37).",
+          "items": {
+            "const": "branch-sync",
+            "type": "string"
+          },
+          "title": "Noise",
+          "type": "array"
         },
         "path_depth": {
           "default": 1,
@@ -500,9 +574,21 @@
           "$ref": "#/$defs/BackfillCoverageConfig",
           "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
         },
+        "decisions": {
+          "$ref": "#/$defs/BackfillDecisionsConfig",
+          "description": "Operator decisions (bh backfill decide): what a deleted bead's unit becomes."
+        },
         "history": {
           "$ref": "#/$defs/BackfillHistoryConfig",
           "description": "bh backfill history: run directory, default sources, ledger restriction."
+        },
+        "hives": {
+          "additionalProperties": {
+            "$ref": "#/$defs/BackfillHiveOverlay"
+          },
+          "description": "Per-hive overlays keyed by the hive's registered prefix (never derived): backfill.hives.<prefix>.<section>... overrides the host block for that hive. Host config only; judge is not overridable.",
+          "title": "Hives",
+          "type": "object"
         },
         "judge": {
           "$ref": "#/$defs/BackfillJudgeConfig",
@@ -602,6 +688,32 @@
         }
       },
       "title": "BackfillCoverageConfig",
+      "type": "object"
+    },
+    "BackfillDecisionsConfig": {
+      "additionalProperties": false,
+      "description": "``backfill.decisions`` — how a re-run treats a backfilled bead that was deleted.",
+      "properties": {
+        "on_delete": {
+          "default": "ignore",
+          "description": "ignore (default): a deleted backfilled bead's unit is proposed again. report: a re-run lists the beads the last apply created that are gone now. skip: also records a skip decision for each (`bh backfill decide --deleted <bead> skip` does the same one bead at a time, whatever this says).",
+          "enum": [
+            "ignore",
+            "report",
+            "skip"
+          ],
+          "title": "On Delete",
+          "type": "string"
+        },
+        "select_max": {
+          "default": 200,
+          "description": "`bh backfill decide --select` refuses to decide more units than this in one run unless `--max` raises it or `--yes` is given.",
+          "minimum": 1,
+          "title": "Select Max",
+          "type": "integer"
+        }
+      },
+      "title": "BackfillDecisionsConfig",
       "type": "object"
     },
     "BackfillDocsSourceConfig": {
@@ -740,6 +852,42 @@
       "title": "BackfillHistoryConfig",
       "type": "object"
     },
+    "BackfillHiveOverlay": {
+      "additionalProperties": false,
+      "description": "``backfill.hives.<prefix>`` — one hive's overlay of the host ``backfill`` block.\n\nEvery section of :class:`BackfillConfig` **except** ``judge`` (one host-wide credit-spending\ncommand stays one host-wide setting, so a ``judge`` key is rejected here) and ``hives``\nitself (overlays do not nest). Only the keys the operator wrote take effect: the overlay is\nmerged key by key over the host block (mappings merge, lists and scalars replace).",
+      "properties": {
+        "collate": {
+          "$ref": "#/$defs/BackfillCollateConfig",
+          "description": "Collation options (B3 to B6) and the create mode of bh backfill history."
+        },
+        "continuous": {
+          "$ref": "#/$defs/BackfillContinuousConfig",
+          "description": "Opt-in incremental backfill after merges and syncs."
+        },
+        "coverage": {
+          "$ref": "#/$defs/BackfillCoverageConfig",
+          "description": "Link-coverage metrics: what is measured and the opt-in cache refresh."
+        },
+        "decisions": {
+          "$ref": "#/$defs/BackfillDecisionsConfig",
+          "description": "Operator decisions (bh backfill decide): what a deleted bead's unit becomes."
+        },
+        "history": {
+          "$ref": "#/$defs/BackfillHistoryConfig",
+          "description": "bh backfill history: run directory, default sources, ledger restriction."
+        },
+        "sources": {
+          "$ref": "#/$defs/BackfillSourcesConfig",
+          "description": "Per-reader settings of the history pipeline (docs formats, github opt-in)."
+        },
+        "timeline": {
+          "$ref": "#/$defs/BackfillTimelineConfig",
+          "description": "History/timeline export settings, including the opt-in dolt_history gap fill."
+        }
+      },
+      "title": "BackfillHiveOverlay",
+      "type": "object"
+    },
     "BackfillIdentifyConfig": {
       "additionalProperties": false,
       "description": "``backfill.collate.identify`` — B5, identifying units against the baseline.",
@@ -750,6 +898,26 @@
           "minimum": 1,
           "title": "Max Candidates",
           "type": "integer"
+        },
+        "merge_fallback": {
+          "default": "none",
+          "description": "Opt-in. none (default): a merge unit that ends residual, NOISE or SKIP projects nothing (its commits are reported as hidden_commits). commits: such a merge is replaced by the commit-rule units of its commits (those include_types admits), which are identified in the same run.",
+          "enum": [
+            "none",
+            "commits"
+          ],
+          "title": "Merge Fallback",
+          "type": "string"
+        },
+        "merge_identity": {
+          "default": "unit",
+          "description": "Opt-in. unit (default): a merge unit is identified by its own title. commits: a merge none of whose commits has a baseline candidate is NEW, whatever its own title matched; a merge whose commits partly match keeps the usual flow and the run records which commits matched.",
+          "enum": [
+            "unit",
+            "commits"
+          ],
+          "title": "Merge Identity",
+          "type": "string"
         },
         "new_threshold": {
           "anyOf": [
@@ -891,6 +1059,12 @@
           "title": "Clock Tolerance Seconds",
           "type": "integer"
         },
+        "close_on_evidence": {
+          "default": true,
+          "description": "A re-run appends the closed transition to an open (or backfill-started) origin:backfill bead whose unit now has closing evidence (a merged change or review, a release, a closed tracker item, a plan done marker), at the evidence's own time. false leaves such beads in their current phase.",
+          "title": "Close On Evidence",
+          "type": "boolean"
+        },
         "date_tolerance_days": {
           "default": 1,
           "description": "Days a doc's declared date may differ from its add commit.",
@@ -905,6 +1079,40 @@
           },
           "title": "Design Only",
           "type": "array"
+        },
+        "doc_default": {
+          "default": "from-doc",
+          "description": "Status of a unit with no evidential closure (only docs). from-doc (default): open when a doc declares a status in doc_open (or a design-only phrase), else closed; the add commit is then the unit's creation, never its close. closed: the add commit closes it (0.36 output for git-history runs). open: every such unit stays open. Evidence always wins.",
+          "enum": [
+            "closed",
+            "open",
+            "from-doc"
+          ],
+          "title": "Doc Default",
+          "type": "string"
+        },
+        "doc_open": {
+          "description": "Declared doc statuses that keep a unit open under doc_default = from-doc.",
+          "items": {
+            "enum": [
+              "proposed",
+              "draft",
+              "accepted",
+              "delivered",
+              "superseded",
+              "rejected",
+              "deprecated"
+            ],
+            "type": "string"
+          },
+          "title": "Doc Open",
+          "type": "array"
+        },
+        "in_progress_on_evidence": {
+          "default": true,
+          "description": "A unit with in-progress evidence (an opened review) gets an in_progress transition at the evidence's own time, on creation and on a re-run. false writes none.",
+          "title": "In Progress On Evidence",
+          "type": "boolean"
         },
         "rules": {
           "description": "Conflict rules run. The clock-* rules are opt-in.",

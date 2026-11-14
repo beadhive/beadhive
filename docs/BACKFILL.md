@@ -32,6 +32,9 @@ bh backfill coverage     [--hive H] [--refresh] [--json]
 bh backfill history      [--hive H] [--sources S,...] [--until parse|collate|plan|apply] [--run-dir D] [--refresh] [--yes] [--json]
 bh backfill collate      [--hive H] [--sources S,...] [--run-dir D] [--refresh] [--yes] [--json]
 bh backfill view         unit|conflict|xref|cost|verdicts RUN_DIR|COLLATION.json [--json]
+bh backfill view         decisions [--hive H] [--json]
+bh backfill decide       UNIT_KEY skip|noise|link [BEAD] [--reason R] [--hive H] [--dry-run] [--json]
+bh backfill decide       --deleted BEAD_ID skip [--reason R] [--hive H] [--dry-run] [--json]
 bh backfill export       [--hive H] [--out F.bdlg] [--history] [--store bd|xtdb] [--json]
 bh backfill inspect      F.bdlg [--json]
 bh backfill verdicts     F.bdlg|COLLATION.json [--class C]... [--engine E] [--min-confidence X] [--max-confidence X] [--json]
@@ -248,19 +251,136 @@ run directory the plan recorded.
 bead projects nothing (the plan reports how many events were not proposed). The projector writes
 PRESENT units' `git.commits`, `external_ref` and cross-reference stamps; nothing is overwritten.
 
+**Merge units: titles, types and branch syncs (0.38.0).** The `merge` rule makes a unit of every
+free first-parent merge. Three settings shape those units
+(`design/backfill-merge-heavy-repos-adr.md`, D2 to D4):
+
+- **Titles** (`backfill.collate.merge_titles`, default `derived`). A merge unit is titled by the
+  first of: the merge body's first line (GitHub puts the pull request title there; a line that is
+  itself a `Merge ...` line is skipped), the subject of the oldest commit the merge brings in, a
+  readable branch name (`fix/render-crash` becomes `Render crash`), else the merge subject. A
+  pull request title still comes first when the `github` source is on (the `review` rule). The git
+  reader records the body line as the `body_head` attr of merge artifacts, so the first run after
+  an upgrade reads the evidence again; `merge_titles = subject` keeps the merge subject and does
+  not record `body_head`. A title feeds identify's lexical step, so verdicts of merge units can
+  shift; the unit key (the merge sha) is unchanged, so a bead made earlier stays linked through
+  its `external_ref` and is never retitled.
+- **Branch-sync noise** (`backfill.collate.noise`, default `[branch-sync]`). A merge whose subject
+  is `Merge branch '<x>'` (optionally `into <y>`) or `Merge remote-tracking branch '<x>'`, and that
+  names no pull request, is flagged `noise: branch-sync`. It stays a unit, visible in
+  `bh backfill view unit`, but identify gives it a derived `SKIP` verdict at the new step
+  `branch-sync` (after an operator decision and an existing `external_ref`), so nothing is
+  projected. It claims only the merge commit; the commits it brings in are released to the
+  `commit` rule, the merges inside it (which were never first-parent merges) are considered as
+  merge units of their own, and the unit joins no area epic. A pull request merge is never flagged.
+  `noise = []` turns it off.
+- **Merge types** (`backfill.collate.merge_types`, opt-in, default unset). A merge's type is its
+  branch prefix (`feat/x`, with the aliases `feature`, `bugfix` and `hotfix`), else the most
+  significant conventional type among its commits (`feat`, `fix`, `perf`, `refactor`, `revert`,
+  `build`, `ci`, `docs`, `test`, `style`, `chore`; a breaking change counts as `feat`), else
+  `untyped`. Setting `merge_types` to a list (types, `untyped`, or `*`) limits the merge rule to
+  those merges and records each unit's `type`; a merge left out releases its commits to the
+  `commit` rule. `*` records the type without filtering. Unset: every merge, no type.
+  `include_types` still applies to commits only. A merge left out releases its inner merges the
+  same way.
+
+All three are per hive: `backfill.hives.<prefix>.collate.*`. `collate.noise = []` together with
+`collate.merge_titles = subject` restores the 0.37.1 output.
+
+**Doc attachment for merge-heavy repositories (0.38.0).** B4 attaches each design record to at
+most one unit by the first tier that finds one (`explicit`, `same-change`, `shared-path`,
+`lexical`). Four opt-in settings, all off by default, tame the guessing tiers
+(`design/backfill-merge-heavy-repos-adr.md`, D8; every one is per hive under
+`backfill.hives.<prefix>.collate.attach.*`):
+
+- **`max_per_unit`** (default unset: no cap). A unit takes at most that many docs from the
+  guessing tiers, `shared-path` and `lexical`. `explicit` and `same-change` attachments are exempt
+  (the doc names the unit, or the unit added it, so a feature that really adds five docs keeps
+  them) and are not counted. Over the cap the unit keeps the docs with the most evidence, then the
+  smaller doc key; the rest go to the next tier, then stand alone. The outcome is deterministic.
+- **`rename_guard`** (default off). A doc whose first-add commit moved it (a rename, not an
+  authoring) is not attached through that commit by `same-change`, `own-add` or `shared-path`, so
+  a reorganising merge no longer collects the docs it moved; such a doc falls to the next tier or
+  stands alone. It is a per-doc test, so it needs no threshold. It makes the git reader keep
+  rename status: the reader option `keep_renames` (set for you when `rename_guard` is on) adds the
+  attr `renamed` (the destination paths of a commit's rename entries) to every change; with the
+  option off the evidence is byte-identical to before.
+- **`own-add` tier** (opt-in, not in the default `tiers`). Add `own-add` to `tiers`, after
+  `same-change` and before `shared-path`: a doc whose first-add commit exists but no unit claimed
+  (a `docs:` commit under `include_types = [feat]`) becomes a unit of its own, with that commit as
+  its evidence (the anchor of the unit that implements it is added when one is found, so a later
+  version can link them; `related` links are not part of 0.38.0). Without the tier the doc
+  attaches or stands alone as before.
+- **`rank`** (default `evidence`). Among `shared-path` candidates `evidence` picks the unit with
+  the most evidence, then the smaller key. `proximity` orders by the time distance from the doc's
+  add commit to the unit's anchor, then subject overlap (more first), then the paths its changes
+  touched (the reader records no line counts, so edit size is the path count), then key, and
+  records the runner-up (`unit`, `distance` in seconds, `overlap`, `paths`) on the attachment;
+  `bh backfill view unit` prints it under the unit that took the doc.
+
+**Hidden commits, the merge fallback and commit-based identity (0.38.0, #154).** A unit that
+projects nothing (residual, NOISE or SKIP) used to swallow the commits it claimed: a merge unit
+sweeps its second-parent commits in as artifacts, so when identify held it residual on a weak
+candidate its `feat` commits appeared nowhere in the plan.
+
+- **Reporting (always on, additive).** A commit claimed by a residual, NOISE or SKIP unit (an
+  operator `skip` included) is *hidden*; one attached to a NEW or PRESENT unit is not, and a
+  branch-sync merge hides nothing because it claims only itself and releases its commits to the
+  `commit` rule. The plan summary of `bh backfill history` gains `hidden_commits`
+  (`{"count": N, "units": M}`), `bh backfill view unit` gains a top-level `hidden_commits`
+  (`count`, `units` and `by_unit`: each unit's key, decision and commit shas) and each affected
+  unit row gains `hidden_commits: [shas]`. The keys appear only when something is hidden, so a run
+  that hides nothing prints what it printed before. Created beads never change.
+- **Fallback** (`backfill.collate.identify.merge_fallback = commits`, opt-in, default `none`). A
+  `merge`-rule unit that ends residual, NOISE or SKIP is replaced by the commit-rule units of its
+  commits (those `include_types` admits) and those are identified in the same run: a deterministic
+  second cluster, attach and identify pass over exactly those merges, never a clustering option.
+  The commit units have the keys the `commit` rule would make, so a second run finds the beads
+  they made by `external_ref` and proposes nothing. A merge none of whose commits `include_types`
+  admits is kept (and so stays reported as hidden); a merge the second pass newly exposes (one
+  inside a released merge) is not released again. This gives up the one-bead-per-PR grouping for
+  those merges, which is why it is opt-in. The fallback never releases an operator decision: a
+  merge decided with `bh backfill decide` (`skip` or `noise`, verdict step `decision`) is kept and
+  its commits stay reported as hidden; decide the commit units instead.
+- **Commit-based identity** (`backfill.collate.identify.merge_identity = commits`, opt-in, default
+  `unit`). A merge unit whose own title has a baseline candidate is checked commit by commit with
+  the step 3 test (does a baseline bead share a title token with the commit's subject?). When none
+  of its commits has a candidate the merge is NEW (`no-candidate`, derived, review required), so a
+  weak candidate that none of its commits matches no longer holds the PR back. A merge whose
+  commits partly or all match keeps the existing flow (lexical, judge, threshold, residual): the
+  matching commits suggest the PR is already represented, so promoting it would duplicate. Every
+  verdict and residual record of a merge judged this way carries `commit_candidates`
+  (`with_candidate` and `without_candidate`, commit keys), and `view unit` shows the counts. A
+  merge with no commits of its own is unchanged.
+
+With `merge_identity = commits` a merge-heavy history yields one bead per PR titled from the PR,
+its commits attached as `git.commits`, and a second run proposes nothing. Both options are per
+hive: `backfill.hives.<prefix>.collate.identify.*`.
+
 `bh backfill view` reviews a run, read-only, over a run directory or any `bdlg.collation/1` JSON.
 Each view is its own verb because adding parameters to the published `inspect` would break the
 wire contract:
 
 | View | Shows |
 |---|---|
-| `unit [--decision D]` | every unit with its NEW / PRESENT / NOISE / residual decision, bead, status and dates |
+| `unit [--decision D]` | every unit with its NEW / PRESENT / NOISE / SKIP / residual decision, bead, status and dates; a merge unit also shows its `noise` flag and, under `merge_types`, its `type`; `hidden_commits` (only when a unit that projects nothing holds commits) and, under `merge_identity = commits`, `commit_candidates` |
 | `conflict` | status conflicts between sources, both sides shown, none resolved |
 | `xref` | references to other ledgers' beads and to tracker items |
 | `cost` | judge calls recorded and their estimated cost |
 | `verdicts` | the judge verdicts, the same view as `bh backfill verdicts` |
+| `decisions [--hive H]` | the operator decisions recorded in the hive's bead store (no run directory needed) |
 
 `--json` emits `beadhive.backfill.view/1` (`view`, `path`, counts and the records).
+
+#### Per-hive settings
+
+Every `backfill` setting can differ per hive: `backfill.hives.<prefix>.*` in the host config
+overlays the host block for the hive with that registered prefix (mappings merge key by key, lists
+and scalars replace; `judge` stays host-wide and is rejected inside an overlay). `collate.areas`
+is therefore truly per hive, and so are the readers' `options`, `collate.create`, the coverage,
+gap fill and continuous settings. A hive with no overlay runs as before. See
+[CONFIGURATION.md](CONFIGURATION.md#backfill-hives); `bh config get <key> --hive <prefix>` shows
+the effective value and the layer it came from.
 
 ### `bh backfill verify`
 
@@ -328,7 +448,24 @@ otherwise, with identical results). Options (`--option key=value`): `layouts` (p
 (`docs/reviews`, review-tool HTML exports); `none`), `globs`, `files` (any extension a format
 detects), `formats` (`markdown` by default; add `html` to read `.html`/`.htm` docs: title from
 `<title>` else the first `<h1>`, `<meta name=...>` as metadata, a visible `Status:` line, `h1`-`h6`
-sections; stdlib `html.parser` only, script/style ignored), `namespaces`, `first_add`, `git`.
+sections; stdlib `html.parser` only, script/style ignored), `exclude` (below), `namespaces`,
+`first_add`, `git`.
+
+**Excluding files (`exclude`, docs and planning readers).** `exclude` is a comma-separated list of
+globs over repo-relative posix paths (`**`, `*`, `?`, `[..]`; `*` and `?` stay within one path
+segment, `**` crosses them). A trailing `/` matches the whole subtree below a directory. Like
+gitignore, a pattern with no other `/` matches by name at any depth: `archive/` excludes
+`archive/x.md` and `docs/archive/x.md` (not `docs/archived/x.md`) and `template.md` excludes that
+file name anywhere. A pattern with an inner `/` is anchored at the repository root
+(`docs/archive/` does not match `other/docs/archive/`). It is applied last, over layouts, `globs`,
+the conventional roadmap names and `files`. An explicitly named `files` entry that an exclude
+matches is dropped with a warning naming the file and the pattern. A leading `!` is a validation
+error (reserved for a later negation syntax). The default is empty (nothing excluded, output
+unchanged). The option is part of the run header, so changing it invalidates reused evidence. In a
+hive, set it per reader, for example `backfill.sources.docs.options = { exclude =
+"docs/archive/,template.md" }` and `backfill.sources.planning.options = { exclude =
+"docs/plans/generated/" }`. For the planning reader it also applies to GSD plan files; a phase
+whose plans are all excluded is dropped.
 
 Bead-token recognition is shared (`beadlog_sources.tokens`). With `namespaces` (id prefixes, for
 example `bh,hq`) every `<ns>-<id>` is a token. Without them a generic shape is used (a short
@@ -345,6 +482,42 @@ registration; the same name with different targets is an error (`beadlog: Duplic
 exit 1). A third-party reader registers under `[project.entry-points."beadlog.readers"]` and
 implements `beadlog_sources.SourceReader` (`name`, `version`, `categories`, and a pure
 `read(ReadRequest) -> Iterable[Artifact]` that never touches a store).
+
+**Git boundary, tags and dates (`git` reader).** All opt-in; with none set a run is the two
+`git` processes it always was and the evidence is byte-identical. In a hive set them per hive,
+for example `backfill.hives.<prefix>.sources.git.options = { exclude_revs = "upstream/main" }`.
+
+- `exclude_revs` (csv of refs): a boundary for a fork. Each ref is resolved **on every run** with
+  `git rev-parse --verify <ref>^{commit}` and passed to `git log` as `^<sha>`, so those commits and
+  their ancestors are left out and the run reads only the fork's own history. A ref that does not
+  resolve fails the run naming it (it is never skipped: that would read the whole upstream). It
+  composes with the cursor and with `since` (`base..rev ^sha`): moving upstream only removes
+  commits from the range and never rewinds a cursor. Unlike a per-hive `since` pinned to the
+  upstream tip, nothing needs refreshing when upstream advances. The resolved shas are hashed into
+  the parse key (an upstream-only change re-reads; an unchanged upstream reuses evidence) and
+  recorded in `run.json` as `parse.exclude_revs` (ref to sha); they are never written into config.
+  Each excluded ref costs one extra `git rev-parse`.
+- `tag_scope` = `all` (default: every tag, as before) or `range` (a tag is read only when the
+  commit it points at, peeled for an annotated tag, is among the commits read; with a cursor that
+  means this run's new commits).
+- `tag_include` / `tag_exclude` (csv of case-sensitive `fnmatch` globs on the tag name): a tag
+  must match an include (when set) and no exclude; **exclude wins**. They apply under either
+  scope, **before** the `previous` chain, so a tag's `commit_range` starts at the first tag that
+  survived (the first one has `commit_range = None`). The scope and filters are in the run
+  header options and so in the parse key. `tag_exclude = "backup/*"` drops backup tags.
+- `since_date`: always a date for `git log --since`. `since` is unchanged (a hex sha means
+  `since..rev`, anything else is a date); setting both is an error. Prefer `since_date` for a date
+  that is all hex digits (`20260901`), which `since` would take for a sha. `bh backfill`'s
+  `commits` strategy now routes any non-commit `since` through `since_date`, replacing the old
+  leading-space workaround, so existing `since=20260901` configs keep working. Note that `git`
+  itself does not read a bare `YYYYMMDD` as a date; write `2026-09-01`.
+  A date-only value (`2026-09-01`) is taken by git at the *current time of day*, so the boundary
+  moves with when you run; use a full timestamp (`2026-09-01T00:00:00Z`) for a precise boundary.
+
+Risk: a fork that rebases onto (or force-updates against) upstream changes its commit shas, and
+with them the unit keys, the parse key and any cursor; beads matched or created from the old
+shas will not line up with the rebased history. Use `exclude_revs` on forks that merge upstream,
+and expect a one-time re-read after a rebase.
 
 ### The `planning` reader
 
@@ -385,8 +558,8 @@ beadlog extract git-commits --root . --group <group id> --group-dir <prefix> \
 ```
 
 Options: `rev` (default `HEAD`), `since` (a commit, or a date for `git log --since`),
-`allow_shallow=true`. Reconcile classes an append as DRIFT (the bead exists and its `git.commits`
-changes); `bh backfill commits` applies it (see
+`since_date` (always a date), `allow_shallow=true`. Reconcile classes an append as DRIFT (the
+bead exists and its `git.commits` changes); `bh backfill commits` applies it (see
 [the hive passes](#bh-backfill-commits-docs-and-planning-passes-3-to-5)).
 
 ### `beadlog extract docs`
@@ -524,10 +697,137 @@ and `PRESENT-in-sync` is PRESENT. For `git-commits` there is no per-doc status: 
 `git.commits` gains shas is DRIFT, and a stored value that is not a JSON array of strings is
 reported as DRIFT with no event.
 
+## Re-running after hand edits {#re-running-after-hand-edits}
+
+A re-run of `bh backfill history` re-reads the hive (`bd export --all`, so closed beads are part of
+the baseline; a `tombstone` row is skipped, `beadlog_sources/bd.py`), folds it, and identifies every
+unit again (B5, `beadlog_sources/identify.py`). Matching is by, in order: the unit key against a
+baseline bead's `external_ref` (`identify.py`, step 1; the key was stamped on the bead by the
+earlier run), an explicit bead id the evidence names (step 2), then the lexical title engine and
+the judge (steps 3 and 4). A matched unit is PRESENT and projects only appends and stamps, never
+an overwrite and never a `create`, label or edge, and a `phase` only as the narrow
+[timeline](#timeline) exception below (`beadlog_sources/project.py`, the **PRESENT** paragraph of
+the module doc). The edited fields are not part of any proposal, so reconcile sees no changed
+facet and nothing is reported as DRIFT (`reconcile.py` classes DRIFT only from facets the
+proposal changes). So a re-run never writes back to a hand-edited bead.
+
+| What was done to a backfilled bead | Next `bh backfill history` run |
+|---|---|
+| Title or description edited | Still matched by `external_ref` (the title is not consulted) and PRESENT; the edit is kept and nothing is proposed. A bead that lost its `external_ref` as well is matched lexically on its *new* title, so a rename can turn a PRESENT into a NEW or a residual. |
+| Status changed: closed, or moved on | Closed beads stay in the baseline and match as above. The status is not compared, so a human close, reopen or move is not DRIFT and is not undone; a bead a human moved is never transitioned by a later run (see the [guard](#timeline)). |
+| Label or dependency added or removed | Kept. A PRESENT bead gets no label or edge events, so the next run neither restores a removed label nor reports an added one. |
+| Deleted (`bd delete`, hard or tombstoned) | The bead is gone from the baseline (`identify.py` skips deleted and erased beads; a hard-deleted bead is not in the export at all), so its unit matches nothing and is NEW: the run proposes a fresh `create`. Nothing records that the unit was once backfilled. |
+| Retired by a rolled-back apply (`backfill-rollback`) | Not a human edit. Such a bead is left out of title matching and revived in place (reopened with reason `backfill-revive`, labels and edges re-applied) when its `external_ref` equals the unit key, so there is no second bead (bh-12hka; `identify.py` `_Baseline`, `project.py` `revive`). |
+
+Close an unwanted backfilled bead rather than deleting it, or record a decision (below): a closed
+bead keeps its `external_ref`, so the run keeps matching it, whereas a delete makes the next run
+propose the same bead again.
+`tests/test_beadlog_sources_project.py::test_a_rerun_after_hand_edits_matches_by_external_ref_and_proposes_nothing`
+and `::test_a_rerun_after_a_backfilled_bead_is_deleted_proposes_it_again_as_new` pin the first and
+fourth rows. Per-unit decisions and the deleted-bead tombstone follow.
+
+### Operator decisions (`bh backfill decide`) {#operator-decisions}
+
+`bh backfill decide <unit-key> skip|noise|link [<bead>] [--reason R] [--hive H] [--dry-run]`
+records what the operator decided about one unit (or, with `--select`, many; see below), in the
+hive's own bead store, and every later run honours it (bh-2sicb; ADR
+`design/backfill-rerun-control-adr.md`, Q3). The unit key is the unit's stable source key
+(`doc:<path>`, `gh:pr/<n>`, an area key ...; see `bh backfill view unit`).
+
+| Decision | A later run |
+|---|---|
+| `skip` | The unit is never proposed. It projects nothing and is not residual (`skipped (operator)` in views, counted as `skip`). |
+| `noise <epic>` | The unit is NOISE against that epic (a live `epic` bead is required, as reconcile's covering rule). |
+| `link <bead>` | The unit is PRESENT against that live bead: the usual appends and stamps, nothing overwritten (the unit key is stamped as `external_ref` only when the bead has none). |
+
+A decision is **one closed `decision`-type bead per unit key**: id `mint_bead_id(prefix, group,
+"decision:" + key)` (deterministic, so deciding the same unit again updates the same bead; bd keeps
+the earlier answer in its history), labels `origin:backfill`, the hive identity triplet and
+`source:decision`, `external_ref = bfdec:<key>` (a namespace no unit key uses), and metadata
+`backfill.decision`, `backfill.unit`, `backfill.target` (the bead for `link`, the epic for `noise`),
+`backfill.reason`, `backfill.decided_by` and `backfill.decided_at`. It is an ordinary issue row, so
+it survives `bd export`/import and every BeadLog loader; nothing compacts, flattens or rewrites
+history. `--dry-run` prints the exact bead (id, labels, fields) and writes nothing. Decision beads
+are excluded from the baseline candidates and `external_ref` lookups, so they never match a unit
+by title. List them with `bd list --label source:decision` or `bh backfill view decisions`.
+
+A `link` or `noise` whose target is no longer there (or, for `noise`, is not an epic) is **stale**:
+the run reports it (`identify: decision ... not applied`) and identifies the unit normally.
+
+**Many units at once (`--select`).** Noise comes in families (branch-sync merges, release
+commits, one vendored area), so `bh backfill decide --select <field><op><value> ...
+skip|noise|link [<bead>] [--run-dir P] [--dry-run] [--max N] [--yes]` decides every unit of a
+run's `collation.json` that matches (bh-espkv, ADR D6). It reads the run's collation (the
+`bh backfill history` run directory, or `--run-dir`), and prints its path and age first; a
+missing collation names `bh backfill collate`. A unit key together with `--select` is a usage
+error; without `--select` the command is unchanged.
+
+- **Clauses.** `--select` repeats and the clauses are ANDed (no OR, no negation). `op` is `=`
+  (exact) or `~` (a regular expression, `re.search`, no flags, at most 200 characters); a value
+  may be quoted (`title~'^Merge branch'`). The fields are `rule`, `kind`, `area`, `title`, `key`,
+  `decision` (`NEW`, `PRESENT`, `NOISE`, `SKIP`, `residual`), `status` (`open`, `closed`),
+  `type` and `noise`. An unknown field, a bad regex, or an `=` value outside the vocabulary of
+  `rule`, `kind`, `decision` or `status` is a usage error, and so is a field the collation lacks:
+  `type` needs a run made with `collate.merge_types` set (for example `["*"]`), `noise` needs
+  `collate.noise` non-empty (the default), `status` needs the status stage. It never silently
+  matches zero units.
+- **Guard rails.** `attach` units (their identity is an existing bead) and units that already
+  have a live bead (a `PRESENT` verdict, or a live bead whose `external_ref` is the unit key) are
+  excluded and listed with the reason, so a selector cannot contradict an existing bead.
+- **Safety.** `--dry-run` lists the matched units, the exact decision ids and fields, and the
+  exclusions, and writes nothing. More matches than `--max` (default
+  `backfill.decisions.select_max`, 200; per hive under `backfill.hives.<prefix>.decisions`)
+  refuses a real run unless `--yes` is given. Matches are sorted by unit key and zero matches
+  write nothing.
+- **One batch.** All decisions are written with one export and one load of the store; each is
+  still its own `decision` bead, so re-runs and `view decisions` work as before. Each decision's
+  reason is `select: <the clauses as typed>`, followed by `; <--reason>` when given. A branch-sync
+  noise unit (`noise=branch-sync`) is a legitimate target: an operator decision is step 0 and wins
+  over the derived `branch-sync` skip.
+- **Not built.** Standing rules that apply a selector to later runs are deferred (a later ADR
+  amendment).
+
+**Deleted backfilled beads.** A hard delete leaves no trace in `bd export`, so the unit would be
+proposed again (see the table above). Record the skip instead of deleting, or after the fact:
+
+- `bh backfill decide --deleted <bead-id> skip` reads that one bead's `external_ref` with a single
+  `bd history <bead-id>` call (it must carry `origin:backfill`; the bead must be gone) and records
+  the skip for its unit. Always available.
+- `backfill.decisions.on_delete = ignore | report | skip` (default `ignore`, today's behaviour)
+  makes `bh backfill history` compare the beads its previous *applied* plan created (the run
+  directory's `plan.bdlg`) with the store: `report` lists the ones that are gone, `skip` also
+  records a skip decision for each, on a run that reaches `--until apply`. This needs the previous
+  run directory (host-local); the decision it records protects every host.
+
+**Collation vocabulary.** Step 0 adds `decision` to the identify steps and `SKIP` to the verdict
+classes of `bdlg.collation/1` (`schemas/bdlg-collation-v1.schema.json`); the projector gains a
+`skip` decision. A reader older than 0.37.0 rejects a collation holding them (the strict loader);
+a run with no decisions writes exactly what it did before.
+
+**Collation vocabulary, 0.38.** One additive change to `bdlg.collation/1`, no version bump:
+`options.cluster` gains the members `merge_types`, `merge_titles` and `noise`, each written only
+when it differs from 0.37 (`merge_types` when set, `merge_titles` when `derived`, `noise` when
+non-empty); a unit gains `type` and `noise`, written only when set; the identify steps gain
+`branch-sync`; `options.attach` gains `max_per_unit`, `rename_guard` and `rank`, written only when
+set (`rename_guard` when on, `rank` when `proximity`); an attachment gains the reason `own-add` and
+the optional `runner_up`; and the evidence of a merge gains the attr `body_head` and, under the
+reader option `keep_renames`, a change gains `renamed`. The loader reads the old
+member sets and the old sets plus any of the new members, and still refuses anything else. A run
+with `noise = []` and `merge_titles = subject` and no other new option (`max_per_unit`,
+`rename_guard`, `rank`, the `own-add` tier) writes exactly the 0.37.1
+collation. A default 0.38 run over a repository with branch-sync merges uses the new vocabulary
+and so is not readable by a `bh` older than 0.38.0 (`CollationFormatError`, as in 0.37.0): do not
+read a 0.38 run directory with an older `bh`. Later options of the same release extend these lists:
+`options.identify` gains `merge_fallback` and `merge_identity` (each written only when `commits`),
+and a verdict or residual record gains `commit_candidates`, written only for a merge judged under
+`merge_identity = commits`. The `hidden_commits` report keys are not part of the collation: they
+are computed from its units and verdicts.
+
 ## Collation status and conflicts
 
-The collation derives each work unit's status and dates from history only (merged or committed
-is closed, a plan item follows its done marker) and lists conflicts between artifacts, never
+The collation derives each work unit's status and dates from history (merged or committed
+is closed, a plan item follows its done marker; a doc-only unit follows `doc_default`, below)
+and lists conflicts between artifacts, never
 resolving one. Four rules are on by default: a draft or proposed doc whose commit or PR also
 landed code, a "design only" doc with a `feat` change attached, a doc accepted after the last
 release with no code, and an open plan item whose summary exists. The two clock rules
@@ -535,6 +835,94 @@ release with no code, and an open plan item whose summary exists. The two clock 
 differ from add-commit days; enable them with the `rules` option of the `status` section
 (`beadlog_sources.StatusOptions`), and tune `date_tolerance_days` and
 `clock_tolerance_seconds`.
+
+### Doc units: `backfill.collate.status.doc_default` {#doc-status}
+
+A backfill writes a **timeline**, not a snapshot. A doc's add commit is when the doc was
+*created*; recording it as the close of a draft or proposed doc would invent a close event that
+never happened. The `doc_default` key (a `backfill.collate.status` option, recorded in the
+collation) decides the status of a unit that has **no evidential closure** (its `basis` is `doc`
+or `none`: only docs back it, no merged or committed change, release, closed tracker item or plan
+done marker):
+
+| `doc_default` | A doc-only unit is |
+|---|---|
+| `from-doc` (default) | **open** when a doc of the unit declares a status in `doc_open` (default `["draft", "proposed"]`) or a raw status matching `design_only` ("design only"); otherwise closed. |
+| `closed` | closed by its add commit (a doc dated but never added closes at its declared date): identical to 0.36 for git-history runs. |
+| `open` | open, whatever the doc declares. |
+
+- An **open** unit's add commit is only its `created` moment: no `closed` event is written.
+  A **closed** doc unit closes at its add commit, else at its declared date (day precision). A
+  dated doc with no declared status closes at its date under `from-doc`.
+- **Evidence wins.** A draft doc whose change also landed code stays closed (basis `committed`)
+  and `doc-draft-code-landed` still fires; every conflict rule runs as before, in every mode.
+- `accepted` is not in the default `doc_open`: an accepted ADR is a finished record. Add it to
+  `doc_open` to keep accepted docs open.
+- Only **newly created** beads follow the setting. A created bead is never rewritten, so a hive
+  that ran 0.36 keeps its closed doc beads.
+- Docs-only runs (`--sources docs`, no git reader) have no add commit. With `create = propose` a
+  unit with **no evidence moment at all** (no add commit, no declared date) is **not created**: it
+  is reported as `skipped: no evidence moment` in the plan summary (and the `no_moment` list of the
+  plan report) and in `bh backfill view unit`. A dated draft/proposed doc is created open at its
+  declared date; a dated doc that maps closed closes at that date. `create = off` is unchanged.
+- Doc checklists are out of scope here (the docs reader has no checklist model); name a roadmap
+  file in the planning reader's `files` to get its unchecked items as open plan items.
+
+**Open backfilled beads show up as ready work.** An open bead is available work to `bd ready` and
+to dispatchers, which a closed historical record never was. Backfilled beads carry the
+`origin:backfill` label (and a `source:docs` label for docs), so filter them out with
+`bd ready --exclude-label origin:backfill`, or list just them with
+`bd list --label origin:backfill --status open`. Whether a hive hides them by default is a
+hive-side choice; backfill does not change it. To restore closed-by-add-commit records for new
+runs, set `backfill.collate.status.doc_default = "closed"`.
+
+### The timeline: created, in progress, closed {#timeline}
+
+A backfill writes a **timeline** into the event ledger, never a current-state snapshot, and never
+records a transition without dated evidence. Each transition is written at its own evidence's
+moment, with that moment's precision (a day stays a day), and a bead reads
+`created` -> `in_progress` -> `closed`, in that order and never later than its close. This applies
+on creation and on a re-run, and is **additive**: earlier events are never rewritten or removed,
+and nothing is compacted or flattened.
+
+| Transition | Evidence (the signals) | Moment |
+|---|---|---|
+| `created` | the earliest of a unit's first change, review open, doc add commit or declared date, tracker open | that moment |
+| `in_progress` | **review-opened**: a review that is open, or merged, and not abandoned (`Lifecycle.started`, `lifecycle.py` `own()`) | the review's `opened_at` |
+| `closed` | a merged review, a committed change, a release, a closed tracker item, a plan done marker, or (for an area epic) all children closed | the evidence's own moment (`merged_at`, the release, the item's `closed_at`, the plan moment) |
+
+Two evidence kinds are deliberately **not** in-progress signals. A commit that references the unit
+is not one, because a committed change is itself closing evidence (the unit closes). A tracker
+item in progress is not one, because its labels and assignee carry no time and a transition
+needs a dated moment. A doc status change (`draft` -> `accepted`) neither starts nor closes a
+bead, and a doc's add commit is never closing evidence for an open bead.
+
+- **On creation.** A unit whose only evidence is an open review is created open at the review's
+  moment and moved to `in_progress` one microsecond later (the written time is then an ordering
+  floor, so `occurred_precision` is dropped; the true moment stays in
+  `metadata.lifecycle.in_progress_at`). A unit with an earlier doc or commit, a later opened
+  review and a merge reads `created` (earliest), `in_progress` (review open), `closed` (merge), at
+  three times; a start that is not strictly between the two is not written.
+- **On a re-run.** A matched bead is moved forward only when it carries `origin:backfill`, and
+  is `open`, or is `in_progress` with the `metadata.lifecycle.in_progress_at` stamp this backfill
+  wrote. A closed bead, a hand-made bead (no `origin:backfill`), and a bead a human moved (an
+  `in_progress` bead without the stamp, or any bead whose earlier events already moved it
+  somewhere else) are never touched. Doc beads match the change they later attach to
+  (`identify.py`), so a draft doc bead follows its PR. The new `phase` event's `occurred_at` is the
+  evidence moment, raised past the bead's latest earlier phase event only when it would not
+  postdate it. An existing `metadata.lifecycle.closed_at` that differs is reported (`kept`), never
+  overwritten.
+- **Deterministic and idempotent.** A transition is driven by the bead's current phase, so the
+  second dry run is empty and a run with no new evidence changes nothing. `bh backfill history`
+  reconcile reports the bead as DRIFT of its `phase` facet, never NEW.
+- **Settings** (`backfill.collate.status`, both default `true`): `close_on_evidence = false`
+  leaves matched beads in their current phase (a bead the run will not close is not started
+  either; creation of closed beads is unchanged), and `in_progress_on_evidence = false` writes
+  no `in_progress` transition, on creation or on a re-run. Both resolve through the per-hive
+  overlay (`backfill.hives.<prefix>.collate.status.*`), so one hive can opt out alone. An operator
+  `skip` decision, and a decision record, never receive a transition.
+
+Pinned by `packages/beadlog-sources/tests/test_beadlog_sources_timeline.py`.
 
 ## Judged residuals
 
@@ -598,7 +986,7 @@ bh backfill planning --apply --plan planning.bdlg
 
 | Pass | Proposes | DRIFT (applied) | NEW (applied) | `--option` keys |
 |---|---|---|---|---|
-| `commits` | `set` of `metadata.git.commits` appending shas | the append to a bead that exists | none | `rev`, `since`, `allow_shallow`, `git` |
+| `commits` | `set` of `metadata.git.commits` appending shas | the append to a bead that exists | none | `rev`, `since`, `since_date`, `allow_shallow`, `git` |
 | `docs` | `set` of `external_ref`; a judged NEW doc | the stamp on a bead that exists | `create` plus `origin:backfill` and `source:docs` for a judged NEW doc | `docs`, `top_k`, `id_prefix`, `new_type`, `labels`, `allow_shallow`, `git` |
 | `planning` | `create` of epics and issues, edges, closes | a close that arrives after the bead exists | the epics, issues and edges of the tree | `planning`, `id_prefix`, `labels`, `issue_type`, `allow_shallow`, `git` |
 
@@ -901,7 +1289,11 @@ Every apply, whatever the pass, does this in order:
    plan's recorded judgments must propose nothing.
 7. **Rollback.** On any failure or interruption every touched bead is restored by replaying the
    loader inverses in reverse; the audit ends `rolled_back`, or `rollback_failed` with the writes
-   that could not be undone. Undoing a create retires the bead; it never deletes.
+   that could not be undone. Undoing a create retires the bead; it never deletes. Rollback then
+   re-reads the store: a created bead that is not retired (still open, or missing) is recorded in
+   `rollback_residual` and fails the rollback rather than passing silently. The audit names the
+   retired beads in `rollback_retired` (with `rollback_retired_count`). A re-run revives a
+   rollback-retired bead in place (no second bead, no duplicate `external_ref`).
 
 ## Recovery
 
@@ -909,8 +1301,10 @@ Keep the plan, the pre-state and the audit together until the audit says `state=
 
 - **`applied`**: done. Check `second_dry_run_changes=0` (and, for complexity,
   `post_apply_complexity_errors=[]` and `model_labels_preserved=true`).
-- **`rolled_back`**: nothing to recover. Read `error`, fix the cause, run a fresh dry run and
-  plan; do not reuse the old plan if the corpus changed.
+- **`rolled_back`**: the writes were undone, but beads the apply created are **retired, not
+  gone**: they stay in the store, closed with reason `backfill-rollback`, and `rollback_retired`
+  lists them. Read `error`, fix the cause, run a fresh dry run and plan (do not reuse the old plan
+  if the corpus changed); the re-run revives the retired beads in place.
 - **`rollback_failed`**: stop writers to the hive. The audit lists every write that could not be
   undone (`rollback_failures`, plus `rollback_residual` for engine plans). Restore those beads from
   the pre-state export, then run the dry run again.

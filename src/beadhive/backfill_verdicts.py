@@ -30,7 +30,7 @@ RECONCILE_ANNOTATION = "bdlg.reconcile"
 ENGINE_ANNOTATION = "beadhive.backfill"
 COLLATION_SCHEMA_PREFIX = "bdlg.collation/"
 
-CLASS_ORDER = ("NEW", "PRESENT", "NOISE", "DRIFT", "abstain", "residual", "other")
+CLASS_ORDER = ("NEW", "PRESENT", "NOISE", "SKIP", "DRIFT", "abstain", "residual", "other")
 # Engines that answer without calling a model; a verdict from anywhere else (or a recorded
 # fallback after a failed attempt) is counted as a judge call for the cost estimate.
 _NO_CALL_ENGINES = frozenset({"deterministic-lexical", "recorded"})

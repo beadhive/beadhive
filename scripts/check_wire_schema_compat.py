@@ -831,6 +831,10 @@ _APPROVED_OPTIONAL_STRING_PARAMS: dict[str, tuple[str, ...]] = {
     # `beadlog.store` plugin.
     "backfill.apply": ("store",),
     "backfill.export": ("store",),
+    # operator approval 2026-11-13 (bh-g71fi, ADR bh-meuhp Q1 refinement posted on the bead):
+    # `bh config get <key> --hive <prefix>` appends one optional string. Without it the verb keeps
+    # its exact request, output and exit codes; with it the value is read as that hive sees it.
+    "config.get": ("hive",),
 }
 _OPTIONAL_STRING_PARAM = {
     "privilege": "inherited",
@@ -881,6 +885,16 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
     # appends one optional boolean (default off). A run without it keeps its exact request,
     # output, exit codes and JSON keys.
     "backfill.timeline": {"since_cursor": {"type": "boolean"}},
+    # operator approval 2026-11-14 (bh-espkv, ADR bh-5e4r1 D6): bh backfill decide
+    # --select/--run-dir/--max/--yes append four optional inputs; --yes is the established
+    # confirm-past-guard override (backfill.history, backfill.collate, hive.onboard ...).
+    # Callers that omit them keep the exact single-key request, output and exit codes.
+    "backfill.decide": {
+        "select": {"type": "array", "items": {}},
+        "run_dir": {"type": "string"},
+        "max_units": {"type": "integer"},
+        "yes": {"type": "boolean"},
+    },
     "worktree.status": {
         "local_safe": {"type": "boolean"},
         "root": {"type": "array", "items": {}},
@@ -900,6 +914,11 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
 }
 
 
+# The one approved appended parameter the catalog classifies `privileged-override` (`--yes`), and
+# the only parameter whose `constraints.override_parameters` entry may be dropped when comparing.
+_APPROVED_PRIVILEGED_OVERRIDES: dict[str, tuple[str, ...]] = {"backfill.decide": ("yes",)}
+
+
 def _approved_optional_parameter(operation, item):
     if not isinstance(item, dict):
         return False
@@ -910,7 +929,12 @@ def _approved_optional_parameter(operation, item):
         schema = _APPROVED_OPTIONAL_REPAIR_PARAMS.get(operation, {}).get(parameter)
         if schema is None:
             return False
-        expected = {"privilege": "inherited", "required": False, "schema": schema}
+        privilege = (
+            "privileged-override"
+            if parameter in _APPROVED_PRIVILEGED_OVERRIDES.get(operation, ())
+            else "inherited"
+        )
+        expected = {"privilege": privilege, "required": False, "schema": schema}
     return {key: value for key, value in item.items() if key != "name"} == expected
 
 
@@ -929,6 +953,14 @@ def _without_approved_params(name: str, operation: dict[str, Any]) -> dict[str, 
     kept = [item for item in parameters if not _approved_optional_parameter(name, item)]
     dropped = {item["name"] for item in parameters if item not in kept}
     candidate["parameters"] = kept
+    constraints = candidate.get("constraints")
+    approved_overrides = _APPROVED_PRIVILEGED_OVERRIDES.get(name, ())
+    if isinstance(constraints, dict) and isinstance(constraints.get("override_parameters"), list):
+        constraints["override_parameters"] = [
+            item
+            for item in constraints["override_parameters"]
+            if not (item in dropped and item in approved_overrides)
+        ]
     if isinstance(cli.get("parameters"), list):
         cli["parameters"] = [item for item in cli["parameters"] if item not in dropped]
     recovery_alias = {

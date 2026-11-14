@@ -30,6 +30,7 @@ from beadlog_sources.commits import read_commits, require_full_history
 from beadlog_sources.docs import discover_docs
 
 from . import registry
+from .backfill_effective import effective_cfg
 from .modules.config.contracts import BackfillCoverageConfig
 
 CACHE_FILE = "coverage.json"
@@ -81,6 +82,7 @@ def advisory_for(
     read of the cache file and nothing else: no bd export, no ``git log``, no doc walk (whether
     the inputs moved is what only ``bh backfill coverage`` can compare). The caller passes
     ``home`` (``config.home()``) so this module stays out of the config import fan-in."""
+    cfg = effective_cfg(cfg, entry)
     if not refresh_enabled(cfg):
         return None
     return evaluate(

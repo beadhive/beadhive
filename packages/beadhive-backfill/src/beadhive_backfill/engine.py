@@ -47,6 +47,7 @@ from ._inverse import Stamper, has_inverse, inverse_of
 from ._judgments import JudgeTap, verdicts_to_json
 from ._projection import ALL_FACETS, Scope, bead_key, check_facets, projection_hash
 from .contracts import (
+    RETIRED_INSTRUCTION,
     AuditEntry,
     AuditProgress,
     AuditRecovery,
@@ -84,6 +85,70 @@ def _loss_counts(report: Mapping[str, Any]) -> dict[str, int]:
     else:
         counts = Counter(str(loss.get("code", "")) for loss in report.get("losses") or ())
     return {code: count for code, count in sorted(counts.items()) if code and count}
+
+
+def _parents_first(
+    units: Sequence[tuple[BeadRef, tuple[BeadEvent, ...]]],
+) -> list[tuple[BeadRef, tuple[BeadEvent, ...]]]:
+    """Order ``units`` so a bead an edge points at is written before the bead carrying the edge.
+
+    A real load resolves an edge only against the store and that load's own creates, so a child
+    written before its epic (units come in bead-id order) would lose the edge. Stable: units keep
+    their order except where an edge forces a target earlier; an edge cycle falls back to the
+    original order for the beads on it (the per-unit loss report then fails the apply).
+    """
+    by_ref = {bead: (bead, events) for bead, events in units}
+    needs: dict[BeadRef, list[BeadRef]] = {
+        bead: [
+            target
+            for event in events
+            if event.kind is EventKind.EDGE_ADD
+            and (target := _edge_target(event, bead.group)) in by_ref
+            and target != bead
+        ]
+        for bead, events in units
+    }
+    ordered: list[tuple[BeadRef, tuple[BeadEvent, ...]]] = []
+    state: dict[BeadRef, bool] = {}  # False = visiting, True = placed
+
+    def place(bead: BeadRef) -> None:
+        if bead in state:
+            return
+        state[bead] = False
+        for target in needs[bead]:
+            place(target)
+        state[bead] = True
+        ordered.append(by_ref[bead])
+
+    for bead, _ in units:
+        place(bead)
+    return ordered
+
+
+def _edge_target(event: BeadEvent, default_group: str) -> BeadRef:
+    target = event.data["target"]
+    return BeadRef(str(target.get("group") or default_group), str(target["id"]))
+
+
+def _unexpected_losses(
+    report: Mapping[str, Any],
+    expected: set[tuple[str, str]],
+    events: Sequence[BeadEvent],
+    bead: BeadRef,
+) -> list[str]:
+    """Losses in a real per-unit load the dry run did not announce, one line each."""
+    by_id = {event.id: event for event in events}
+    lines = []
+    for loss in report.get("losses") or ():
+        event_id, code = str(loss.get("event_id", "")), str(loss.get("code", ""))
+        if not code or (event_id, code) in expected:
+            continue
+        event = by_id.get(event_id)
+        what = ""
+        if event is not None and event.kind is EventKind.EDGE_ADD:
+            what = f" {event.data.get('type')} edge -> {event.data['target'].get('id')}"
+        lines.append(f"{code} on {bead_key(bead)}{what} (event {event_id})")
+    return lines
 
 
 def _by_bead(events: Iterable[BeadEvent]) -> dict[BeadRef, list[BeadEvent]]:
@@ -280,12 +345,18 @@ class BackfillEngine:
                 " — rerun dry-run"
             )
 
-        units = plan.units()
+        units = _parents_first(plan.units())
         applicable = plan.applicable_events()
         expected_after = self._verification_hash(pass_, fold(union_merge([before, applicable])))
         losses: dict[str, int] = {}
+        announced: set[tuple[str, str]] = set()
         if applicable:
-            losses = _loss_counts(loader.load(applicable, dry_run=True))
+            dry = loader.load(applicable, dry_run=True)
+            losses = _loss_counts(dry)
+            announced = {
+                (str(loss.get("event_id", "")), str(loss.get("code", "")))
+                for loss in dry.get("losses") or ()
+            }
             if losses.get(ERASURE_INCOMPLETE) and not acknowledge_erasure:
                 raise BackfillError(
                     f"loader reports {ERASURE_INCOMPLETE} for {losses[ERASURE_INCOMPLETE]} "
@@ -332,7 +403,13 @@ class BackfillEngine:
                 )
                 audit.record(entry)
                 touched.append((bead, events))
-                loader.load(events, dry_run=False)
+                report = loader.load(events, dry_run=False)
+                unexpected = _unexpected_losses(report, announced, events, bead)
+                if unexpected:
+                    raise BackfillError(
+                        "the loader reported a loss the dry run did not announce: "
+                        + "; ".join(unexpected)
+                    )
                 entry = replace(
                     entry,
                     completed=(*entry.completed, key),
@@ -439,6 +516,7 @@ class BackfillEngine:
             current: dict[BeadRef, list[BeadEvent]] | None = _by_bead(reader.export())
         except BaseException:  # a failed read must never suppress best-effort rollback
             current = None
+        uncertain = entry.recovery.uncertain
         applied = [event for _, events in touched for event in events]
         seen = [*before, *applied, *(e for es in (current or {}).values() for e in es)]
         stamp = Stamper(self._clock(), seen)
@@ -460,7 +538,13 @@ class BackfillEngine:
                         now = current.setdefault(bead, [])
                         state_now = fold(now).get(bead)
                         if state_now is None and inverse.kind is not EventKind.CREATE:
-                            continue  # the bead was never written: nothing to undo
+                            if bead_key(bead) != uncertain:
+                                # a completed unit's bead is gone from the store: not "never
+                                # written", so the undo cannot be confirmed (bh-12hka)
+                                note = f"{bead.id}: missing from the store"
+                                if note not in residual:
+                                    residual.append(note)
+                            continue  # the uncertain unit may never have been written
                         if not changed_facets(state_now, fold([*now, inverse]).get(bead)):
                             continue
                     try:
@@ -473,13 +557,65 @@ class BackfillEngine:
                         continue
                     if current is not None:
                         current[bead].append(inverse)
+        retired = self._created_beads(reader, touched, prior_events, uncertain, residual)
         complete = not failures and not residual
+        instruction = RETIRED_INSTRUCTION if retired else entry.recovery.instruction
         return replace(
             entry,
             state=AuditState.ROLLED_BACK if complete else AuditState.ROLLBACK_FAILED,
             error=f"{type(exc).__name__}: {exc}",
             rollback_failures=(*entry.rollback_failures, *failures),
             rollback_residual=tuple(residual),
+            rollback_retired=retired,
             progress=replace(entry.progress, current=None),
-            recovery=replace(entry.recovery, uncertain=None, rollback_complete=complete),
+            recovery=replace(
+                entry.recovery,
+                uncertain=None,
+                rollback_complete=complete,
+                instruction=instruction,
+            ),
         )
+
+    def _created_beads(
+        self,
+        reader: StoreReader,
+        touched: Sequence[tuple[BeadRef, tuple[BeadEvent, ...]]],
+        prior_events: Mapping[BeadRef, list[BeadEvent]],
+        uncertain: str | None,
+        residual: list[str],
+    ) -> tuple[str, ...]:
+        """The ids of the beads this apply created that rollback retired.
+
+        Re-reads the store: a created bead that is not retired afterwards (still open, or
+        missing) is appended to ``residual`` rather than reported as undone, and when the read
+        fails every created bead is reported unverified.
+        """
+        created = sorted(
+            {
+                bead.id
+                for bead, events in touched
+                if any(e.kind is EventKind.CREATE for e in events)
+                and fold(prior_events.get(bead, [])).get(bead) is None
+            }
+        )
+        if not created:
+            return ()
+        group = {bead.id: bead for bead, _ in touched}
+        try:
+            states = fold(reader.export())
+        except BaseException:
+            residual.extend(
+                f"{ident}: retirement unverified (the store could not be read)" for ident in created
+            )
+            return ()
+        retired: list[str] = []
+        for ident in created:
+            state = states.get(group[ident])
+            if state is not None and state.phase == "retired":
+                retired.append(ident)
+            elif state is None and bead_key(group[ident]) == uncertain:
+                continue  # the interrupted create may never have been written
+            elif not any(item.startswith(f"{ident}:") for item in residual):
+                found = "missing from the store" if state is None else f"still {state.phase}"
+                residual.append(f"{ident}: created by the apply but {found} after rollback")
+        return tuple(retired)

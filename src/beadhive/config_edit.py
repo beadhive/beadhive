@@ -230,6 +230,17 @@ def _set_in(api, dotted: str, raw: str, as_json: bool, cfg, *, persist: bool, sc
     parts = api._split_key(dotted)
     value = api.coerce_value(raw, as_json)
     problems = api._validate(parts, value)
+    if scope == api.SCOPE_FLEET and parts[:2] == ["backfill", "hives"]:
+        # Per-hive backfill overlays can switch bead-writing behaviour on; they are host config
+        # and a fleet push must never carry them (backfill-rerun-control-adr.md Q1).
+        problems.append(
+            api._problem(
+                "error",
+                "backfill.hives.* is host-owned (it can enable bead creation for a hive); "
+                "set it with --scope host",
+            )
+        )
+        return {"ok": False, "problems": problems, "old": None, "new": None}
     if persist and scope == api.SCOPE_HOST:
         try:
             api._reject_fleet_override_for_key(parts, value)

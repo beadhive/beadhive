@@ -25,6 +25,7 @@ from beadlog_sources import (
     ProjectError,
     Projection,
     ProjectOptions,
+    StatusOptions,
     collate,
     dumps_collation,
     loads_collation,
@@ -73,7 +74,11 @@ def existing(ident: str, title: str, **fields: Any) -> beadlog.BeadEvent:
     )
 
 
-def run_collate(corpus: EvidenceCorpus, baseline: Sequence[beadlog.BeadEvent]) -> Collation:
+def run_collate(
+    corpus: EvidenceCorpus,
+    baseline: Sequence[beadlog.BeadEvent],
+    status: StatusOptions | None = None,
+) -> Collation:
     return collate(
         corpus,
         baseline,
@@ -81,14 +86,18 @@ def run_collate(corpus: EvidenceCorpus, baseline: Sequence[beadlog.BeadEvent]) -
         local="bh",
         options=ClusterOptions(),
         identify_options=IdentifyOptions(new_threshold=100),
+        status_options=status,
     )
 
 
 def run(
-    *artifacts, baseline: Sequence[beadlog.BeadEvent] = (), options: ProjectOptions | None = None
+    *artifacts,
+    baseline: Sequence[beadlog.BeadEvent] = (),
+    options: ProjectOptions | None = None,
+    status: StatusOptions | None = None,
 ) -> tuple[EvidenceCorpus, Collation, Projection]:
     corpus = ev.corpus(*artifacts)
-    col = run_collate(corpus, baseline)
+    col = run_collate(corpus, baseline, status)
     return (
         corpus,
         col,
@@ -311,6 +320,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat: archive writer",
                 "type": "feature",
             },
@@ -378,6 +388,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from gh:pr/5.",
                 "external_ref": "gh:pr/5",
+                "priority": 2,
                 "title": "Add parser",
                 "type": "feature",
             },
@@ -445,6 +456,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat: sync importer",
                 "type": "feature",
             },
@@ -532,6 +544,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from doc:docs/design/queue.md.",
                 "external_ref": "doc:docs/design/queue.md",
+                "priority": 2,
                 "title": "Queue design",
                 "type": "decision",
             },
@@ -545,6 +558,28 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             "doc:docs/design/queue.md",
             "label_add",
             {"label": "source:docs"},
+            "2026-02-03T00:00:00Z",
+            "day",
+            "derived",
+            None,
+            ["doc:docs/design/queue.md"],
+        ),
+        # bh-f4t6r: an accepted doc maps closed under the default from-doc, and with no add
+        # commit it closes at its declared date (0.36: it stayed open with no closing clock).
+        (
+            "doc:docs/design/queue.md",
+            "phase",
+            {"phase": "closed", "reason": "doc: doc:docs/design/queue.md"},
+            "2026-02-03T00:00:00.000001Z",
+            None,
+            "derived",
+            None,
+            ["doc:docs/design/queue.md"],
+        ),
+        (
+            "doc:docs/design/queue.md",
+            "set",
+            {"field": "metadata.lifecycle.closed_at", "value": "2026-02-03"},
             "2026-02-03T00:00:00Z",
             "day",
             "derived",
@@ -567,6 +602,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat(cache): cache layer",
                 "type": "feature",
             },
@@ -660,6 +696,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from plan:phase-1.",
                 "external_ref": "plan:phase-1",
+                "priority": 2,
                 "title": "Phase 1: storage",
                 "type": "epic",
             },
@@ -695,6 +732,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from plan:phase-1/a.",
                 "external_ref": "plan:phase-1/a",
+                "priority": 2,
                 "title": "Write the log",
                 "type": "task",
             },
@@ -760,6 +798,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from plan:phase-1/b.",
                 "external_ref": "plan:phase-1/b",
+                "priority": 2,
                 "title": "Read the log",
                 "type": "task",
             },
@@ -817,6 +856,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from area:release/v1.0.",
                 "external_ref": "area:release/v1.0",
+                "priority": 2,
                 "title": "release/v1.0",
                 "type": "epic",
             },
@@ -882,6 +922,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat: first",
                 "type": "feature",
             },
@@ -967,6 +1008,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c2.",
                 "external_ref": "git:commit/c2",
+                "priority": 2,
                 "title": "feat: second",
                 "type": "feature",
             },
@@ -1088,7 +1130,10 @@ def test_new_creates_carry_the_b5_verdict() -> None:
 
 
 def test_day_precision_is_the_start_of_the_day_never_a_midnight_instant() -> None:
-    (_, _, projection), _ = scenario("design-record")
+    # pinned to ``open``: a declared, never-added doc kept open has no closing clock (the
+    # from-doc default closes an accepted doc at its declared date, see the status-doc tests)
+    built = SCENARIOS["design-record"]()
+    (_, _, projection) = run(*built["artifacts"], status=StatusOptions(doc_default="open"))
     record = projection.unit("doc:docs/design/queue.md")
     assert record is not None
     dated = [e for e in projection.events if e.bead.id == record.bead]
@@ -1138,6 +1183,66 @@ def test_project_apply_and_project_again_proposes_zero_events(name: str) -> None
     projected = {u.unit: u.bead for u in first.units if u.events}
     assert {u.unit: u.bead for u in again.units if u.unit in projected} == projected
     assert {u.decision for u in again.units if u.unit in projected} == {"PRESENT"}
+
+
+def _hand_event(kind: str, bead: beadlog.BeadRef, data: dict[str, Any], at: str):
+    return beadlog.mint_event(
+        kind,
+        bead,
+        data,
+        occurred_at=at,
+        recorded_at=at,
+        extracted_at="2026-11-13T00:00:00Z",
+        source=("bd", f"bd:{kind}/{bead.id}"),
+        provenance="observed",
+    )
+
+
+def _rerun(corpus: EvidenceCorpus, baseline: Sequence[beadlog.BeadEvent]) -> Projection:
+    return project(
+        run_collate(corpus, baseline),
+        corpus,
+        baseline,
+        prefix=PREFIX,
+        group=GROUP,
+        extracted_at="2026-11-14T00:00:00Z",
+    )
+
+
+def test_a_rerun_after_hand_edits_matches_by_external_ref_and_proposes_nothing() -> None:
+    """docs/BACKFILL.md "Re-running after hand edits": an edited, closed or reopened bead is still
+    PRESENT through its ``external_ref`` and is never rewritten or re-created."""
+    (corpus, _, first), baseline = scenario("design-record")
+    created = apply(baseline, reconcile(first.events, baseline).events)
+    bead = next(u.bead for u in first.units if u.unit == "doc:docs/design/queue.md")
+    ref = beadlog.BeadRef(GROUP, bead)
+    edits = [
+        _hand_event("set", ref, {"field": "title", "value": "Renamed"}, "2026-11-13T01:00:00Z"),
+        _hand_event("set", ref, {"field": "description", "value": "new"}, "2026-11-13T01:00:00Z"),
+        _hand_event("label_add", ref, {"label": "hand-added"}, "2026-11-13T01:00:00Z"),
+        _hand_event("phase", ref, {"phase": "open"}, "2026-11-13T02:00:00Z"),
+    ]
+    edited = [*created, *edits]
+    again = _rerun(corpus, edited)
+    assert again.events == ()
+    (record,) = [u for u in again.units if u.unit == "doc:docs/design/queue.md"]
+    assert record.decision == "PRESENT" and record.bead == bead
+
+
+def test_a_rerun_after_a_backfilled_bead_is_deleted_proposes_it_again_as_new() -> None:
+    """docs/BACKFILL.md: a deleted (soft or hard) bead leaves the baseline, so its unit is NEW."""
+    (corpus, _, first), baseline = scenario("design-record")
+    created = list(apply(baseline, reconcile(first.events, baseline).events))
+    bead = next(u.bead for u in first.units if u.unit == "doc:docs/design/queue.md")
+    ref = beadlog.BeadRef(GROUP, bead)
+    hard = [e for e in created if e.bead != ref]
+    soft = [*created, _hand_event("delete", ref, {}, "2026-11-13T01:00:00Z")]
+    for baseline_after in (hard, soft):
+        again = _rerun(corpus, baseline_after)
+        (record,) = [u for u in again.units if u.unit == "doc:docs/design/queue.md"]
+        assert record.decision == "NEW"
+        # same-instant events tie-break by id, so the create is not necessarily listed first
+        assert "create" in {str(e.kind) for e in again.events if e.bead.id == record.bead}
 
 
 def test_projected_beads_fold_to_closed_history() -> None:
@@ -1247,6 +1352,21 @@ def test_creation_labels_are_an_option_and_off_by_default() -> None:
     labels = {e.data["label"] for e in labelled.events if e.kind == "label_add"}
     assert labels == {"source:github", "origin:backfill"}
     assert labelled.to_json()["options"]["creation_labels"] == ["origin:backfill"]
+
+
+def test_every_new_create_states_the_priority_so_bd_import_never_fills_p0() -> None:
+    for name in sorted(SCENARIOS):
+        (_, _, projection), _ = scenario(name)
+        creates = [e for e in projection.events if e.kind == "create"]
+        assert creates, name
+        assert {e.data["fields"]["priority"] for e in creates} == {2}, name  # epics included
+    (_, _, custom), _ = scenario("review", ProjectOptions(create_priority=3))
+    (create,) = [e for e in custom.events if e.kind == "create"]
+    assert create.data["fields"]["priority"] == 3
+    assert custom.to_json()["options"]["create_priority"] == 3
+    for bad in (-1, 5, "2", True):
+        with pytest.raises(ProjectError):
+            ProjectOptions(create_priority=bad)  # type: ignore[arg-type]
 
 
 def test_types_are_configurable_per_category() -> None:

@@ -123,3 +123,32 @@ def test_real_bd_round_trip_honors_import_times_and_reloads_with_zero_writes(hiv
     head = head[0] if isinstance(head, list) else head
     assert head["description"] == "-dash first" and head["metadata"]["team"] == "core"
     assert run_bd("export", cwd=hive, capture=True).stdout == before  # the reload wrote nothing
+
+
+def test_real_bd_drops_an_edge_to_a_bead_created_by_a_later_load_and_the_loader_reports_it(
+    hive: Path,
+) -> None:
+    """#163: the premise of the parents-first apply order, against the real bd."""
+    epic = _mint(
+        "create",
+        "ag-infra-9",
+        {"type": "epic", "fields": {"title": "Area"}},
+        "2026-01-01T00:00:00Z",
+    )
+    child = _mint(
+        "create", "ag-infra-1", {"type": "task", "fields": {"title": "Kid"}}, "2026-01-01T01:00:00Z"
+    )
+    edge = _mint(
+        "edge_add",
+        "ag-infra-1",
+        {"type": "parent-child", "target": {"group": GROUP, "id": "ag-infra-9"}},
+        "2026-01-01T02:00:00Z",
+    )
+    loader = BdStoreLoader(BdCliPort(hive, actor="dev/loader"), group=GROUP)
+    report = loader.load(stamp_labels([child, edge], [*TRIPLET, "origin:backfill"]), dry_run=False)
+    assert {loss["code"] for loss in report["losses"]} >= {"edge.dangling-target"}
+    loader.load(stamp_labels([epic], [*TRIPLET, "origin:backfill"]), dry_run=False)
+    row = bd_json("show", "ag-infra-1", cwd=hive)
+    row = row[0] if isinstance(row, list) else row
+    deps = row.get("dependencies") or []
+    assert not any(d.get("depends_on_id") == "ag-infra-9" for d in deps), row  # bd dropped it

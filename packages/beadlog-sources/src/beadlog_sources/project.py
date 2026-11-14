@@ -31,10 +31,31 @@ today).
 - **PRESENT** (matched to baseline bead ``bead``): only DRIFT-style appends and stamps on that
   bead, never an overwrite: the facts below, plus an ``external_ref`` stamp (the unit key) when the
   bead has none. A stamp whose field already holds another value is not emitted; it is reported
-  in :attr:`UnitProjection.kept`. No ``create``, ``phase``, label or edge ever touches an
-  existing bead (it may be hand-made).
+  in :attr:`UnitProjection.kept`. No ``create``, label or edge ever touches an existing bead (it
+  may be hand-made), and neither does a ``phase`` except the one narrow exception below.
+  **The timeline exception (bh-1vkff.3).** A backfill writes a timeline, so a re-run appends the
+  later transitions of a bead it created: when the bead carries :data:`BACKFILL_LABEL`, is
+  ``open`` (or ``in_progress`` with its own :data:`IN_PROGRESS_AT` stamp), and no ``phase`` event
+  of the baseline moved it anywhere else, the run appends ``in_progress`` (the unit's review was
+  opened, ``Lifecycle.started``) and/or ``closed`` (closing evidence, a basis in
+  :data:`~beadlog_sources.lifecycle.CLOSING_BASES`), each at its own evidence's moment. A closed
+  bead, a bead without the label and a bead a human moved are never touched. The transitions
+  follow ``StatusOptions.close_on_evidence`` / ``in_progress_on_evidence`` (both default on).
+  Earlier events are never rewritten; the second run finds the bead already moved and appends
+  nothing.
+  A NEW unit with no evidence moment at all (:func:`~beadlog_sources.lifecycle.has_no_moment`:
+  no add commit, no declared date) is not created: it projects nothing and carries the note
+  :data:`NOTE_NO_MOMENT`.
 - **NOISE** (covered by a coarser epic) and **residual** (no decision): nothing is projected; the
   unit is reported (:attr:`Projection.residual` lists the residual units).
+- **skip** (an operator decision, B5 step 0, or a branch-sync merge, step ``branch-sync``):
+  nothing is projected and the unit is not residual; it counts under ``skip`` only when some unit
+  was skipped, so a run with no decisions reports exactly what it did before.
+- **Hidden commits** (D5): the commits a residual, NOISE or SKIP unit claimed (a merge unit's
+  second-parent commits) are in no plan, so :attr:`Projection.hidden` lists them per unit
+  (:func:`~beadlog_sources.identify.hidden_commits`) and the report gains ``hidden_commits``
+  (``count`` and ``units``), only when non-zero. Created beads never change; the opt-in
+  ``identify.merge_fallback`` turns those commits into units instead.
 
 **The facts** (``set`` events, the same rule for NEW and PRESENT):
 
@@ -69,9 +90,11 @@ midnight. Two rules may move an instant, and both drop ``occurred_precision`` be
 time is then an ordering floor, not the fact's clock (the fact's own moment always stays in
 ``metadata.lifecycle.*`` and the evidence):
 
-- a closed ``phase`` that would not sort strictly after its bead's ``create`` (a commit unit is
-  created and closed by the same commit) is raised to one microsecond after the create
-  (:func:`~beadlog_sources.commits.just_after`), so the last-writer-wins fold ends ``closed``;
+- a ``phase`` that would not sort strictly after the event before it (its bead's ``create``, the
+  previous transition, or on a matched bead the baseline's latest decider of the phase; a commit
+  unit is created and closed by the same commit) is raised to one microsecond after that event
+  (:func:`~beadlog_sources.commits.just_after`), so the last-writer-wins fold ends in the last
+  transition;
 - a ``set`` on an existing bead that would not postdate the baseline's latest decider of that field
   is raised past it, as :mod:`beadlog_sources.commits` does.
 
@@ -101,6 +124,7 @@ from beadlog import (
     BeadRef,
     BeadState,
     Edge,
+    EventKind,
     Evidence,
     TimestampError,
     canonical_json,
@@ -111,7 +135,7 @@ from beadlog import (
     sort_events,
 )
 
-from ._sources import commit_time, floors, live_beads, mint_bead_id
+from ._sources import ROLLBACK_REASON, commit_time, floors, live_beads, mint_bead_id
 from .collate import (
     ARTIFACT,
     ATTACH,
@@ -124,9 +148,20 @@ from .collate import (
     build_indexes,
 )
 from .commits import dump_linkage, just_after, parse_linkage
+from .decisions import SOURCE_LABEL as DECISION_LABEL
 from .evidence import Artifact, Category, EvidenceCorpus
+from .identify import CLASS_SKIP, hidden_commits, hidden_summary
 from .ledger import BEAD_TOKEN, FOREIGN
-from .lifecycle import STATUS_CLOSED, Lifecycle, Moment, conflicts_of, lifecycles
+from .lifecycle import (
+    CLOSING_BASES,
+    STATUS_CLOSED,
+    Lifecycle,
+    Moment,
+    StatusOptions,
+    conflicts_of,
+    has_no_moment,
+    lifecycles,
+)
 from .reconcile import ReconcileClass
 
 SOURCE_SYSTEM = "collate"
@@ -139,9 +174,14 @@ INFERRED = "inferred"
 _STRENGTH = {OBSERVED: 2, DERIVED: 1, INFERRED: 0}
 
 EXTERNAL_REF = "external_ref"
+# The label of a bead backfill created (decision D1); only such a bead is ever transitioned.
+BACKFILL_LABEL = "origin:backfill"
+PHASE_OPEN = "open"
+PHASE_IN_PROGRESS = "in_progress"
 GIT_COMMITS = "metadata.git.commits"
 CREATED_AT = "metadata.lifecycle.created_at"
 CLOSED_AT = "metadata.lifecycle.closed_at"
+IN_PROGRESS_AT = "metadata.lifecycle.in_progress_at"
 XREF_PREFIX = "metadata.xref."
 XREF_TRACKER = "metadata.xref.tracker"
 RELEASE = "metadata.release"
@@ -151,6 +191,7 @@ DECISION_NEW = str(ReconcileClass.NEW)
 DECISION_PRESENT = str(ReconcileClass.PRESENT)
 DECISION_NOISE = str(ReconcileClass.NOISE)
 DECISION_RESIDUAL = "residual"
+DECISION_SKIP = "skip"  # an operator decision (B5 step 0): projects nothing, never residual
 DECISIONS = (DECISION_NEW, DECISION_PRESENT, DECISION_NOISE, DECISION_RESIDUAL)
 
 # The B6 bases whose closing record states the closure itself.
@@ -184,6 +225,7 @@ OPTION_MEMBERS = ("creation_labels", "types", "source_labels")
 NOTE_CLOSED_UNDATED = "closed-undated"
 NOTE_PHASE_RAISED = "phase-raised"
 NOTE_NO_BEAD = "missing-bead"
+NOTE_NO_MOMENT = "skipped: no evidence moment"
 NOTE_PARENT_SKIPPED = "parent-skipped"
 NOTE_DEPENDENCY_SKIPPED = "dependency-skipped"
 
@@ -192,6 +234,10 @@ _PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 class ProjectError(ValueError):
     """A projection that cannot be made (a missing prefix, an invalid option)."""
+
+
+# ``bd create``'s own default priority (P2), the priority a NEW bead is stamped with.
+DEFAULT_CREATE_PRIORITY = 2
 
 
 @dataclass(frozen=True)
@@ -205,13 +251,23 @@ class ProjectOptions:
       the create-mode caller passes ``origin:backfill``, decision D1).
     - ``types``: category to the bead type of a NEW non-epic unit (default
       :data:`DEFAULT_TYPES`; a given mapping overrides those keys only). Epic units are ``epic``.
+    - ``create_priority``: the ``priority`` field every NEW bead's ``create`` carries, epics and
+      doc units included (default :data:`DEFAULT_CREATE_PRIORITY`, ``bd create``'s own default;
+      without it ``bd import`` would store P0 and rank backfilled beads first).
     """
 
+    create_priority: int = DEFAULT_CREATE_PRIORITY
     creation_labels: tuple[str, ...] = ()
     types: Mapping[str, str] = field(default_factory=dict, hash=False)
     source_labels: Mapping[str, str] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.create_priority, bool)
+            or not isinstance(self.create_priority, int)
+            or not 0 <= self.create_priority <= 4
+        ):
+            raise ProjectError("create_priority must be an integer from 0 to 4")
         labels = self.creation_labels
         if isinstance(labels, str) or not isinstance(labels, Iterable):
             raise ProjectError("creation_labels must be a list of strings")
@@ -251,6 +307,7 @@ class ProjectOptions:
     def to_json(self) -> dict[str, Any]:
         """The effective options as a JSON object."""
         return {
+            "create_priority": self.create_priority,
             "creation_labels": list(self.creation_labels),
             "types": dict(self.types),
             "source_labels": dict(self.source_labels),
@@ -299,6 +356,7 @@ class Projection:
     events: tuple[BeadEvent, ...]
     units: tuple[UnitProjection, ...]
     options: ProjectOptions = field(default_factory=ProjectOptions)
+    hidden: tuple[dict[str, Any], ...] = ()
 
     @property
     def residual(self) -> tuple[str, ...]:
@@ -311,17 +369,25 @@ class Projection:
     def counts(self) -> dict[str, int]:
         out = dict.fromkeys(DECISIONS, 0)
         for item in self.units:
-            out[item.decision] += 1
+            out[item.decision] = out.get(item.decision, 0) + 1  # skip only when decided
         return out
 
+    def hidden_commits(self) -> dict[str, int]:
+        """D5: ``{"count": N, "units": M}``, the commits inside units that project nothing
+        (residual, NOISE or SKIP); empty when nothing is hidden."""
+        return hidden_summary(self.hidden) if self.hidden else {}
+
     def to_json(self) -> dict[str, Any]:
-        """The report (not the events) as a JSON object."""
-        return {
+        """The report (not the events) as a JSON object (``hidden_commits`` only when non-zero)."""
+        out: dict[str, Any] = {
             "counts": self.counts(),
             "events": len(self.events),
             "options": self.options.to_json(),
             "units": [u.to_json() for u in self.units],
         }
+        if self.hidden:
+            out["hidden_commits"] = self.hidden_commits()
+        return out
 
 
 # -- helpers -----------------------------------------------------------------------------------
@@ -392,6 +458,8 @@ class _Projector:
         self.units = {u.key: u for u in collation.units}
         self.life: dict[str, Lifecycle] = {life.unit: life for life in lifecycles(collation)}
         self.decided = _decision(collation)
+        recorded = collation.options.get("status")
+        self.status = StatusOptions() if recorded is None else StatusOptions.from_json(recorded)
         states = fold(baseline)
         self.live = live_beads(states, group)
         self.baseline = baseline
@@ -493,6 +561,27 @@ class _Projector:
 
     # -- events ------------------------------------------------------------------------------
 
+    def moved(self, bead: BeadRef) -> set[str]:
+        """The phases the baseline's ``phase`` and ``retire`` events put ``bead`` into."""
+        return {
+            str(e.data.get("phase", "retired"))
+            for e in self.baseline
+            if e.bead == bead and e.kind in (EventKind.PHASE, EventKind.RETIRE)
+        }
+
+    def phase_floor(self, bead: str) -> str | None:
+        """The time of the baseline's latest event that decides ``bead``'s phase."""
+        found = [
+            e.occurred_at
+            for e in self.baseline
+            if e.bead.group == self.group
+            and e.bead.id == bead
+            and e.occurred_at is not None
+            and e.kind
+            in (EventKind.CREATE, EventKind.CHECKPOINT, EventKind.PHASE, EventKind.RETIRE)
+        ]
+        return max(found, key=instant, default=None)
+
     def floor(self, bead: str, name: str) -> str | None:
         if name not in self._floors:
             self._floors[name] = floors(self.baseline, self.group, name)
@@ -505,23 +594,34 @@ class _Projector:
             made, record = self.unit(self.units[key])
             events.extend(made)
             out.append(record)
-        return Projection(sort_events(events), tuple(out), self.options)
+        hidden = hidden_commits(self.collation.units, self.collation.verdicts)
+        return Projection(sort_events(events), tuple(out), self.options, hidden)
 
     def unit(self, unit: Unit) -> tuple[list[BeadEvent], UnitProjection]:
         record = self.decided.get(unit.key)
         if record is None:
             return [], UnitProjection(unit.key, DECISION_RESIDUAL)
         cls = record["class"]
+        if cls == CLASS_SKIP:
+            return [], UnitProjection(unit.key, DECISION_SKIP)
         if cls == DECISION_NOISE:
             return [], UnitProjection(unit.key, DECISION_NOISE, record["bead"])
         if unit.key not in self.beads:
             return [], UnitProjection(unit.key, cls, record["bead"], notes=(NOTE_NO_BEAD,))
         ident = self.beads[unit.key]
+        life = self.life.get(unit.key)
+        if cls == DECISION_NEW and life is not None and has_no_moment(life):
+            # nothing dates it: never mint an open bead from no evidence (bh-uysl1)
+            return [], UnitProjection(unit.key, cls, None, notes=(NOTE_NO_MOMENT,))
         writer = _Writer(self, unit, record, BeadRef(self.group, ident))
         if cls == DECISION_NEW:
             writer.create()
-        elif unit.kind != ATTACH:  # an attach unit's key names its bead: nothing to stamp
-            writer.link()
+        elif writer.revivable():
+            writer.revive()
+        else:
+            if unit.kind != ATTACH:  # an attach unit's key names its bead: nothing to stamp
+                writer.link()
+            writer.transitions()
         writer.facts()
         return writer.events, UnitProjection(
             unit.key,
@@ -545,6 +645,7 @@ class _Writer:
         self.bead = bead
         self.new = record["class"] == DECISION_NEW
         self.state: BeadState | None = None if self.new else owner.live[bead.id]
+        self.status = owner.status
         self.match = str(record["provenance"])
         permille = record["confidence_permille"]
         self.confidence = None if permille is None else permille / 1000
@@ -556,6 +657,7 @@ class _Writer:
         self.kept: list[Kept] = []
         self.notes: list[str] = []
         self.create_at = _When.of(self.created)
+        self.latest: str | None = None  # the time of the last phase event written
 
     # -- minting -----------------------------------------------------------------------------
 
@@ -626,6 +728,7 @@ class _Writer:
                     "title": unit.title,
                     EXTERNAL_REF: unit.key,
                     "description": f"Reconstructed from {unit.key}.",
+                    "priority": self.p.options.create_priority,
                 },
             },
             self.create_at,
@@ -645,6 +748,52 @@ class _Writer:
             self.emit("label_add", {"label": label}, self.create_at, label_evidence, DERIVED)
         self.edges(keys)
         self.phase(create)
+
+    def revivable(self) -> bool:
+        """A matched bead a failed apply's rollback retired: the earlier create of this unit."""
+        state = self.state
+        return (
+            state is not None
+            and state.phase == "retired"
+            and (state.retired or {}).get("reason") == ROLLBACK_REASON
+            and state.fields.get(EXTERNAL_REF) == self.unit.key
+        )
+
+    def revive(self) -> None:
+        """Re-open a rollback-retired bead in place and re-apply what the create projected, so
+        a re-run lands the planned state with no second bead and no duplicate ``external_ref``."""
+        assert self.state is not None
+        floor = max(
+            (
+                stamp
+                for event in self.p.baseline
+                if event.bead == self.bead
+                for stamp in (event.occurred_at, event.recorded_at)
+                if stamp is not None
+            ),
+            key=instant,
+            default=None,
+        )
+        self.create_at = self.create_at.after(floor)
+        reopened = self.emit(
+            "phase",
+            {"phase": "open", "reason": "backfill-revive"},
+            self.create_at,
+            self.p.evidence_keys(self.unit),
+            DERIVED,
+        )
+        keys = self.p.evidence_keys(self.unit)
+        anchor = self.p.anchor(self.unit)
+        source = self.p.options.source_label(
+            anchor.kind if anchor is not None else None,
+            anchor.category.value if anchor is not None else None,
+            self.unit.rule,
+        )
+        label_evidence = [anchor.key] if anchor is not None else keys
+        for label in dict.fromkeys([source, *self.p.options.creation_labels]):
+            self.emit("label_add", {"label": label}, self.create_at, label_evidence, DERIVED)
+        self.edges(keys)
+        self.phase(reopened)
 
     def edges(self, keys: list[str]) -> None:
         unit = self.unit
@@ -680,25 +829,106 @@ class _Writer:
             )
 
     def phase(self, create: BeadEvent) -> None:
+        """A NEW (or revived) bead's timeline after its ``create``: ``in_progress`` at the
+        unit's start evidence, then ``closed`` at its close, each at its own moment."""
         life = self.lifecycle
-        if life is None or life.status != STATUS_CLOSED:
+        if life is None:
+            return
+        closing = life.status == STATUS_CLOSED
+        progress = self.status.in_progress_on_evidence and life.started is not None
+        if not (closing or progress):
             return
         if create.occurred_at is None:
-            self.notes.append(NOTE_CLOSED_UNDATED)
+            if closing:
+                self.notes.append(NOTE_CLOSED_UNDATED)
             return
+        if progress:
+            self.step_in_progress(create.occurred_at)
+        if closing:
+            self.step_closed(self.latest or create.occurred_at, force=True)
+
+    def step_in_progress(self, floor: str | None) -> None:
+        """Append ``in_progress`` at the unit's start moment (raised past ``floor``) and stamp
+        :data:`IN_PROGRESS_AT`, the mark that this transition is the backfill's own."""
+        life = self.lifecycle
+        assert life is not None and life.started is not None
+        began = life.started
+        when = _When.of(began)
+        if when.at is None or (floor is not None and instant(when.at) <= instant(floor)):
+            when = _When(just_after(floor)) if floor is not None else when
+            self.notes.append(NOTE_PHASE_RAISED)
+        evidence = (
+            [began.source] if began.source in self.p.arts else self.p.evidence_keys(self.unit)
+        )
+        event = self.emit(
+            "phase",
+            {"phase": PHASE_IN_PROGRESS, "reason": f"review-opened: {began.source}"},
+            when,
+            evidence,
+            OBSERVED,
+        )
+        self.latest = event.occurred_at
+        self.stamp(IN_PROGRESS_AT, began.at, began, evidence, DERIVED)
+
+    def step_closed(self, floor: str | None, *, force: bool = False) -> None:
+        """Append ``closed`` at the unit's close moment, raised past ``floor`` (the event
+        before it). ``force`` (a NEW bead) closes even a unit with no close moment, one
+        microsecond after ``floor``."""
+        life = self.lifecycle
+        assert life is not None
         when = _When.of(self.closed) if self.closed is not None else _When()
-        if when.at is None or instant(when.at) <= instant(create.occurred_at):
-            when = _When(just_after(create.occurred_at))
+        if floor is not None and (when.at is None or instant(when.at) <= instant(floor)):
+            if when.at is None and not force:
+                self.notes.append(NOTE_CLOSED_UNDATED)
+                return
+            when = _When(just_after(floor))
             self.notes.append(NOTE_PHASE_RAISED)
         source = self.closed.source if self.closed is not None else self.unit.key
         evidence = [source] if source in self.p.arts else self.p.evidence_keys(self.unit)
-        self.emit(
+        event = self.emit(
             "phase",
             {"phase": "closed", "reason": f"{life.basis}: {source}"},
             when,
             evidence,
             OBSERVED if life.basis in OBSERVED_BASES else DERIVED,
         )
+        self.latest = event.occurred_at
+
+    def transitions(self) -> None:
+        """The timeline exception for a matched bead (see the module doc): the later transitions
+        of an open (or its own in-progress) ``origin:backfill`` bead, from evidence."""
+        state, life = self.state, self.lifecycle
+        if state is None or life is None or self.unit.kind == ATTACH:
+            return
+        if BACKFILL_LABEL not in state.labels or DECISION_LABEL in state.labels:
+            return  # not backfilled, or an operator decision record (never a unit's bead)
+        moved = self.p.moved(self.bead)
+        if state.phase == PHASE_OPEN:
+            if moved - {PHASE_OPEN}:
+                return  # an earlier event already moved it somewhere else: a human's call
+        elif state.phase == PHASE_IN_PROGRESS:
+            if moved - {PHASE_OPEN, PHASE_IN_PROGRESS} or self.existing(IN_PROGRESS_AT) is None:
+                return  # in progress, but not by this backfill
+        else:
+            return  # closed, retired, deferred, blocked ...: never touched
+        closing = (
+            self.status.close_on_evidence
+            and life.status == STATUS_CLOSED
+            and life.basis in CLOSING_BASES
+            and self.closed is not None
+        )
+        if life.status == STATUS_CLOSED and not closing:
+            return  # a bead the run will not close is not started either
+        floor = self.p.phase_floor(self.bead.id)
+        self.latest = floor
+        if (
+            self.status.in_progress_on_evidence
+            and life.started is not None
+            and state.phase == PHASE_OPEN
+        ):
+            self.step_in_progress(floor)
+        if closing:
+            self.step_closed(self.latest)
 
     def link(self) -> None:
         """Stamp the unit key as a matched bead's ``external_ref`` when it has none. A bead
@@ -850,14 +1080,17 @@ def project(
 
 __all__ = [
     "ANNOTATION",
+    "BACKFILL_LABEL",
     "CLOSED_AT",
     "CONFLICT",
     "CREATED_AT",
     "DECISIONS",
+    "DECISION_SKIP",
     "DEFAULT_SOURCE_LABELS",
     "DEFAULT_TYPES",
     "EVENT_KINDS",
     "GIT_COMMITS",
+    "IN_PROGRESS_AT",
     "RELEASE",
     "SOURCE_SYSTEM",
     "XREF_PREFIX",
