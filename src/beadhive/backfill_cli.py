@@ -38,6 +38,7 @@ import importlib.metadata
 import json
 import os
 import re
+import time
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -1458,6 +1459,135 @@ def _decide_run(
         typer.echo("  (dry run: nothing written)")
 
 
+def selection_now() -> float:
+    """Seconds since the epoch, for the age of the collation ``decide --select`` reads (the seam
+    tests replace, so no test depends on the wall clock)."""
+    return time.time()
+
+
+def _age(seconds: float) -> str:
+    """``seconds`` as a short age (``45s``, ``12m``, ``3h``, ``2d``)."""
+    seconds = max(0, int(seconds))
+    for limit, unit, size in ((60, "s", 1), (3600, "m", 60), (86400, "h", 3600)):
+        if seconds < limit:
+            return f"{seconds // size}{unit}"
+    return f"{seconds // 86400}d"
+
+
+def _select_args(first: str, kind: str | None, bead: str | None) -> tuple[str, str | None]:
+    """``(kind, target)`` of ``decide --select``: the positionals are ``skip|noise|link [<bead>]``
+    (a unit key among them is the usage error: a key and a selector are two ways to name units)."""
+    from beadlog_sources.decisions import KINDS
+
+    if first not in KINDS:
+        raise BackfillError(
+            "usage: --select replaces the unit key: bh backfill decide --select <field><op><value> "
+            "skip|noise|link [<bead>]"
+        )
+    if bead is not None:
+        raise BackfillError("usage: bh backfill decide --select <...> skip|noise|link [<bead>]")
+    return first, kind
+
+
+def _decide_select(
+    args: tuple[str, str | None, str | None],
+    select: list[str],
+    run_dir: Path | None,
+    max_units: int | None,
+    yes: bool,
+    reason: str,
+    hive: str,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    from . import backfill_create, backfill_decisions, backfill_select, backfill_views
+
+    try:
+        kind, target = _select_args(*args)
+        clauses = backfill_select.parse_clauses(select)
+        cfg = effective_cfg(config.load(), hive)
+        backfill = BackfillConfig.model_validate(cfg.get("backfill") or {})
+        cwd, group = _target(hive)
+        prefix = hive_prefix(hive)
+        if not prefix:
+            raise BackfillError("the hive has no registered prefix (prefixes are never derived)")
+        run = _run_dir_for(hive, backfill, run_dir)
+        try:
+            path = backfill_views.collation_path(run)
+        except backfill_views.ViewInputError:
+            raise BackfillError(
+                f"{run}: no collation; run `bh backfill collate` (or `bh backfill history`) first"
+            ) from None
+        age = selection_now() - path.stat().st_mtime
+        collation = backfill_views.load(path)
+        if not as_json:
+            typer.echo(f"collation: {path} (age {_age(age)})")
+        if max_units is not None and max_units < 1:
+            raise BackfillError("usage: --max must be at least 1")
+        limit = None if yes else (backfill.decisions.select_max if max_units is None else max_units)
+
+        def choose(states: Mapping[Any, Any]) -> tuple[list[str], list[tuple[str, str]]]:
+            found = backfill_select.select_units(
+                collation, clauses, backfill_select.live_external_refs(states)
+            )
+            return list(found.matched), list(found.excluded)
+
+        out = backfill_decisions.record_decisions(
+            store_loader(cwd, group=group.id),
+            prefix=prefix,
+            labels=backfill_create.creation_labels(hive, cfg),
+            choose=choose,
+            kind=kind,
+            target=target,
+            reason=backfill_select.selector_reason(clauses, reason),
+            dry_run=dry_run,
+            clock=decision_clock,
+            limit=limit,
+        )
+    except (
+        *_ERRORS,
+        DecisionError,
+        backfill_select.SelectError,
+        backfill_views.ViewInputError,
+    ) as exc:
+        raise _fail(exc) from None
+    out["collation"] = {"path": str(path), "age_seconds": int(age)}
+    out["select"] = [c.raw for c in clauses]
+    out["max"] = limit
+    if as_json:
+        _emit(out)
+        return
+    verb = "would record" if dry_run else "recorded"
+    typer.echo(f"select: {' AND '.join(out['select'])}")
+    for item in out["decisions"]:
+        typer.echo(f"  {verb} {kind} {item['bead']} ({item['action']}): {item['unit']}")
+        if dry_run:
+            for name in sorted(item["fields"]):
+                if name.startswith("metadata.backfill.") or name == "title":
+                    typer.echo(f"      {name}: {item['fields'][name]}")
+    for item in out["excluded"]:
+        typer.echo(f"  excluded {item['unit']}: {item['reason']}")
+    typer.echo(f"{len(out['decisions'])} unit(s) matched, {len(out['excluded'])} excluded")
+    if out["over_limit"]:
+        typer.echo(f"! more than {limit} matches: a real run needs --yes or a higher --max")
+    if dry_run:
+        typer.echo("(dry run: nothing written)")
+
+
+_SELECT_OPTION = typer.Option(
+    None,
+    "--select",
+    help="decide every unit of the run's collation that matches <field><op><value> "
+    "(repeatable, ANDed; op '=' exact or '~' regex; fields rule, kind, area, title, key, "
+    "decision, status, type, noise) instead of one unit key",
+)
+_MAX_OPTION = typer.Option(
+    None,
+    "--max",
+    help="with --select: refuse to decide more units than this (default "
+    "backfill.decisions.select_max, 200) unless --yes",
+)
+_YES_OPTION = typer.Option(False, "--yes", help="with --select: allow more matches than --max")
 _DECIDE_UNIT = typer.Argument(..., help="the unit key (with --deleted: just `skip`)")
 _DECIDE_KIND = typer.Argument(None, help="skip, noise or link")
 _DECIDE_BEAD = typer.Argument(None, help="the bead a link / noise decision names")
@@ -1480,13 +1610,31 @@ def decide_cmd(
         False, "--dry-run", help="print the decision bead that would be written; write nothing"
     ),
     as_json: bool = typer.Option(False, "--json", help="emit the decision as JSON"),
+    select: list[str] | None = _SELECT_OPTION,
+    run_dir: Path | None = _RUN_DIR_OPTION,
+    max_units: int | None = typer.Option(
+        None,
+        "--max",
+        help="with --select: refuse to decide more units than this (default "
+        "backfill.decisions.select_max, 200) unless --yes",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="with --select: allow more matches than --max"),
 ) -> None:
     """Record a per-unit decision in the hive's bead store, kept across re-runs.
 
     skip: the unit is never proposed. noise: it is covered by the named epic. link: it is the
     named existing bead. One closed `decision` bead per unit key (re-deciding updates it);
     `bh backfill view decisions` lists them.
+
+    With --select the units come from the run's collation instead of one key: every match gets
+    the decision (attach units and units with a live bead are excluded), in one batched write;
+    each decision's reason is the selector.
     """
+    if select:
+        _decide_select(
+            (unit_key, kind, bead), select, run_dir, max_units, yes, reason, hive, dry_run, as_json
+        )
+        return
     _decide_run((unit_key, kind, bead), deleted, reason, hive, dry_run, as_json)
 
 

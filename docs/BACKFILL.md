@@ -729,9 +729,10 @@ fourth rows. Per-unit decisions and the deleted-bead tombstone follow.
 ### Operator decisions (`bh backfill decide`) {#operator-decisions}
 
 `bh backfill decide <unit-key> skip|noise|link [<bead>] [--reason R] [--hive H] [--dry-run]`
-records what the operator decided about one unit, in the hive's own bead store, and every later
-run honours it (bh-2sicb; ADR `design/backfill-rerun-control-adr.md`, Q3). The unit key is the
-unit's stable source key (`doc:<path>`, `gh:pr/<n>`, an area key ...; see `bh backfill view unit`).
+records what the operator decided about one unit (or, with `--select`, many; see below), in the
+hive's own bead store, and every later run honours it (bh-2sicb; ADR
+`design/backfill-rerun-control-adr.md`, Q3). The unit key is the unit's stable source key
+(`doc:<path>`, `gh:pr/<n>`, an area key ...; see `bh backfill view unit`).
 
 | Decision | A later run |
 |---|---|
@@ -752,6 +753,39 @@ by title. List them with `bd list --label source:decision` or `bh backfill view 
 
 A `link` or `noise` whose target is no longer there (or, for `noise`, is not an epic) is **stale**:
 the run reports it (`identify: decision ... not applied`) and identifies the unit normally.
+
+**Many units at once (`--select`).** Noise comes in families (branch-sync merges, release
+commits, one vendored area), so `bh backfill decide --select <field><op><value> ...
+skip|noise|link [<bead>] [--run-dir P] [--dry-run] [--max N] [--yes]` decides every unit of a
+run's `collation.json` that matches (bh-espkv, ADR D6). It reads the run's collation (the
+`bh backfill history` run directory, or `--run-dir`), and prints its path and age first; a
+missing collation names `bh backfill collate`. A unit key together with `--select` is a usage
+error; without `--select` the command is unchanged.
+
+- **Clauses.** `--select` repeats and the clauses are ANDed (no OR, no negation). `op` is `=`
+  (exact) or `~` (a regular expression, `re.search`, no flags, at most 200 characters); a value
+  may be quoted (`title~'^Merge branch'`). The fields are `rule`, `kind`, `area`, `title`, `key`,
+  `decision` (`NEW`, `PRESENT`, `NOISE`, `SKIP`, `residual`), `status` (`open`, `closed`),
+  `type` and `noise`. An unknown field, a bad regex, or an `=` value outside the vocabulary of
+  `rule`, `kind`, `decision` or `status` is a usage error, and so is a field the collation lacks:
+  `type` needs a run made with `collate.merge_types` set (for example `["*"]`), `noise` needs
+  `collate.noise` non-empty (the default), `status` needs the status stage. It never silently
+  matches zero units.
+- **Guard rails.** `attach` units (their identity is an existing bead) and units that already
+  have a live bead (a `PRESENT` verdict, or a live bead whose `external_ref` is the unit key) are
+  excluded and listed with the reason, so a selector cannot contradict an existing bead.
+- **Safety.** `--dry-run` lists the matched units, the exact decision ids and fields, and the
+  exclusions, and writes nothing. More matches than `--max` (default
+  `backfill.decisions.select_max`, 200; per hive under `backfill.hives.<prefix>.decisions`)
+  refuses a real run unless `--yes` is given. Matches are sorted by unit key and zero matches
+  write nothing.
+- **One batch.** All decisions are written with one export and one load of the store; each is
+  still its own `decision` bead, so re-runs and `view decisions` work as before. Each decision's
+  reason is `select: <the clauses as typed>`, followed by `; <--reason>` when given. A branch-sync
+  noise unit (`noise=branch-sync`) is a legitimate target: an operator decision is step 0 and wins
+  over the derived `branch-sync` skip.
+- **Not built.** Standing rules that apply a selector to later runs are deferred (a later ADR
+  amendment).
 
 **Deleted backfilled beads.** A hard delete leaves no trace in `bd export`, so the unit would be
 proposed again (see the table above). Record the skip instead of deleting, or after the fact:

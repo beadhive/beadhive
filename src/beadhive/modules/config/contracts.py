@@ -2512,6 +2512,12 @@ class BackfillDecisionsConfig(_Section):
         "records a skip decision for each (`bh backfill decide --deleted <bead> skip` does the "
         "same one bead at a time, whatever this says).",
     )
+    select_max: int = Field(
+        200,
+        ge=1,
+        description="`bh backfill decide --select` refuses to decide more units than this in one "
+        "run unless `--max` raises it or `--yes` is given.",
+    )
 
 
 class BackfillHiveOverlay(_Section):

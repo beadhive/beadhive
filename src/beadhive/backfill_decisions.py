@@ -147,6 +147,87 @@ def record_decision(
     }
 
 
+def record_decisions(
+    loader: BdStoreLoader,
+    *,
+    prefix: str,
+    labels: Sequence[str],
+    choose: Callable[[Mapping[BeadRef, Any]], tuple[Sequence[str], Sequence[tuple[str, str]]]],
+    kind: str,
+    target: str | None = None,
+    reason: str = "",
+    dry_run: bool = False,
+    clock: Clock = system_clock,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Record (or, with ``dry_run``, describe) the decision ``kind`` on many units with ONE baseline
+    export and ONE load (each decision is still its own bead, so re-runs and ``view decisions``
+    work as for :func:`record_decision`).
+
+    ``choose`` sees the folded baseline (the live-bead guard rail needs it) and returns the unit
+    keys to decide plus the ``(key, reason)`` pairs it excluded. More than ``limit`` keys raises
+    :class:`DecisionError` before anything is written, unless ``dry_run`` (which reports
+    ``over_limit``). Zero keys writes nothing."""
+    _decisions.check(kind, target)
+    baseline = tuple(loader.export())
+    states = fold(baseline)
+    _check_target(kind, target, states)
+    keys, excluded = choose(states)
+    for key in keys:
+        if key.startswith(DECISION_REF_PREFIX):
+            raise DecisionError("name the unit key, not a decision record's reference")
+    over = limit is not None and len(keys) > limit
+    if over and not dry_run:
+        raise DecisionError(
+            f"{len(keys)} units match, more than the {limit} allowed; narrow the selector, raise "
+            "--max (backfill.decisions.select_max) or pass --yes"
+        )
+    by = str(getattr(loader.port, "actor", "") or "")
+    events: list[BeadEvent] = []
+    items: list[dict[str, Any]] = []
+    for key in sorted(set(keys)):
+        ident = decision_id(prefix, loader.group, key)
+        state = states.get(BeadRef(loader.group, ident))
+        live = state is not None and state.exists and not state.deleted and not state.erased
+        made = decision_events(
+            prefix=prefix,
+            group=loader.group,
+            key=key,
+            kind=kind,
+            target=target,
+            reason=reason,
+            decided_by=by,
+            decided_at=clock(),
+            labels=labels,
+            existing=state.fields if live and state is not None else None,
+        )
+        created = next((e for e in made if str(e.kind) == "create"), None)
+        items.append(
+            {
+                "unit": key,
+                "bead": ident,
+                "action": "update" if live else "create",
+                "fields": dict(created.data["fields"]) if created is not None else _fields(made),
+            }
+        )
+        events.extend(made)
+    report = loader.load(events, dry_run=dry_run) if events else None
+    return {
+        "schema": SCHEMA,
+        "dry_run": dry_run,
+        "decision": kind,
+        "target": target,
+        "type": _decisions.BEAD_TYPE,
+        "status": "closed",
+        "labels": sorted({*labels, DECISION_SOURCE_LABEL}),
+        "decisions": items,
+        "excluded": [{"unit": key, "reason": why} for key, why in excluded],
+        "over_limit": over,
+        "events": len(events),
+        "loss_report": report,
+    }
+
+
 def _fields(events: Sequence[BeadEvent]) -> dict[str, Any]:
     return {e.data["field"]: e.data["value"] for e in events if str(e.kind) == "set"}
 
@@ -212,5 +293,6 @@ __all__ = [
     "deleted_units",
     "list_decisions",
     "record_decision",
+    "record_decisions",
     "render_decisions",
 ]

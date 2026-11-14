@@ -704,6 +704,13 @@
           ],
           "title": "On Delete",
           "type": "string"
+        },
+        "select_max": {
+          "default": 200,
+          "description": "`bh backfill decide --select` refuses to decide more units than this in one run unless `--max` raises it or `--yes` is given.",
+          "minimum": 1,
+          "title": "Select Max",
+          "type": "integer"
         }
       },
       "title": "BackfillDecisionsConfig",
