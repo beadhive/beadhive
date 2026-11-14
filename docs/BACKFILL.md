@@ -287,6 +287,37 @@ free first-parent merge. Three settings shape those units
 All three are per hive: `backfill.hives.<prefix>.collate.*`. `collate.noise = []` together with
 `collate.merge_titles = subject` restores the 0.37.1 output.
 
+**Doc attachment for merge-heavy repositories (0.38.0).** B4 attaches each design record to at
+most one unit by the first tier that finds one (`explicit`, `same-change`, `shared-path`,
+`lexical`). Four opt-in settings, all off by default, tame the guessing tiers
+(`design/backfill-merge-heavy-repos-adr.md`, D8; every one is per hive under
+`backfill.hives.<prefix>.collate.attach.*`):
+
+- **`max_per_unit`** (default unset: no cap). A unit takes at most that many docs from the
+  guessing tiers, `shared-path` and `lexical`. `explicit` and `same-change` attachments are exempt
+  (the doc names the unit, or the unit added it, so a feature that really adds five docs keeps
+  them) and are not counted. Over the cap the unit keeps the docs with the most evidence, then the
+  smaller doc key; the rest go to the next tier, then stand alone. The outcome is deterministic.
+- **`rename_guard`** (default off). A doc whose first-add commit moved it (a rename, not an
+  authoring) is not attached through that commit by `same-change`, `own-add` or `shared-path`, so
+  a reorganising merge no longer collects the docs it moved; such a doc falls to the next tier or
+  stands alone. It is a per-doc test, so it needs no threshold. It makes the git reader keep
+  rename status: the reader option `keep_renames` (set for you when `rename_guard` is on) adds the
+  attr `renamed` (the destination paths of a commit's rename entries) to every change; with the
+  option off the evidence is byte-identical to before.
+- **`own-add` tier** (opt-in, not in the default `tiers`). Add `own-add` to `tiers`, after
+  `same-change` and before `shared-path`: a doc whose first-add commit exists but no unit claimed
+  (a `docs:` commit under `include_types = [feat]`) becomes a unit of its own, with that commit as
+  its evidence (the anchor of the unit that implements it is added when one is found, so a later
+  version can link them; `related` links are not part of 0.38.0). Without the tier the doc
+  attaches or stands alone as before.
+- **`rank`** (default `evidence`). Among `shared-path` candidates `evidence` picks the unit with
+  the most evidence, then the smaller key. `proximity` orders by the time distance from the doc's
+  add commit to the unit's anchor, then subject overlap (more first), then the paths its changes
+  touched (the reader records no line counts, so edit size is the path count), then key, and
+  records the runner-up (`unit`, `distance` in seconds, `overlap`, `paths`) on the attachment;
+  `bh backfill view unit` prints it under the unit that took the doc.
+
 `bh backfill view` reviews a run, read-only, over a run directory or any `bdlg.collation/1` JSON.
 Each view is its own verb because adding parameters to the published `inspect` would break the
 wire contract:
@@ -704,9 +735,13 @@ a run with no decisions writes exactly what it did before.
 `options.cluster` gains the members `merge_types`, `merge_titles` and `noise`, each written only
 when it differs from 0.37 (`merge_types` when set, `merge_titles` when `derived`, `noise` when
 non-empty); a unit gains `type` and `noise`, written only when set; the identify steps gain
-`branch-sync`; and the evidence of a merge gains the attr `body_head`. The loader reads the old
+`branch-sync`; `options.attach` gains `max_per_unit`, `rename_guard` and `rank`, written only when
+set (`rename_guard` when on, `rank` when `proximity`); an attachment gains the reason `own-add` and
+the optional `runner_up`; and the evidence of a merge gains the attr `body_head` and, under the
+reader option `keep_renames`, a change gains `renamed`. The loader reads the old
 member sets and the old sets plus any of the new members, and still refuses anything else. A run
-with `noise = []` and `merge_titles = subject` and no other new option writes exactly the 0.37.1
+with `noise = []` and `merge_titles = subject` and no other new option (`max_per_unit`,
+`rename_guard`, `rank`, the `own-add` tier) writes exactly the 0.37.1
 collation. A default 0.38 run over a repository with branch-sync merges uses the new vocabulary
 and so is not readable by a `bh` older than 0.38.0 (`CollationFormatError`, as in 0.37.0): do not
 read a 0.38 run directory with an older `bh`. Later options of the same release extend these lists.

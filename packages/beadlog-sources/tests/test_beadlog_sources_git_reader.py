@@ -388,3 +388,23 @@ def test_default_options_are_unchanged(fork: Path) -> None:
         ReadRequest(root=fork, options={"tag_scope": "all", "exclude_revs": "", "tag_include": ""})
     )
     assert unset.artifacts == spelled.artifacts and unset.cursor == spelled.cursor
+
+
+def test_keep_renames_records_rename_destinations_only_when_asked(tmp_path: Path) -> None:
+    root = tmp_path / "moves"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    commit(root, "docs: add notes", 1, docs__old="a long enough body\nline two\nline three\n")
+    git(root, "mv", "docs/old", "docs/new")
+    git(root, "commit", "-q", "-m", "docs: move notes", when="2026-03-02T10:00:00+02:00")
+
+    def attrs(**options: object) -> list[dict[str, object]]:
+        read = read_git(ReadRequest(root=root, options=options))
+        return [dict(a.attrs) for a in read.artifacts if a.category is Category.CHANGE]
+
+    default = attrs()
+    assert all("renamed" not in a for a in default)  # default evidence is unchanged
+    kept = attrs(keep_renames="true")
+    assert [a["renamed"] for a in kept] == [("docs/new",), ()]  # newest first
+    # nothing else differs: dropping the attr gives the default read back
+    assert [{k: v for k, v in a.items() if k != "renamed"} for a in kept] == default

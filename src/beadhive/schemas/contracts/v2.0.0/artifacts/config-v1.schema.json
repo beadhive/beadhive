@@ -382,6 +382,36 @@
           "title": "Lexical Percent",
           "type": "integer"
         },
+        "max_per_unit": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opt-in. Unset (default): no cap. The most docs a unit takes from the guessing tiers (shared-path, lexical); explicit and same-change attachments are exempt. A doc over the cap falls to the next tier, then stands alone.",
+          "title": "Max Per Unit"
+        },
+        "rank": {
+          "default": "evidence",
+          "description": "How shared-path picks among candidate units. evidence (default): most evidence, then key. proximity: nearest in time to the doc's add commit, then subject overlap, then edit size (paths touched), then key; the runner-up is recorded.",
+          "enum": [
+            "evidence",
+            "proximity"
+          ],
+          "title": "Rank",
+          "type": "string"
+        },
+        "rename_guard": {
+          "default": false,
+          "description": "Opt-in. A doc moved by its first-add commit (a rename) is not attached through that commit, so a reorganising merge does not collect the docs it moved. Makes the git reader keep rename status.",
+          "title": "Rename Guard",
+          "type": "boolean"
+        },
         "standalone": {
           "default": true,
           "description": "Make a doc-unit of a doc no tier attached.",
@@ -389,11 +419,12 @@
           "type": "boolean"
         },
         "tiers": {
-          "description": "Attach tiers run, in order; drop one to turn it off.",
+          "description": "Attach tiers run, in order; drop one to turn it off. own-add is opt-in (not in the default list): a doc whose first-add commit no unit claimed becomes a doc-unit of its own, evidenced by that commit; place it after same-change.",
           "items": {
             "enum": [
               "explicit",
               "same-change",
+              "own-add",
               "shared-path",
               "lexical"
             ],

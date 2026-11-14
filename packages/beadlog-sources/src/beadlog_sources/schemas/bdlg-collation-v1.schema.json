@@ -110,10 +110,13 @@
       "required": ["tiers", "lexical_percent", "lexical_min_tokens", "standalone"],
       "description": "B4 AttachOptions (beadlog_sources.attach).",
       "properties": {
-        "tiers": {"type": "array", "uniqueItems": true, "items": {"enum": ["explicit", "same-change", "shared-path", "lexical"]}, "description": "The attach tiers run, in order."},
+        "tiers": {"type": "array", "uniqueItems": true, "items": {"enum": ["explicit", "same-change", "own-add", "shared-path", "lexical"]}, "description": "The attach tiers run, in order; own-add is opt-in (0.38)."},
         "lexical_percent": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Minimum overlap coefficient (percent) of the lexical tier."},
         "lexical_min_tokens": {"type": "integer", "minimum": 1},
-        "standalone": {"type": "boolean", "description": "Whether an unattached doc became a doc-unit."}
+        "standalone": {"type": "boolean", "description": "Whether an unattached doc became a doc-unit."},
+        "max_per_unit": {"type": "integer", "minimum": 1, "description": "Written only when set (0.38): the most attachments a unit takes from the shared-path and lexical tiers; explicit and same-change are exempt. Absent: no cap."},
+        "rename_guard": {"const": true, "description": "Written only when on (0.38): a doc moved by its first-add commit is not attached through that commit. Absent: off."},
+        "rank": {"const": "proximity", "description": "Written only when proximity (0.38): shared-path candidates rank by time distance, subject overlap, edit size, then key, and the attachment records a runner_up. Absent: evidence."}
       }
     },
     "status_options": {
@@ -192,8 +195,20 @@
       "properties": {
         "doc": {"type": "string", "minLength": 1, "description": "The design record's key, doc:<path>."},
         "unit": {"type": "string", "minLength": 1, "description": "Key of the unit it attaches to (the doc itself for standalone)."},
-        "reason": {"enum": ["explicit", "same-change", "shared-path", "lexical", "standalone"]},
-        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Artifact keys behind the decision (empty for standalone)."}
+        "reason": {"enum": ["explicit", "same-change", "own-add", "shared-path", "lexical", "standalone"], "description": "own-add (0.38, opt-in): the doc is a doc-unit of its own, its evidence the add commit no unit claimed."},
+        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Artifact keys behind the decision (empty for standalone)."},
+        "runner_up": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unit", "distance", "overlap", "paths"],
+          "description": "Written only when set (0.38, attach.rank = proximity): the candidate that ranked next.",
+          "properties": {
+            "unit": {"type": "string", "minLength": 1},
+            "distance": {"type": ["integer", "null"], "minimum": 0, "description": "Seconds from the doc's add commit to the unit's anchor; null if unknown."},
+            "overlap": {"type": "integer", "minimum": 0, "description": "Subject tokens shared with the doc."},
+            "paths": {"type": "integer", "minimum": 0, "description": "Paths the unit's changes touched (the edit size)."}
+          }
+        }
       }
     },
     "unit": {

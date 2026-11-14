@@ -306,3 +306,22 @@ def test_a_hive_overlay_turns_close_on_evidence_off_for_that_hive_only():
     assert status(WIDGETS).close_on_evidence is False
     assert status(GADGETS).close_on_evidence is True  # another hive keeps the host default
     assert status(WIDGETS).in_progress_on_evidence is True  # only the overlaid key moved
+
+
+def test_attach_options_overlay_per_hive():
+    cfg = _cfg(
+        {
+            "hives": {
+                "wd": {
+                    "collate": {
+                        "attach": {"max_per_unit": 4, "rename_guard": True, "rank": "proximity"}
+                    }
+                }
+            }
+        }
+    )
+    wd = BackfillConfig.model_validate(effective_backfill(cfg, "wd")).collate.attach
+    assert (wd.max_per_unit, wd.rename_guard, wd.rank) == (4, True, "proximity")
+    gd = BackfillConfig.model_validate(effective_backfill(cfg, "gd")).collate.attach
+    assert (gd.max_per_unit, gd.rename_guard, gd.rank) == (None, False, "evidence")
+    assert "own-add" not in gd.tiers

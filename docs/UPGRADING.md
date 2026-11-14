@@ -39,11 +39,21 @@ exists for the releases where "read the changelog" isn't enough to act on.
   merge types (conventional types, `untyped`, or `*`) limits the `merge` rule to merges of those
   types, derived from the branch prefix, then the merge's commits, and records each unit's `type`
   (see [BACKFILL.md](BACKFILL.md)).
+- **New, opt-in: doc attachment for merge-heavy repositories (#157, bh-dviao).** Nothing changes
+  unless you set them; each is also per hive under `backfill.hives.<prefix>.collate.attach`.
+  `max_per_unit` caps what one unit takes from the `shared-path` and `lexical` tiers (`explicit`
+  and `same-change` are exempt; the overflow goes to the next tier, then stands alone).
+  `rename_guard` keeps a reorganising merge from collecting the docs it moved (the git reader then
+  records a `renamed` attr, so the first run after turning it on re-reads the evidence). `own-add`,
+  added to `tiers` after `same-change`, makes a unit of a doc a `docs:` commit added when no unit
+  claimed that commit. `rank = proximity` picks the `shared-path` unit nearest in time to the doc's
+  add commit and records the runner-up, shown by `bh backfill view unit`. `related` links are not
+  part of 0.38.0. See [BACKFILL.md](BACKFILL.md).
 - **Collation files.** `bdlg.collation/1` gained members, written only when used (no version
   bump); a 0.37 collation still reads. A default 0.38 run over a repository with branch-sync
   merges writes the new vocabulary, which a `bh` older than 0.38.0 refuses, so do not read a 0.38
   run directory with an older `bh`. With both opt-outs above and no other new option the run
-  writes the 0.37.1 collation byte for byte.
+  writes the 0.37.1 collation byte for byte (as long as the attach options above stay unset).
 
 ## 0.37.0 → 0.37.1 — backfill apply fixes
 

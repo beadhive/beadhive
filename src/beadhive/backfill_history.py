@@ -166,6 +166,8 @@ def source_options(name: str, backfill: Backfill, namespaces: Sequence[str]) -> 
         options["snapshot"] = backfill.sources.github.snapshot
     if name == "git" and backfill.collate.merge_titles == "derived":
         options["merge_body"] = "true"  # the merge body's first line titles a merge unit
+    if name == "git" and backfill.collate.attach.rename_guard:
+        options["keep_renames"] = "true"  # attach.rename_guard needs each commit's renames
     options.update(getattr(section, "options", {}) or {})
     if namespaces and "namespaces" not in options:
         options["namespaces"] = _csv(namespaces)
