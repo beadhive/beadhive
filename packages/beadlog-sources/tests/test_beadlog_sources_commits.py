@@ -559,3 +559,22 @@ def test_entry_point_is_declared() -> None:
         pytest.skip("package metadata not in this sandbox")
     text = pyproject.read_text(encoding="utf-8")
     assert 'git-commits = "beadlog_sources.commits:GitCommitsStrategy"' in text
+
+
+def test_since_an_all_hex_date_reaches_git_as_since_not_as_a_commit(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import beadlog_sources.commits as commits_module
+
+    seen: list[dict[str, object]] = []
+    real = commits_module.read_git
+
+    def spy(request, runner=None):  # type: ignore[no-untyped-def]
+        seen.append(dict(request.options))
+        return real(request, runner)
+
+    monkeypatch.setattr(commits_module, "read_git", spy)
+    _commit(repo, "feat: bh-100", date="2026-01-01T00:00:00+00:00")
+    _proposed(repo, _baseline(), since="20260901")
+    assert seen[-1]["since_date"] == "20260901" and "since" not in seen[-1]
+    assert " 20260901" not in seen[-1].values()  # no leading-space workaround

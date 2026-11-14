@@ -6,6 +6,8 @@ Phase A). One run is exactly **two** ``git`` processes whatever the history size
 resolved here: bead-looking tokens, shas, ``#N`` numbers, paths and tags found in a subject, body
 or trailer become un-interpreted :class:`~beadlog_sources.evidence.Ref` records (a bead token is
 shape only, never a prefix guess; deciding what is a bead is the later collation phase).
+Without ``exclude_revs`` a run is exactly **two** ``git`` processes; each excluded ref costs one
+more ``rev-parse`` (see Options).
 
 Artifacts (provenance ``observed``):
 
@@ -25,9 +27,16 @@ the repository's ``shallow`` file, so it costs no process.
 
 Options: ``namespaces`` (comma-separated id namespaces anchoring bead tokens; absent: the generic
 shape; ``header_options`` records ``token_mode``), ``rev`` (default ``HEAD``), ``since`` (a hex
-sha: only
-``since..rev``; anything else is a date for ``git log --since``), ``allow_shallow`` and ``git``
-(the binary). A string
+sha: only ``since..rev``; anything else is a date for ``git log --since``), ``since_date`` (always
+a date for ``git log --since``, so an all-hex date such as ``20260901`` is not taken for a sha;
+setting both ``since`` and ``since_date`` is an error), ``exclude_revs`` (comma-separated refs, each
+resolved on every run to a commit and passed as ``^<sha>``: those commits and their ancestors are
+left out, so a fork reads only its own history; a ref that does not resolve is a
+:class:`GitReadError` naming it; it composes with the cursor and ``since``, and moving upstream
+only ever removes commits from the range), ``tag_scope`` (``all``, default: every tag; ``range``:
+only tags whose commit is among the commits read), ``tag_include`` / ``tag_exclude`` (comma-
+separated case-sensitive globs on the tag name, applied before the ``previous`` chain; exclude
+wins), ``allow_shallow`` and ``git`` (the binary). A string
 :attr:`~beadlog_sources.readers.ReadRequest.cursor` is a sha read as ``cursor..rev``
 (incremental); :func:`read_git` also returns the new cursor, the newest commit read (or the old
 cursor when nothing is new).
@@ -39,6 +48,7 @@ import re
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -246,6 +256,26 @@ def _commit(chunk: str, reader: str, version: str, beads: re.Pattern[str]) -> tu
     return artifact, sha
 
 
+def _tag_wanted(
+    record: str,
+    scope: str,
+    include: Sequence[str],
+    exclude: Sequence[str],
+    read_shas: set[Any],
+) -> bool:
+    """Whether a ``for-each-ref`` record survives the tag scope and filters (a malformed record
+    passes through: :func:`_release` drops it)."""
+    parts = record.strip("\n").split(_US, 5)
+    if len(parts) != 6 or not parts[0]:
+        return True
+    name, kind, obj, target = parts[:4]
+    if include and not any(fnmatchcase(name, glob) for glob in include):
+        return False
+    if any(fnmatchcase(name, glob) for glob in exclude):
+        return False
+    return scope != "range" or (target if kind == "tag" else obj) in read_shas
+
+
 def _release(
     record: str, previous: str | None, reader: str, version: str, beads: re.Pattern[str]
 ) -> tuple[Artifact, str] | None:
@@ -441,12 +471,60 @@ def _argv(binary: str, root: Path, *args: str) -> list[str]:
     return [binary, "-C", str(root), "-c", "core.quotepath=off", *args]
 
 
+TAG_SCOPES = ("all", "range")
+
+
+def resolve_exclude_revs(
+    root: Path | str, options: Mapping[str, Any], runner: Runner | None = None
+) -> dict[str, str]:
+    """``exclude_revs`` resolved now: ref -> full commit sha, in the order given (empty when the
+    option is unset). One ``git rev-parse --verify <ref>^{commit}`` per ref; a ref that does not
+    resolve is a :class:`GitReadError` naming it, never a silent skip (that would read the whole
+    upstream)."""
+    refs = csv(options.get("exclude_revs", ""))
+    if not refs:
+        return {}
+    binary = str(options.get("git") or "git")
+    run = runner or subprocess_runner(DEFAULT_TIMEOUT_SECONDS, GitReadError, "git")
+    resolved: dict[str, str] = {}
+    for ref in refs:
+        try:
+            out = run(
+                _argv(binary, Path(root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+            )
+        except GitReadError as exc:
+            raise GitReadError(
+                f"exclude_revs: {ref!r} does not resolve to a commit ({exc})"
+            ) from exc
+        sha = out.strip()
+        if not sha:
+            raise GitReadError(f"exclude_revs: {ref!r} does not resolve to a commit")
+        resolved[ref] = sha
+    return resolved
+
+
+def _tag_filter(options: Mapping[str, Any]) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    scope = str(options.get("tag_scope") or "all")
+    if scope not in TAG_SCOPES:
+        raise GitReadError(f"tag_scope {scope!r} is not one of {', '.join(TAG_SCOPES)}")
+    return (
+        scope,
+        tuple(csv(options.get("tag_include", ""))),
+        tuple(csv(options.get("tag_exclude", ""))),
+    )
+
+
 def read_git(request: ReadRequest, runner: Runner | None = None) -> GitRead:
-    """Read the repository of ``request`` (see the module docstring); two ``runner`` calls."""
+    """Read the repository of ``request`` (see the module docstring); two ``runner`` calls, plus
+    one per ``exclude_revs`` ref."""
     options = request.options
     binary = str(options.get("git") or "git")
     rev = str(options.get("rev") or "HEAD")
     since = str(options.get("since") or "")
+    since_date = str(options.get("since_date") or "")
+    if since and since_date:
+        raise GitReadError("options since and since_date are exclusive: set one")
+    scope, include, exclude = _tag_filter(options)
     root = Path(request.root)
     if not truthy(options.get("allow_shallow", False)) and is_shallow_repo(root):
         raise ShallowCloneError(
@@ -457,12 +535,14 @@ def read_git(request: ReadRequest, runner: Runner | None = None) -> GitRead:
     log = ["log", "-z", "--parents", "-M", "--name-status", "--no-color", "--no-ext-diff"]
     log.append(f"--format={_LOG_FORMAT}")
     base = cursor or (since if _SINCE_SHA.fullmatch(since) else "")
+    date = since_date or ("" if _SINCE_SHA.fullmatch(since) else since)
     if base:
         log.append(f"{base}..{rev}")
     else:
-        if since:
-            log.append(f"--since={since}")
+        if date:
+            log.append(f"--since={date}")
         log.append(rev)
+    log += [f"^{sha}" for sha in resolve_exclude_revs(root, options, run).values()]
     log.append("--")
     text = run(_argv(binary, root, *log))
     refs = run(
@@ -485,8 +565,11 @@ def read_git(request: ReadRequest, runner: Runner | None = None) -> GitRead:
         artifact, sha = _commit(chunk, READER_NAME, READER_VERSION, beads)
         head = head or sha
         artifacts.append(artifact)
+    read_shas = {a.attrs["sha"] for a in artifacts}
     previous: str | None = None
     for record in refs.split(_RS):
+        if not _tag_wanted(record, scope, include, exclude, read_shas):
+            continue
         made = _release(record, previous, READER_NAME, READER_VERSION, beads)
         if made is not None:
             artifacts.append(made[0])
@@ -518,6 +601,8 @@ __all__ = [
     "READER_NAME",
     "READER_VERSION",
     "SHALLOW_REMEDIATION",
+    "TAG_SCOPES",
+    "resolve_exclude_revs",
     "Commit",
     "CommitsSourceError",
     "ConventionalSubject",

@@ -262,3 +262,127 @@ def test_namespaces_anchor_bead_tokens(full_repo: Path) -> None:
     assert tokens == {"bh-4o07n", "bh-abc12"}
     other = read_git(ReadRequest(root=full_repo, options={"namespaces": "zz"}))
     assert not {r for a in other.artifacts for r in a.refs if r.kind == "bead-token"}
+
+
+# -- exclude_revs, tag scope and filters, since_date (bh-19q4u, ADR D7) ---------------------
+
+
+@pytest.fixture
+def fork(tmp_path: Path) -> Path:
+    """Upstream history (two commits, tags ``rel-1`` and ``backup/old`` on it) with a branch
+    ``upstream`` at its tip, then two downstream commits tagged ``fork-1``."""
+    root = tmp_path / "fork"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    commit(root, "chore: up one", 1, a="1")
+    git(root, "tag", "rel-1")
+    commit(root, "chore: up two", 2, a="2")
+    git(root, "tag", "backup/old")
+    git(root, "branch", "upstream")
+    commit(root, "feat: down one", 3, b="1")
+    commit(root, "feat: down two", 4, b="2")
+    git(root, "tag", "fork-1")
+    return root
+
+
+def changes(root: Path, **options: object) -> list[str]:
+    read = read_git(ReadRequest(root=root, options=options))
+    return [a.title for a in read.artifacts if a.category is Category.CHANGE]
+
+
+def tags(root: Path, **options: object) -> list[str]:
+    read = read_git(ReadRequest(root=root, options=options))
+    return [a.title for a in read.artifacts if a.category is Category.RELEASE_MARKER]
+
+
+def test_exclude_revs_reads_only_downstream_and_follows_upstream(fork: Path) -> None:
+    assert changes(fork, exclude_revs="upstream") == ["feat: down two", "feat: down one"]
+    # upstream advances (a new commit merged into it): the rerun excludes it with no config edit
+    git(fork, "checkout", "-q", "upstream")
+    commit(fork, "chore: up three", 5, a="3")
+    git(fork, "checkout", "-q", "main")
+    git(fork, "merge", "-q", "--no-ff", "upstream", "-m", "Merge upstream")
+    assert "chore: up three" not in changes(fork, exclude_revs="upstream")
+
+
+def test_exclude_revs_unresolvable_ref_names_the_ref(fork: Path) -> None:
+    with pytest.raises(GitReadError, match="nope/branch"):
+        read_git(ReadRequest(root=fork, options={"exclude_revs": "upstream,nope/branch"}))
+
+
+def test_exclude_revs_resolves_every_run_and_costs_one_call_per_ref(fork: Path) -> None:
+    counting = Counting()
+    list(GitReader(counting).read(ReadRequest(root=fork, options={"exclude_revs": "upstream"})))
+    assert [argv[5] for argv in counting.calls] == ["rev-parse", "log", "for-each-ref"]
+    assert any(arg == f"^{git(fork, 'rev-parse', 'upstream')}" for arg in counting.calls[1])
+
+
+def test_exclude_revs_composes_with_cursor_and_never_rewinds_it(fork: Path) -> None:
+    first = read_git(ReadRequest(root=fork, options={"exclude_revs": "upstream"}))
+    new = commit(fork, "feat: down three", 6, b="3")
+    more = read_git(
+        ReadRequest(root=fork, cursor=first.cursor, options={"exclude_revs": "upstream"})
+    )
+    assert [a.attrs["sha"] for a in more.artifacts if a.category is Category.CHANGE] == [new]
+    assert more.cursor == new
+    # upstream moves onto the cursor's commits: nothing is left, and the cursor holds
+    git(fork, "branch", "-f", "upstream", "HEAD")
+    nothing = read_git(
+        ReadRequest(root=fork, cursor=more.cursor, options={"exclude_revs": "upstream"})
+    )
+    assert [a for a in nothing.artifacts if a.category is Category.CHANGE] == []
+    assert nothing.cursor == more.cursor
+
+
+def test_exclude_revs_composes_with_since(fork: Path) -> None:
+    first = git(fork, "rev-list", "--max-parents=0", "HEAD")
+    assert changes(fork, since=first, exclude_revs="upstream") == [
+        "feat: down two",
+        "feat: down one",
+    ]
+    assert changes(fork, since="2026-03-04", exclude_revs="upstream") == ["feat: down two"]
+
+
+def test_tags_default_is_every_tag_and_range_drops_upstream_only(fork: Path) -> None:
+    assert tags(fork) == ["rel-1", "backup/old", "fork-1"]
+    assert tags(fork, tag_scope="all", exclude_revs="upstream") == ["rel-1", "backup/old", "fork-1"]
+    assert tags(fork, tag_scope="range", exclude_revs="upstream") == ["fork-1"]
+    with pytest.raises(GitReadError, match="tag_scope"):
+        tags(fork, tag_scope="some")
+
+
+def test_tag_filters_run_before_the_previous_chain_and_exclude_wins(fork: Path) -> None:
+    assert tags(fork, tag_exclude="backup/*") == ["rel-1", "fork-1"]
+    read = read_git(ReadRequest(root=fork, options={"tag_exclude": "backup/*"}))
+    ranges = {a.title: a.attrs["commit_range"] for a in read.artifacts if a.kind == "tag"}
+    assert ranges == {"rel-1": None, "fork-1": "rel-1..fork-1"}
+    assert tags(fork, tag_include="rel-*,fork-*,backup/*", tag_exclude="backup/*") == [
+        "rel-1",
+        "fork-1",
+    ]
+    assert tags(fork, tag_include="fork-*") == ["fork-1"]
+    assert tags(fork, tag_include="FORK-*") == []  # case-sensitive
+    both = read_git(
+        ReadRequest(root=fork, options={"tag_scope": "range", "exclude_revs": "upstream"})
+    )
+    assert [a.attrs["commit_range"] for a in both.artifacts if a.kind == "tag"] == [None]
+
+
+def test_since_date_is_always_a_date_and_exclusive_with_since(fork: Path) -> None:
+    assert changes(fork, since_date="2026-03-04") == ["feat: down two"]
+    # an all-hex date is handed to git as --since under since_date (under since it would be
+    # taken for a sha); git's own parser then reads it
+    counting = Counting()
+    list(GitReader(counting).read(ReadRequest(root=fork, options={"since_date": "20260901"})))
+    assert "--since=20260901" in counting.calls[0]
+    assert not any(".." in arg for arg in counting.calls[0])
+    with pytest.raises(GitReadError, match="since_date"):
+        changes(fork, since="2026-03-04", since_date="2026-03-04")
+
+
+def test_default_options_are_unchanged(fork: Path) -> None:
+    unset = read_git(ReadRequest(root=fork))
+    spelled = read_git(
+        ReadRequest(root=fork, options={"tag_scope": "all", "exclude_revs": "", "tag_include": ""})
+    )
+    assert unset.artifacts == spelled.artifacts and unset.cursor == spelled.cursor

@@ -164,10 +164,6 @@ def derive_namespaces(live_ids: Iterable[str], coverage: float = 0.95) -> set[st
 
 # -- reading the history through the git reader ----------------------------------------------
 
-# A ``since`` date the git reader would take for a sha (all hex digits, such as ``20260901``) is
-# handed over with a leading space: git's date parser skips it, the reader's sha test fails.
-_HEX_SINCE = re.compile(r"[0-9a-fA-F]{7,64}")
-
 
 def _runner(root: Path | str) -> Any:
     """The reader's command seam with this strategy's failure contract: output decoded as UTF-8
@@ -217,9 +213,9 @@ def read_changes(
     }
     if since:
         sha = resolve_commit(root, since, git)
-        options["since"] = (
-            sha if sha is not None else (f" {since}" if _HEX_SINCE.fullmatch(since) else since)
-        )
+        # Not a commit: a date, handed over as ``since_date`` so an all-hex one (``20260901``)
+        # is never taken for a sha by the reader.
+        options["since" if sha is not None else "since_date"] = sha if sha is not None else since
     read = read_git(ReadRequest(root=Path(root), options=options), _runner(root))
     return [a for a in read.artifacts if a.category is Category.CHANGE]
 
