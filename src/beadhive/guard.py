@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 from contextvars import ContextVar
+from pathlib import Path
 
 import typer
 
@@ -1243,6 +1244,36 @@ def is_bd_write(args) -> bool:
     return bd_verb(rest) not in subs
 
 
+def is_replica_bootstrap(args, cwd, *, cfg=None) -> bool:
+    """Whether `args` is a `bd bootstrap` that CREATES this frame's missing replica of a
+    registered hive (bh-pjhwe) — the one write the frame-eligibility fence must let through.
+
+    hives-ready requires a ready local replica of every registered hive, so a frame that lacks
+    one is ineligible, and the eligibility refusal below used to refuse the very bootstrap that
+    would make it eligible again. Creating a replica authors nothing in the shared corpus (it
+    clones it), and `bd bootstrap` over an existing store is bd's own no-op, so the waiver is
+    narrow on every axis: only `bootstrap`, only for a registered hive, only when no replica
+    exists here (`store_locator.replica_missing`, a pure filesystem probe that fails toward
+    "present"), and never for a hive whose HQ declares a `dolt_remote` — there `bd bootstrap`
+    would clone the code origin's refs/dolt/data instead of the declared remote, and re-running
+    `bh hive onboard` is the remediation (`hive_ready._internal_store_check`)."""
+    from . import registry, store_locator
+
+    if bd_verb(args) != "bootstrap":
+        return False
+    directory = Path(cwd) if cwd is not None else Path.cwd()
+    try:
+        entry = registry.entry_for_dir(cfg, directory)
+    except Exception:  # noqa: BLE001 — unresolvable: no waiver, the normal guard decides
+        return False
+    if not entry or entry.get("dolt_remote"):
+        return False
+    key = registry.hive_key(entry)
+    if not any(registry.hive_key(known) == key for known in registry.hives(cfg)):
+        return False  # entry_for_dir synthesises an entry for an unregistered repo
+    return store_locator.replica_missing(directory, str(entry.get("prefix") or ""))
+
+
 def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     """The refusal text for a passthrough WRITE verb this host may not run against `cwd`'s
     hive, or ``""`` to allow — the same decision, predicate and wording `bh work`'s own write
@@ -1269,6 +1300,8 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     # bug this whole bead exists to close, reintroduced one layer down. Load it here instead:
     # only writes pay for it, and reads (the hot path) still skip it entirely.
     cfg = cfg if cfg else config.load()
+    if not break_glass and is_replica_bootstrap(args, cwd, cfg=cfg):
+        return ""  # creating the missing replica is what makes this frame eligible (bh-pjhwe)
     try:
         cut_over = writer_state(cfg=cfg, hive_dir=cwd)
     except WriterUnreadable as exc:

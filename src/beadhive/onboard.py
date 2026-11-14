@@ -946,11 +946,16 @@ def _internal_store_missing(ctx: Ctx, descriptor) -> bool:
 
 
 def _bootstrap_from_origin_or_mint(ctx: Ctx, env: dict) -> None:
-    """Today's no-HQ-policy path: a furnished hive mints; a zero-footprint hive bootstraps from
-    origin's refs/dolt/data when it carries one, else mints with zero tracked footprint."""
+    """Today's no-HQ-policy path: when origin already carries refs/dolt/data the store is
+    bootstrapped from it — furnished or zero-footprint alike (bh-pjhwe: a furnished hive used to
+    mint a fresh store over existing remote history, which the publish step then skipped, so the
+    two diverged unreconciled) — else a furnished hive mints and a zero-footprint hive mints with
+    zero tracked footprint."""
     from . import hive
 
-    if ctx.furnish:
+    if _origin_has_dolt_data(ctx):
+        _bootstrap_from_origin(ctx, env)
+    elif ctx.furnish:
         bd_init = [
             "bd",
             "init",
@@ -965,27 +970,6 @@ def _bootstrap_from_origin_or_mint(ctx: Ctx, env: dict) -> None:
         # A bare `bd init` (no --remote) always MINTS a fresh store — the shape bh-u562.1
         # Finding 7 measured as reproducing the GH#2455 dirty-config bug under any server mode.
         _bypass_gh2455_dirty_config(ctx)
-    elif _origin_has_dolt_data(ctx):
-        typer.echo("• beads: bootstrapping from origin refs/dolt/data (zero-footprint)")
-        # `bd bootstrap` has no --shared-server flag of its own (unlike `bd init`) — activate
-        # the same target mode via bd's own env var (measured, this bead: a FRESH bootstrap
-        # persists `dolt_mode: "server"` into metadata.json from this alone, same as a fresh
-        # `bd init --shared-server` does — the metadata-drift bh-areg.4 found is specific to
-        # `--reinit-local` re-initializing an EXISTING local store, not this clone-from-origin
-        # path; `_ensure_server_mode_persisted` below still re-asserts it defensively).
-        _run_bd_mint(
-            ["bd", "bootstrap", "--non-interactive"],
-            ctx,
-            env=dict(env, BEADS_DOLT_SHARED_SERVER="1"),
-        )
-        # No GH#2455 bypass here, deliberately: `bd bootstrap`'s sync-from-origin action calls
-        # the SAME clone primitive as `bd init --remote` (bd source: cmd/bd/bootstrap.go's
-        # executeSyncAction -> cloneFromRemote, shared verbatim with cmd/bd/init.go's --remote
-        # handling) — the exact recipe bh-u562.1 Finding 7 measured as producing a clean
-        # `dolt_status` on every server mode, because a clone pulls an already-committed dolt
-        # history rather than minting a fresh one. Re-verified for this bead against a real
-        # git-backed origin in shared-server mode: `dolt_status` was `[]` immediately after
-        # bootstrap. A bare, non-clone `bd init` is what reproduces the bug; bootstrap never is.
     else:
         bd_init = [
             "bd",
@@ -1005,6 +989,81 @@ def _bootstrap_from_origin_or_mint(ctx: Ctx, env: dict) -> None:
             )
         # Same reasoning as the furnished branch above: a bare `bd init` mints a fresh store.
         _bypass_gh2455_dirty_config(ctx)
+
+
+def _bootstrap_from_origin(ctx: Ctx, env: dict) -> None:
+    """Replica bootstrap from origin's refs/dolt/data — the second-host case (bh-pjhwe).
+
+    Three things a busy executor needs that a bare `bd bootstrap` does not give it:
+
+    * the database is NAMED from the registered prefix before bd reads metadata
+      (`_stamp_clone_identity`, the HQ-clone path's own stamp): a zero-footprint clone carries no
+      metadata, so bd otherwise lands it on its generic default — a name another hive already
+      uses on the shared server (bh-g5ujg / bh-fnn3d);
+    * the shared server is started when nothing answers yet (`bd bootstrap` never auto-starts
+      it), and running servers are never stopped or restarted;
+    * bd's exclusive shared-Dolt gate, which every other hive's live bd server holds shared, is
+      taken within bd's own bounded window — and, for a database that does not exist yet,
+      bypassed rather than waited on (`replica_bootstrap.run_through_gate`).
+
+    `bd bootstrap` has no --shared-server flag of its own (unlike `bd init`) — the target mode is
+    activated via bd's own env var (measured: a FRESH bootstrap persists `dolt_mode: "server"`
+    from this alone; `_ensure_server_mode_persisted` still re-asserts it defensively).
+
+    No GH#2455 bypass here, deliberately: `bd bootstrap`'s sync-from-origin action calls the
+    SAME clone primitive as `bd init --remote` (bd source: cmd/bd/bootstrap.go's
+    executeSyncAction -> cloneFromRemote) — the exact recipe bh-u562.1 Finding 7 measured as
+    producing a clean `dolt_status` on every server mode, because a clone pulls an
+    already-committed dolt history rather than minting a fresh one."""
+    from . import hive, replica_bootstrap
+
+    shape = "furnished" if ctx.furnish else "zero-footprint"
+    typer.echo(f"• beads: bootstrapping from origin refs/dolt/data ({shape})")
+    database = _stamp_clone_identity(ctx)
+    _start_shared_server_for_clone(ctx)
+
+    def attempt(attempt_env: dict):
+        res = bd_mod.run(
+            ["bootstrap", "--non-interactive"],
+            ctx.base,
+            env=attempt_env,
+            capture=True,
+            hive_aware=False,
+            pin_process_cwd=True,
+        )
+        _echo_captured(res)  # bd's own progress/error output, verbatim (never paraphrased)
+        return res
+
+    res = replica_bootstrap.run_through_gate(
+        attempt,
+        dict(env, BEADS_DOLT_SHARED_SERVER="1"),
+        database,
+        note=lambda line: typer.echo(line, err=True),
+    )
+    if getattr(res, "returncode", 1) != 0:
+        hive.cleanup_failed_bd_init(ctx.base)
+        typer.echo(
+            "✗ beads: replica bootstrap did not complete — bd's error is above. The working "
+            "tree has been cleaned up; no bd server was stopped. Re-run onboarding once the "
+            "cause is resolved.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if database:  # recorded, never re-derived (bh-g5ujg); bd's bootstrap drops the key
+        store_locator.ensure_server_database_persisted(ctx.base, database)
+    # `bd bootstrap` writes no ignore rules at all, so `.beads/` and bd's root gate lock would
+    # leave a zero-footprint checkout dirty — the HQ clone path's own exclusion step.
+    _exclude_clone_footprint(ctx)
+
+
+def _echo_captured(res) -> None:
+    """Replay a captured bd invocation's stdout/stderr unchanged, each to its own stream."""
+    out = getattr(res, "stdout", "") or ""
+    err = getattr(res, "stderr", "") or ""
+    if out:
+        typer.echo(out, nl=not out.endswith("\n"))
+    if err:
+        typer.echo(err, err=True, nl=not err.endswith("\n"))
 
 
 def _partitioned_entry(ctx: Ctx):
@@ -1133,7 +1192,7 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
     leaves nothing behind. Empty remote: only with ``BH_ONBOARD_SEED_REMOTE=<this hive>``, a
     fresh store is minted, registered and pushed; a remote that turns out to hold data rejects
     that push as a non-fast-forward (never forced)."""
-    from . import dolt_remote, dolt_remote_credentials, engine, hive
+    from . import dolt_remote, dolt_remote_credentials, engine, hive, replica_bootstrap
 
     target = dolt_remote.classify(descriptor.url)  # onboarding lands on server mode
     shown = f"{descriptor.name} → {target.redacted} ({target.family.value})"
@@ -1152,8 +1211,15 @@ def _bootstrap_from_hq_remote(ctx: Ctx, descriptor, env: dict) -> None:
         database = _stamp_clone_identity(ctx)
         _start_shared_server_for_clone(ctx)
         extra = {"tracked_scaffold": True} if scaffold else {}
-        cloned = eng.clone_remote(
-            ctx.base, descriptor.url, env=server_env, extra_env=creds.env, **extra
+        # bd's exclusive shared-Dolt gate within bd's own bounded window, bypassed for a
+        # database that does not exist yet — never by stopping other hives' bd servers (bh-pjhwe).
+        cloned = replica_bootstrap.run_through_gate(
+            lambda attempt_env: eng.clone_remote(
+                ctx.base, descriptor.url, env=attempt_env, extra_env=creds.env, **extra
+            ),
+            server_env,
+            database,
+            note=lambda line: typer.echo(line, err=True),
         )
         if cloned.returncode:
             tail = (getattr(cloned, "stderr", "") or "").strip().splitlines()

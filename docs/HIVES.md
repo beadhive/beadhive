@@ -30,11 +30,20 @@ Flow (`hive.py`):
 3. Resolve/derive the **prefix** (`registry.derive_prefix`), or use `--prefix`.
 4. **Required-org check** — if the org's policy is `required`, the prefix must start with
    `<code>-`; otherwise it's blocked (a registration invariant, always enforced).
-5. **Materialize beads** — zero-footprint (default): `bd bootstrap` (with
-   `BEADS_DOLT_SHARED_SERVER=1`) when origin already carries `refs/dolt/data`, else
-   `bd init --setup-exclude --shared-server …` with bd's stray `.gitignore` block relocated
-   into `.git/info/exclude`. Furnished: `bd init --prefix <p> --shared-server --skip-agents
-   --skip-hooks --init-if-missing --non-interactive`. Every FRESH hive lands on bd's shared
+5. **Materialize beads** — when origin already carries `refs/dolt/data` (furnished or
+   zero-footprint alike), a **replica bootstrap**: `bd bootstrap` with
+   `BEADS_DOLT_SHARED_SERVER=1`, into a database named from the registered prefix (stamped
+   into `.beads/metadata.json` first, never bd's generic default), with the shared server
+   started only if nothing answers. On a busy executor whose other hives' bd servers hold
+   bd's shared Dolt gate, bd's bounded exclusive wait is refused; for a database that does
+   not exist yet the bootstrap then re-runs once through the running shared server without
+   that gate — no bd server is ever stopped or restarted (bh-pjhwe). Otherwise
+   zero-footprint (default) runs `bd init --setup-exclude --shared-server …` with bd's stray
+   `.gitignore` block relocated into `.git/info/exclude`, and furnished runs `bd init
+   --prefix <p> --shared-server --skip-agents --skip-hooks --init-if-missing
+   --non-interactive`. A frame that is ineligible only because it lacks a registered hive's
+   replica may still run `bh bd bootstrap` there to create it (not for an HQ-declared
+   `dolt_remote`, where re-running onboard is the remedy). Every FRESH hive lands on bd's shared
    server — the fleet's target mode and the default for newly-onboarded hives, not per-hive
    opt-in (`docs/design/dolt-server-mode-adr.md`, `bh-areg.7`). Skipped entirely (idempotent
    no-op) when `.beads/` already exists — an EXISTING hive, embedded or otherwise, is never
