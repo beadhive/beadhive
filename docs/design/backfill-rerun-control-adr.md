@@ -14,6 +14,10 @@
   (B6) and the per-hive `areas` intent (B3) change as set out in Q1-Q3; that ADR carries a
   matching pointer.
 - **Grounded in:** main `0624f478` (0.36.x). Line references below are to that tree.
+- **Amended by:** [`backfill-merge-heavy-repos-adr.md`](backfill-merge-heavy-repos-adr.md)
+  (`bh-5e4r1`, 0.38.0): merge units gain opt-in types, titles and noise (B3), hidden-commit
+  reporting and commit-based identity (B5), attach caps, a rename guard and an own-add tier
+  (B4), and `bdlg.collation/1` gains additive optional vocabulary; no default changes.
 
 ## Context
 

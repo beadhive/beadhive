@@ -18,6 +18,10 @@
   touches `phase` is narrowed so a re-run may append evidence-timestamped close events to open
   `origin:backfill` beads; B5 gains a step 0 that consults operator decisions kept in the ledger
   (Q3); the per-hive `areas` override of B3 is realised by a host-owned per-hive overlay (Q1).
+- **Amended by:** [`backfill-merge-heavy-repos-adr.md`](backfill-merge-heavy-repos-adr.md)
+  (`bh-5e4r1`, 0.38.0): merge units gain opt-in types, titles and noise (B3), hidden-commit
+  reporting and commit-based identity (B5), attach caps, a rename guard and an own-add tier
+  (B4), and `bdlg.collation/1` gains additive optional vocabulary; no default changes.
 
 ## Context
 
