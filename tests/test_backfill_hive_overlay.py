@@ -124,6 +124,24 @@ def test_merge_options_overlay_per_hive_and_opt_outs_replace_the_defaults():
     assert (gd.merge_types, gd.merge_titles, gd.noise) == (None, "derived", ["branch-sync"])
 
 
+def test_merge_identify_options_overlay_per_hive_and_default_off():
+    cfg = _cfg(
+        {
+            "hives": {
+                "wd": {
+                    "collate": {
+                        "identify": {"merge_fallback": "commits", "merge_identity": "commits"}
+                    }
+                }
+            }
+        }
+    )
+    wd = BackfillConfig.model_validate(effective_backfill(cfg, "wd")).collate.identify
+    assert (wd.merge_fallback, wd.merge_identity) == ("commits", "commits")
+    gd = BackfillConfig.model_validate(effective_backfill(cfg, "gd")).collate.identify
+    assert (gd.merge_fallback, gd.merge_identity) == ("none", "unit")
+
+
 def test_overlay_by_entry_and_by_cwd_hive(monkeypatch):
     cfg = _cfg({"hives": {"wd": {"collate": {"epics": False}}}})
     assert effective_backfill(cfg, WIDGETS)["collate"]["epics"] is False

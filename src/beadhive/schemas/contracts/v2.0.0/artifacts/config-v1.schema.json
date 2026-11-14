@@ -892,6 +892,26 @@
           "title": "Max Candidates",
           "type": "integer"
         },
+        "merge_fallback": {
+          "default": "none",
+          "description": "Opt-in. none (default): a merge unit that ends residual, NOISE or SKIP projects nothing (its commits are reported as hidden_commits). commits: such a merge is replaced by the commit-rule units of its commits (those include_types admits), which are identified in the same run.",
+          "enum": [
+            "none",
+            "commits"
+          ],
+          "title": "Merge Fallback",
+          "type": "string"
+        },
+        "merge_identity": {
+          "default": "unit",
+          "description": "Opt-in. unit (default): a merge unit is identified by its own title. commits: a merge none of whose commits has a baseline candidate is NEW, whatever its own title matched; a merge whose commits partly match keeps the usual flow and the run records which commits matched.",
+          "enum": [
+            "unit",
+            "commits"
+          ],
+          "title": "Merge Identity",
+          "type": "string"
+        },
         "new_threshold": {
           "anyOf": [
             {

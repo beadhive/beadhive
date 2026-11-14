@@ -49,11 +49,29 @@ exists for the releases where "read the changelog" isn't enough to act on.
   claimed that commit. `rank = proximity` picks the `shared-path` unit nearest in time to the doc's
   add commit and records the runner-up, shown by `bh backfill view unit`. `related` links are not
   part of 0.38.0. See [BACKFILL.md](BACKFILL.md).
+- **New in reports: hidden commits (#154, bh-yg3ae).** A merge unit that ended residual (or NOISE,
+  or an operator SKIP) used to swallow the commits it brought in: they were in no unit, child or
+  link, so the plan silently lacked that work. The plan summary of `bh backfill history` now
+  carries `hidden_commits` (`count`, `units`), `bh backfill view unit --json` a top-level
+  `hidden_commits` with each unit's commit shas and a `hidden_commits` list on each affected unit
+  row, and the text view prints them. The keys appear only when something is hidden; a run that
+  hid nothing is byte-identical, and created beads do not change. Nothing to opt out of.
+- **New, opt-in: `backfill.collate.identify.merge_fallback = commits` (#154, bh-yg3ae).** Replaces a
+  merge unit that ends residual, NOISE or SKIP by the `commit`-rule units of its commits, in the
+  same run. Default `none`. It gives up the one-bead-per-PR grouping for those merges. To keep the
+  old behaviour leave it unset.
+- **New, opt-in: `backfill.collate.identify.merge_identity = commits` (#154, bh-yg3ae).** A merge
+  none of whose commits has a baseline candidate is NEW instead of residual on a weak candidate its
+  title matched; a merge whose commits partly match keeps the existing flow and the collation
+  records which commits matched (`commit_candidates`). Default `unit`. Both options can be set per
+  hive under `backfill.hives.<prefix>.collate.identify`.
 - **Collation files.** `bdlg.collation/1` gained members, written only when used (no version
   bump); a 0.37 collation still reads. A default 0.38 run over a repository with branch-sync
   merges writes the new vocabulary, which a `bh` older than 0.38.0 refuses, so do not read a 0.38
   run directory with an older `bh`. With both opt-outs above and no other new option the run
-  writes the 0.37.1 collation byte for byte (as long as the attach options above stay unset).
+  writes the 0.37.1 collation byte for byte (as long as the attach options above stay unset). The
+  identify options `merge_fallback` and `merge_identity` and the record member `commit_candidates`
+  are written only when the opt-ins are on.
 
 ## 0.37.0 → 0.37.1 — backfill apply fixes
 

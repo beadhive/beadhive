@@ -74,7 +74,7 @@
       "id": "urn:beadhive:wire-schema:config:1",
       "kind": "json-schema",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:0680f777006ab69a7381d636ec5fc0776a2b1471c7bad61c36cfb33f2ea906de",
+      "sha256": "sha256:0157b57656057d5ea2d0ad38a65fb5818331d71867d1f9a92dfc232b9717cd02",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema",
       "version": 2
     },

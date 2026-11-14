@@ -451,6 +451,80 @@ def test_merge_titles_noise_and_types_through_the_real_reader(hive, tmp_path, cf
     assert document["options"]["cluster"]["noise"] == ["branch-sync"]
 
 
+def _held_merge_history(repo: Path) -> None:
+    """A PR merge whose body line shares tokens with an existing bead ("Other matter") while the
+    commit it brings in does not: the 0.37.1 shape of a residual merge hiding a feat commit."""
+    _git(repo, "checkout", "-q", "-b", "side")
+    _commit(repo, "feat(side): add the gizmo", {"side/a.txt": "a"})
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, "chore: mainline moves on", {"main.txt": "m"})
+    _git(
+        repo,
+        "merge",
+        "-q",
+        "--no-ff",
+        "side",
+        "-m",
+        "Merge pull request #5 from x/feat/side\n\nOther matter, reworked",
+    )
+
+
+def test_a_residual_merge_reports_its_hidden_commits_in_the_plan_and_the_view(
+    hive, tmp_path, cfg_path
+) -> None:
+    _, repo = hive
+    _held_merge_history(repo)
+    result = _run(tmp_path, "--sources", "git", "--until", "plan", "--json")
+    plan = json.loads(result.stdout)["stages"]["plan"]
+    assert plan["hidden_commits"] == {"count": 1, "units": 1}
+    view = json.loads(_invoke("backfill", "view", "unit", str(tmp_path / "run"), "--json").stdout)
+    assert view["hidden_commits"]["count"] == 1
+    (held,) = view["hidden_commits"]["by_unit"]
+    assert held["decision"] == "residual"
+    row = next(u for u in view["units"] if u["key"] == held["unit"])
+    assert row["hidden_commits"] == held["commits"] and row["decision"] == "residual"
+    text = _invoke("backfill", "view", "unit", str(tmp_path / "run")).stdout
+    assert "hidden commits: 1 in 1 units" in text and "[hides 1 commits]" in text
+
+
+def test_a_run_that_hides_nothing_has_no_hidden_commits_key(hive, tmp_path) -> None:
+    _, repo = hive
+    _merge_history(repo)
+    result = _run(tmp_path, "--sources", "git", "--until", "plan", "--json")
+    assert "hidden_commits" not in json.loads(result.stdout)["stages"]["plan"]
+    view = json.loads(_invoke("backfill", "view", "unit", str(tmp_path / "run"), "--json").stdout)
+    assert "hidden_commits" not in view
+    assert not any("hidden_commits" in u for u in view["units"])
+
+
+def test_the_opt_in_fallback_makes_the_hidden_commit_a_unit(hive, tmp_path, cfg_path) -> None:
+    _, repo = hive
+    _held_merge_history(repo)
+    _config(cfg_path, collate={"identify": {"merge_fallback": "commits"}})
+    result = _run(tmp_path, "--sources", "git", "--until", "plan", "--json")
+    assert "hidden_commits" not in json.loads(result.stdout)["stages"]["plan"]
+    view = json.loads(_invoke("backfill", "view", "unit", str(tmp_path / "run"), "--json").stdout)
+    assert not any(
+        u["rule"] == "merge" and u["title"].startswith("Other matter") for u in view["units"]
+    )
+    assert any(u["title"] == "feat(side): add the gizmo" for u in view["units"])
+    document = json.loads((tmp_path / "run" / "collation.json").read_text())
+    assert document["options"]["identify"]["merge_fallback"] == "commits"
+
+
+def test_merge_identity_commits_makes_the_held_merge_new(hive, tmp_path, cfg_path) -> None:
+    _, repo = hive
+    _held_merge_history(repo)
+    _config(cfg_path, collate={"identify": {"merge_identity": "commits"}})
+    _run(tmp_path, "--sources", "git", "--until", "collate")
+    document = json.loads((tmp_path / "run" / "collation.json").read_text())
+    assert document["options"]["identify"]["merge_identity"] == "commits"
+    merge = next(u for u in document["units"] if u["rule"] == "merge")
+    verdict = next(v for v in document["verdicts"] if v["unit"] == merge["key"] and v["class"])
+    assert verdict["step"] == "no-candidate" and verdict["class"] == "NEW"
+    assert verdict["commit_candidates"]["with_candidate"] == []
+
+
 def test_opting_out_restores_the_0_37_merge_output(hive, tmp_path, cfg_path) -> None:
     _, repo = hive
     _merge_history(repo)

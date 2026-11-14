@@ -318,13 +318,51 @@ most one unit by the first tier that finds one (`explicit`, `same-change`, `shar
   records the runner-up (`unit`, `distance` in seconds, `overlap`, `paths`) on the attachment;
   `bh backfill view unit` prints it under the unit that took the doc.
 
+**Hidden commits, the merge fallback and commit-based identity (0.38.0, #154).** A unit that
+projects nothing (residual, NOISE or SKIP) used to swallow the commits it claimed: a merge unit
+sweeps its second-parent commits in as artifacts, so when identify held it residual on a weak
+candidate its `feat` commits appeared nowhere in the plan.
+
+- **Reporting (always on, additive).** A commit claimed by a residual, NOISE or SKIP unit (an
+  operator `skip` included) is *hidden*; one attached to a NEW or PRESENT unit is not, and a
+  branch-sync merge hides nothing because it claims only itself and releases its commits to the
+  `commit` rule. The plan summary of `bh backfill history` gains `hidden_commits`
+  (`{"count": N, "units": M}`), `bh backfill view unit` gains a top-level `hidden_commits`
+  (`count`, `units` and `by_unit`: each unit's key, decision and commit shas) and each affected
+  unit row gains `hidden_commits: [shas]`. The keys appear only when something is hidden, so a run
+  that hides nothing prints what it printed before. Created beads never change.
+- **Fallback** (`backfill.collate.identify.merge_fallback = commits`, opt-in, default `none`). A
+  `merge`-rule unit that ends residual, NOISE or SKIP is replaced by the commit-rule units of its
+  commits (those `include_types` admits) and those are identified in the same run: a deterministic
+  second cluster, attach and identify pass over exactly those merges, never a clustering option.
+  The commit units have the keys the `commit` rule would make, so a second run finds the beads
+  they made by `external_ref` and proposes nothing. A merge none of whose commits `include_types`
+  admits is kept (and so stays reported as hidden); a merge the second pass newly exposes (one
+  inside a released merge) is not released again. This gives up the one-bead-per-PR grouping for
+  those merges, which is why it is opt-in. An operator `skip` is released too: skip the commit
+  units to keep them out.
+- **Commit-based identity** (`backfill.collate.identify.merge_identity = commits`, opt-in, default
+  `unit`). A merge unit whose own title has a baseline candidate is checked commit by commit with
+  the step 3 test (does a baseline bead share a title token with the commit's subject?). When none
+  of its commits has a candidate the merge is NEW (`no-candidate`, derived, review required), so a
+  weak candidate that none of its commits matches no longer holds the PR back. A merge whose
+  commits partly or all match keeps the existing flow (lexical, judge, threshold, residual): the
+  matching commits suggest the PR is already represented, so promoting it would duplicate. Every
+  verdict and residual record of a merge judged this way carries `commit_candidates`
+  (`with_candidate` and `without_candidate`, commit keys), and `view unit` shows the counts. A
+  merge with no commits of its own is unchanged.
+
+With `merge_identity = commits` a merge-heavy history yields one bead per PR titled from the PR,
+its commits attached as `git.commits`, and a second run proposes nothing. Both options are per
+hive: `backfill.hives.<prefix>.collate.identify.*`.
+
 `bh backfill view` reviews a run, read-only, over a run directory or any `bdlg.collation/1` JSON.
 Each view is its own verb because adding parameters to the published `inspect` would break the
 wire contract:
 
 | View | Shows |
 |---|---|
-| `unit [--decision D]` | every unit with its NEW / PRESENT / NOISE / SKIP / residual decision, bead, status and dates; a merge unit also shows its `noise` flag and, under `merge_types`, its `type` |
+| `unit [--decision D]` | every unit with its NEW / PRESENT / NOISE / SKIP / residual decision, bead, status and dates; a merge unit also shows its `noise` flag and, under `merge_types`, its `type`; `hidden_commits` (only when a unit that projects nothing holds commits) and, under `merge_identity = commits`, `commit_candidates` |
 | `conflict` | status conflicts between sources, both sides shown, none resolved |
 | `xref` | references to other ledgers' beads and to tracker items |
 | `cost` | judge calls recorded and their estimated cost |
@@ -744,7 +782,11 @@ with `noise = []` and `merge_titles = subject` and no other new option (`max_per
 `rename_guard`, `rank`, the `own-add` tier) writes exactly the 0.37.1
 collation. A default 0.38 run over a repository with branch-sync merges uses the new vocabulary
 and so is not readable by a `bh` older than 0.38.0 (`CollationFormatError`, as in 0.37.0): do not
-read a 0.38 run directory with an older `bh`. Later options of the same release extend these lists.
+read a 0.38 run directory with an older `bh`. Later options of the same release extend these lists:
+`options.identify` gains `merge_fallback` and `merge_identity` (each written only when `commits`),
+and a verdict or residual record gains `commit_candidates`, written only for a merge judged under
+`merge_identity = commits`. The `hidden_commits` report keys are not part of the collation: they
+are computed from its units and verdicts.
 
 ## Collation status and conflicts
 

@@ -293,6 +293,8 @@ from .identify import (
     IdentifyOptionsError,
     IdentifyResult,
     IdentifyRun,
+    hidden_commits,
+    hidden_summary,
     identify,
     identify_units,
 )
@@ -558,6 +560,8 @@ __all__ = [
     "IdentifyOptionsError",
     "IdentifyResult",
     "IdentifyRun",
+    "hidden_commits",
+    "hidden_summary",
     "identify",
     "identify_prior_verdicts",
     "identify_units",

@@ -34,7 +34,9 @@
       "description": "B5 IdentifyOptions (beadlog_sources.identify).",
       "properties": {
         "new_threshold": {"type": ["integer", "null"], "minimum": 1, "maximum": 100, "description": "Percent: a unit nothing else decided whose fuzzy score is below it is NEW (inferred); null turns the threshold step off."},
-        "max_candidates": {"type": "integer", "minimum": 1, "description": "Baseline beads (and, separately, epics) offered by the match query."}
+        "max_candidates": {"type": "integer", "minimum": 1, "description": "Baseline beads (and, separately, epics) offered by the match query."},
+        "merge_fallback": {"const": "commits", "description": "Written only when commits (0.38, opt-in): a merge unit that ends residual, NOISE or SKIP was replaced by the commit-rule units of its commits. Absent: none, as 0.37."},
+        "merge_identity": {"const": "commits", "description": "Written only when commits (0.38, opt-in): a merge none of whose commits has a baseline candidate is NEW. Absent: unit, as 0.37."}
       }
     },
     "identify_verdict": {
@@ -71,7 +73,8 @@
             }
           ],
           "description": "Why the configured engine did not answer (timeout, exit, malformed, ...)."
-        }
+        },
+        "commit_candidates": {"$ref": "#/$defs/commit_candidates"}
       }
     },
     "identify_residual": {
@@ -84,7 +87,18 @@
         "reason": {"enum": ["no-match", "judge-abstained", "judge-failed", "judge-budget"], "description": "judge-budget: the call cap stopped the run before this unit; the next run continues."},
         "score": {"type": "integer", "minimum": 0, "maximum": 100},
         "query_hash": {"type": ["string", "null"]},
-        "candidates": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "The baseline bead ids the match query offered, best first."}
+        "candidates": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "The baseline bead ids the match query offered, best first."},
+        "commit_candidates": {"$ref": "#/$defs/commit_candidates"}
+      }
+    },
+    "commit_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["with_candidate", "without_candidate"],
+      "description": "Written only for a merge unit judged under merge_identity = commits (0.38): the keys of its non-merge commits that share a title token with a baseline bead, and those that do not.",
+      "properties": {
+        "with_candidate": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "without_candidate": {"type": "array", "items": {"type": "string", "minLength": 1}}
       }
     },
     "cluster_options": {

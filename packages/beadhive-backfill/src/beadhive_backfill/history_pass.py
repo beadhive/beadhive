@@ -169,6 +169,8 @@ class HistoryPass:
             "creates_skipped": skipped,
             "no_moment": no_moment if self.create else [],
         }
+        if hidden := projection.hidden_commits():  # D5: only when a run hid commits
+            self._report["hidden_commits"] = hidden
         return events
 
     def report(
