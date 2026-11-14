@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.37.1 (2026-11-14)
+
+### Fix
+
+- **backfill**: stamp a configurable priority (default 2) on every bead a create-mode apply makes (bh-ohzms)
+- **backfill**: write edge targets before the beads that reference them in an apply (bh-dvb8s)
+
 ## v0.37.0 (2026-11-13)
 
 ### Feat
