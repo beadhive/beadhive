@@ -476,6 +476,9 @@ _UNIT_MEMBERS = (
     "children",
     "depends_on",
 )
+# Members a unit writes only when set (D9 of ``docs/design/backfill-merge-heavy-repos-adr.md``): a
+# collation without them is the 0.37 shape, one with any needs a 0.38 reader.
+_UNIT_OPTIONAL_MEMBERS = ("type", "noise")
 
 
 @dataclass(frozen=True)
@@ -495,6 +498,11 @@ class Unit:
       an epic); ``parent`` / ``children``: unit keys of the parent-child membership (area epics
       and plan-item structure); ``depends_on``: unit keys a plan item depends on.
 
+    - ``type`` (merge units, only when ``collate.merge_types`` is set): the derived merge type,
+      a conventional type or ``untyped``. ``noise`` (merge units): the subject shape that marks a
+      merge as noise (``branch-sync``); B5 gives such a unit a ``SKIP`` verdict. Both are written
+      to JSON only when set.
+
     Later steps add members of their own (B4 attached docs, B6 status and dates); B5 verdicts
     live in the collation's ``verdicts``, keyed by ``key``.
     """
@@ -509,10 +517,16 @@ class Unit:
     parent: str | None = None
     children: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
+    type: str | None = None
+    noise: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
             raise CollationFormatError("unit key must be a non-empty string")
+        for name in _UNIT_OPTIONAL_MEMBERS:
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value):
+                raise CollationFormatError(f"unit {self.key!r}: {name} must be a non-empty string")
         if self.kind not in UNIT_KINDS:
             raise CollationFormatError(f"unit {self.key!r}: unknown kind {self.kind!r}")
         if self.rule not in UNIT_RULES:
@@ -521,8 +535,8 @@ class Unit:
             raise CollationFormatError(f"unit {self.key!r}: bead is set exactly for attach units")
 
     def to_json(self) -> dict[str, Any]:
-        """The unit as a JSON object."""
-        return {
+        """The unit as a JSON object (``type`` and ``noise`` only when set)."""
+        out: dict[str, Any] = {
             "key": self.key,
             "kind": self.kind,
             "rule": self.rule,
@@ -534,12 +548,21 @@ class Unit:
             "children": list(self.children),
             "depends_on": list(self.depends_on),
         }
+        for name in _UNIT_OPTIONAL_MEMBERS:
+            if getattr(self, name) is not None:
+                out[name] = getattr(self, name)
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> Unit:
-        """Parse a unit object; unknown or missing members are refused."""
-        if not isinstance(raw, dict) or sorted(raw) != sorted(_UNIT_MEMBERS):
-            raise CollationFormatError(f"unit must have exactly {_UNIT_MEMBERS}")
+        """Parse a unit object: the base members plus any subset of ``type`` / ``noise``;
+        unknown or missing members are refused."""
+        if not isinstance(raw, dict) or not (
+            set(_UNIT_MEMBERS) <= set(raw) <= {*_UNIT_MEMBERS, *_UNIT_OPTIONAL_MEMBERS}
+        ):
+            raise CollationFormatError(
+                f"unit must have exactly {_UNIT_MEMBERS} plus any of {_UNIT_OPTIONAL_MEMBERS}"
+            )
         return cls(
             key=raw["key"],
             kind=raw["kind"],
@@ -551,6 +574,8 @@ class Unit:
             parent=raw["parent"],
             children=tuple(raw["children"]),
             depends_on=tuple(raw["depends_on"]),
+            type=raw.get("type"),
+            noise=raw.get("noise"),
         )
 
 

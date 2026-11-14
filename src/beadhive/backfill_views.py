@@ -78,27 +78,29 @@ def unit_view(path: Path, *, decision: Sequence[str] = ()) -> dict[str, Any]:
             continue
         status = life.get(unit.key) or {}
         no_moment = cls == "NEW" and bool(status) and has_no_moment(Lifecycle.from_json(status))
-        units.append(
-            {
-                "key": unit.key,
-                "kind": unit.kind,
-                "rule": unit.rule,
-                "title": unit.title,
-                "decision": cls,
-                "bead": (record or {}).get("bead") or unit.bead,
-                "step": (record or {}).get("step"),
-                "review": (record or {}).get("review"),
-                "parent": unit.parent,
-                "artifacts": len(unit.artifacts),
-                "docs": len(collation.docs_of(unit.key)),
-                "status": status.get("status"),
-                "closed": (status.get("closed") or {}).get("at"),
-                "skipped": "no evidence moment" if no_moment else None,
-            }
-        )
+        row: dict[str, Any] = {
+            "key": unit.key,
+            "kind": unit.kind,
+            "rule": unit.rule,
+            "title": unit.title,
+            "decision": cls,
+            "bead": (record or {}).get("bead") or unit.bead,
+            "step": (record or {}).get("step"),
+            "review": (record or {}).get("review"),
+            "parent": unit.parent,
+            "artifacts": len(unit.artifacts),
+            "docs": len(collation.docs_of(unit.key)),
+            "status": status.get("status"),
+            "closed": (status.get("closed") or {}).get("at"),
+            "skipped": "no evidence moment" if no_moment else None,
+        }
+        for name in ("type", "noise"):  # written only when set (byte-identical else)
+            if getattr(unit, name) is not None:
+                row[name] = getattr(unit, name)
+        units.append(row)
     counts = Counter(u["decision"] for u in units)
     shown = {name: counts.get(name, 0) for name in _DECISIONS}
-    if counts.get(SKIP):  # an operator skip only shows once there is one (byte-identical else)
+    if counts.get(SKIP):  # a skip (operator or branch-sync) only shows once there is one
         shown[SKIP] = counts[SKIP]
     return _envelope(
         "unit",
@@ -199,6 +201,10 @@ def render_text(view: Mapping[str, Any]) -> list[str]:
         for unit in view["units"]:
             bead = unit["bead"] or "-"
             operator = "  (operator)" if unit["step"] == "decision" else ""
+            if unit.get("noise"):
+                operator += f"  [noise: {unit['noise']}]"
+            if unit.get("type"):
+                operator += f"  [type: {unit['type']}]"
             lines.append(
                 f"{unit['decision']:<8} {unit['key']}  [{unit['kind']}/{unit['rule']}] "
                 f"bead={bead} status={unit['status'] or '-'}  {unit['title']}{operator}"

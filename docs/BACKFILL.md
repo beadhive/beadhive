@@ -251,13 +251,49 @@ run directory the plan recorded.
 bead projects nothing (the plan reports how many events were not proposed). The projector writes
 PRESENT units' `git.commits`, `external_ref` and cross-reference stamps; nothing is overwritten.
 
+**Merge units: titles, types and branch syncs (0.38.0).** The `merge` rule makes a unit of every
+free first-parent merge. Three settings shape those units
+(`design/backfill-merge-heavy-repos-adr.md`, D2 to D4):
+
+- **Titles** (`backfill.collate.merge_titles`, default `derived`). A merge unit is titled by the
+  first of: the merge body's first line (GitHub puts the pull request title there; a line that is
+  itself a `Merge ...` line is skipped), the subject of the oldest commit the merge brings in, a
+  readable branch name (`fix/render-crash` becomes `Render crash`), else the merge subject. A
+  pull request title still comes first when the `github` source is on (the `review` rule). The git
+  reader records the body line as the `body_head` attr of merge artifacts, so the first run after
+  an upgrade reads the evidence again; `merge_titles = subject` keeps the merge subject and does
+  not record `body_head`. A title feeds identify's lexical step, so verdicts of merge units can
+  shift; the unit key (the merge sha) is unchanged, so a bead made earlier stays linked through
+  its `external_ref` and is never retitled.
+- **Branch-sync noise** (`backfill.collate.noise`, default `[branch-sync]`). A merge whose subject
+  is `Merge branch '<x>'` (optionally `into <y>`) or `Merge remote-tracking branch '<x>'`, and that
+  names no pull request, is flagged `noise: branch-sync`. It stays a unit, visible in
+  `bh backfill view unit`, but identify gives it a derived `SKIP` verdict at the new step
+  `branch-sync` (after an operator decision and an existing `external_ref`), so nothing is
+  projected. It claims only the merge commit; the commits it brings in are released to the
+  `commit` rule, the merges inside it (which were never first-parent merges) are considered as
+  merge units of their own, and the unit joins no area epic. A pull request merge is never flagged.
+  `noise = []` turns it off.
+- **Merge types** (`backfill.collate.merge_types`, opt-in, default unset). A merge's type is its
+  branch prefix (`feat/x`, with the aliases `feature`, `bugfix` and `hotfix`), else the most
+  significant conventional type among its commits (`feat`, `fix`, `perf`, `refactor`, `revert`,
+  `build`, `ci`, `docs`, `test`, `style`, `chore`; a breaking change counts as `feat`), else
+  `untyped`. Setting `merge_types` to a list (types, `untyped`, or `*`) limits the merge rule to
+  those merges and records each unit's `type`; a merge left out releases its commits to the
+  `commit` rule. `*` records the type without filtering. Unset: every merge, no type.
+  `include_types` still applies to commits only. A merge left out releases its inner merges the
+  same way.
+
+All three are per hive: `backfill.hives.<prefix>.collate.*`. `collate.noise = []` together with
+`collate.merge_titles = subject` restores the 0.37.1 output.
+
 `bh backfill view` reviews a run, read-only, over a run directory or any `bdlg.collation/1` JSON.
 Each view is its own verb because adding parameters to the published `inspect` would break the
 wire contract:
 
 | View | Shows |
 |---|---|
-| `unit [--decision D]` | every unit with its NEW / PRESENT / NOISE / residual decision, bead, status and dates |
+| `unit [--decision D]` | every unit with its NEW / PRESENT / NOISE / SKIP / residual decision, bead, status and dates; a merge unit also shows its `noise` flag and, under `merge_types`, its `type` |
 | `conflict` | status conflicts between sources, both sides shown, none resolved |
 | `xref` | references to other ledgers' beads and to tracker items |
 | `cost` | judge calls recorded and their estimated cost |
@@ -661,6 +697,17 @@ proposed again (see the table above). Record the skip instead of deleting, or af
 classes of `bdlg.collation/1` (`schemas/bdlg-collation-v1.schema.json`); the projector gains a
 `skip` decision. A reader older than 0.37.0 rejects a collation holding them (the strict loader);
 a run with no decisions writes exactly what it did before.
+
+**Collation vocabulary, 0.38.** One additive change to `bdlg.collation/1`, no version bump:
+`options.cluster` gains the members `merge_types`, `merge_titles` and `noise`, each written only
+when it differs from 0.37 (`merge_types` when set, `merge_titles` when `derived`, `noise` when
+non-empty); a unit gains `type` and `noise`, written only when set; the identify steps gain
+`branch-sync`; and the evidence of a merge gains the attr `body_head`. The loader reads the old
+member sets and the old sets plus any of the new members, and still refuses anything else. A run
+with `noise = []` and `merge_titles = subject` and no other new option writes exactly the 0.37.1
+collation. A default 0.38 run over a repository with branch-sync merges uses the new vocabulary
+and so is not readable by a `bh` older than 0.38.0 (`CollationFormatError`, as in 0.37.0): do not
+read a 0.38 run directory with an older `bh`. Later options of the same release extend these lists.
 
 ## Collation status and conflicts
 

@@ -456,12 +456,47 @@
           "title": "Include Types",
           "type": "array"
         },
+        "merge_titles": {
+          "default": "derived",
+          "description": "derived (default since 0.38): a merge unit is titled from the merge body's first line, else its first commit's subject, else a readable branch name. subject: the merge subject (0.37 titles).",
+          "enum": [
+            "derived",
+            "subject"
+          ],
+          "title": "Merge Titles",
+          "type": "string"
+        },
+        "merge_types": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Opt-in. Unset (default): the merge rule makes a unit of every merge and derives no type. A list of merge types (conventional types, untyped, or * for any) limits the merge rule to those merges and records each unit's type; a merge left out releases its commits to the commit rule. * records the type without filtering. include_types stays commit-only.",
+          "title": "Merge Types"
+        },
         "min_epic_units": {
           "default": 2,
           "description": "Fewest units an area needs for an epic.",
           "minimum": 1,
           "title": "Min Epic Units",
           "type": "integer"
+        },
+        "noise": {
+          "description": "Merge subject shapes flagged as noise (default since 0.38: branch-sync, Merge branch 'x' [into y] and Merge remote-tracking branch 'x', never a pull request merge). A flagged merge stays visible in view unit, is skipped by identify and releases its commits to the commit rule. [] flags none (0.37).",
+          "items": {
+            "const": "branch-sync",
+            "type": "string"
+          },
+          "title": "Noise",
+          "type": "array"
         },
         "path_depth": {
           "default": 1,
