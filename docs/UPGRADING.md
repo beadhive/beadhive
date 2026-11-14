@@ -66,6 +66,16 @@ exists for the releases where "read the changelog" isn't enough to act on.
   title matched; a merge whose commits partly match keeps the existing flow and the collation
   records which commits matched (`commit_candidates`). Default `unit`. Both options can be set per
   hive under `backfill.hives.<prefix>.collate.identify`.
+- **New: `bh backfill decide --select` decides many units at once (bh-espkv, #162).** Repeat
+  `--select <field><op><value>` (`=` or `~` regex, ANDed; fields `rule`, `kind`, `area`, `title`,
+  `key`, `decision`, `status`, `type`, `noise`) instead of a unit key, for example
+  `bh backfill decide --select noise=branch-sync skip`. It reads the run's `collation.json`
+  (`--run-dir`), skips attach units and units that already have a live bead, supports
+  `--dry-run`, and refuses more than `--max` matches (new `backfill.decisions.select_max`,
+  default `200`, per hive under `backfill.hives.<prefix>.decisions`) without `--yes`. All
+  decisions are written in one batch, each its own decision bead with the selector as its reason.
+  The single-unit form is unchanged and nothing changes unless you pass `--select`. See
+  [BACKFILL.md](BACKFILL.md#operator-decisions).
 - **Collation files.** `bdlg.collation/1` gained members, written only when used (no version
   bump); a 0.37 collation still reads. A default 0.38 run over a repository with branch-sync
   merges writes the new vocabulary, which a `bh` older than 0.38.0 refuses, so do not read a 0.38
