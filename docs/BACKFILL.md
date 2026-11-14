@@ -377,6 +377,40 @@ exit 1). A third-party reader registers under `[project.entry-points."beadlog.re
 implements `beadlog_sources.SourceReader` (`name`, `version`, `categories`, and a pure
 `read(ReadRequest) -> Iterable[Artifact]` that never touches a store).
 
+**Git boundary, tags and dates (`git` reader).** All opt-in; with none set a run is the two
+`git` processes it always was and the evidence is byte-identical. In a hive set them per hive,
+for example `backfill.hives.<prefix>.sources.git.options = { exclude_revs = "upstream/main" }`.
+
+- `exclude_revs` (csv of refs): a boundary for a fork. Each ref is resolved **on every run** with
+  `git rev-parse --verify <ref>^{commit}` and passed to `git log` as `^<sha>`, so those commits and
+  their ancestors are left out and the run reads only the fork's own history. A ref that does not
+  resolve fails the run naming it (it is never skipped: that would read the whole upstream). It
+  composes with the cursor and with `since` (`base..rev ^sha`): moving upstream only removes
+  commits from the range and never rewinds a cursor. Unlike a per-hive `since` pinned to the
+  upstream tip, nothing needs refreshing when upstream advances. The resolved shas are hashed into
+  the parse key (an upstream-only change re-reads; an unchanged upstream reuses evidence) and
+  recorded in `run.json` as `parse.exclude_revs` (ref to sha); they are never written into config.
+  Each excluded ref costs one extra `git rev-parse`.
+- `tag_scope` = `all` (default: every tag, as before) or `range` (a tag is read only when the
+  commit it points at, peeled for an annotated tag, is among the commits read; with a cursor that
+  means this run's new commits).
+- `tag_include` / `tag_exclude` (csv of case-sensitive `fnmatch` globs on the tag name): a tag
+  must match an include (when set) and no exclude; **exclude wins**. They apply under either
+  scope, **before** the `previous` chain, so a tag's `commit_range` starts at the first tag that
+  survived (the first one has `commit_range = None`). The scope and filters are in the run
+  header options and so in the parse key. `tag_exclude = "backup/*"` drops backup tags.
+- `since_date`: always a date for `git log --since`. `since` is unchanged (a hex sha means
+  `since..rev`, anything else is a date); setting both is an error. Prefer `since_date` for a date
+  that is all hex digits (`20260901`), which `since` would take for a sha. `bh backfill`'s
+  `commits` strategy now routes any non-commit `since` through `since_date`, replacing the old
+  leading-space workaround, so existing `since=20260901` configs keep working. Note that `git`
+  itself does not read a bare `YYYYMMDD` as a date; write `2026-09-01`.
+
+Risk: a fork that rebases onto (or force-updates against) upstream changes its commit shas, and
+with them the unit keys, the parse key and any cursor; beads matched or created from the old
+shas will not line up with the rebased history. Use `exclude_revs` on forks that merge upstream,
+and expect a one-time re-read after a rebase.
+
 ### The `planning` reader
 
 `beadlog read planning` emits one `plan-item` artifact per plan item, keyed
@@ -416,8 +450,8 @@ beadlog extract git-commits --root . --group <group id> --group-dir <prefix> \
 ```
 
 Options: `rev` (default `HEAD`), `since` (a commit, or a date for `git log --since`),
-`allow_shallow=true`. Reconcile classes an append as DRIFT (the bead exists and its `git.commits`
-changes); `bh backfill commits` applies it (see
+`since_date` (always a date), `allow_shallow=true`. Reconcile classes an append as DRIFT (the
+bead exists and its `git.commits` changes); `bh backfill commits` applies it (see
 [the hive passes](#bh-backfill-commits-docs-and-planning-passes-3-to-5)).
 
 ### `beadlog extract docs`
@@ -791,7 +825,7 @@ bh backfill planning --apply --plan planning.bdlg
 
 | Pass | Proposes | DRIFT (applied) | NEW (applied) | `--option` keys |
 |---|---|---|---|---|
-| `commits` | `set` of `metadata.git.commits` appending shas | the append to a bead that exists | none | `rev`, `since`, `allow_shallow`, `git` |
+| `commits` | `set` of `metadata.git.commits` appending shas | the append to a bead that exists | none | `rev`, `since`, `since_date`, `allow_shallow`, `git` |
 | `docs` | `set` of `external_ref`; a judged NEW doc | the stamp on a bead that exists | `create` plus `origin:backfill` and `source:docs` for a judged NEW doc | `docs`, `top_k`, `id_prefix`, `new_type`, `labels`, `allow_shallow`, `git` |
 | `planning` | `create` of epics and issues, edges, closes | a close that arrives after the bead exists | the epics, issues and edges of the tree | `planning`, `id_prefix`, `labels`, `issue_type`, `allow_shallow`, `git` |
 

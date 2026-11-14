@@ -5,6 +5,17 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.37.1 → 0.38.0 — backfill for merge-heavy and forked repositories
+
+- **New, opt-in: the git reader's fork boundary and tag filters (bh-19q4u, #159).** The `git`
+  reader options `exclude_revs` (refs resolved on every run and excluded, so a fork reads only its
+  own commits and follows upstream with no config edit), `tag_scope = range`, `tag_include` /
+  `tag_exclude` (globs, exclude wins) and `since_date` (an explicit date; `since` is unchanged)
+  are set under `backfill.sources.git.options` or per hive in
+  `backfill.hives.<prefix>.sources.git.options`. Nothing changes unless you set them. A fork that
+  rebases onto upstream changes its shas and so its unit keys. See
+  [BACKFILL.md](BACKFILL.md).
+
 ## 0.37.0 → 0.37.1 — backfill apply fixes
 
 - **Fix: a create-mode `bh backfill history --until apply` no longer drops epic edges (bh-dvb8s,

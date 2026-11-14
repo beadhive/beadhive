@@ -1134,9 +1134,10 @@ def _history_run(
 
         # parse
         namespaces = list(directory.ledgers())
-        key = backfill_history.parse_key(
-            cwd, [(n, backfill_history.source_options(n, backfill, namespaces)) for n in names]
-        )
+        plan_options = [
+            (n, backfill_history.source_options(n, backfill, namespaces)) for n in names
+        ]
+        key = backfill_history.parse_key(cwd, plan_options)
         reused = (
             not refresh
             and files["evidence"].is_file()
@@ -1148,6 +1149,8 @@ def _history_run(
             corpus = backfill_history.read_sources(cwd, chosen, backfill, namespaces)
             backfill_history.write_evidence(corpus, files["evidence"])
         manifest["parse"] = {"key": key, "artifacts": len(corpus.artifacts), "reused": reused}
+        if boundary := backfill_history.exclude_boundary(cwd, plan_options):
+            manifest["parse"]["exclude_revs"] = boundary  # the shas this run's boundary resolved to
         summary["stages"]["parse"] = manifest["parse"]
         backfill_history.write_manifest(run, manifest)
         if last == 0:
