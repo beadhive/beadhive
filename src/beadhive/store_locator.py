@@ -191,6 +191,36 @@ def has_direct_server_database(database: str) -> bool:
     return not database_dir.is_symlink() and not marker.is_symlink() and marker.is_dir()
 
 
+_LOCAL_SERVER_HOSTS = frozenset({"", "127.0.0.1", "localhost", "::1"})
+
+
+def replica_missing(hive_dir: Path, prefix: str) -> bool:
+    """Whether ``hive_dir`` demonstrably has NO local replica of its bead store (bh-pjhwe) — a
+    pure filesystem probe, never a server start or a query.
+
+    True only when every place the store could live is verifiably empty: no embedded store, no
+    per-project ``.beads/dolt``, and no shared-server database under the name this hive resolves
+    (its recorded server name, or — with no metadata at all, the zero-footprint clone case — its
+    sanitized ``prefix``, the name onboarding would stamp). A bd pointed at a REMOTE server, or a
+    hive whose database name cannot be resolved, answers False: presence is then unprovable, and
+    callers use this to WAIVE a refusal, so unknown must fail toward "present"."""
+    root = Path(hive_dir)
+    if has_embedded_store(root) or (embedded_store_dir(root).parent / "dolt").exists():
+        return False
+    mode = dolt_mode(root)
+    if mode == "embedded":
+        return True  # embedded mode recorded, but the embedded store is not there
+    if os.environ.get("BEADS_DOLT_SERVER_HOST", "") not in _LOCAL_SERVER_HOSTS:
+        return False
+    if mode is None:
+        database = sanitize_database_name(prefix)
+    else:
+        database = server_database(root, prefix)
+    if not database:
+        return False
+    return not has_direct_server_database(database)
+
+
 def store_dir(hive_dir: Path) -> Path:
     """MODE-AWARE: the parent that holds ``hive_dir``'s databases, per bd's own persisted
     ``dolt_mode`` — :func:`embedded_store_dir` for embedded, :func:`server_store_dir` for

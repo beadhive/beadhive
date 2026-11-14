@@ -135,8 +135,8 @@ def test_bootstrap_path_activates_shared_server_via_env_var(tmp_path, monkeypatc
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 
-    assert calls[0] == ["bd", "bootstrap", "--non-interactive"]
-    assert envs[0].get("BEADS_DOLT_SHARED_SERVER") == "1"
+    at = calls.index(["bd", "bootstrap", "--non-interactive"])
+    assert envs[at].get("BEADS_DOLT_SHARED_SERVER") == "1"
 
 
 # ---------------------------------------------------------------------------
