@@ -8,7 +8,9 @@ the same run. Residual is only known after B5, which runs after B3, so it is a d
 second B3, B4 and B5 pass over exactly those merges, never a B3 option:
 
 1. the merges to release are the ``merge``-rule units that ended residual, NOISE or SKIP (a branch
-   sync, which claims only itself, has nothing to release) and hold at least one commit that
+   sync, which claims only itself, has nothing to release), never one an operator decided (verdict
+   step ``decision``: the decision wins, and its commits stay reported as hidden), and hold at
+   least one commit that
    ``include_types`` admits (a merge with none stays, so what it hides stays reported);
 2. B3 runs again with those merges released (:func:`~beadlog_sources.cluster.cluster`'s
    ``release``): their commits go to the ``commit`` rule, the merges inside them are looked at as
@@ -24,7 +26,7 @@ run (after applying) finds the beads they made by ``external_ref`` and proposes 
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import replace
 
 from beadlog import BeadEvent
@@ -35,6 +37,7 @@ from .collate import ISSUE, RULE_MERGE, Collation, Unit
 from .identify import (
     COMMIT_PREFIX,
     HIDDEN_DECISIONS,
+    STEP_DECISION,
     STEPS,
     IdentifyOptions,
     IdentifyRun,
@@ -45,7 +48,10 @@ from .identify import (
 
 
 def _releasable(
-    collation: Collation, include_types: Iterable[str], decisions: Mapping[str, str]
+    collation: Collation,
+    include_types: Iterable[str],
+    decisions: Mapping[str, str],
+    operator: Collection[str] = (),
 ) -> list[str]:
     """The merge units to replace by their commits (see the module doc)."""
     assert collation.indexes is not None
@@ -56,6 +62,8 @@ def _releasable(
             continue
         if decisions.get(unit.key, "residual") not in HIDDEN_DECISIONS:
             continue
+        if unit.key in operator:
+            continue  # an operator decision (step 0) always wins
         for key in unit.artifacts[1:]:
             art = collation.indexes.artifact(key)
             if art is None or not key.startswith(COMMIT_PREFIX) or len(art.attrs["parents"]) >= 2:
@@ -86,7 +94,8 @@ def merge_fallback(
     baseline = tuple(baseline)
     cluster_options = cluster_options or ClusterOptions()
     decided = {r["unit"]: r["class"] for r in first.verdicts if r["class"] is not None}
-    released = _releasable(first, cluster_options.include_types, decided)
+    operator = {r["unit"] for r in first.verdicts if r["step"] == STEP_DECISION}
+    released = _releasable(first, cluster_options.include_types, decided, operator)
     if not released:
         return first
     second = attach(cluster(resolved, cluster_options, release=released), attach_options)

@@ -339,8 +339,9 @@ candidate its `feat` commits appeared nowhere in the plan.
   they made by `external_ref` and proposes nothing. A merge none of whose commits `include_types`
   admits is kept (and so stays reported as hidden); a merge the second pass newly exposes (one
   inside a released merge) is not released again. This gives up the one-bead-per-PR grouping for
-  those merges, which is why it is opt-in. An operator `skip` is released too: skip the commit
-  units to keep them out.
+  those merges, which is why it is opt-in. The fallback never releases an operator decision: a
+  merge decided with `bh backfill decide` (`skip` or `noise`, verdict step `decision`) is kept and
+  its commits stay reported as hidden; decide the commit units instead.
 - **Commit-based identity** (`backfill.collate.identify.merge_identity = commits`, opt-in, default
   `unit`). A merge unit whose own title has a baseline candidate is checked commit by commit with
   the step 3 test (does a baseline bead share a title token with the commit's subject?). When none

@@ -221,6 +221,52 @@ def test_the_fallback_emits_the_commits_of_a_residual_merge_as_units() -> None:
     assert on.options["identify"]["merge_fallback"] == "commits"
 
 
+def _operator_baseline(kind, target):
+    return (
+        *BASELINE,
+        bead("bh-epic", "Rendering", type_="epic"),
+        *decision_events(
+            prefix=PREFIX,
+            group=GROUP,
+            key=key(100),
+            kind=kind,
+            target=target,
+            decided_by="dev/x",
+            labels=LABELS,
+            decided_at="2026-11-13T12:00:00Z",
+        ),
+    )
+
+
+@pytest.mark.parametrize(("kind", "target"), [("skip", None), ("noise", "bh-epic")])
+def test_the_fallback_never_releases_an_operator_decision(kind, target) -> None:
+    arts = residual_world()
+    baseline = _operator_baseline(kind, target)
+    col = run(arts, baseline, identify={"merge_fallback": "commits"})
+    assert key(100) in {u.key for u in col.units}  # the merge is kept
+    assert not any(u.rule == "commit" for u in col.units)  # no commit units
+    (verdict,) = [v for v in col.verdicts if v["unit"] == key(100)]
+    assert verdict["step"] == "decision"
+    (record,) = hidden_commits(col.units, col.verdicts)  # still reported (D5)
+    assert record["commits"] == [key(101), key(102)]
+    assert plan(col, arts, baseline).to_json()["hidden_commits"]["count"] == 2
+
+
+def test_branch_sync_and_plain_residual_merges_are_still_released() -> None:
+    arts = [
+        *merge_world(100, "Merge branch 'main' into next", kids=(("Sync feature", "feat"),)),
+        *merge_world(
+            200, "Merge pull request #7 from o/x", body_head="Parse widget", kids=KIDS[:1]
+        ),
+    ]
+    col = run(arts, BASELINE, identify={"merge_fallback": "commits"})
+    units = {u.key: u for u in col.units}
+    assert units[key(100)].noise == "branch-sync"  # the sync stays a SKIP unit
+    assert key(200) not in units  # the residual merge was replaced...
+    assert units[key(201)].rule == "commit" and units[key(101)].rule == "commit"
+    assert hidden_commits(col.units, col.verdicts) == ()
+
+
 def test_the_fallback_leaves_a_merge_that_identity_decided_alone() -> None:
     arts = residual_world()
     col = run(arts, (), identify={"merge_fallback": "commits"})  # NEW: nothing to fall back from

@@ -58,8 +58,9 @@ exists for the releases where "read the changelog" isn't enough to act on.
   hid nothing is byte-identical, and created beads do not change. Nothing to opt out of.
 - **New, opt-in: `backfill.collate.identify.merge_fallback = commits` (#154, bh-yg3ae).** Replaces a
   merge unit that ends residual, NOISE or SKIP by the `commit`-rule units of its commits, in the
-  same run. Default `none`. It gives up the one-bead-per-PR grouping for those merges. To keep the
-  old behaviour leave it unset.
+  same run. Default `none`. It gives up the one-bead-per-PR grouping for those merges, and never
+  releases a merge an operator decided (`skip` or `noise`). To keep the old behaviour leave it
+  unset.
 - **New, opt-in: `backfill.collate.identify.merge_identity = commits` (#154, bh-yg3ae).** A merge
   none of whose commits has a baseline candidate is NEW instead of residual on a weak candidate its
   title matched; a merge whose commits partly match keeps the existing flow and the collation
