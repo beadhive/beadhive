@@ -210,7 +210,7 @@ def test_cursor_and_since(full_repo: Path) -> None:
     start = git(full_repo, "rev-list", "--max-parents=0", "HEAD")
     since = read_git(ReadRequest(root=full_repo, options={"since": start}))
     assert all(a.attrs.get("sha") != start for a in since.artifacts)
-    dated = read_git(ReadRequest(root=full_repo, options={"since": "2026-03-08"}))
+    dated = read_git(ReadRequest(root=full_repo, options={"since": "2026-03-08T00:00:00Z"}))
     assert [a.title for a in dated.artifacts if a.category is Category.CHANGE] == ["feat: later"]
 
 
@@ -340,7 +340,9 @@ def test_exclude_revs_composes_with_since(fork: Path) -> None:
         "feat: down two",
         "feat: down one",
     ]
-    assert changes(fork, since="2026-03-04", exclude_revs="upstream") == ["feat: down two"]
+    assert changes(fork, since="2026-03-04T00:00:00Z", exclude_revs="upstream") == [
+        "feat: down two"
+    ]
 
 
 def test_tags_default_is_every_tag_and_range_drops_upstream_only(fork: Path) -> None:
@@ -369,7 +371,7 @@ def test_tag_filters_run_before_the_previous_chain_and_exclude_wins(fork: Path) 
 
 
 def test_since_date_is_always_a_date_and_exclusive_with_since(fork: Path) -> None:
-    assert changes(fork, since_date="2026-03-04") == ["feat: down two"]
+    assert changes(fork, since_date="2026-03-04T00:00:00Z") == ["feat: down two"]
     # an all-hex date is handed to git as --since under since_date (under since it would be
     # taken for a sha); git's own parser then reads it
     counting = Counting()
@@ -377,7 +379,7 @@ def test_since_date_is_always_a_date_and_exclusive_with_since(fork: Path) -> Non
     assert "--since=20260901" in counting.calls[0]
     assert not any(".." in arg for arg in counting.calls[0])
     with pytest.raises(GitReadError, match="since_date"):
-        changes(fork, since="2026-03-04", since_date="2026-03-04")
+        changes(fork, since="2026-03-04T00:00:00Z", since_date="2026-03-04T00:00:00Z")
 
 
 def test_default_options_are_unchanged(fork: Path) -> None:
