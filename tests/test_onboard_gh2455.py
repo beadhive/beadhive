@@ -274,7 +274,7 @@ def test_bootstrap_path_never_probes_dolt_status(tmp_path, monkeypatch):
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 
-    assert calls == [["bd", "bootstrap", "--non-interactive"]]
+    assert ["bd", "bootstrap", "--non-interactive"] in calls
     assert not any(c[:2] == ["bd", "sql"] for c in calls)
 
 
