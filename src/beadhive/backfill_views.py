@@ -97,6 +97,13 @@ def unit_view(path: Path, *, decision: Sequence[str] = ()) -> dict[str, Any]:
         for name in ("type", "noise"):  # written only when set (byte-identical else)
             if getattr(unit, name) is not None:
                 row[name] = getattr(unit, name)
+        runners = [  # attach.rank = proximity: who else a doc might have gone to
+            {"doc": a.doc, **a.runner_up}
+            for a in collation.docs_of(unit.key)
+            if a.runner_up is not None
+        ]
+        if runners:
+            row["runner_ups"] = runners
         units.append(row)
     counts = Counter(u["decision"] for u in units)
     shown = {name: counts.get(name, 0) for name in _DECISIONS}
@@ -214,6 +221,12 @@ def render_text(view: Mapping[str, Any]) -> list[str]:
                     else ""
                 )
             )
+            for runner in unit.get("runner_ups", ()):
+                gap = "?" if runner["distance"] is None else f"{runner['distance']}s"
+                lines.append(
+                    f"           runner-up for {runner['doc']}: {runner['unit']} "
+                    f"(distance {gap}, overlap {runner['overlap']}, paths {runner['paths']})"
+                )
         return lines
     if kind == "conflict":
         lines = [f"conflicts: {len(view['conflicts'])}"]

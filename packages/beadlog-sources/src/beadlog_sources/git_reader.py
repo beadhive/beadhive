@@ -38,7 +38,9 @@ only tags whose commit is among the commits read), ``tag_include`` / ``tag_exclu
 separated case-sensitive globs on the tag name, applied before the ``previous`` chain; exclude
 wins), ``allow_shallow`` and ``git`` (the binary), and ``merge_body`` (off by default; on: a merge's
 ``attrs`` gain ``body_head``, the first non-empty body line or ``None``, which backfill's
-``collate.merge_titles = derived`` uses). A string
+``collate.merge_titles = derived`` uses) and ``keep_renames`` (off by default; on: every commit's
+``attrs`` gain ``renamed``, the destination paths of its rename entries, which backfill's
+``attach.rename_guard`` uses). A string
 :attr:`~beadlog_sources.readers.ReadRequest.cursor` is a sha read as ``cursor..rev``
 (incremental); :func:`read_git` also returns the new cursor, the newest commit read (or the old
 cursor when nothing is new).
@@ -209,6 +211,22 @@ def _paths(fields: list[str]) -> list[str]:
     return sorted(paths)
 
 
+def _renamed(fields: list[str]) -> list[str]:
+    """Destination paths of the R entries of the NUL-split ``--name-status -z`` tail."""
+    out: set[str] = set()
+    index = 0
+    while index < len(fields):
+        status = fields[index].strip()
+        index += 1
+        if not status:
+            continue
+        count = 2 if status[0] in "RC" else 1
+        if status[0] == "R" and index + 1 < len(fields) and fields[index + 1]:
+            out.add(fields[index + 1])
+        index += count
+    return sorted(out)
+
+
 def _commit(
     chunk: str,
     reader: str,
@@ -216,6 +234,7 @@ def _commit(
     beads: re.Pattern[str],
     *,
     merge_body: bool = False,
+    keep_renames: bool = False,
 ) -> tuple[Artifact, str]:
     head, _, tail = chunk.partition("\0")
     parts = head.split(_US, 4)
@@ -250,6 +269,9 @@ def _commit(
         "paths": _paths([item for item in tail.lstrip("\n").split("\0")]),
         "trailers": trailers,
     }
+    if keep_renames:
+        # destination paths of rename entries (backfill's attach.rename_guard)
+        attrs["renamed"] = _renamed([item for item in tail.lstrip("\n").split("\0")])
     if merge_body and len(parents) > 1:
         # the first non-empty body line: GitHub puts the pull request title there
         attrs["body_head"] = next((line.strip() for line in body_lines if line.strip()), None)
@@ -570,12 +592,20 @@ def read_git(request: ReadRequest, runner: Runner | None = None) -> GitRead:
     )
     beads = bead_token_pattern(csv(options.get("namespaces", "")))
     merge_body = truthy(options.get("merge_body", False))
+    keep_renames = truthy(options.get("keep_renames", False))
     artifacts: list[Artifact] = []
     head: str | None = None
     for chunk in text.split(_RS):
         if not chunk.strip("\0\n"):
             continue
-        artifact, sha = _commit(chunk, READER_NAME, READER_VERSION, beads, merge_body=merge_body)
+        artifact, sha = _commit(
+            chunk,
+            READER_NAME,
+            READER_VERSION,
+            beads,
+            merge_body=merge_body,
+            keep_renames=keep_renames,
+        )
         head = head or sha
         artifacts.append(artifact)
     read_shas = {a.attrs["sha"] for a in artifacts}

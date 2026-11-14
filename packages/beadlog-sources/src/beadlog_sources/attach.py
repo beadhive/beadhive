@@ -22,6 +22,23 @@ decision as evidence:
    (shared / the smaller token set, in percent) of at least :attr:`AttachOptions.lexical_percent`.
    Evidence: the unit's anchor artifact.
 
+Opt-in extras (``docs/design/backfill-merge-heavy-repos-adr.md``, D8), all off by default so the
+default output is byte-identical:
+
+- ``own-add`` (a tier, outside :data:`ATTACH_TIERS`; place it after ``same-change`` to use it): a
+  doc whose first-add commit exists but no unit claimed gets a doc-unit of its own, its evidence
+  that add commit (and the anchor of the unit that implements it, when one is found).
+- :attr:`AttachOptions.max_per_unit`: a unit takes at most that many attachments from the
+  guessing tiers (``shared-path``, ``lexical``); ``explicit`` and ``same-change`` are exempt. The
+  docs the unit would take beyond the cap, weakest evidence first, go to the next tier, then
+  stand alone.
+- :attr:`AttachOptions.rename_guard`: a doc moved by its first-add commit (the commit's
+  ``renamed`` attr, read under the git reader option ``keep_renames``) is not attached through
+  that commit.
+- :attr:`AttachOptions.rank` ``proximity``: among ``shared-path`` candidates, the nearest unit in
+  time to the doc's add commit wins (then subject overlap, then the number of paths touched, then
+  key), and the runner-up is recorded on the attachment.
+
 Within a tier the unit with the most evidence wins, then the smaller key (lexical: highest score,
 then the smaller key). A doc no tier attaches becomes a **doc-unit** (``issue`` unit, rule ``doc``,
 keyed by the doc's key and claiming it), matching the pre-pipeline docs behaviour; set
@@ -36,6 +53,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 from .collate import (
@@ -45,6 +63,7 @@ from .collate import (
     ISSUE,
     REASON_EXPLICIT,
     REASON_LEXICAL,
+    REASON_OWN_ADD,
     REASON_SAME_CHANGE,
     REASON_SHARED_PATH,
     REASON_STANDALONE,
@@ -60,7 +79,24 @@ from .evidence import Category
 from .ledger import BEAD_TOKEN, LOCAL
 
 ATTACH_TIERS = (REASON_EXPLICIT, REASON_SAME_CHANGE, REASON_SHARED_PATH, REASON_LEXICAL)
-OPTION_MEMBERS = ("tiers", "lexical_percent", "lexical_min_tokens", "standalone")
+# Every tier an option list may name; ``own-add`` is opt-in and so is not in ATTACH_TIERS.
+KNOWN_TIERS = (
+    REASON_EXPLICIT,
+    REASON_SAME_CHANGE,
+    REASON_OWN_ADD,
+    REASON_SHARED_PATH,
+    REASON_LEXICAL,
+)
+# The tiers that guess (``max_per_unit`` binds only these).
+CAPPED_TIERS = (REASON_SHARED_PATH, REASON_LEXICAL)
+RANK_EVIDENCE = "evidence"
+RANK_PROXIMITY = "proximity"
+RANKS = (RANK_EVIDENCE, RANK_PROXIMITY)
+# Written to JSON only when set (D9): a collation without them is the 0.37 shape.
+BASE_OPTION_MEMBERS = ("tiers", "lexical_percent", "lexical_min_tokens", "standalone")
+NEW_OPTION_MEMBERS = ("max_per_unit", "rename_guard", "rank")
+OPTION_MEMBERS = (*BASE_OPTION_MEMBERS, *NEW_OPTION_MEMBERS)
+_FAR = 1 << 60  # a time distance nothing can beat for "unknown"
 DOC_PREFIX = "doc:"
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -86,12 +122,21 @@ class AttachOptions:
       (default 60; an integer because the collation's canonical JSON admits no floats).
     - ``lexical_min_tokens``: the fewest shared tokens the lexical tier accepts (default 2).
     - ``standalone``: make a doc-unit of a doc no tier attached (default on).
+    - ``max_per_unit``: the most attachments a unit takes from ``shared-path`` and ``lexical``
+      (default ``None``: no cap). ``explicit`` and ``same-change`` are exempt.
+    - ``rename_guard``: do not attach a moved doc through the commit that moved it (default off).
+    - ``rank``: ``evidence`` (default) picks a ``shared-path`` unit by evidence count;
+      ``proximity`` by time distance to the add commit, subject overlap, edit size, then key, and
+      records the runner-up.
     """
 
     tiers: tuple[str, ...] = ATTACH_TIERS
     lexical_percent: int = 60
     lexical_min_tokens: int = 2
     standalone: bool = True
+    max_per_unit: int | None = None
+    rename_guard: bool = False
+    rank: str = RANK_EVIDENCE
 
     def __post_init__(self) -> None:
         tiers = self.tiers
@@ -100,11 +145,11 @@ class AttachOptions:
         tiers = tuple(tiers)
         if (
             not all(isinstance(t, str) for t in tiers)
-            or any(t not in ATTACH_TIERS for t in tiers)
+            or any(t not in KNOWN_TIERS for t in tiers)
             or len(set(tiers)) != len(tiers)
         ):
             raise AttachOptionsError(
-                f"tiers must be distinct names from {ATTACH_TIERS}, got {list(tiers)}"
+                f"tiers must be distinct names from {KNOWN_TIERS}, got {list(tiers)}"
             )
         object.__setattr__(self, "tiers", tiers)
         percent = self.lexical_percent
@@ -115,6 +160,13 @@ class AttachOptions:
             raise AttachOptionsError("lexical_min_tokens must be a positive integer")
         if not isinstance(self.standalone, bool):
             raise AttachOptionsError("standalone must be a boolean")
+        cap = self.max_per_unit
+        if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap < 1):
+            raise AttachOptionsError("max_per_unit must be a positive integer or unset")
+        if not isinstance(self.rename_guard, bool):
+            raise AttachOptionsError("rename_guard must be a boolean")
+        if self.rank not in RANKS:
+            raise AttachOptionsError(f"rank must be one of {RANKS}")
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> AttachOptions:
@@ -123,18 +175,32 @@ class AttachOptions:
 
     def to_json(self) -> dict[str, Any]:
         """The effective options as a JSON object (the collation's ``options.attach``)."""
-        return {
+        out: dict[str, Any] = {
             "tiers": list(self.tiers),
             "lexical_percent": self.lexical_percent,
             "lexical_min_tokens": self.lexical_min_tokens,
             "standalone": self.standalone,
         }
+        # The newer members are written only when set (D9): a run that sets none writes 0.37 bytes.
+        if self.max_per_unit is not None:
+            out["max_per_unit"] = self.max_per_unit
+        if self.rename_guard:
+            out["rename_guard"] = True
+        if self.rank != RANK_EVIDENCE:
+            out["rank"] = self.rank
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> AttachOptions:
-        """Parse :meth:`to_json` output; missing or unknown members are refused."""
-        if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_MEMBERS):
-            raise AttachOptionsError(f"attach options must have exactly {OPTION_MEMBERS}")
+        """Parse :meth:`to_json` output: the four base members plus any subset of the newer ones
+        (an absent one reads as 0.37 behaved); missing or unknown members are refused."""
+        if not isinstance(raw, dict) or not (
+            set(BASE_OPTION_MEMBERS) <= set(raw) <= set(OPTION_MEMBERS)
+        ):
+            raise AttachOptionsError(
+                f"attach options must have exactly {BASE_OPTION_MEMBERS} plus any of "
+                f"{NEW_OPTION_MEMBERS}"
+            )
         return cls(**raw)
 
 
@@ -149,6 +215,15 @@ def tokens(text: str) -> frozenset[str]:
 def _stem(path: str) -> str:
     name = path.rsplit("/", 1)[-1]
     return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def _seconds(stamp: str | None) -> int | None:
+    if not stamp:
+        return None
+    try:
+        return int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
 
 
 class _Attacher:
@@ -178,6 +253,8 @@ class _Attacher:
             for kid in kids:
                 self.merge_of[kid].add(merge)
         self.unit_tokens = {u.key: tokens(u.title) for u in collation.units if u.kind != EPIC}
+        self.runner_up: dict[str, dict[str, Any]] = {}  # doc -> its shared-path runner-up
+        self.lexical_score: dict[str, int] = {}  # doc -> the score of its lexical candidate
 
     # -- helpers ---------------------------------------------------------------------------
 
@@ -190,6 +267,47 @@ class _Attacher:
             return None
         unit = min(found, key=lambda u: (-len(found[u]), u))
         return unit, tuple(sorted(found[unit]))
+
+    def _renamed_by(self, doc: str, change: str | None) -> bool:
+        """Whether ``change`` moved ``doc`` (rename_guard; needs the reader's ``renamed`` attr)."""
+        if not self.options.rename_guard or change is None:
+            return False
+        art = self.ix.artifact(change)
+        return art is not None and doc[len(DOC_PREFIX) :] in art.attrs.get("renamed", ())
+
+    def _unit_seconds(self, unit: str) -> int | None:
+        for key in self.units[unit].artifacts:
+            art = self.ix.artifact(key)
+            if art is not None and _seconds(art.occurred_at) is not None:
+                return _seconds(art.occurred_at)
+        return None
+
+    def _unit_paths(self, unit: str) -> int:
+        total = 0
+        for key in self.units[unit].artifacts:
+            art = self.ix.artifact(key)
+            if art is not None and art.category is Category.CHANGE:
+                total += len(art.attrs["paths"])
+        return total
+
+    def _rank_key(self, doc: str, unit: str) -> tuple[tuple[int, int, int, str], dict[str, Any]]:
+        """Proximity rank of ``unit`` for ``doc``: time distance to the doc's add commit, then
+        subject overlap (more first), then paths touched (more first), then key."""
+        added = self.ix.artifact(self.ix.doc_add.get(doc, ""))
+        then, now = _seconds(added.occurred_at) if added else None, self._unit_seconds(unit)
+        distance = abs(then - now) if then is not None and now is not None else _FAR
+        art = self.ix.artifact(doc)
+        assert art is not None
+        words = tokens(art.title) | tokens(_stem(doc[len(DOC_PREFIX) :]))
+        overlap = len(words & tokens(self.units[unit].title))
+        paths = self._unit_paths(unit)
+        shown = {
+            "unit": unit,
+            "distance": None if distance == _FAR else distance,
+            "overlap": overlap,
+            "paths": paths,
+        }
+        return (distance, -overlap, -paths, unit), shown
 
     def _is_change(self, key: str) -> bool:
         art = self.ix.artifact(key)
@@ -215,7 +333,7 @@ class _Attacher:
 
     def same_change(self, doc: str) -> tuple[str, tuple[str, ...]] | None:
         added = self.ix.doc_add.get(doc)
-        if added is None:
+        if added is None or self._renamed_by(doc, added):
             return None
         vias = {added, *self.ix.pr_of_commit.get(added, ()), *self.merge_of.get(added, ())}
         found: dict[str, set[str]] = defaultdict(set)
@@ -237,7 +355,7 @@ class _Attacher:
                 del found[unit]
         return self._best(found)
 
-    def shared_path(self, doc: str) -> tuple[str, tuple[str, ...]] | None:
+    def _shared_candidates(self, doc: str) -> dict[str, set[str]]:
         changes: set[str] = set()
         for r in self.refs_of.get(doc, ()):
             if r.outcome == ARTIFACT and r.ref.kind == "path":
@@ -247,11 +365,36 @@ class _Attacher:
             c for c in self.ix.path_changes.get(doc[len(DOC_PREFIX) :], ()) if c != added
         )
         found: dict[str, set[str]] = defaultdict(set)
-        for change in changes:
+        for change in sorted(changes):
+            if self._renamed_by(doc, change):
+                continue
             unit = self.claimed.get(change)
             if unit is not None and self._usable(unit, REASON_SHARED_PATH):
                 found[unit].add(change)
-        return self._best(found)
+        return found
+
+    def shared_path(self, doc: str) -> tuple[str, tuple[str, ...]] | None:
+        found = self._shared_candidates(doc)
+        if self.options.rank != RANK_PROXIMITY or not found:
+            return self._best(found)
+        ranked = sorted(self._rank_key(doc, unit) for unit in found)
+        unit = ranked[0][0][3]
+        if len(ranked) > 1:
+            self.runner_up[doc] = ranked[1][1]
+        return unit, tuple(sorted(found[unit]))
+
+    def own_add(self, doc: str) -> tuple[str, tuple[str, ...]] | None:
+        added = self.ix.doc_add.get(doc)
+        if added is None or added in self.claimed or self._renamed_by(doc, added):
+            return None
+        evidence = [added]
+        found = self._shared_candidates(doc)
+        if found:  # name the implementing unit's anchor so a later bead can link to it
+            unit = self.units[self._best(found)[0]]  # type: ignore[index]
+            anchor = unit.artifacts[0] if unit.artifacts else unit.key
+            if anchor not in evidence:
+                evidence.append(anchor)
+        return doc, tuple(evidence)
 
     def lexical(self, doc: str) -> tuple[str, tuple[str, ...]] | None:
         art = self.ix.artifact(doc)
@@ -268,39 +411,76 @@ class _Attacher:
                 best = (score, key)
         if best is None:
             return None
+        self.lexical_score[doc] = best[0]
         unit = self.units[best[1]]
         return unit.key, (unit.artifacts[0] if unit.artifacts else unit.key,)
 
     # -- run -------------------------------------------------------------------------------
 
+    def _capped(
+        self, tier: str, hits: dict[str, tuple[str, tuple[str, ...]]], taken: dict[str, int]
+    ) -> dict[str, tuple[str, tuple[str, ...]]]:
+        """Keep, per unit, the strongest hits of a guessing tier that fit under ``max_per_unit``
+        (weakest evidence first to overflow, then the larger doc key); the rest fall through."""
+        cap = self.options.max_per_unit
+        if cap is None or tier not in CAPPED_TIERS:
+            return hits
+        by_unit: dict[str, list[str]] = defaultdict(list)
+        for doc, (unit, _) in hits.items():
+            by_unit[unit].append(doc)
+
+        def weight(doc: str) -> int:
+            return self.lexical_score[doc] if tier == REASON_LEXICAL else len(hits[doc][1])
+
+        kept: dict[str, tuple[str, tuple[str, ...]]] = {}
+        for unit, docs in by_unit.items():
+            room = max(cap - taken[unit], 0)
+            for doc in sorted(docs, key=lambda d: (-weight(d), d))[:room]:
+                kept[doc] = hits[doc]
+        return kept
+
     def run(self) -> tuple[tuple[Unit, ...], tuple[Attachment, ...]]:
         tiers = {
             REASON_EXPLICIT: self.explicit,
             REASON_SAME_CHANGE: self.same_change,
+            REASON_OWN_ADD: self.own_add,
             REASON_SHARED_PATH: self.shared_path,
             REASON_LEXICAL: self.lexical,
         }
-        attachments: list[Attachment] = []
+        attachments: dict[str, Attachment] = {}
         doc_units: list[Unit] = []
-        for doc in self.docs:
-            if doc in self.claimed:
-                continue
-            for tier in self.options.tiers:
+        taken: dict[str, int] = defaultdict(int)  # guessed attachments per unit
+        pending = [doc for doc in self.docs if doc not in self.claimed]
+        # Tier-major: each tier sees every doc the earlier tiers left (a doc's own outcome never
+        # depends on another's until a cap binds), so a cap can order a unit's candidates.
+        for tier in self.options.tiers:
+            hits = {}
+            for doc in pending:
                 hit = tiers[tier](doc)
                 if hit is not None:
-                    attachments.append(Attachment(doc, hit[0], tier, hit[1]))
-                    break
-            else:
-                if not self.options.standalone:
-                    continue
+                    hits[doc] = hit
+            for doc, (unit, evidence) in sorted(self._capped(tier, hits, taken).items()):
+                runner = self.runner_up.get(doc) if tier == REASON_SHARED_PATH else None
+                attachments[doc] = Attachment(doc, unit, tier, evidence, runner)
+                if tier in CAPPED_TIERS:
+                    taken[unit] += 1
+                if tier == REASON_OWN_ADD:
+                    art = self.ix.artifact(doc)
+                    assert art is not None
+                    doc_units.append(
+                        Unit(key=doc, kind=ISSUE, rule=RULE_DOC, title=art.title, artifacts=(doc,))
+                    )
+            pending = [doc for doc in pending if doc not in attachments]
+        if self.options.standalone:
+            for doc in pending:
                 art = self.ix.artifact(doc)
                 assert art is not None
                 doc_units.append(
                     Unit(key=doc, kind=ISSUE, rule=RULE_DOC, title=art.title, artifacts=(doc,))
                 )
-                attachments.append(Attachment(doc, doc, REASON_STANDALONE, ()))
+                attachments[doc] = Attachment(doc, doc, REASON_STANDALONE, ())
         units = sorted((*self.units.values(), *doc_units), key=lambda u: u.key)
-        return tuple(units), tuple(attachments)
+        return tuple(units), tuple(attachments[doc] for doc in sorted(attachments))
 
 
 def attach(collation: Collation, options: AttachOptions | None = None) -> Collation:
@@ -324,7 +504,11 @@ def attach(collation: Collation, options: AttachOptions | None = None) -> Collat
 
 __all__ = [
     "ATTACH_TIERS",
+    "BASE_OPTION_MEMBERS",
+    "KNOWN_TIERS",
+    "NEW_OPTION_MEMBERS",
     "OPTION_MEMBERS",
+    "RANKS",
     "AttachOptions",
     "AttachOptionsError",
     "attach",

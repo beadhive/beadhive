@@ -2315,9 +2315,11 @@ class BackfillSourcesConfig(_Section):
 class BackfillAttachConfig(_Section):
     """``backfill.collate.attach`` — B4, attaching docs to units."""
 
-    tiers: list[Literal["explicit", "same-change", "shared-path", "lexical"]] = Field(
+    tiers: list[Literal["explicit", "same-change", "own-add", "shared-path", "lexical"]] = Field(
         default_factory=lambda: ["explicit", "same-change", "shared-path", "lexical"],
-        description="Attach tiers run, in order; drop one to turn it off.",
+        description="Attach tiers run, in order; drop one to turn it off. own-add is opt-in "
+        "(not in the default list): a doc whose first-add commit no unit claimed becomes a "
+        "doc-unit of its own, evidenced by that commit; place it after same-change.",
     )
     lexical_percent: int = Field(
         60, ge=1, le=100, description="Minimum overlap percent of the lexical tier."
@@ -2326,6 +2328,25 @@ class BackfillAttachConfig(_Section):
         2, ge=1, description="Fewest shared tokens the lexical tier accepts."
     )
     standalone: bool = Field(True, description="Make a doc-unit of a doc no tier attached.")
+    max_per_unit: int | None = Field(
+        None,
+        ge=1,
+        description="Opt-in. Unset (default): no cap. The most docs a unit takes from the "
+        "guessing tiers (shared-path, lexical); explicit and same-change attachments are exempt. "
+        "A doc over the cap falls to the next tier, then stands alone.",
+    )
+    rename_guard: bool = Field(
+        False,
+        description="Opt-in. A doc moved by its first-add commit (a rename) is not attached "
+        "through that commit, so a reorganising merge does not collect the docs it moved. "
+        "Makes the git reader keep rename status.",
+    )
+    rank: Literal["evidence", "proximity"] = Field(
+        "evidence",
+        description="How shared-path picks among candidate units. evidence (default): most "
+        "evidence, then key. proximity: nearest in time to the doc's add commit, then subject "
+        "overlap, then edit size (paths touched), then key; the runner-up is recorded.",
+    )
 
 
 class BackfillIdentifyConfig(_Section):

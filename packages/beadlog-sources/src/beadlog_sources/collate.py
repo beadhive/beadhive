@@ -113,12 +113,14 @@ UNIT_RULES = (*CLAIM_RULES, RULE_AREA, RULE_DOC)
 # ``standalone`` for a doc that is a doc-unit of its own.
 REASON_EXPLICIT = "explicit"
 REASON_SAME_CHANGE = "same-change"
+REASON_OWN_ADD = "own-add"
 REASON_SHARED_PATH = "shared-path"
 REASON_LEXICAL = "lexical"
 REASON_STANDALONE = "standalone"
 ATTACH_REASONS = (
     REASON_EXPLICIT,
     REASON_SAME_CHANGE,
+    REASON_OWN_ADD,
     REASON_SHARED_PATH,
     REASON_LEXICAL,
     REASON_STANDALONE,
@@ -585,6 +587,9 @@ def claimed_artifacts(units: Iterable[Unit]) -> dict[str, str]:
 
 
 _ATTACHMENT_MEMBERS = ("doc", "unit", "reason", "evidence")
+# Written only when set (D9 of ``docs/design/backfill-merge-heavy-repos-adr.md``).
+_ATTACHMENT_OPTIONAL_MEMBERS = ("runner_up",)
+_RUNNER_UP_MEMBERS = ("unit", "distance", "overlap", "paths")
 
 
 @dataclass(frozen=True)
@@ -594,12 +599,18 @@ class Attachment:
     ``reason`` is one of :data:`ATTACH_REASONS`; ``evidence`` the artifact keys behind it (empty
     for ``standalone``, where ``unit`` is the doc's own doc-unit, i.e. ``unit == doc``). A doc has
     at most one attachment.
+
+    ``runner_up`` (only under ``attach.rank = proximity``, and only when a second candidate
+    existed): the candidate that ranked next, as ``unit``, ``distance`` (seconds from the doc's
+    add commit to the unit's anchor, ``null`` if unknown), ``overlap`` (shared subject tokens) and
+    ``paths`` (paths its changes touched). Written to JSON only when set.
     """
 
     doc: str
     unit: str
     reason: str
     evidence: tuple[str, ...] = ()
+    runner_up: dict[str, Any] | None = field(default=None, hash=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.doc, str) or not self.doc or not isinstance(self.unit, str):
@@ -610,23 +621,62 @@ class Attachment:
             raise CollationFormatError(
                 f"attachment {self.doc!r}: standalone exactly when the unit is the doc itself"
             )
+        run = self.runner_up
+        if run is not None:
+            distance = run.get("distance") if isinstance(run, dict) else None
+            if (
+                not isinstance(run, dict)
+                or sorted(run) != sorted(_RUNNER_UP_MEMBERS)
+                or not isinstance(run["unit"], str)
+                or not run["unit"]
+                or not all(
+                    isinstance(run[k], int) and not isinstance(run[k], bool) and run[k] >= 0
+                    for k in ("overlap", "paths")
+                )
+                or not (
+                    distance is None
+                    or (
+                        isinstance(distance, int)
+                        and not isinstance(distance, bool)
+                        and distance >= 0
+                    )
+                )
+            ):
+                raise CollationFormatError(
+                    f"attachment {self.doc!r}: runner_up must have exactly {_RUNNER_UP_MEMBERS}"
+                )
 
     def to_json(self) -> dict[str, Any]:
-        """The record as a JSON object."""
-        return {
+        """The record as a JSON object (``runner_up`` only when set)."""
+        out: dict[str, Any] = {
             "doc": self.doc,
             "unit": self.unit,
             "reason": self.reason,
             "evidence": list(self.evidence),
         }
+        if self.runner_up is not None:
+            out["runner_up"] = dict(self.runner_up)
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> Attachment:
-        """Parse a record object; unknown or missing members are refused."""
-        if not isinstance(raw, dict) or sorted(raw) != sorted(_ATTACHMENT_MEMBERS):
-            raise CollationFormatError(f"attachment must have exactly {_ATTACHMENT_MEMBERS}")
+        """Parse a record object: the base members plus an optional ``runner_up``; unknown or
+        missing members are refused."""
+        if not isinstance(raw, dict) or not (
+            set(_ATTACHMENT_MEMBERS)
+            <= set(raw)
+            <= {*_ATTACHMENT_MEMBERS, *_ATTACHMENT_OPTIONAL_MEMBERS}
+        ):
+            raise CollationFormatError(
+                f"attachment must have exactly {_ATTACHMENT_MEMBERS} plus any of "
+                f"{_ATTACHMENT_OPTIONAL_MEMBERS}"
+            )
         return cls(
-            doc=raw["doc"], unit=raw["unit"], reason=raw["reason"], evidence=tuple(raw["evidence"])
+            doc=raw["doc"],
+            unit=raw["unit"],
+            reason=raw["reason"],
+            evidence=tuple(raw["evidence"]),
+            runner_up=raw.get("runner_up"),
         )
 
 
@@ -851,6 +901,7 @@ __all__ = [
     "REASON_EXPLICIT",
     "REASON_LEXICAL",
     "REASON_SAME_CHANGE",
+    "REASON_OWN_ADD",
     "REASON_SHARED_PATH",
     "REASON_STANDALONE",
     "RULE_COMMIT",

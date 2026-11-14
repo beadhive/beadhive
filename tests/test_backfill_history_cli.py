@@ -646,3 +646,89 @@ def test_a_failed_create_apply_exits_nonzero_retires_what_it_created_and_a_rerun
         BdStoreLoader(store, group=backfill_cli.hive_group(ENTRY, repo).id).export()
     )
     assert {s.phase for r, s in folded.items() if r.id in created} == {"closed"}  # not retired
+
+
+def test_rename_guard_asks_the_reader_for_renames_and_the_attach_options_follow() -> None:
+    from beadhive.modules.config.contracts import BackfillConfig
+
+    default = BackfillConfig()
+    assert "keep_renames" not in backfill_history.source_options("git", default, [])
+    assert backfill_history.CollateOptions.from_config(default).attach.to_json().keys() == {
+        "tiers",
+        "lexical_percent",
+        "lexical_min_tokens",
+        "standalone",
+    }
+    chosen = BackfillConfig.model_validate(
+        {
+            "collate": {
+                "attach": {
+                    "tiers": ["explicit", "same-change", "own-add", "shared-path", "lexical"],
+                    "max_per_unit": 3,
+                    "rename_guard": True,
+                    "rank": "proximity",
+                }
+            }
+        }
+    )
+    assert backfill_history.source_options("git", chosen, [])["keep_renames"] == "true"
+    assert "keep_renames" not in backfill_history.source_options("docs", chosen, [])
+    attach = backfill_history.CollateOptions.from_config(chosen).attach
+    assert (attach.max_per_unit, attach.rename_guard, attach.rank) == (3, True, "proximity")
+    assert "own-add" in attach.tiers
+
+
+def test_unit_view_shows_the_attach_runner_up(tmp_path) -> None:
+    """D8: under attach.rank = proximity the runner-up is visible in `view unit`; default runs
+    add no member to a row."""
+    from beadhive import backfill_views
+    from beadlog_sources import (
+        AttachOptions,
+        ClusterOptions,
+        collate,
+        dumps_collation,
+    )
+    from beadlog_sources.testing import evidence as ev
+
+    def at(n: int) -> str:
+        return f"2026-01-01T{n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d}Z"
+
+    def change(n: int, parents=(), **kw):
+        return ev.change(
+            f"{n:040x}", occurred_at=at(n), parents=[f"{p:040x}" for p in parents], **kw
+        )
+
+    arts = [
+        change(10, cc_type="docs", paths=["docs/d.md"]),
+        change(20, [10], paths=["src/a.py", "docs/d.md"], title="feat: alpha"),
+        change(900, [20], paths=["src/b.py", "docs/d.md"], title="feat: beta"),
+        ev.design_record("docs/d.md"),
+    ]
+
+    def view(rank: str) -> dict[str, Any]:
+        collation = collate(
+            ev.corpus(*arts),
+            [],
+            InMemoryLedgerDirectory({"hq": ["hq-9"]}),
+            local="bh",
+            options=ClusterOptions(include_types=["feat"]),
+            attach_options=AttachOptions(rank=rank),
+        )
+        target = tmp_path / f"{rank}.json"
+        target.write_bytes(dumps_collation(collation))
+        return backfill_views.unit_view(target)
+
+    shown = {u["key"]: u for u in view("proximity")["units"]}
+    mine = shown[f"git:commit/{20:040x}"]
+    assert mine["runner_ups"] == [
+        {
+            "doc": "doc:docs/d.md",
+            "unit": f"git:commit/{900:040x}",
+            "distance": 890,
+            "overlap": 0,
+            "paths": 2,
+        }
+    ]
+    assert all("runner_ups" not in u for u in view("evidence")["units"])
+    text = "\n".join(backfill_views.render_text({**view("proximity"), "view": "unit"}))
+    assert "runner-up for doc:docs/d.md" in text
