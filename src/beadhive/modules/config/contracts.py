@@ -1747,6 +1747,47 @@ class HqReleaseCatalogConfig(_Section):
         return self
 
 
+class HqApiConfig(_Section):
+    """Where this host reaches the HQ service (``hq.api``, bh-g76hp). Used only when
+    ``hq.route`` is ``api``. HOST-local. The caller's identity is the credential the Gateway
+    ``hq`` plane authenticates (a client certificate on its TLS listener, or the auth proxy
+    in front of its socket), never a value carried in a request."""
+
+    url: str = Field(
+        "",
+        description=(
+            "Base URL of the Gateway hq plane, for example `https://hq.example.org:8443`. "
+            "Over `unix_socket` it is only the request authority (default `http://hq`)."
+        ),
+    )
+    unix_socket: str = Field(
+        "",
+        description=(
+            "Absolute path of the Gateway hq plane's proxy socket. When set, requests go over "
+            "it instead of the network."
+        ),
+    )
+    client_cert: str = Field(
+        "", description="Absolute path of this frame's mTLS client certificate (PEM)."
+    )
+    client_key: str = Field(
+        "", description="Absolute path of the private key for `client_cert` (PEM)."
+    )
+    ca_cert: str = Field(
+        "", description="Absolute path of the CA bundle that verifies the Gateway (PEM)."
+    )
+
+    @model_validator(mode="after")
+    def _absolute_paths(self):
+        for name in ("unix_socket", "client_cert", "client_key", "ca_cert"):
+            value = getattr(self, name)
+            if value and not Path(value).is_absolute():
+                raise ValueError(f"hq.api {name} must be an absolute path")
+        if bool(self.client_cert) != bool(self.client_key):
+            raise ValueError("hq.api client_cert and client_key are set together")
+        return self
+
+
 class HqConfig(_Section):
     """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
 
@@ -1802,6 +1843,16 @@ class HqConfig(_Section):
             "key."
         ),
     )
+    route: Literal["sql", "api"] = Field(
+        "sql",
+        description=(
+            "HOST-only. Which adapter this host's HQ calls use: `sql` (default; this host "
+            "opens the HQ SQL server itself) or `api` (the hq-service, through the Gateway hq "
+            "plane named by `hq.api`). There is no fallback between them: an `api` host whose "
+            "service is down fails, and switching back is this one setting."
+        ),
+    )
+    api: HqApiConfig = Field(default_factory=HqApiConfig)
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
     release_catalog: HqReleaseCatalogConfig = Field(default_factory=HqReleaseCatalogConfig)
 
