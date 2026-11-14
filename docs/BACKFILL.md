@@ -441,6 +441,8 @@ for example `backfill.hives.<prefix>.sources.git.options = { exclude_revs = "ups
   `commits` strategy now routes any non-commit `since` through `since_date`, replacing the old
   leading-space workaround, so existing `since=20260901` configs keep working. Note that `git`
   itself does not read a bare `YYYYMMDD` as a date; write `2026-09-01`.
+  A date-only value (`2026-09-01`) is taken by git at the *current time of day*, so the boundary
+  moves with when you run; use a full timestamp (`2026-09-01T00:00:00Z`) for a precise boundary.
 
 Risk: a fork that rebases onto (or force-updates against) upstream changes its commit shas, and
 with them the unit keys, the parse key and any cursor; beads matched or created from the old
