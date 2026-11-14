@@ -5,6 +5,85 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.37.1 → 0.38.0 — backfill for merge-heavy and forked repositories
+
+- **New, opt-in: the git reader's fork boundary and tag filters (bh-19q4u, #159).** The `git`
+  reader options `exclude_revs` (refs resolved on every run and excluded, so a fork reads only its
+  own commits and follows upstream with no config edit), `tag_scope = range`, `tag_include` /
+  `tag_exclude` (globs, exclude wins) and `since_date` (an explicit date; `since` is unchanged)
+  are set under `backfill.sources.git.options` or per hive in
+  `backfill.hives.<prefix>.sources.git.options`. Nothing changes unless you set them. A fork that
+  rebases onto upstream changes its shas and so its unit keys. See
+  [BACKFILL.md](BACKFILL.md).
+- **Behaviour change: a branch-sync merge no longer makes a bead (#154, bh-8h2k8).** A merge whose
+  subject is `Merge branch '<x>'` (optionally `into <y>`) or `Merge remote-tracking branch '<x>'`,
+  and that names no pull request, used to become a unit like any merge; in one real repository 127
+  of 169 merge units were such syncs, each proposed as a bead. Such a merge is now flagged
+  `noise: branch-sync` and identify gives it a derived `SKIP` verdict, so a default run projects
+  nothing for it. The unit stays listed by `bh backfill view unit`; the commits it brings in are
+  released to the `commit` rule (so a `feat` commit becomes a commit unit as it would on a plain
+  history); an operator `decide` and an existing `external_ref` still win; a pull request merge is
+  never flagged. Beads an earlier run already made for a sync merge stay linked and are not
+  removed. Opt out with `backfill.collate.noise = []`.
+- **Behaviour change: merge units are titled from the pull request, not the merge subject (#154,
+  bh-8h2k8).** Most merge subjects read `Merge pull request #N from org/branch`, which says
+  nothing about the work. A merge unit is now titled by the first of: the merge body's first line,
+  the subject of the oldest commit it brings in, a readable branch name, else the merge subject.
+  Titles feed identify's lexical step, so verdicts of merge units can shift, and the git reader
+  now records `body_head` on merge artifacts, so the first run re-reads the evidence once. Unit
+  keys (the merge sha) do not change: a bead created earlier stays PRESENT through its
+  `external_ref` and is never retitled. Opt out with `backfill.collate.merge_titles = subject`.
+- **To get the 0.37.1 output back**, set both in the host config (or per hive under
+  `backfill.hives.<prefix>.collate`): `noise = []` and `merge_titles = subject`.
+- **New, opt-in: `backfill.collate.merge_types`.** Unset (the default) changes nothing. A list of
+  merge types (conventional types, `untyped`, or `*`) limits the `merge` rule to merges of those
+  types, derived from the branch prefix, then the merge's commits, and records each unit's `type`
+  (see [BACKFILL.md](BACKFILL.md)).
+- **New, opt-in: doc attachment for merge-heavy repositories (#157, bh-dviao).** Nothing changes
+  unless you set them; each is also per hive under `backfill.hives.<prefix>.collate.attach`.
+  `max_per_unit` caps what one unit takes from the `shared-path` and `lexical` tiers (`explicit`
+  and `same-change` are exempt; the overflow goes to the next tier, then stands alone).
+  `rename_guard` keeps a reorganising merge from collecting the docs it moved (the git reader then
+  records a `renamed` attr, so the first run after turning it on re-reads the evidence). `own-add`,
+  added to `tiers` after `same-change`, makes a unit of a doc a `docs:` commit added when no unit
+  claimed that commit. `rank = proximity` picks the `shared-path` unit nearest in time to the doc's
+  add commit and records the runner-up, shown by `bh backfill view unit`. `related` links are not
+  part of 0.38.0. See [BACKFILL.md](BACKFILL.md).
+- **New in reports: hidden commits (#154, bh-yg3ae).** A merge unit that ended residual (or NOISE,
+  or an operator SKIP) used to swallow the commits it brought in: they were in no unit, child or
+  link, so the plan silently lacked that work. The plan summary of `bh backfill history` now
+  carries `hidden_commits` (`count`, `units`), `bh backfill view unit --json` a top-level
+  `hidden_commits` with each unit's commit shas and a `hidden_commits` list on each affected unit
+  row, and the text view prints them. The keys appear only when something is hidden; a run that
+  hid nothing is byte-identical, and created beads do not change. Nothing to opt out of.
+- **New, opt-in: `backfill.collate.identify.merge_fallback = commits` (#154, bh-yg3ae).** Replaces a
+  merge unit that ends residual, NOISE or SKIP by the `commit`-rule units of its commits, in the
+  same run. Default `none`. It gives up the one-bead-per-PR grouping for those merges, and never
+  releases a merge an operator decided (`skip` or `noise`). To keep the old behaviour leave it
+  unset.
+- **New, opt-in: `backfill.collate.identify.merge_identity = commits` (#154, bh-yg3ae).** A merge
+  none of whose commits has a baseline candidate is NEW instead of residual on a weak candidate its
+  title matched; a merge whose commits partly match keeps the existing flow and the collation
+  records which commits matched (`commit_candidates`). Default `unit`. Both options can be set per
+  hive under `backfill.hives.<prefix>.collate.identify`.
+- **New: `bh backfill decide --select` decides many units at once (bh-espkv, #162).** Repeat
+  `--select <field><op><value>` (`=` or `~` regex, ANDed; fields `rule`, `kind`, `area`, `title`,
+  `key`, `decision`, `status`, `type`, `noise`) instead of a unit key, for example
+  `bh backfill decide --select noise=branch-sync skip`. It reads the run's `collation.json`
+  (`--run-dir`), skips attach units and units that already have a live bead, supports
+  `--dry-run`, and refuses more than `--max` matches (new `backfill.decisions.select_max`,
+  default `200`, per hive under `backfill.hives.<prefix>.decisions`) without `--yes`. All
+  decisions are written in one batch, each its own decision bead with the selector as its reason.
+  The single-unit form is unchanged and nothing changes unless you pass `--select`. See
+  [BACKFILL.md](BACKFILL.md#operator-decisions).
+- **Collation files.** `bdlg.collation/1` gained members, written only when used (no version
+  bump); a 0.37 collation still reads. A default 0.38 run over a repository with branch-sync
+  merges writes the new vocabulary, which a `bh` older than 0.38.0 refuses, so do not read a 0.38
+  run directory with an older `bh`. With both opt-outs above and no other new option the run
+  writes the 0.37.1 collation byte for byte (as long as the attach options above stay unset). The
+  identify options `merge_fallback` and `merge_identity` and the record member `commit_candidates`
+  are written only when the opt-ins are on.
+
 ## 0.37.0 → 0.37.1 — backfill apply fixes
 
 - **Fix: a create-mode `bh backfill history --until apply` no longer drops epic edges (bh-dvb8s,

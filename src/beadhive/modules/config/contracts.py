@@ -2315,9 +2315,11 @@ class BackfillSourcesConfig(_Section):
 class BackfillAttachConfig(_Section):
     """``backfill.collate.attach`` — B4, attaching docs to units."""
 
-    tiers: list[Literal["explicit", "same-change", "shared-path", "lexical"]] = Field(
+    tiers: list[Literal["explicit", "same-change", "own-add", "shared-path", "lexical"]] = Field(
         default_factory=lambda: ["explicit", "same-change", "shared-path", "lexical"],
-        description="Attach tiers run, in order; drop one to turn it off.",
+        description="Attach tiers run, in order; drop one to turn it off. own-add is opt-in "
+        "(not in the default list): a doc whose first-add commit no unit claimed becomes a "
+        "doc-unit of its own, evidenced by that commit; place it after same-change.",
     )
     lexical_percent: int = Field(
         60, ge=1, le=100, description="Minimum overlap percent of the lexical tier."
@@ -2326,6 +2328,25 @@ class BackfillAttachConfig(_Section):
         2, ge=1, description="Fewest shared tokens the lexical tier accepts."
     )
     standalone: bool = Field(True, description="Make a doc-unit of a doc no tier attached.")
+    max_per_unit: int | None = Field(
+        None,
+        ge=1,
+        description="Opt-in. Unset (default): no cap. The most docs a unit takes from the "
+        "guessing tiers (shared-path, lexical); explicit and same-change attachments are exempt. "
+        "A doc over the cap falls to the next tier, then stands alone.",
+    )
+    rename_guard: bool = Field(
+        False,
+        description="Opt-in. A doc moved by its first-add commit (a rename) is not attached "
+        "through that commit, so a reorganising merge does not collect the docs it moved. "
+        "Makes the git reader keep rename status.",
+    )
+    rank: Literal["evidence", "proximity"] = Field(
+        "evidence",
+        description="How shared-path picks among candidate units. evidence (default): most "
+        "evidence, then key. proximity: nearest in time to the doc's add commit, then subject "
+        "overlap, then edit size (paths touched), then key; the runner-up is recorded.",
+    )
 
 
 class BackfillIdentifyConfig(_Section):
@@ -2340,6 +2361,20 @@ class BackfillIdentifyConfig(_Section):
     )
     max_candidates: int = Field(
         5, ge=1, description="Baseline beads (and epics) offered to the match query."
+    )
+    merge_fallback: Literal["none", "commits"] = Field(
+        "none",
+        description="Opt-in. none (default): a merge unit that ends residual, NOISE or SKIP "
+        "projects nothing (its commits are reported as hidden_commits). commits: such a merge is "
+        "replaced by the commit-rule units of its commits (those include_types admits), which "
+        "are identified in the same run.",
+    )
+    merge_identity: Literal["unit", "commits"] = Field(
+        "unit",
+        description="Opt-in. unit (default): a merge unit is identified by its own title. "
+        "commits: a merge none of whose commits has a baseline candidate is NEW, whatever its "
+        "own title matched; a merge whose commits partly match keeps the usual flow and the "
+        "run records which commits matched.",
     )
 
 
@@ -2441,6 +2476,27 @@ class BackfillCollateConfig(_Section):
     )
     path_depth: int = Field(1, ge=1, description="Directory segments of a path-derived area.")
     min_epic_units: int = Field(2, ge=1, description="Fewest units an area needs for an epic.")
+    merge_types: list[str] | None = Field(
+        None,
+        description="Opt-in. Unset (default): the merge rule makes a unit of every merge and "
+        "derives no type. A list of merge types (conventional types, untyped, or * for any) "
+        "limits the merge rule to those merges and records each unit's type; a merge left out "
+        "releases its commits to the commit rule. * records the type without filtering. "
+        "include_types stays commit-only.",
+    )
+    merge_titles: Literal["derived", "subject"] = Field(
+        "derived",
+        description="derived (default since 0.38): a merge unit is titled from the merge body's "
+        "first line, else its first commit's subject, else a readable branch name. subject: "
+        "the merge subject (0.37 titles).",
+    )
+    noise: list[Literal["branch-sync"]] = Field(
+        default_factory=lambda: ["branch-sync"],
+        description="Merge subject shapes flagged as noise (default since 0.38: branch-sync, "
+        "Merge branch 'x' [into y] and Merge remote-tracking branch 'x', never a pull request "
+        "merge). A flagged merge stays visible in view unit, is skipped by identify and "
+        "releases its commits to the commit rule. [] flags none (0.37).",
+    )
     attach: BackfillAttachConfig = Field(default_factory=BackfillAttachConfig)
     identify: BackfillIdentifyConfig = Field(default_factory=BackfillIdentifyConfig)
     status: BackfillStatusConfig = Field(default_factory=BackfillStatusConfig)
@@ -2455,6 +2511,12 @@ class BackfillDecisionsConfig(_Section):
         "report: a re-run lists the beads the last apply created that are gone now. skip: also "
         "records a skip decision for each (`bh backfill decide --deleted <bead> skip` does the "
         "same one bead at a time, whatever this says).",
+    )
+    select_max: int = Field(
+        200,
+        ge=1,
+        description="`bh backfill decide --select` refuses to decide more units than this in one "
+        "run unless `--max` raises it or `--yes` is given.",
     )
 
 

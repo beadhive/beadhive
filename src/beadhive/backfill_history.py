@@ -69,6 +69,8 @@ from beadlog_sources import (
     write_evidence,
 )
 from beadlog_sources.collate import dumps_collation
+from beadlog_sources.git_dates import GitReadError
+from beadlog_sources.git_reader import resolve_exclude_revs
 from beadlog_sources.identify import prior_verdicts
 
 # ``Backfill`` is the validated ``backfill`` config section (``BackfillConfig``); the root CLI owns
@@ -162,6 +164,10 @@ def source_options(name: str, backfill: Backfill, namespaces: Sequence[str]) -> 
             options["layouts"] = _csv(backfill.sources.docs.layouts)
     elif name == "github":
         options["snapshot"] = backfill.sources.github.snapshot
+    if name == "git" and backfill.collate.merge_titles == "derived":
+        options["merge_body"] = "true"  # the merge body's first line titles a merge unit
+    if name == "git" and backfill.collate.attach.rename_guard:
+        options["keep_renames"] = "true"  # attach.rename_guard needs each commit's renames
     options.update(getattr(section, "options", {}) or {})
     if namespaces and "namespaces" not in options:
         options["namespaces"] = _csv(namespaces)
@@ -178,16 +184,31 @@ def _git_text(cwd: Path, *args: str) -> str:
     return done.stdout if done.returncode == 0 else ""
 
 
+def exclude_boundary(cwd: Path, plan: Sequence[tuple[str, Mapping[str, str]]]) -> dict[str, str]:
+    """The git reader's ``exclude_revs`` resolved now (ref -> commit sha; empty when unset). An
+    upstream that moves while ``HEAD`` does not changes this, so it belongs in the parse key. An
+    unresolvable ref is a :class:`BackfillError` naming it."""
+    for name, options in plan:
+        if name == "git" and options.get("exclude_revs"):
+            try:
+                return resolve_exclude_revs(cwd, options)
+            except GitReadError as exc:
+                raise BackfillError(str(exc)) from exc
+    return {}
+
+
 def parse_key(cwd: Path, plan: Sequence[tuple[str, Mapping[str, str]]]) -> str:
     """What the evidence depends on: the readers, their options, the checkout's ``HEAD`` and its
-    uncommitted changes (docs are read from the working tree)."""
-    text = canonical_json(
-        {
-            "head": _git_text(cwd, "rev-parse", "HEAD").strip(),
-            "dirty": hashlib.sha256(_git_text(cwd, "status", "--porcelain").encode()).hexdigest(),
-            "sources": [[name, dict(options)] for name, options in plan],
-        }
-    )
+    uncommitted changes (docs are read from the working tree), and the shas the git reader's
+    ``exclude_revs`` resolve to (only when set, so a key without it is unchanged)."""
+    key: dict[str, Any] = {
+        "head": _git_text(cwd, "rev-parse", "HEAD").strip(),
+        "dirty": hashlib.sha256(_git_text(cwd, "status", "--porcelain").encode()).hexdigest(),
+        "sources": [[name, dict(options)] for name, options in plan],
+    }
+    if boundary := exclude_boundary(cwd, plan):
+        key["exclude_revs"] = boundary
+    text = canonical_json(key)
     return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
 
 
@@ -228,7 +249,17 @@ class CollateOptions:
     def from_config(cls, backfill: Backfill) -> CollateOptions:
         section = backfill.collate
         cluster = section.model_dump(
-            include={"rules", "include_types", "epics", "areas", "path_depth", "min_epic_units"}
+            include={
+                "rules",
+                "include_types",
+                "epics",
+                "areas",
+                "path_depth",
+                "min_epic_units",
+                "merge_types",
+                "merge_titles",
+                "noise",
+            }
         )
         return cls(
             ClusterOptions.from_mapping(cluster),

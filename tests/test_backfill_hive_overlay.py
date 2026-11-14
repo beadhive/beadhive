@@ -104,6 +104,44 @@ def test_overlay_wins_key_by_key_and_hides_the_hives_map():
     assert BackfillConfig.model_validate(eff).collate.areas["ui"] == "frontend"
 
 
+def test_merge_options_overlay_per_hive_and_opt_outs_replace_the_defaults():
+    cfg = _cfg(
+        {
+            "hives": {
+                "wd": {
+                    "collate": {
+                        "merge_types": ["fix", "untyped"],
+                        "merge_titles": "subject",
+                        "noise": [],
+                    }
+                }
+            }
+        }
+    )
+    wd = BackfillConfig.model_validate(effective_backfill(cfg, "wd")).collate
+    assert (wd.merge_types, wd.merge_titles, wd.noise) == (["fix", "untyped"], "subject", [])
+    gd = BackfillConfig.model_validate(effective_backfill(cfg, "gd")).collate
+    assert (gd.merge_types, gd.merge_titles, gd.noise) == (None, "derived", ["branch-sync"])
+
+
+def test_merge_identify_options_overlay_per_hive_and_default_off():
+    cfg = _cfg(
+        {
+            "hives": {
+                "wd": {
+                    "collate": {
+                        "identify": {"merge_fallback": "commits", "merge_identity": "commits"}
+                    }
+                }
+            }
+        }
+    )
+    wd = BackfillConfig.model_validate(effective_backfill(cfg, "wd")).collate.identify
+    assert (wd.merge_fallback, wd.merge_identity) == ("commits", "commits")
+    gd = BackfillConfig.model_validate(effective_backfill(cfg, "gd")).collate.identify
+    assert (gd.merge_fallback, gd.merge_identity) == ("none", "unit")
+
+
 def test_overlay_by_entry_and_by_cwd_hive(monkeypatch):
     cfg = _cfg({"hives": {"wd": {"collate": {"epics": False}}}})
     assert effective_backfill(cfg, WIDGETS)["collate"]["epics"] is False
@@ -286,3 +324,22 @@ def test_a_hive_overlay_turns_close_on_evidence_off_for_that_hive_only():
     assert status(WIDGETS).close_on_evidence is False
     assert status(GADGETS).close_on_evidence is True  # another hive keeps the host default
     assert status(WIDGETS).in_progress_on_evidence is True  # only the overlaid key moved
+
+
+def test_attach_options_overlay_per_hive():
+    cfg = _cfg(
+        {
+            "hives": {
+                "wd": {
+                    "collate": {
+                        "attach": {"max_per_unit": 4, "rename_guard": True, "rank": "proximity"}
+                    }
+                }
+            }
+        }
+    )
+    wd = BackfillConfig.model_validate(effective_backfill(cfg, "wd")).collate.attach
+    assert (wd.max_per_unit, wd.rename_guard, wd.rank) == (4, True, "proximity")
+    gd = BackfillConfig.model_validate(effective_backfill(cfg, "gd")).collate.attach
+    assert (gd.max_per_unit, gd.rename_guard, gd.rank) == (None, False, "evidence")
+    assert "own-add" not in gd.tiers

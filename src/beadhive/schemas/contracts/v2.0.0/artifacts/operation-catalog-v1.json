@@ -1111,7 +1111,9 @@
       "constraints": {
         "hq_write": false,
         "interactive": false,
-        "override_parameters": [],
+        "override_parameters": [
+          "yes"
+        ],
         "secret_material": false
       },
       "kind": "action",
@@ -1180,6 +1182,39 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "select",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "items": {},
+            "type": "array"
+          }
+        },
+        {
+          "name": "run_dir",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "max_units",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "integer"
+          }
+        },
+        {
+          "name": "yes",
+          "privilege": "privileged-override",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -1209,7 +1244,11 @@
             "reason",
             "hive",
             "dry_run",
-            "as_json"
+            "as_json",
+            "select",
+            "run_dir",
+            "max_units",
+            "yes"
           ],
           "path": "backfill decide",
           "progress": {

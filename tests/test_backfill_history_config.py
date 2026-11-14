@@ -132,3 +132,60 @@ def test_timeline_settings_default_on_and_reach_the_status_options() -> None:
     assert not status.close_on_evidence and not status.in_progress_on_evidence
     with pytest.raises(ValidationError):
         BackfillConfig.model_validate({"collate": {"status": {"close_on_evidence": "sometimes"}}})
+
+
+# -- the git boundary in the parse key (bh-19q4u) ------------------------------------------------
+
+
+def _git_fixture(root, *args):
+    import subprocess
+
+    env = {
+        "GIT_AUTHOR_NAME": "a",
+        "GIT_AUTHOR_EMAIL": "a@example.invalid",
+        "GIT_COMMITTER_NAME": "a",
+        "GIT_COMMITTER_EMAIL": "a@example.invalid",
+        "GIT_AUTHOR_DATE": "2026-03-01T10:00:00+00:00",
+        "GIT_COMMITTER_DATE": "2026-03-01T10:00:00+00:00",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "PATH": __import__("os").environ["PATH"],
+    }
+    return subprocess.run(
+        ["git", "-C", str(root), *args], check=True, capture_output=True, text=True, env=env
+    ).stdout.strip()
+
+
+def test_parse_key_follows_exclude_revs_and_reuses_when_unchanged(tmp_path) -> None:
+    root = tmp_path / "r"
+    root.mkdir()
+    _git_fixture(root, "init", "-q", "-b", "main")
+    (root / "f").write_text("1")
+    _git_fixture(root, "add", "-A")
+    _git_fixture(root, "commit", "-q", "-m", "chore: one")
+    _git_fixture(root, "branch", "upstream")
+    plan = [("git", {"exclude_revs": "upstream"})]
+    plain = [("git", {})]
+    key = backfill_history.parse_key(root, plan)
+    assert backfill_history.parse_key(root, plan) == key  # unchanged upstream: evidence reused
+    assert backfill_history.exclude_boundary(root, plan) == {
+        "upstream": _git_fixture(root, "rev-parse", "upstream")
+    }
+    # an upstream-only change (the branch moves, HEAD does not) changes the key
+    (root / "f").write_text("2")
+    _git_fixture(root, "add", "-A")
+    _git_fixture(root, "commit", "-q", "-m", "chore: two")
+    _git_fixture(root, "branch", "-f", "upstream", "HEAD")
+    head_only = backfill_history.parse_key(root, plain)
+    assert backfill_history.parse_key(root, plan) != key
+    # no exclude_revs: no boundary, and the key is the one a build without the option made
+    assert backfill_history.exclude_boundary(root, plain) == {}
+    assert backfill_history.parse_key(root, plain) == head_only
+
+
+def test_parse_key_unresolvable_exclude_ref_is_a_backfill_error_naming_it(tmp_path) -> None:
+    root = tmp_path / "r"
+    root.mkdir()
+    _git_fixture(root, "init", "-q", "-b", "main")
+    with pytest.raises(backfill_history.BackfillError, match="no-such-ref"):
+        backfill_history.parse_key(root, [("git", {"exclude_revs": "no-such-ref"})])

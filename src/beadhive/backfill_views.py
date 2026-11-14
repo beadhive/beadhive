@@ -16,7 +16,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from beadlog_sources import Collation, Lifecycle, conflicts_of, has_no_moment, read_collation
+from beadlog_sources import (
+    Collation,
+    Lifecycle,
+    conflicts_of,
+    has_no_moment,
+    hidden_commits,
+    hidden_summary,
+    read_collation,
+)
 
 from . import backfill_verdicts
 
@@ -70,6 +78,8 @@ def unit_view(path: Path, *, decision: Sequence[str] = ()) -> dict[str, Any]:
     decided = decisions(collation)
     life = {record["unit"]: record for record in collation.lifecycle}
     wanted = {d.upper() if d.lower() != RESIDUAL else RESIDUAL for d in decision}
+    hidden = {h["unit"]: h for h in hidden_commits(collation.units, collation.verdicts)}
+    candidates = _commit_candidates(collation)
     units = []
     for unit in collation.units:
         record = decided.get(unit.key)
@@ -78,34 +88,60 @@ def unit_view(path: Path, *, decision: Sequence[str] = ()) -> dict[str, Any]:
             continue
         status = life.get(unit.key) or {}
         no_moment = cls == "NEW" and bool(status) and has_no_moment(Lifecycle.from_json(status))
-        units.append(
-            {
-                "key": unit.key,
-                "kind": unit.kind,
-                "rule": unit.rule,
-                "title": unit.title,
-                "decision": cls,
-                "bead": (record or {}).get("bead") or unit.bead,
-                "step": (record or {}).get("step"),
-                "review": (record or {}).get("review"),
-                "parent": unit.parent,
-                "artifacts": len(unit.artifacts),
-                "docs": len(collation.docs_of(unit.key)),
-                "status": status.get("status"),
-                "closed": (status.get("closed") or {}).get("at"),
-                "skipped": "no evidence moment" if no_moment else None,
-            }
-        )
+        row: dict[str, Any] = {
+            "key": unit.key,
+            "kind": unit.kind,
+            "rule": unit.rule,
+            "title": unit.title,
+            "decision": cls,
+            "bead": (record or {}).get("bead") or unit.bead,
+            "step": (record or {}).get("step"),
+            "review": (record or {}).get("review"),
+            "parent": unit.parent,
+            "artifacts": len(unit.artifacts),
+            "docs": len(collation.docs_of(unit.key)),
+            "status": status.get("status"),
+            "closed": (status.get("closed") or {}).get("at"),
+            "skipped": "no evidence moment" if no_moment else None,
+        }
+        for name in ("type", "noise"):  # written only when set (byte-identical else)
+            if getattr(unit, name) is not None:
+                row[name] = getattr(unit, name)
+        runners = [  # attach.rank = proximity: who else a doc might have gone to
+            {"doc": a.doc, **a.runner_up}
+            for a in collation.docs_of(unit.key)
+            if a.runner_up is not None
+        ]
+        if runners:
+            row["runner_ups"] = runners
+        if unit.key in hidden:  # D5: only a unit that hides commits
+            row["hidden_commits"] = hidden[unit.key]["commits"]
+        if unit.key in candidates:  # merge_identity = commits: which commits had a candidate
+            row["commit_candidates"] = candidates[unit.key]
+        units.append(row)
     counts = Counter(u["decision"] for u in units)
     shown = {name: counts.get(name, 0) for name in _DECISIONS}
-    if counts.get(SKIP):  # an operator skip only shows once there is one (byte-identical else)
+    if counts.get(SKIP):  # a skip (operator or branch-sync) only shows once there is one
         shown[SKIP] = counts[SKIP]
-    return _envelope(
-        "unit",
-        path,
-        counts=shown,
-        units=units,
-    )
+    body: dict[str, Any] = {"counts": shown, "units": units}
+    if hidden:  # D5: additive, only when the run hid commits
+        body["hidden_commits"] = {
+            **hidden_summary(hidden.values()),
+            "by_unit": [
+                {"unit": h["unit"], "decision": h["decision"], "commits": h["commits"]}
+                for h in hidden.values()
+            ],
+        }
+    return _envelope("unit", path, **body)
+
+
+def _commit_candidates(collation: Collation) -> dict[str, dict[str, Any]]:
+    """Unit key to the ``commit_candidates`` its verdicts or residual record carry."""
+    found: dict[str, dict[str, Any]] = {}
+    for record in (*collation.verdicts, *collation.residual):
+        if "commit_candidates" in record:
+            found[record["unit"]] = record["commit_candidates"]
+    return found
 
 
 def conflict_view(path: Path) -> dict[str, Any]:
@@ -196,9 +232,24 @@ def render_text(view: Mapping[str, Any]) -> list[str]:
     if kind == "unit":
         counts = view["counts"]
         lines = ["decisions: " + ", ".join(f"{k}={v}" for k, v in counts.items())]
+        if hidden := view.get("hidden_commits"):
+            lines.append(
+                f"hidden commits: {hidden['count']} in {hidden['units']} units that project nothing"
+            )
         for unit in view["units"]:
             bead = unit["bead"] or "-"
             operator = "  (operator)" if unit["step"] == "decision" else ""
+            if unit.get("noise"):
+                operator += f"  [noise: {unit['noise']}]"
+            if unit.get("type"):
+                operator += f"  [type: {unit['type']}]"
+            if unit.get("hidden_commits"):
+                operator += f"  [hides {len(unit['hidden_commits'])} commits]"
+            if cands := unit.get("commit_candidates"):
+                operator += (
+                    f"  [commits with a candidate: {len(cands['with_candidate'])}, "
+                    f"without: {len(cands['without_candidate'])}]"
+                )
             lines.append(
                 f"{unit['decision']:<8} {unit['key']}  [{unit['kind']}/{unit['rule']}] "
                 f"bead={bead} status={unit['status'] or '-'}  {unit['title']}{operator}"
@@ -208,6 +259,12 @@ def render_text(view: Mapping[str, Any]) -> list[str]:
                     else ""
                 )
             )
+            for runner in unit.get("runner_ups", ()):
+                gap = "?" if runner["distance"] is None else f"{runner['distance']}s"
+                lines.append(
+                    f"           runner-up for {runner['doc']}: {runner['unit']} "
+                    f"(distance {gap}, overlap {runner['overlap']}, paths {runner['paths']})"
+                )
         return lines
     if kind == "conflict":
         lines = [f"conflicts: {len(view['conflicts'])}"]
