@@ -2362,6 +2362,20 @@ class BackfillIdentifyConfig(_Section):
     max_candidates: int = Field(
         5, ge=1, description="Baseline beads (and epics) offered to the match query."
     )
+    merge_fallback: Literal["none", "commits"] = Field(
+        "none",
+        description="Opt-in. none (default): a merge unit that ends residual, NOISE or SKIP "
+        "projects nothing (its commits are reported as hidden_commits). commits: such a merge is "
+        "replaced by the commit-rule units of its commits (those include_types admits), which "
+        "are identified in the same run.",
+    )
+    merge_identity: Literal["unit", "commits"] = Field(
+        "unit",
+        description="Opt-in. unit (default): a merge unit is identified by its own title. "
+        "commits: a merge none of whose commits has a baseline candidate is NEW, whatever its "
+        "own title matched; a merge whose commits partly match keeps the usual flow and the "
+        "run records which commits matched.",
+    )
 
 
 class BackfillStatusConfig(_Section):

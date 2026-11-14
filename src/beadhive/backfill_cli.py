@@ -1223,6 +1223,11 @@ def _history_run(
             "units": plan.report.get("units") or {},
             "creates_skipped": plan.report.get("creates_skipped", 0),
             "no_moment": list(plan.report.get("no_moment") or ()),
+            **(
+                {"hidden_commits": plan.report["hidden_commits"]}
+                if plan.report.get("hidden_commits")
+                else {}
+            ),
         }
         summary["stages"]["plan"] = manifest["plan"]
         backfill_history.write_manifest(run, manifest)
@@ -1336,6 +1341,12 @@ def _history_done(summary: dict[str, Any], files: Mapping[str, Path], as_json: b
             typer.echo(
                 f"skipped: no evidence moment: {len(plan['no_moment'])} units were not created "
                 f"({shown}{more})"
+            )
+        if hidden := plan.get("hidden_commits"):
+            typer.echo(
+                f"hidden: {hidden['count']} commits in {hidden['units']} units that project "
+                "nothing (residual, NOISE or SKIP); see `bh backfill view unit`, or set "
+                "backfill.collate.identify.merge_fallback = commits"
             )
         typer.echo(f"plan hash: {plan['plan_hash']}")
     if applied := stages.get("apply"):

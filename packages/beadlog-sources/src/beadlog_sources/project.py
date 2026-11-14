@@ -48,9 +48,14 @@ today).
   :data:`NOTE_NO_MOMENT`.
 - **NOISE** (covered by a coarser epic) and **residual** (no decision): nothing is projected; the
   unit is reported (:attr:`Projection.residual` lists the residual units).
-- **skip** (an operator decision, B5 step 0): nothing is projected and the unit is not residual;
-  it counts under ``skip`` only when some unit was skipped, so a run with no decisions reports
-  exactly what it did before.
+- **skip** (an operator decision, B5 step 0, or a branch-sync merge, step ``branch-sync``):
+  nothing is projected and the unit is not residual; it counts under ``skip`` only when some unit
+  was skipped, so a run with no decisions reports exactly what it did before.
+- **Hidden commits** (D5): the commits a residual, NOISE or SKIP unit claimed (a merge unit's
+  second-parent commits) are in no plan, so :attr:`Projection.hidden` lists them per unit
+  (:func:`~beadlog_sources.identify.hidden_commits`) and the report gains ``hidden_commits``
+  (``count`` and ``units``), only when non-zero. Created beads never change; the opt-in
+  ``identify.merge_fallback`` turns those commits into units instead.
 
 **The facts** (``set`` events, the same rule for NEW and PRESENT):
 
@@ -145,7 +150,7 @@ from .collate import (
 from .commits import dump_linkage, just_after, parse_linkage
 from .decisions import SOURCE_LABEL as DECISION_LABEL
 from .evidence import Artifact, Category, EvidenceCorpus
-from .identify import CLASS_SKIP
+from .identify import CLASS_SKIP, hidden_commits, hidden_summary
 from .ledger import BEAD_TOKEN, FOREIGN
 from .lifecycle import (
     CLOSING_BASES,
@@ -351,6 +356,7 @@ class Projection:
     events: tuple[BeadEvent, ...]
     units: tuple[UnitProjection, ...]
     options: ProjectOptions = field(default_factory=ProjectOptions)
+    hidden: tuple[dict[str, Any], ...] = ()
 
     @property
     def residual(self) -> tuple[str, ...]:
@@ -366,14 +372,22 @@ class Projection:
             out[item.decision] = out.get(item.decision, 0) + 1  # skip only when decided
         return out
 
+    def hidden_commits(self) -> dict[str, int]:
+        """D5: ``{"count": N, "units": M}``, the commits inside units that project nothing
+        (residual, NOISE or SKIP); empty when nothing is hidden."""
+        return hidden_summary(self.hidden) if self.hidden else {}
+
     def to_json(self) -> dict[str, Any]:
-        """The report (not the events) as a JSON object."""
-        return {
+        """The report (not the events) as a JSON object (``hidden_commits`` only when non-zero)."""
+        out: dict[str, Any] = {
             "counts": self.counts(),
             "events": len(self.events),
             "options": self.options.to_json(),
             "units": [u.to_json() for u in self.units],
         }
+        if self.hidden:
+            out["hidden_commits"] = self.hidden_commits()
+        return out
 
 
 # -- helpers -----------------------------------------------------------------------------------
@@ -580,7 +594,8 @@ class _Projector:
             made, record = self.unit(self.units[key])
             events.extend(made)
             out.append(record)
-        return Projection(sort_events(events), tuple(out), self.options)
+        hidden = hidden_commits(self.collation.units, self.collation.verdicts)
+        return Projection(sort_events(events), tuple(out), self.options, hidden)
 
     def unit(self, unit: Unit) -> tuple[list[BeadEvent], UnitProjection]:
         record = self.decided.get(unit.key)

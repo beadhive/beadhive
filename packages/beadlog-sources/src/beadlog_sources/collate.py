@@ -774,11 +774,25 @@ def collate(
         refs=resolve_refs(corpus, indexes, baseline, directory, local=local),
         indexes=indexes,
     )
-    from .identify import identify  # B5
+    from .identify import FALLBACK_COMMITS, IdentifyOptions, identify_with_result  # B5
 
-    identified = identify(
+    identify_options = identify_options or IdentifyOptions()
+    identified, result = identify_with_result(
         attach(cluster(resolved, options), attach_options), baseline, identify_options, identify_run
     )
+    if identify_options.merge_fallback == FALLBACK_COMMITS:
+        from .fallback import merge_fallback  # the opt-in second pass over residual merges
+
+        identified = merge_fallback(
+            identified,
+            resolved,
+            baseline,
+            cluster_options=options,
+            attach_options=attach_options,
+            options=identify_options,
+            run=identify_run,
+            calls=result.calls,
+        )
     return derive_lifecycle(identified, status_options)  # B6 after B5: reads the verdicts' units
 
 

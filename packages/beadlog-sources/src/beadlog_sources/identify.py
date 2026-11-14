@@ -22,7 +22,11 @@ unit, in key order, goes through these steps; the first that decides wins:
 3. ``no-candidate``: the baseline holds no bead (and no epic) sharing a title token with the unit,
    so there is nothing it could be present as or covered by: NEW, provenance ``derived``,
    confidence null (a rule decided it, nothing was estimated), always reviewed. Units WITH a
-   candidate keep the flow below.
+   candidate keep the flow below. Under ``merge_identity = commits`` a merge unit is also NEW here
+   when none of its own commits has a candidate (the same test, per commit subject): a candidate
+   its title matched, that no commit matches, does not hold it back. A merge whose commits
+   partly or all match keeps the flow below, and every record of such a merge carries
+   ``commit_candidates`` (which commits had a candidate and which did not).
 4. ``lexical``: the deterministic engine (:class:`~beadlog_sources.judges.DeterministicJudge`)
    over one :class:`~beadlog_sources.contracts.ChoiceQuery` shaped like reconcile's match query
    (``present:N`` for the baseline beads whose titles share the most tokens with the unit,
@@ -77,7 +81,7 @@ from typing import Any
 from beadlog import BeadEvent, BeadState, fold
 
 from ._sources import ROLLBACK_REASON
-from .collate import ATTACH, Collation, CollationFormatError, Unit
+from .collate import ATTACH, RULE_MERGE, Collation, CollationFormatError, Unit
 from .contracts import ABSTAIN, ChoiceQuery, Fallback, Judgment, JudgmentPort
 from .decisions import LINK, NOISE, SKIP, Decision, decisions_of, is_decision
 from .docs import ask
@@ -156,8 +160,19 @@ RESIDUAL_REASONS = (
 THRESHOLD_ENGINE = "identify-threshold"
 BRIDGE_ENGINE = "identify-bridge"
 ENGINE_VERSION = "1"
-OPTION_MEMBERS = ("new_threshold", "max_candidates")
+# The two members every collation's ``options.identify`` has, then the ones it writes only when they
+# differ from the 0.37 behaviour (D9): a collation without them reads back as 0.37 made it.
+BASE_OPTION_MEMBERS = ("new_threshold", "max_candidates")
+NEW_OPTION_MEMBERS = ("merge_fallback", "merge_identity")
+OPTION_MEMBERS = (*BASE_OPTION_MEMBERS, *NEW_OPTION_MEMBERS)
+FALLBACK_NONE = "none"
+FALLBACK_COMMITS = "commits"
+MERGE_FALLBACKS = (FALLBACK_NONE, FALLBACK_COMMITS)
+IDENTITY_UNIT = "unit"
+IDENTITY_COMMITS = "commits"
+MERGE_IDENTITIES = (IDENTITY_UNIT, IDENTITY_COMMITS)
 DEFAULT_MAX_CANDIDATES = 5
+COMMIT_PREFIX = "git:commit/"
 PERMILLE = 1000
 _CONTEXT_LIMIT = 4000
 _MAX_CONTEXT_ARTIFACTS = 8
@@ -198,15 +213,27 @@ class IdentifyOptions:
       off). A unit nothing else decided whose fuzzy score is below it is NEW (inferred).
     - ``max_candidates``: how many baseline beads (and, separately, epics) the match query offers
       (default 5).
+    - ``merge_fallback``: ``none`` (default) or ``commits``. Under ``commits`` a merge unit that
+      ends residual, NOISE or SKIP is replaced by the commit-rule units of its commits
+      (:mod:`beadlog_sources.fallback`), which are then identified in the same run.
+    - ``merge_identity``: ``unit`` (default) or ``commits``. Under ``commits`` a merge unit whose
+      own title has a baseline candidate is still NEW when none of its commits has one; a merge
+      whose commits partly match keeps the usual flow and the collation records which matched.
     """
 
     new_threshold: int | None = None
     max_candidates: int = DEFAULT_MAX_CANDIDATES
+    merge_fallback: str = FALLBACK_NONE
+    merge_identity: str = IDENTITY_UNIT
 
     def __post_init__(self) -> None:
         if self.new_threshold is not None:
             _int_in(self.new_threshold, "new_threshold", 1, 100)
         _int_in(self.max_candidates, "max_candidates", 1)
+        if self.merge_fallback not in MERGE_FALLBACKS:
+            raise IdentifyOptionsError(f"merge_fallback must be one of {MERGE_FALLBACKS}")
+        if self.merge_identity not in MERGE_IDENTITIES:
+            raise IdentifyOptionsError(f"merge_identity must be one of {MERGE_IDENTITIES}")
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> IdentifyOptions:
@@ -215,13 +242,28 @@ class IdentifyOptions:
 
     def to_json(self) -> dict[str, Any]:
         """The effective options as a JSON object (the collation's ``options.identify``)."""
-        return {"new_threshold": self.new_threshold, "max_candidates": self.max_candidates}
+        out: dict[str, Any] = {
+            "new_threshold": self.new_threshold,
+            "max_candidates": self.max_candidates,
+        }
+        # The newer members are written only when they differ from 0.37 (D9).
+        if self.merge_fallback != FALLBACK_NONE:
+            out["merge_fallback"] = self.merge_fallback
+        if self.merge_identity != IDENTITY_UNIT:
+            out["merge_identity"] = self.merge_identity
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> IdentifyOptions:
-        """Parse :meth:`to_json` output; missing or unknown members are refused."""
-        if not isinstance(raw, dict) or sorted(raw) != sorted(OPTION_MEMBERS):
-            raise IdentifyOptionsError(f"identify options must have exactly {OPTION_MEMBERS}")
+        """Parse :meth:`to_json` output: the two base members plus any subset of the newer ones;
+        missing or unknown members are refused."""
+        if not isinstance(raw, dict) or not (
+            set(BASE_OPTION_MEMBERS) <= set(raw) <= set(OPTION_MEMBERS)
+        ):
+            raise IdentifyOptionsError(
+                f"identify options must have exactly {BASE_OPTION_MEMBERS} plus any of "
+                f"{NEW_OPTION_MEMBERS}"
+            )
         return cls(**raw)
 
 
@@ -359,6 +401,10 @@ VERDICT_MEMBERS = (
     "fallback",
 )
 RESIDUAL_MEMBERS = ("unit", "reason", "score", "query_hash", "candidates")
+# Written on a verdict or residual record only for a merge unit judged under
+# ``merge_identity = commits`` (D1, D9): which of its commits had a baseline candidate.
+COMMIT_CANDIDATES = "commit_candidates"
+_COMMIT_CANDIDATE_MEMBERS = ("with_candidate", "without_candidate")
 _FALLBACK_MEMBERS = ("engine", "reason", "detail")
 
 
@@ -412,10 +458,25 @@ def _bad(what: str) -> CollationFormatError:
     return CollationFormatError(f"identify: {what}")
 
 
+def _check_commit_candidates(raw: Any, who: str) -> None:
+    if (
+        not isinstance(raw, dict)
+        or sorted(raw) != sorted(_COMMIT_CANDIDATE_MEMBERS)
+        or not all(
+            isinstance(v, list) and all(isinstance(k, str) and k for k in v) for v in raw.values()
+        )
+    ):
+        raise _bad(f"{who}: {COMMIT_CANDIDATES} must have exactly {_COMMIT_CANDIDATE_MEMBERS}")
+
+
 def check_verdict(raw: Any) -> dict[str, Any]:
     """Validate one verdict record (strictly, as the collation loader does); return it."""
-    if not isinstance(raw, dict) or sorted(raw) != sorted(VERDICT_MEMBERS):
-        raise _bad(f"verdict must have exactly {VERDICT_MEMBERS}")
+    if not isinstance(raw, dict) or sorted(k for k in raw if k != COMMIT_CANDIDATES) != sorted(
+        VERDICT_MEMBERS
+    ):
+        raise _bad(f"verdict must have exactly {VERDICT_MEMBERS} (plus {COMMIT_CANDIDATES})")
+    if COMMIT_CANDIDATES in raw:
+        _check_commit_candidates(raw[COMMIT_CANDIDATES], f"verdict {raw['unit']!r}")
     if not isinstance(raw["unit"], str) or not raw["unit"]:
         raise _bad("verdict unit must be a non-empty string")
     if raw["step"] not in STEPS:
@@ -445,8 +506,12 @@ def check_verdict(raw: Any) -> dict[str, Any]:
 
 def check_residual(raw: Any) -> dict[str, Any]:
     """Validate one residual record; return it."""
-    if not isinstance(raw, dict) or sorted(raw) != sorted(RESIDUAL_MEMBERS):
-        raise _bad(f"residual must have exactly {RESIDUAL_MEMBERS}")
+    if not isinstance(raw, dict) or sorted(k for k in raw if k != COMMIT_CANDIDATES) != sorted(
+        RESIDUAL_MEMBERS
+    ):
+        raise _bad(f"residual must have exactly {RESIDUAL_MEMBERS} (plus {COMMIT_CANDIDATES})")
+    if COMMIT_CANDIDATES in raw:
+        _check_commit_candidates(raw[COMMIT_CANDIDATES], f"residual {raw['unit']!r}")
     if not isinstance(raw["unit"], str) or not raw["unit"]:
         raise _bad("residual unit must be a non-empty string")
     if raw["reason"] not in RESIDUAL_REASONS:
@@ -654,9 +719,12 @@ def identify_units(
     options: IdentifyOptions | None = None,
     run: IdentifyRun | None = None,
     attached: Mapping[str, Sequence[str]] | None = None,
+    commits: Mapping[str, Sequence[tuple[str, str]]] | None = None,
 ) -> IdentifyResult:
     """B5 over ``units`` (see the module doc); pure apart from the judge and the preview sink.
-    ``attached`` maps a unit key to the keys of the docs B4 attached to it."""
+    ``attached`` maps a unit key to the keys of the docs B4 attached to it; ``commits`` maps a
+    merge unit key to ``(commit key, subject)`` of its non-merge commits (only read under
+    ``merge_identity = commits``)."""
     options = options or IdentifyOptions()
     run = run or IdentifyRun()
     base = _Baseline(baseline)
@@ -686,6 +754,7 @@ def identify_units(
         )
 
     stale: list[str] = []
+    commit_report: dict[str, dict[str, list[str]]] = {}
     for unit in sorted(units, key=lambda u: u.key):
         # 0. an operator decision from the bead store.
         decision = base.decisions.get(unit.key)
@@ -766,8 +835,23 @@ def identify_units(
         subject = tokens(unit.title)
         present = base.ranked(subject, options.max_candidates, epics=False)
         epics = base.ranked(subject, options.max_candidates, epics=True)
-        if not present and not epics:
-            why = "no baseline bead shares a title token with the unit"
+        found_commits = (commits or {}).get(unit.key, ())
+        if options.merge_identity == IDENTITY_COMMITS and unit.rule == RULE_MERGE and found_commits:
+            report = {"with_candidate": [], "without_candidate": []}
+            for key, title in found_commits:
+                has = base.ranked(tokens(title), 1, epics=False)
+                report["with_candidate" if has else "without_candidate"].append(key)
+            commit_report[unit.key] = report
+        commit_only = bool(present) and unit.key in commit_report
+        commit_only = commit_only and not commit_report[unit.key]["with_candidate"]
+        if commit_only or (not present and not epics):
+            if commit_only:
+                why = (
+                    f"none of the merge's {len(found_commits)} commits shares a title token with "
+                    "a baseline bead (merge_identity = commits)"
+                )
+            else:
+                why = "no baseline bead shares a title token with the unit"
             record = _verdict_json(
                 unit.key,
                 STEP_NO_CANDIDATE,
@@ -878,14 +962,66 @@ def identify_units(
         )
     for line in stale:
         (run.warn or _print_warning)(line)
+    records = [verdicts[k] for k in sorted(verdicts)]
+    for record in (*records, *residual):
+        if record["unit"] in commit_report:
+            record[COMMIT_CANDIDATES] = commit_report[record["unit"]]
     return IdentifyResult(
-        verdicts=tuple(verdicts[k] for k in sorted(verdicts)),
+        verdicts=tuple(records),
         residual=tuple(residual),
         calls=calls,
         reused=reused,
         preview=preview,
         stale=tuple(stale),
     )
+
+
+def commit_subjects(collation: Collation) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Merge unit key to ``(commit key, subject)`` of the non-merge commits it claimed, in claim
+    order (empty without the in-memory B1 indexes, as on a loaded collation)."""
+    if collation.indexes is None:
+        return {}
+    out: dict[str, tuple[tuple[str, str], ...]] = {}
+    for unit in collation.units:
+        if unit.rule != RULE_MERGE or unit.kind == ATTACH:
+            continue
+        found = []
+        for key in unit.artifacts[1:]:
+            art = collation.indexes.artifact(key)
+            if art is None or not key.startswith(COMMIT_PREFIX) or len(art.attrs["parents"]) >= 2:
+                continue
+            found.append((key, art.title))
+        if found:
+            out[unit.key] = tuple(found)
+    return out
+
+
+def identify_with_result(
+    collation: Collation,
+    baseline: Iterable[BeadEvent],
+    options: IdentifyOptions | None = None,
+    run: IdentifyRun | None = None,
+) -> tuple[Collation, IdentifyResult]:
+    """:func:`identify`, and what it decided (calls made, preview, stale decisions)."""
+    options = options or IdentifyOptions()
+    docs: dict[str, list[str]] = {}
+    for found in collation.attachments:
+        docs.setdefault(found.unit, []).append(found.doc)
+    result = identify_units(
+        collation.units,
+        baseline,
+        options,
+        run,
+        docs,
+        commit_subjects(collation) if options.merge_identity == IDENTITY_COMMITS else None,
+    )
+    identified = replace(
+        collation,
+        verdicts=result.verdicts,
+        residual=result.residual,
+        options={**collation.options, "identify": options.to_json()},
+    )
+    return identified, result
 
 
 def identify(
@@ -895,23 +1031,59 @@ def identify(
     run: IdentifyRun | None = None,
 ) -> Collation:
     """B5: ``collation`` with ``verdicts``, ``residual`` and ``options.identify`` filled."""
-    options = options or IdentifyOptions()
-    docs: dict[str, list[str]] = {}
-    for found in collation.attachments:
-        docs.setdefault(found.unit, []).append(found.doc)
-    result = identify_units(collation.units, baseline, options, run, docs)
-    return replace(
-        collation,
-        verdicts=result.verdicts,
-        residual=result.residual,
-        options={**collation.options, "identify": options.to_json()},
-    )
+    return identify_with_result(collation, baseline, options, run)[0]
+
+
+# The decisions that project nothing (D5): the commits a unit with one of these claimed are hidden.
+HIDDEN_DECISIONS = ("residual", str(ReconcileClass.NOISE), CLASS_SKIP)
+
+
+def hidden_commits(
+    units: Iterable[Unit], verdicts: Iterable[Mapping[str, Any]]
+) -> tuple[dict[str, Any], ...]:
+    """D5: the commits swallowed by units that project nothing, one record per such unit.
+
+    A commit is hidden when it is an artifact (other than the unit's own anchor) of an ``issue`` or
+    ``epic`` unit whose decision is residual, NOISE or SKIP (an operator skip included); one
+    attached to a NEW or PRESENT unit, or claimed by no unit, is not. A branch-sync merge claims
+    only itself, so it hides nothing. Each record is ``{"unit", "decision", "commits"}``, in
+    unit key order; units with nothing hidden are left out. Nested merge commits count as commits.
+    """
+    by_unit: dict[str, str] = {}
+    for record in verdicts:
+        if record["class"] is not None:
+            by_unit[record["unit"]] = record["class"]
+    out = []
+    for unit in sorted(units, key=lambda u: u.key):
+        if unit.kind == ATTACH:
+            continue
+        shas = [k for k in unit.artifacts if k.startswith(COMMIT_PREFIX) and k != unit.key]
+        decision = by_unit.get(unit.key, "residual")
+        if shas and decision in HIDDEN_DECISIONS:
+            out.append({"unit": unit.key, "decision": decision, "commits": shas})
+    return tuple(out)
+
+
+def hidden_summary(hidden: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """The plan summary form of :func:`hidden_commits`: ``{"count": commits, "units": units}``."""
+    records = list(hidden)
+    return {"count": sum(len(r["commits"]) for r in records), "units": len(records)}
 
 
 __all__ = [
     "CLASSES",
     "CLASS_SKIP",
     "FAMILY",
+    "BASE_OPTION_MEMBERS",
+    "COMMIT_CANDIDATES",
+    "FALLBACK_COMMITS",
+    "FALLBACK_NONE",
+    "HIDDEN_DECISIONS",
+    "IDENTITY_COMMITS",
+    "IDENTITY_UNIT",
+    "MERGE_FALLBACKS",
+    "MERGE_IDENTITIES",
+    "NEW_OPTION_MEMBERS",
     "OPTION_MEMBERS",
     "RESIDUAL_MEMBERS",
     "RESIDUAL_REASONS",
@@ -926,8 +1098,12 @@ __all__ = [
     "IdentifyResult",
     "IdentifyRun",
     "check_records",
+    "commit_subjects",
+    "hidden_commits",
+    "hidden_summary",
     "identify",
     "identify_units",
+    "identify_with_result",
     "print_preview",
     "prior_verdicts",
 ]

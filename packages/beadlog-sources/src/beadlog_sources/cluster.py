@@ -332,8 +332,15 @@ def _readable_branch(branch: str | None) -> str | None:
 
 
 class _Clusterer:
-    def __init__(self, collation: Collation, indexes: Indexes, options: ClusterOptions) -> None:
+    def __init__(
+        self,
+        collation: Collation,
+        indexes: Indexes,
+        options: ClusterOptions,
+        release: Iterable[str] = (),
+    ) -> None:
         self.options = options
+        self.release = frozenset(release)
         self.ix = indexes
         self.arts = {key: found[0] for key, found in sorted(indexes.by_key.items())}
         self.units: dict[str, _Draft] = {}
@@ -502,6 +509,10 @@ class _Clusterer:
                 continue
             kids = self.ix.merge_children.get(merge.key, ())
             free_kids = [k for k in kids if self.free(k)]
+            if free_kids and merge.key in self.release:
+                # the merge fallback (identify.merge_fallback): same as a filtered-out merge
+                queue[position:position] = self._released_merges(free_kids)
+                continue
             if free_kids:
                 typed = (
                     self.merge_type(merge, free_kids) if options.merge_types is not None else None
@@ -652,8 +663,14 @@ class _Clusterer:
         return tuple(self.units[key].freeze() for key in sorted(self.units))
 
 
-def cluster(collation: Collation, options: ClusterOptions | None = None) -> Collation:
+def cluster(
+    collation: Collation, options: ClusterOptions | None = None, *, release: Iterable[str] = ()
+) -> Collation:
     """B3: ``collation`` with its ``units`` filled and ``options.cluster`` set (see the module doc).
+
+    ``release`` names merge keys the ``merge`` rule must not make units of (their commits stay free
+    for the ``commit`` rule, the merges inside them are looked at next): the second pass of
+    ``identify.merge_fallback`` (:mod:`beadlog_sources.fallback`). It changes no option.
 
     Needs the in-memory B1 indexes (a collation from :func:`~beadlog_sources.collate.collate`,
     not one loaded from disk).
@@ -661,7 +678,7 @@ def cluster(collation: Collation, options: ClusterOptions | None = None) -> Coll
     if collation.indexes is None:
         raise CollationFormatError("cluster needs the B1 indexes (a loaded collation has none)")
     options = options or ClusterOptions()
-    units = _Clusterer(collation, collation.indexes, options).run()
+    units = _Clusterer(collation, collation.indexes, options, release).run()
     return replace(
         collation, units=units, options={**collation.options, "cluster": options.to_json()}
     )
