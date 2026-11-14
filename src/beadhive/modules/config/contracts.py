@@ -2417,6 +2417,14 @@ class BackfillCollateConfig(_Section):
         "propose nothing. propose: a unit that matches no bead is proposed as a bead (closed, "
         "or open for a draft or proposed doc under status.doc_default).",
     )
+    create_priority: int = Field(
+        2,
+        ge=0,
+        le=4,
+        description="Priority (0 = highest, 4 = lowest) every bead a create-mode apply makes "
+        "carries, epics and doc units included; 2 matches `bd create`. Beads made by earlier "
+        "runs keep what they were stored with.",
+    )
     rules: list[Literal["plan-item", "local-bead", "review", "merge", "commit"]] = Field(
         default_factory=lambda: ["plan-item", "local-bead", "review", "merge", "commit"],
         description="B3 claim rules run, in order.",

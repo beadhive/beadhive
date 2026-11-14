@@ -320,6 +320,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat: archive writer",
                 "type": "feature",
             },
@@ -387,6 +388,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from gh:pr/5.",
                 "external_ref": "gh:pr/5",
+                "priority": 2,
                 "title": "Add parser",
                 "type": "feature",
             },
@@ -454,6 +456,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat: sync importer",
                 "type": "feature",
             },
@@ -541,6 +544,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from doc:docs/design/queue.md.",
                 "external_ref": "doc:docs/design/queue.md",
+                "priority": 2,
                 "title": "Queue design",
                 "type": "decision",
             },
@@ -598,6 +602,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat(cache): cache layer",
                 "type": "feature",
             },
@@ -691,6 +696,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from plan:phase-1.",
                 "external_ref": "plan:phase-1",
+                "priority": 2,
                 "title": "Phase 1: storage",
                 "type": "epic",
             },
@@ -726,6 +732,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from plan:phase-1/a.",
                 "external_ref": "plan:phase-1/a",
+                "priority": 2,
                 "title": "Write the log",
                 "type": "task",
             },
@@ -791,6 +798,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from plan:phase-1/b.",
                 "external_ref": "plan:phase-1/b",
+                "priority": 2,
                 "title": "Read the log",
                 "type": "task",
             },
@@ -848,6 +856,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from area:release/v1.0.",
                 "external_ref": "area:release/v1.0",
+                "priority": 2,
                 "title": "release/v1.0",
                 "type": "epic",
             },
@@ -913,6 +922,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c1.",
                 "external_ref": "git:commit/c1",
+                "priority": 2,
                 "title": "feat: first",
                 "type": "feature",
             },
@@ -998,6 +1008,7 @@ GOLDEN: dict[str, list[tuple[Any, ...]]] = {
             {
                 "description": "Reconstructed from git:commit/c2.",
                 "external_ref": "git:commit/c2",
+                "priority": 2,
                 "title": "feat: second",
                 "type": "feature",
             },
@@ -1230,7 +1241,8 @@ def test_a_rerun_after_a_backfilled_bead_is_deleted_proposes_it_again_as_new() -
         again = _rerun(corpus, baseline_after)
         (record,) = [u for u in again.units if u.unit == "doc:docs/design/queue.md"]
         assert record.decision == "NEW"
-        assert [str(e.kind) for e in again.events if e.bead.id == record.bead][0] == "create"
+        # same-instant events tie-break by id, so the create is not necessarily listed first
+        assert "create" in {str(e.kind) for e in again.events if e.bead.id == record.bead}
 
 
 def test_projected_beads_fold_to_closed_history() -> None:
@@ -1340,6 +1352,21 @@ def test_creation_labels_are_an_option_and_off_by_default() -> None:
     labels = {e.data["label"] for e in labelled.events if e.kind == "label_add"}
     assert labels == {"source:github", "origin:backfill"}
     assert labelled.to_json()["options"]["creation_labels"] == ["origin:backfill"]
+
+
+def test_every_new_create_states_the_priority_so_bd_import_never_fills_p0() -> None:
+    for name in sorted(SCENARIOS):
+        (_, _, projection), _ = scenario(name)
+        creates = [e for e in projection.events if e.kind == "create"]
+        assert creates, name
+        assert {e.data["fields"]["priority"] for e in creates} == {2}, name  # epics included
+    (_, _, custom), _ = scenario("review", ProjectOptions(create_priority=3))
+    (create,) = [e for e in custom.events if e.kind == "create"]
+    assert create.data["fields"]["priority"] == 3
+    assert custom.to_json()["options"]["create_priority"] == 3
+    for bad in (-1, 5, "2", True):
+        with pytest.raises(ProjectError):
+            ProjectOptions(create_priority=bad)  # type: ignore[arg-type]
 
 
 def test_types_are_configurable_per_category() -> None:

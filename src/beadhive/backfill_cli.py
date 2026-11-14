@@ -33,6 +33,7 @@ in ``beadhive_backfill``; this module resolves the target hive, composes the bd 
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
 import json
 import os
@@ -987,6 +988,10 @@ def _history_pass(
         if create == backfill_create.CREATE_PROPOSE
         else None
     )
+    if project_options is not None:
+        project_options = dataclasses.replace(
+            project_options, create_priority=options.create_priority
+        )
     return backfill_history.HistoryPass(
         corpus,
         directory,
@@ -1036,6 +1041,7 @@ def history_pass_for_plan(plan: Plan, group: Group, hive: str, *, cfg: Mapping[s
         IdentifyOptions.from_json(recorded["identify"]),
         StatusOptions.from_json(recorded["status"]),
         str(report.get("create_mode") or "off"),
+        backfill.collate.create_priority,
     )
     return _history_pass(
         cfg,
