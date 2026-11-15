@@ -550,8 +550,11 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
 def local_only_lease_refusal(prefix, host_id):
     """Why ``host_id`` may not adopt or take over ``prefix``'s lease because the hive is
     local-only to another host (bh-sj2bf R5), or None. Applied directly by the lease paths so an
-    unbound legacy host, for which no eligibility predicate runs, is refused too. A catalog that
-    cannot be read here leaves the decision to the eligibility read."""
+    unbound legacy host, for which no eligibility predicate runs, is refused too.
+
+    Fails CLOSED: a catalog that cannot be read refuses the adopt/takeover, since an unreadable
+    catalog could be hiding a local-only marker (bh-sj2bf review). A catalog that reads fine but
+    has no entry for ``prefix`` is not a refusal (an unregistered hive carries no marker)."""
     from . import config, registry
 
     try:
@@ -559,8 +562,11 @@ def local_only_lease_refusal(prefix, host_id):
             (e for e in registry.hives(config.load()) if str(e.get("prefix", "")) == prefix),
             None,
         )
-    except Exception:  # noqa: BLE001 — see docstring
-        return None
+    except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
+        return (
+            f"cannot read the hive catalog to check whether {prefix} is local-only to another "
+            f"host ({type(exc).__name__}: {exc}); refusing to adopt or take over its lease"
+        )
     return registry.local_only_refusal(entry, host_id)
 
 

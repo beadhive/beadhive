@@ -7221,6 +7221,14 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "already_published",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -7243,7 +7251,8 @@
           },
           "parameter_map": {},
           "parameters": [
-            "hive_id"
+            "hive_id",
+            "already_published"
           ],
           "path": "hive replicate",
           "progress": {

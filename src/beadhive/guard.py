@@ -546,14 +546,30 @@ _HEALED = object()
 def _refuse_local_only_legacy(hive: str, cfg) -> None:
     """Refuse a legacy host's write on a local-only hive it does not own (bh-sj2bf R5).
 
-    An unresolvable hive is not this guard's error to raise (same as :func:`primary_state`)."""
+    Fails CLOSED when the catalog or config cannot be read: an unreadable catalog could be hiding
+    a local-only marker, so the write is refused. The only pass-through is a hive that does not
+    resolve (unknown name, or a directory that belongs to no hive) — that is not this guard's
+    error to raise (same as :func:`primary_state`) and carries no marker."""
     from . import host, registry  # lazy: keep guard import-light + cycle-free
+
+    def _unreadable(exc: Exception):
+        typer.echo(
+            f"✗ cannot read the hive catalog to check whether this hive is local-only to "
+            f"another host ({type(exc).__name__}: {exc}); refusing the write",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
 
     try:
         settings = cfg if cfg is not None else config.load()
+    except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
+        _unreadable(exc)
+    try:
         entry = registry.entry_for_dir(settings, registry.hive_dir_for(settings, hive)) or {}
-    except Exception:  # noqa: BLE001 — see docstring
-        return
+    except (ValueError, KeyError, FileNotFoundError):
+        return  # unresolvable hive: nothing to check a marker on
+    except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
+        _unreadable(exc)
     refusal = registry.local_only_refusal(entry, host.host_id_or_none())
     if refusal:
         typer.echo(f"✗ {refusal}", err=True)

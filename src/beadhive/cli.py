@@ -2764,10 +2764,16 @@ def hive_repair_cmd(
 )
 def hive_replicate_cmd(
     hive_id: str = typer.Argument(..., metavar="HIVE", help="hive prefix or provider/org/repo"),
+    already_published: bool = typer.Option(
+        False,
+        "--already-published",
+        help="origin already carries this hive's refs/dolt/data: restore the beads remote and "
+        "clear the local-only marker without publishing",
+    ),
 ):
     from . import hive_local_only
 
-    hive_local_only.replicate_cli(hive_id)
+    hive_local_only.replicate_cli(hive_id, already_published=already_published)
 
 
 @hive_app.command("ready", help="check whether this repo is set up for AGF (read-only).")

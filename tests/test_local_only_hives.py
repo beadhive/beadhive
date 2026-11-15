@@ -680,11 +680,12 @@ def replicate_world(world, monkeypatch):
         return world.push_ok, "" if world.push_ok else "remote rejected"
 
     world.push_ok, world.push_lands = True, True
-    monkeypatch.setattr(hive_local_only, "origin_has_dolt_data", _origin)
+    monkeypatch.setattr(hive_local_only, "origin_dolt_data_state", _origin)
     monkeypatch.setattr(
         hive_local_only, "restore_beads_remote", lambda cfg, d: events.append("restore")
     )
     monkeypatch.setattr(hive_local_only, "_publish", _publish)
+    monkeypatch.setattr(hive_local_only, "_unset_beads_remote", lambda d: events.append("unset"))
     _probe(monkeypatch, "confirmed")
     world.events, world.origin = events, origin
     return world
@@ -694,6 +695,12 @@ def _replicate(hive="widget"):
     from beadhive import hive_local_only
 
     return hive_local_only.replicate(config.load(), hive)
+
+
+def _replicate_published(hive="widget"):
+    from beadhive import hive_local_only
+
+    return hive_local_only.replicate(config.load(), hive, already_published=True)
 
 
 def test_replicate_publishes_first_then_clears(replicate_world, monkeypatch):
@@ -730,6 +737,41 @@ def test_replicate_refuses_when_origin_already_carries_data(replicate_world):
     assert _marker() is not None
 
 
+def test_replicate_refuses_when_origin_cannot_be_probed(replicate_world):
+    from beadhive import hive_local_only
+
+    replicate_world.origin["data"] = None
+    with pytest.raises(hive_local_only.LocalOnlyError, match="cannot determine"):
+        _replicate()
+    assert "restore" not in replicate_world.events and _marker() is not None
+
+
+def test_replicate_already_published_clears_without_publishing(replicate_world):
+    replicate_world.origin["data"] = True
+    result = _replicate_published()
+    assert result.cleared and not result.published
+    assert "push" not in replicate_world.events and "restore" in replicate_world.events
+    assert _marker() is None
+
+
+def test_replicate_already_published_still_refuses_an_unknown_origin(replicate_world):
+    from beadhive import hive_local_only
+
+    replicate_world.origin["data"] = None
+    with pytest.raises(hive_local_only.LocalOnlyError, match="cannot determine"):
+        _replicate_published()
+    assert _marker() is not None
+
+
+def test_replicate_already_published_needs_a_marked_hive(replicate_world):
+    from beadhive import hive_local_only
+
+    registry.set_local_only("github", "acme", "widget", None)
+    replicate_world.origin["data"] = True
+    with pytest.raises(hive_local_only.LocalOnlyError, match="already carries"):
+        _replicate_published()
+
+
 def test_replicate_failed_push_leaves_the_field(replicate_world):
     from beadhive import hive_local_only
 
@@ -737,6 +779,7 @@ def test_replicate_failed_push_leaves_the_field(replicate_world):
     with pytest.raises(hive_local_only.LocalOnlyError, match="remote rejected"):
         _replicate()
     assert _marker() == {"owner_host": _this_host(), "reason": "push-denied"}
+    assert replicate_world.events[-1] == "unset"  # sync.remote rolled back
 
 
 def test_replicate_unverified_push_leaves_the_field(replicate_world):
@@ -745,7 +788,7 @@ def test_replicate_unverified_push_leaves_the_field(replicate_world):
     replicate_world.push_lands = False
     with pytest.raises(hive_local_only.LocalOnlyError, match="does not carry"):
         _replicate()
-    assert _marker() is not None
+    assert _marker() is not None and replicate_world.events[-1] == "unset"
 
 
 def test_replicate_failed_remote_restore_leaves_the_field(replicate_world, monkeypatch):
@@ -804,7 +847,7 @@ def repair_world(world, monkeypatch):
 
     _register()
     (world.ws_root / "github" / "acme" / "widget" / ".beads").mkdir(parents=True)
-    monkeypatch.setattr(hive_local_only, "origin_has_dolt_data", lambda d: False)
+    monkeypatch.setattr(hive_local_only, "origin_dolt_data_state", lambda d: False)
     monkeypatch.setattr(hive_local_only, "_lease", lambda prefix: None)
     monkeypatch.setattr(hive_local_only, "_now", lambda: 1_000_000.0)
     monkeypatch.setattr(local_only_rollout, "refusal", lambda **k: None)
@@ -895,10 +938,19 @@ def test_repair_refuses_an_unreadable_lease(repair_world, monkeypatch):
     assert _marker() is None
 
 
+def test_repair_refuses_when_origin_cannot_be_probed(repair_world, monkeypatch):
+    from beadhive import hive_local_only
+
+    monkeypatch.setattr(hive_local_only, "origin_dolt_data_state", lambda d: None)
+    with pytest.raises(typer.Exit):
+        _repair()
+    assert _marker() is None
+
+
 def test_repair_refuses_a_published_hive(repair_world, monkeypatch):
     from beadhive import hive_local_only
 
-    monkeypatch.setattr(hive_local_only, "origin_has_dolt_data", lambda d: True)
+    monkeypatch.setattr(hive_local_only, "origin_dolt_data_state", lambda d: True)
     with pytest.raises(typer.Exit):
         _repair()
     assert _marker() is None
@@ -964,6 +1016,58 @@ def test_host_retire_proceeds_when_it_owns_none(monkeypatch, tmp_path):
     from beadhive import host_retire
 
     assert host_retire.owned_local_only({"managed_repos": [_local(owner=OTHER)]}, OWNER) == []
+
+
+def test_original_revision_decorates_retire_not_the_ownership_helpers():
+    """Regression: the fleet write-transaction decorator belongs on ``retire`` itself."""
+    from beadhive import host_retire
+
+    assert hasattr(host_retire.retire, "__wrapped__")
+    assert not hasattr(host_retire.owned_local_only, "__wrapped__")
+    assert not hasattr(host_retire._refuse_owned_local_only, "__wrapped__")
+
+
+# ---- fail closed on an unreadable catalog (review item 4) ----------------------------------
+
+
+def _boom(*a, **k):
+    raise RuntimeError("catalog unreadable")
+
+
+def test_lease_refusal_fails_closed_when_the_catalog_is_unreadable(monkeypatch, tmp_path):
+    monkeypatch.setattr(policy, "require_eligible", lambda *a, **k: None)  # legacy host
+    monkeypatch.setattr(config, "load", _boom)
+    assert "cannot read the hive catalog" in policy.local_only_lease_refusal("tl", OWNER)
+    for fn in (host_lease.adopt, host_lease.takeover):
+        with pytest.raises(host_lease.HostLeaseRejected, match="cannot read the hive catalog"):
+            fn("origin", "tl", host_id=OWNER, label="x", cwd=tmp_path)
+
+
+def test_legacy_guard_fails_closed_when_the_catalog_is_unreadable(monkeypatch, capsys):
+    monkeypatch.setattr(guard, "writer_state", lambda *a, **k: None)
+    monkeypatch.setattr(policy, "require_intake", lambda *a, **k: None)
+    monkeypatch.setattr(registry, "hive_dir_for", lambda cfg, hive: "/nowhere")
+    monkeypatch.setattr(registry, "entry_for_dir", _boom)
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("tl", cfg={"managed_repos": [_local()]})
+    assert "cannot read the hive catalog" in capsys.readouterr().err
+    # config itself unreadable (no cfg passed): same refusal
+    monkeypatch.setattr(config, "load", _boom)
+    with pytest.raises(typer.Exit):
+        guard.guard_primary("tl")
+
+
+def test_legacy_guard_still_passes_an_unresolvable_hive(monkeypatch):
+    monkeypatch.setattr(guard, "writer_state", lambda *a, **k: None)
+    monkeypatch.setattr(policy, "require_intake", lambda *a, **k: None)
+    monkeypatch.setattr(guard, "primary_state", lambda *a, **k: None)
+    monkeypatch.setattr(registry, "hive_dir_for", lambda cfg, hive: "/nowhere")
+
+    def unknown(cfg, d):
+        raise ValueError("unknown hive")
+
+    monkeypatch.setattr(registry, "entry_for_dir", unknown)
+    guard._refuse_local_only_legacy("zz", {"managed_repos": []})  # does not raise
 
 
 # ---- bh doctor detection (R9) --------------------------------------------------------------

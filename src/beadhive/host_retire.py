@@ -519,7 +519,6 @@ def _step_push_hq(*, dry_run: bool) -> StepResult:
     return StepResult("push HQ", "would" if dry_run else "done", "")
 
 
-@hosts.original_revision
 def owned_local_only(cfg, host_id: str) -> list[str]:
     """Prefixes of the local-only hives this host owns (bh-sj2bf): their bead database exists
     only here, so reclaiming the host would delete the only copy."""
@@ -550,6 +549,7 @@ def _refuse_owned_local_only(cfg, host_id: str) -> None:
     raise typer.Exit(1)
 
 
+@hosts.original_revision
 def retire(
     *, dry_run: bool = False, backup: bool = False, confirm: bool = False, purge: bool = False
 ) -> list[StepResult]:

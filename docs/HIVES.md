@@ -137,12 +137,18 @@ operator's responsibility.
 **Leaving local-only:** `bh hive replicate <hive>`, run on the owner once it has push access:
 
 1. requires a **confirmed** push probe (denied or unknown refuses);
-2. refuses when origin already carries `refs/dolt/data` (another database was published there);
+2. refuses when origin already carries `refs/dolt/data` (another database was published there),
+   and refuses when origin cannot be probed (`git ls-remote` failure is never read as "empty");
 3. restores the beads remote, then publishes through onboard's publish leg;
 4. verifies that origin now carries `refs/dolt/data`;
 5. only then deletes `local_only`.
 
-Any failure leaves the hive local-only. `replicate` refuses an external hive. It also publishes an
+Any failure leaves the hive local-only, and a failed publish or verify unsets the `sync.remote`
+it restored (warning if that unset fails too). **Recovery:** when origin already carries this
+hive's own `refs/dolt/data` (a publish that landed but whose marker clear did not),
+`bh hive replicate <hive> --already-published` restores the beads remote and clears the marker
+without publishing. `bh hive repair --local-only` likewise refuses an origin it cannot probe.
+`replicate` refuses an external hive. It also publishes an
 unpublished registration that has no marker.
 
 **Existing unpublished registrations.** `bh doctor` reports "registered hive is unpublished and

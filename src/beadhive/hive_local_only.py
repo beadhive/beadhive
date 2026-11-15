@@ -23,7 +23,7 @@ from pathlib import Path
 import typer
 
 from . import config, host, registry
-from .storage_migrate import origin_has_dolt_data
+from .storage_migrate import origin_dolt_data_state
 
 #: clock seam (tests pin it; never a timing dependency)
 _now = time.time
@@ -79,6 +79,26 @@ def _publish(cfg, hive_dir: Path) -> tuple[bool, str]:
     return sync_remote._push_dolt_state(cfg, hive_dir)
 
 
+def _unset_beads_remote(hive_dir: Path) -> None:
+    """Best-effort inverse of :func:`restore_beads_remote`'s ``sync.remote`` write, so a hive
+    that is still marked local-only does not keep a live remote after a failed replicate."""
+    from . import bd
+
+    try:
+        res = bd.run(["config", "unset", "sync.remote"], hive_dir, capture=True)
+        ok = getattr(res, "returncode", 1) == 0
+    except Exception:  # noqa: BLE001 — best effort
+        ok = False
+    if not ok:
+        typer.echo(
+            f"⚠ could not unset sync.remote again in {hive_dir}; the hive is still local-only "
+            "but has a beads remote — run `bd config unset sync.remote` there",
+            err=True,
+        )
+    else:
+        typer.echo("• rolled back sync.remote: the hive stays local-only", err=True)
+
+
 def _key(entry) -> str:
     return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
 
@@ -103,9 +123,15 @@ class ReplicateResult:
     cleared: bool
 
 
-def replicate(cfg, hive_id: str) -> ReplicateResult:
+def replicate(cfg, hive_id: str, *, already_published: bool = False) -> ReplicateResult:
     """Publish then clear (R2). Raises :class:`LocalOnlyError` on any refusal or failure; the
-    ``local_only`` marker is deleted only after origin is verified to carry ``refs/dolt/data``."""
+    ``local_only`` marker is deleted only after origin is verified to carry ``refs/dolt/data``.
+
+    ``already_published`` is the recovery path for a hive whose origin already carries
+    ``refs/dolt/data`` (a publish that landed but whose marker clear did not, or a hive wrongly
+    marked): with it, nothing is pushed — the beads remote is restored and the marker cleared.
+    Without it that state refuses, because it may be someone else's database. An origin that
+    cannot be probed always refuses."""
     entry = registry.resolve_hive(cfg, hive_id)
     _refuse_unreplicable(entry)
     marker = registry.local_only_of(entry)
@@ -133,24 +159,44 @@ def replicate(cfg, hive_id: str) -> ReplicateResult:
             f"push access to {entry['org']}/{entry['repo']} is {access.state}{cause} — "
             "replicate needs confirmed push access; the hive stays local-only"
         )
-    # 2. someone else already published a database: merging the two is out of scope
-    if origin_has_dolt_data(hive_dir):
+    # 2. someone else may already have published a database: merging the two is out of scope
+    state = origin_dolt_data_state(hive_dir)
+    if state is None:
         raise LocalOnlyError(
-            f"origin of {key} already carries refs/dolt/data — another database was published "
-            "there; refusing to push over it (merging the two is out of scope)"
+            f"cannot determine whether origin of {key} carries refs/dolt/data (git ls-remote "
+            "failed) — fix network/auth and retry; the hive stays local-only"
         )
-    # 3. restore the beads remote the push guard unset, then 4. publish through onboard's leg
+    if state:
+        if not already_published or marker is None:
+            raise LocalOnlyError(
+                f"origin of {key} already carries refs/dolt/data — another database was "
+                "published there; refusing to push over it (merging the two is out of scope). "
+                "If it is this hive's own database, re-run with --already-published to clear "
+                "the local-only marker without publishing"
+            )
+        restore_beads_remote(cfg, hive_dir)
+        registry.set_local_only(entry["provider"], entry["org"], entry["repo"], None)
+        typer.echo(f"✓ beads: origin of {key} already carries refs/dolt/data; nothing published")
+        return ReplicateResult(key, prefix, published=False, cleared=True)
+    # 3. restore the beads remote the push guard unset, then 4. publish through onboard's leg.
+    # From here a failure rolls the restored remote back: the hive stays marked local-only.
     restore_beads_remote(cfg, hive_dir)
     typer.echo(f"• beads: publishing the bead database of {key}")
-    ok, reason = _publish(cfg, hive_dir)
+    try:
+        ok, reason = _publish(cfg, hive_dir)
+    except Exception:
+        _unset_beads_remote(hive_dir)
+        raise
     if not ok:
+        _unset_beads_remote(hive_dir)
         detail = f": {reason.strip()}" if reason and reason.strip() else ""
         raise LocalOnlyError(f"publishing refs/dolt/data failed{detail}; the hive stays local-only")
     # 5. verify, then 6. flip
-    if not origin_has_dolt_data(hive_dir):
+    if origin_dolt_data_state(hive_dir) is not True:
+        _unset_beads_remote(hive_dir)
         raise LocalOnlyError(
-            "the push reported success but origin does not carry refs/dolt/data; the hive "
-            "stays local-only"
+            "the push reported success but origin does not carry refs/dolt/data (or cannot be "
+            "read); the hive stays local-only"
         )
     typer.echo(f"✓ beads: published refs/dolt/data for {key}")
     if marker is None:
@@ -159,10 +205,10 @@ def replicate(cfg, hive_id: str) -> ReplicateResult:
     return ReplicateResult(key, prefix, published=True, cleared=True)
 
 
-def replicate_cli(hive_id: str) -> None:
+def replicate_cli(hive_id: str, *, already_published: bool = False) -> None:
     cfg = config.load()
     try:
-        result = replicate(cfg, hive_id)
+        result = replicate(cfg, hive_id, already_published=already_published)
     except LocalOnlyError as exc:
         typer.echo(f"✗ replicate refused: {exc}", err=True)
         raise typer.Exit(1) from None
@@ -230,10 +276,18 @@ def detect_local_only(cfg, entry) -> LocalOnlyRepairPlan:
         raise LocalOnlyError(
             f"{hive_dir} has no bead store on this host — run this on the host that holds it"
         )
-    if origin_has_dolt_data(hive_dir):
+    state = origin_dolt_data_state(hive_dir)
+    if state is None:
+        raise LocalOnlyError(
+            f"cannot determine whether origin of {key} carries refs/dolt/data (git ls-remote "
+            "failed) — fix network/auth and retry; an unknown origin is never recorded as "
+            "local-only"
+        )
+    if state:
         raise LocalOnlyError(
             f"origin of {key} already carries refs/dolt/data — the hive is published, not "
-            "local-only"
+            f"local-only (if it was marked local-only, `{config.BINARY_ALIAS} hive replicate "
+            "--already-published` clears the marker)"
         )
     try:
         lease = _lease(prefix)

@@ -426,6 +426,14 @@ def origin_has_dolt_data(cwd) -> bool:
     `cwd` accepts anything the git binary can be pointed at with `cwd=` (a `Path`, a `str`, or
     `None`/"" to mean "inherit the caller's own process cwd" — the shape `onboard.Ctx.cwd`
     itself carries)."""
+    return origin_dolt_data_state(cwd) is True
+
+
+def origin_dolt_data_state(cwd) -> bool | None:
+    """Tri-state form of :func:`origin_has_dolt_data`: True / False when
+    `git ls-remote origin refs/dolt/data` answers, None when it cannot (offline, auth, no
+    origin). Callers that must not guess (bh-sj2bf: a hive is "unpublished" only when origin
+    definitively carries no data) use this; the boolean collapses None to False."""
     res = run(
         ["git", "ls-remote", "origin", "refs/dolt/data"],
         cwd=str(cwd) if cwd else None,
@@ -433,7 +441,9 @@ def origin_has_dolt_data(cwd) -> bool:
         capture=True,
         timeout=GIT_TIMEOUT,
     )
-    return getattr(res, "returncode", 1) == 0 and bool((getattr(res, "stdout", "") or "").strip())
+    if getattr(res, "returncode", 1) != 0:
+        return None
+    return bool((getattr(res, "stdout", "") or "").strip())
 
 
 def detect_pre_existing_drift(hive_dir: Path) -> str | None:

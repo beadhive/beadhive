@@ -152,7 +152,7 @@
       "id": "urn:beadhive:wire-catalog:operations:1",
       "kind": "catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:80018f85396d90224dee3edebe9c29fb70143a3e4d99a51d886c6f406312ed53",
+      "sha256": "sha256:463e2b2a0142e09e24e9ba6fdcb83b8aaea17c2bc3b578c999a5309f4c27b4fb",
       "source_owner": "beadhive.kernel.operations.document",
       "version": 2
     },
