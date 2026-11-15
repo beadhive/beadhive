@@ -442,6 +442,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("localloop.py", "_default_instructions", ".beads")
     | _owned("mcp.py", "hq_intake_resource", ".beads")
     | _owned("onboard.py", "_act_bd_init", ".beads")
+    | _owned("onboard.py", "_push_access_applies", ".beads")
     | _owned("onboard.py", "_stamp_clone_identity", ".beads")
     | _owned("onboard.py", "_start_shared_server_for_clone", ".beads")
     | _owned("publish_export.py", "_resolve_public_store", ".beads")

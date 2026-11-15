@@ -11,6 +11,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import typer
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
@@ -509,29 +510,67 @@ def classify(group, org, repo, cfg=None) -> str:
 
 
 _PUSH_PERMISSIONS = ("ADMIN", "WRITE", "MAINTAIN")
+_READ_ONLY_PERMISSIONS = ("READ", "TRIAGE", "NONE")
+
+PUSH_CONFIRMED = "confirmed"
+PUSH_DENIED = "denied"
+PUSH_UNKNOWN = "unknown"
+
+#: cause categories of an UNKNOWN answer — what the onboard refusal names to the operator
+CAUSE_GH_MISSING = "gh-missing"
+CAUSE_PROBE_FAILED = "probe-failed"
+CAUSE_UNPARSEABLE = "unparseable"
+CAUSE_NO_PROBE = "no-probe"
 
 
-def has_push_access(provider, org, repo) -> bool:
-    """True only when we can CONFIRM push access to `<org>/<repo>` — fail-closed everywhere else.
+class PushAccess(NamedTuple):
+    """Tri-state answer to "can we push to `<org>/<repo>`?" (bh-9eua2).
 
-    Probes GitHub's `viewerPermission` via `gh`; write access is ADMIN/WRITE/MAINTAIN. Returns
-    False when gh is absent from PATH, the provider isn't github, the probe errors, or the
-    permission is read-only (READ/TRIAGE/NONE). Beads must live on a repo we own or nowhere
-    (bh-dhl6), so an unconfirmable answer is treated as no-access."""
-    if provider != "github" or not shutil.which("gh"):
-        return False
+    `state` is `confirmed` (viewerPermission ADMIN/WRITE/MAINTAIN), `denied` (a definite
+    READ/TRIAGE/NONE) or `unknown` (anything that is not a definite answer; `cause` names why).
+    Truthiness is `confirmed` only, so a legacy `if has_push_access(...)` stays fail-closed."""
+
+    state: str
+    cause: str = ""
+
+    def __bool__(self) -> bool:
+        return self.state == PUSH_CONFIRMED
+
+
+def _unknown(cause: str) -> PushAccess:
+    return PushAccess(PUSH_UNKNOWN, cause)
+
+
+def has_push_access(provider, org, repo) -> PushAccess:
+    """Tri-state push access to `<org>/<repo>`: confirmed / denied / unknown.
+
+    Probes GitHub's `viewerPermission` via `gh`. confirmed = ADMIN/WRITE/MAINTAIN; denied = a
+    definite READ/TRIAGE/NONE; unknown = no definite answer: gh absent from PATH
+    (`gh-missing`), a nonzero exit (`probe-failed`), unparseable JSON or an unrecognised value
+    (`unparseable`), or a provider with no probe (`no-probe`). Beads must live on a repo we own
+    or nowhere (bh-dhl6), so only `confirmed` may point the beads remote at the repo; callers
+    decide what to do with `unknown` (onboard refuses unless the operator opts in)."""
+    if provider != "github":
+        return _unknown(CAUSE_NO_PROBE)
+    if not shutil.which("gh"):
+        return _unknown(CAUSE_GH_MISSING)
     res = run(
         ["gh", "repo", "view", f"{org}/{repo}", "--json", "viewerPermission"],
         check=False,
         capture=True,
     )
     if res.returncode != 0:
-        return False
+        return _unknown(CAUSE_PROBE_FAILED)
     try:
-        perm = str((json.loads(res.stdout or "{}") or {}).get("viewerPermission", "")).upper()
+        payload = json.loads(res.stdout or "{}")
     except json.JSONDecodeError:
-        return False
-    return perm in _PUSH_PERMISSIONS
+        return _unknown(CAUSE_UNPARSEABLE)
+    perm = str((payload if isinstance(payload, dict) else {}).get("viewerPermission", "")).upper()
+    if perm in _PUSH_PERMISSIONS:
+        return PushAccess(PUSH_CONFIRMED)
+    if perm in _READ_ONLY_PERMISSIONS:
+        return PushAccess(PUSH_DENIED)
+    return _unknown(CAUSE_UNPARSEABLE)
 
 
 # ---- prefix -----------------------------------------------------------------
