@@ -36,6 +36,15 @@ class ControlPlaneError(ValueError):
     """Unavailable protection, rejected authority, or unsupported binding."""
 
 
+def _unavailable(message, code, exc):
+    """Refusal text: stable `code` plus the underlying ValueError's message (bh-ay9lb).
+
+    Only ``str(exc)`` is surfaced (never a repr or payload), collapsed to one line and
+    bounded, so an operator sees why without an exception hook."""
+    reason = " ".join(str(exc).split())[:200] or "unspecified"
+    return f"{message} [{code}]: {reason}"
+
+
 def _require_operator_key(operator_key):
     """Key-less operator mutations are trusted-mode only (bh-l4q0s); refuse before any I/O."""
     if authority_mode.key_required(operator_key):
@@ -2052,7 +2061,9 @@ class SqlControlPlane:
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise
-            raise ControlPlaneError("SQL candidate grant unavailable") from None
+            raise ControlPlaneError(
+                _unavailable("SQL candidate grant unavailable", "candidate_grant_refused", exc)
+            ) from None
 
     def prune_inbox(self, frame, *, retention_s, dry_run=False):
         """Operator-side bounded retention of signed-mode heartbeat inbox rows (bh-ce886)."""
@@ -2161,7 +2172,9 @@ class SqlControlPlane:
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise
-            raise ControlPlaneError("SQL authority renewal unavailable") from None
+            raise ControlPlaneError(
+                _unavailable("SQL authority renewal unavailable", "authority_renewal_refused", exc)
+            ) from None
 
     def _rebind_frame_grant(self, state, frame):
         """Point `frame`'s active/candidate grant at the current frame-policy revision.
@@ -3314,6 +3327,13 @@ def _registry_fence_reader(prefix):
         )
     _sha, record = gitref.read_remote("origin", EPOCH_REF, cwd=Path(hive_dir))
     return None if record is None else EpochFence.from_record(record)
+
+
+def host_sql_settings():
+    """This host's validated ``hq.sql`` settings, as the SQL control plane and the SQL port
+    adapter (bh-v3dyp) both take them."""
+    cfg = config.load_host().get("hq", {})
+    return _validated_sql_binding(cfg.get("sql", {})).model_dump()
 
 
 def control_plane(hq_dir=None):

@@ -92,3 +92,46 @@ def test_expired_operator_budget_never_opens_a_new_connection(monkeypatch):
     )
     with pytest.raises(SqlOperatorError, match="deadline exceeded"):
         operator.load(deadline=time.monotonic() - 1)
+
+
+class _RefusingOperator:
+    """Operator whose load fails with a validation ValueError carrying a known reason."""
+
+    def load(self, *, deadline):
+        raise ValueError("bound authority carrier requires one beadyard identity")
+
+
+def _refusing_plane(monkeypatch):
+    plane = object.__new__(SqlControlPlane)
+    plane.settings = {}
+    plane.clock = lambda: 1_000_000.0
+    monkeypatch.setattr(plane, "_operator", lambda: _RefusingOperator())
+    monkeypatch.setattr(plane, "_operator_deadline", lambda: 10**12)
+    return plane
+
+
+def test_renewal_refusal_carries_code_and_underlying_reason(monkeypatch):
+    plane = _refusing_plane(monkeypatch)
+    with pytest.raises(ControlPlaneError) as caught:
+        plane.renew(expected="original", operator_key="/fixture/operator-key")
+    text = str(caught.value)
+    assert text.startswith("SQL authority renewal unavailable [authority_renewal_refused]: ")
+    assert "bound authority carrier requires one beadyard identity" in text
+
+
+def test_candidate_grant_refusal_carries_code_and_underlying_reason(monkeypatch):
+    from beadhive.host_heartbeat_core import ObservationAuthority
+    from beadhive.hq_sql_signatures import fingerprint
+    from test_hq_operator_expiry_preserved import _public
+
+    plane = _refusing_plane(monkeypatch)
+    public = _public()
+    plane.settings = {"runtime_operator_public_key": _public()}
+    authority = ObservationAuthority(
+        "frame2", "host2", "vm2", fingerprint(public), 1, "fleet", "cfg", 1_000_600.0
+    )
+    with pytest.raises(ControlPlaneError) as caught:
+        plane.grant(authority, public, {}, expected="head", operator_key="key")
+    text = str(caught.value)
+    assert text.startswith("SQL candidate grant unavailable [candidate_grant_refused]: ")
+    assert "bound authority carrier requires one beadyard identity" in text

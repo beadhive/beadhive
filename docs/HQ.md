@@ -721,6 +721,9 @@ the copy.
 - [CONFIGURATION — Fleet + host config](CONFIGURATION.md#fleet-host) — how `fleet.yaml` merges
   with a host's own config, the override allowlist, `--scope`, and the flat-config migration.
 - [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.
+- [HQ lifecycle port](design/hq-lifecycle-port.md) — every place bh opens the HQ SQL server,
+  and the port (liveness, admission, reads, operator publication) that maps each one onto an
+  hq.lifecycle.v0 route for the hq-service adapter (ADR 0005), with the routes still missing.
 
 ## Signed-mode inbox retention
 
@@ -993,6 +996,22 @@ replay.
    because it descends from their floor.
 4. If the change is not intended, revert it with a new commit, then publish again as in
    step 3. A revert alone is still refused, because every commit since the floor is checked.
+
+**Keep the binding in step with the fleet's release floor (bh-jc6zo).** Steps 3 and 4 run the
+`bh` installed beside the server-local operator binding, and that `bh` must read the current
+authority state before it can republish. A binding older than the `bh` that wrote that state
+cannot validate it. It refuses, naming its own version and what the state carries (a newer
+runtime schema, authority carrier or envelope field), instead of the generic "unavailable":
+
+```text
+HQ authority version mismatch: the authority state was written by a newer bh than this
+binding's bh 0.35.0 (it carries authority carrier beadhive/git-authority/v3; this bh
+understands beadhive/git-authority/v1 and beadhive/git-authority/v2); upgrade the server-local
+operator binding to at least the fleet release floor and retry
+```
+
+Upgrade the binding to at least the fleet release floor, then retry. Upgrade it together with
+the fleet, before any recovery needs it.
 
 ### The signed release catalog {#release-catalog}
 

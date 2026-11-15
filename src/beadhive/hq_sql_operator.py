@@ -25,6 +25,7 @@ from .hq_sql_runtime import (
     SqlRuntimeAuthority,
     SqlRuntimeCapabilityMissing,
     SqlRuntimeFloorRefusal,
+    SqlRuntimeVersionMismatch,
 )
 from .hq_sql_runtime_schema import (
     evidence_table,
@@ -114,7 +115,7 @@ class SqlRuntimeOperator:
             raise SqlOperatorError(
                 f"protected authority writer read unavailable: {error}"
             ) from None
-        except SqlRuntimeFloorRefusal as error:
+        except (SqlRuntimeFloorRefusal, SqlRuntimeVersionMismatch) as error:
             # A restore-floor refusal is a finding, not an outage (bh-a0wem): its fixed text
             # names heads, sequences and changed tables, never rows or secrets, and points at
             # the native recovery procedure the operator needs.
@@ -358,15 +359,20 @@ class SqlRuntimeOperator:
         state: dict,
         *,
         expected_revision: str,
-        operator_key: str,
+        operator_key: str = "",
         provisioned_route=None,
         release_upgrade=None,
         deadline=None,
+        authority_signer=None,
     ) -> str:
         """Sign current canonical catalog projection and exact authority CAS.
 
         Without *operator_key* in trusted mode (bh-l4q0s) the row carries the unsigned marker
-        :data:`beadhive.hq_authority_enforce.UNSIGNED_SIGNATURE` instead of a signature."""
+        :data:`beadhive.hq_authority_enforce.UNSIGNED_SIGNATURE` instead of a signature.
+
+        *authority_signer* (the HQ port's keyless contract, bh-v3dyp) replaces *operator_key*:
+        it receives the canonical record and returns the signature (or the unsigned marker), so
+        the key never crosses the port."""
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlOperatorError("original authority revision required")
         connection, deadline = self._open(deadline=deadline)
@@ -467,7 +473,20 @@ class SqlRuntimeOperator:
                     "state": state,
                     "hive_policies": policies,
                 }
-                if operator_key:
+                if authority_signer is not None:
+                    signature = authority_signer(signed)
+                    if signature == hq_authority_enforce.UNSIGNED_SIGNATURE:
+                        # Same fence as the key-less path: the unsigned marker is written only
+                        # on a trusted host, never because a signer returned it.
+                        if not hq_authority_enforce.trusted():
+                            raise SqlOperatorError("mutation requires separate --operator-key")
+                    else:
+                        verify_authority(
+                            signed,
+                            signature,
+                            granted_public_key=self.settings["runtime_operator_public_key"],
+                        )
+                elif operator_key:
                     signature = sign_authority(signed, signing_key=operator_key)
                     verify_authority(
                         signed,
@@ -501,9 +520,13 @@ class SqlRuntimeOperator:
                 self.authority.fresh_runtime_head_fence(head, deadline=deadline)
                 sql.stage_authority()
                 crossed_commit = True
+                signed_label = (
+                    "unsigned (trusted)"
+                    if signature == hq_authority_enforce.UNSIGNED_SIGNATURE
+                    else "signed"
+                )
                 committed = sql.commit_authority(
-                    f"HQ {'signed' if operator_key else 'unsigned (trusted)'} authority "
-                    f"{state['revision']}",
+                    f"HQ {signed_label} authority {state['revision']}",
                     "HQ operator <hq-operator@localhost>",
                 )
                 if not committed or not isinstance(committed[0], str):
@@ -523,6 +546,13 @@ class SqlRuntimeOperator:
             if not crossed_commit:
                 connection.rollback()
                 raise
+            raise AuthorityPublicationUnknown(expected_revision) from None
+        except SqlRuntimeVersionMismatch as error:
+            # An older binding facing newer authority state (bh-jc6zo): name it, never the
+            # generic "unavailable". Before the commit nothing was written.
+            if not crossed_commit:
+                connection.rollback()
+                raise SqlOperatorError(str(error)) from None
             raise AuthorityPublicationUnknown(expected_revision) from None
         except Exception:
             if not crossed_commit:

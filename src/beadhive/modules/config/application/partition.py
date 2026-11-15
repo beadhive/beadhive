@@ -26,6 +26,8 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "hq.authority_anchor",
         "hq.authority_mode",
         "hq.authority_expiry_recheck_s",
+        "hq.route",
+        "hq.api",
         "hq.sql",
         "hq.release_catalog",
         "dolt",

@@ -2688,6 +2688,44 @@
       "title": "HostLeaseConfig",
       "type": "object"
     },
+    "HqApiConfig": {
+      "additionalProperties": false,
+      "description": "Where this host reaches the HQ service (``hq.api``, bh-g76hp). Used only when\n``hq.route`` is ``api``. HOST-local. The caller's identity is the credential the Gateway\n``hq`` plane authenticates (a client certificate on its TLS listener, or the auth proxy\nin front of its socket), never a value carried in a request.",
+      "properties": {
+        "ca_cert": {
+          "default": "",
+          "description": "Absolute path of the CA bundle that verifies the Gateway (PEM).",
+          "title": "Ca Cert",
+          "type": "string"
+        },
+        "client_cert": {
+          "default": "",
+          "description": "Absolute path of this frame's mTLS client certificate (PEM).",
+          "title": "Client Cert",
+          "type": "string"
+        },
+        "client_key": {
+          "default": "",
+          "description": "Absolute path of the private key for `client_cert` (PEM).",
+          "title": "Client Key",
+          "type": "string"
+        },
+        "unix_socket": {
+          "default": "",
+          "description": "Absolute path of the Gateway hq plane's proxy socket. When set, requests go over it instead of the network.",
+          "title": "Unix Socket",
+          "type": "string"
+        },
+        "url": {
+          "default": "",
+          "description": "Base URL of the Gateway hq plane, for example `https://hq.example.org:8443`. Over `unix_socket` it is only the request authority (default `http://hq`).",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "title": "HqApiConfig",
+      "type": "object"
+    },
     "HqConfig": {
       "additionalProperties": false,
       "description": "Factory HQ remote (``hq``) — where the factory's central HQ store publishes to.",
@@ -2697,6 +2735,9 @@
           "default": "manual",
           "title": "Admission Policy",
           "type": "string"
+        },
+        "api": {
+          "$ref": "#/$defs/HqApiConfig"
         },
         "authority_anchor": {
           "default": "",
@@ -2760,6 +2801,16 @@
           "default": "",
           "description": "HQ repo remote: `<owner>/beadhive-hq`, an absolute local path, or local `file://` URL. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
           "title": "Remote",
+          "type": "string"
+        },
+        "route": {
+          "default": "sql",
+          "description": "HOST-only. Which adapter this host's HQ calls use: `sql` (default; this host opens the HQ SQL server itself) or `api` (the hq-service, through the Gateway hq plane named by `hq.api`). There is no fallback between them: an `api` host whose service is down fails, and switching back is this one setting.",
+          "enum": [
+            "sql",
+            "api"
+          ],
+          "title": "Route",
           "type": "string"
         },
         "sql": {

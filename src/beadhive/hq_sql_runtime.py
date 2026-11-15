@@ -21,6 +21,7 @@ every method that takes a ``cursor`` also takes that statement surface.
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -68,6 +69,49 @@ class SqlRuntimeFloorRefusal(SqlRuntimeError):
 
     The message names heads, sequences, the reason and changed tables, never row contents or
     credentials, and points at :data:`FLOOR_RECOVERY_DOC`, so callers may show it verbatim."""
+
+
+class SqlRuntimeVersionMismatch(SqlRuntimeError):
+    """The authority state was written by a newer ``bh`` than the one reading it (bh-jc6zo).
+
+    Raised when the stored schema, carrier domain or envelope fields are newer than this
+    release understands. The text names this ``bh`` and what the state carries, never row
+    contents, and tells the operator to upgrade the binding; callers may show it verbatim."""
+
+
+def _running_version() -> str:
+    try:
+        return importlib.metadata.version("beadhive")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def version_mismatch(detail: str) -> SqlRuntimeVersionMismatch:
+    return SqlRuntimeVersionMismatch(
+        f"HQ authority version mismatch: the authority state was written by a newer bh than "
+        f"this binding's bh {_running_version()} ({detail}); upgrade the server-local operator "
+        f"binding to at least the fleet release floor and retry; see {FLOOR_RECOVERY_DOC}"
+    )
+
+
+def check_state_compatible(state) -> None:
+    """Refuse state this ``bh`` predates with a version-mismatch reason, before validation
+    would reject it with the generic "invalid authority envelope"."""
+    if not isinstance(state, dict):
+        return
+    domain = state.get("domain")
+    if isinstance(domain, str) and domain not in (guard.DOMAIN, guard.DOMAIN_V2):
+        prefix, _, number = domain.rpartition("/v")
+        if prefix == guard.DOMAIN.rpartition("/v")[0] and number.isdigit():
+            raise version_mismatch(
+                f"it carries authority carrier {domain}; this bh understands "
+                f"{guard.DOMAIN} and {guard.DOMAIN_V2}"
+            )
+    known = {"domain", "generation", "revision", "issued_at", "expires_at", "frames"}
+    if (extra := set(state) - known) and known <= set(state):
+        raise version_mismatch(
+            f"it carries authority fields this bh does not know: {sorted(extra)}"
+        )
 
 
 class _ProvisioningRefusal(SqlRuntimeError):
@@ -798,6 +842,8 @@ class SqlRuntimeAuthority:
             policy_digest,
             signature,
         ) = rows[0]
+        if singleton == 1 and type(schema) is int and schema > 1:
+            raise version_mismatch(f"it carries runtime schema {schema}; this bh understands 1")
         if singleton != 1 or schema != 1 or not config_head:
             raise SqlRuntimeError("protected HQ runtime metadata invalid")
         if isinstance(encoded, memoryview):
@@ -905,6 +951,7 @@ class SqlRuntimeAuthority:
         trusted = hq_authority_enforce.trusted()
         allow_expired = allow_expired or trusted
         config_head = crossref[2]
+        check_state_compatible(state)
         guard.validate_state(state)
         validate_sql_hive_policies(
             policies, config_head=config_head, now=self.clock(), require_fresh=False
