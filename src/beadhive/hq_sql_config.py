@@ -141,6 +141,15 @@ _DEGRADED: dict[tuple, FleetConfigSnapshot] = {}
 _degraded_warned: set[tuple] = set()
 
 
+class SqlConfigDeadline(SqlConfigError):
+    """The caller's deadline was spent before the config write was sent; nothing was written."""
+
+
+def _require_time(deadline) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise SqlConfigDeadline("HQ config operation deadline exceeded before the write")
+
+
 class PublicationUnknown(SqlConfigError):
     """DOLT_COMMIT may have succeeded; recover by immutable publication ID.
 
@@ -1066,7 +1075,7 @@ class SqlFleetConfigRevisionStore:
         finally:
             connection.close()
 
-    def recover_publication(self, publication_id, *, expected_revision):
+    def recover_publication(self, publication_id, *, expected_revision, deadline=None):
         """Read committed current history for an uncertain original publication.
 
         None means no *confirmed* outcome on this branch; callers must not retry
@@ -1084,15 +1093,19 @@ class SqlFleetConfigRevisionStore:
             raise SqlConfigError("immutable publication ID invalid") from None
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original publication parent required")
+        _require_time(deadline)
         confirmed = confirmed_publication(
             self.history, publication_id, expected_revision=expected_revision
         )
-        head, rows, descends = self._publication_witness(publication_id, expected_revision)
+        bounded = {} if deadline is None else {"deadline": deadline}
+        head, rows, descends = self._publication_witness(
+            publication_id, expected_revision, **bounded
+        )
         return _recovery(publication_id, expected_revision, confirmed, head, rows, descends)
 
-    def _publication_witness(self, publication_id, expected_revision):
+    def _publication_witness(self, publication_id, expected_revision, *, deadline=None):
         """``(head, witness rows, head descends from the parent)`` at the floor-checked head."""
-        connection, deadline = self._open("reader")
+        connection, deadline = self._open("reader", deadline=deadline)
         try:
             binding = self.settings["reader"]
             timeout = min(binding["read_timeout"], binding["write_timeout"])
@@ -1409,13 +1422,23 @@ class SqlFleetConfigRevisionStore:
             connection.close()
 
     def publish_snapshot(
-        self, documents, *, expected_revision, explicit_adoption=False, publication_id=None
+        self,
+        documents,
+        *,
+        expected_revision,
+        explicit_adoption=False,
+        publication_id=None,
+        deadline=None,
     ):
+        """Publish once. A ``deadline`` (monotonic) spent before the write is sent raises
+        :class:`SqlConfigDeadline`; once the write may have gone out the outcome is
+        :class:`PublicationUnknown` (recover by ``recover_publication``)."""
         return self._publish_snapshot(
             documents,
             expected_revision=expected_revision,
             explicit_adoption=explicit_adoption,
             publication_id=publication_id,
+            deadline=deadline,
         )
 
     def repair_snapshot(self, documents, *, expected_revision):
@@ -1450,8 +1473,10 @@ class SqlFleetConfigRevisionStore:
         allow_invalid_previous=False,
         explicit_adoption=False,
         publication_id=None,
+        deadline=None,
     ):
         _validate(documents)
+        _require_time(deadline)
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original expected configuration revision required")
         if publication_id is None:
@@ -1463,12 +1488,15 @@ class SqlFleetConfigRevisionStore:
                 raise SqlConfigError("immutable publication ID invalid") from None
             if parsed_publication.version != 4 or str(parsed_publication) != publication_id:
                 raise SqlConfigError("immutable publication ID invalid")
+        bounded = {} if deadline is None else {"deadline": deadline}
         target_version = self._publication_preflight(
             documents,
             expected_revision=expected_revision,
             allow_invalid_previous=allow_invalid_previous,
             explicit_adoption=explicit_adoption,
+            **bounded,
         )
+        _require_time(deadline)
         committed_hash = publish_documents(
             self.history,
             documents,
@@ -1479,7 +1507,7 @@ class SqlFleetConfigRevisionStore:
         # DOLT_COMMIT commits the SQL transaction; rollback cannot undo it. A failed or
         # differing readback leaves the outcome uncertain: recover by the original UUID.
         try:
-            snapshot = self.load_snapshot(revision=committed_hash)
+            snapshot = self.load_snapshot(revision=committed_hash, **bounded)
         except Exception:
             raise PublicationUnknown(publication_id, expected_revision) from None
         if snapshot.documents != documents:
@@ -1487,7 +1515,13 @@ class SqlFleetConfigRevisionStore:
         return snapshot
 
     def _publication_preflight(
-        self, documents, *, expected_revision, allow_invalid_previous, explicit_adoption
+        self,
+        documents,
+        *,
+        expected_revision,
+        allow_invalid_previous,
+        explicit_adoption,
+        deadline=None,
     ):
         """The publisher's read-only checks of the original parent; the storage version.
 
@@ -1496,7 +1530,7 @@ class SqlFleetConfigRevisionStore:
         monotonicity and the host floor, all before the port publish is attempted. The port
         publish re-checks the head, the working tree and the allowlist in its own transaction.
         """
-        connection, deadline = self._open("publisher")
+        connection, deadline = self._open("publisher", deadline=deadline)
         try:
             binding = self.settings["publisher"]
             timeout = min(binding["read_timeout"], binding["write_timeout"])

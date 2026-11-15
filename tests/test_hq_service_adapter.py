@@ -159,7 +159,7 @@ def test_5xx_on_idempotent_submissions_and_reads_stays_unavailable(status):
         lambda: adapter.submit_heartbeat(ANCHOR, {}, request_id="rq", deadline=_later()),
         lambda: adapter.submit_hive_lease(ANCHOR, "p", {}, deadline=_later()),
         lambda: adapter.read_authority(deadline=_later()),
-        lambda: adapter.read_history(since="r0", deadline=_later()),
+        lambda: adapter._read_history(since="r0", deadline=_later()),
     ):
         with pytest.raises(HqUnavailable):
             call()
@@ -209,12 +209,12 @@ def test_read_timeout_on_a_read_is_deadline():
 
     adapter, _ = _adapter(slow)
     with pytest.raises(HqDeadline):
-        adapter.read_history(since="abc", deadline=_later())
+        adapter._read_history(since="abc", deadline=_later())
 
 
 def test_history_floor_is_a_path_segment():
     adapter, calls = _adapter(_json({"commits": [{"h": 1}], "diff_summary": []}))
-    history = adapter.read_history(since="deadbeef", deadline=_later())
+    history = adapter._read_history(since="deadbeef", deadline=_later())
     assert calls[0].url.path == f"{PREFIX}/history/deadbeef" and not calls[0].url.query
     assert history.commits == ({"h": 1},)
 

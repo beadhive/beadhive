@@ -102,6 +102,12 @@ class Submission:
     outcome: Literal["pending", "accepted", "replayed", "refused"]
     revision: str | None = None
     refusal: str | None = None
+    #: What a stateless ``read_result`` needs to rebuild the receiver's public-result read
+    #: (SQL route, filled by submit): the envelope audience, the head the submit was
+    #: anchored at, and the submitting route. ``None`` when the route does not need them.
+    audience: str | None = None
+    expected_head: str | None = None
+    anchor: FrameAnchor | None = None
 
 
 @dataclass(frozen=True)
@@ -172,7 +178,6 @@ class HqReads(Protocol):
     def read_config(
         self, *, revision: str | None = None, cached_ok: bool = False, deadline: float
     ) -> Any: ...
-    def read_history(self, *, since: str, deadline: float) -> HistorySinceFloor: ...
 
 
 class HqOperator(Protocol):
