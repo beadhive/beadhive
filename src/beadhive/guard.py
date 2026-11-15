@@ -566,8 +566,10 @@ def _refuse_local_only_legacy(hive: str, cfg) -> None:
         _unreadable(exc)
     try:
         entry = registry.entry_for_dir(settings, registry.hive_dir_for(settings, hive)) or {}
-    except (ValueError, KeyError, FileNotFoundError):
-        return  # unresolvable hive: nothing to check a marker on
+    except (ValueError, KeyError, FileNotFoundError, typer.Exit):
+        # unresolvable hive (``resolve_hive`` prints its own error and raises ``typer.Exit``):
+        # nothing to check a marker on, and the verb reports it
+        return
     except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
         _unreadable(exc)
     refusal = registry.local_only_refusal(entry, host.host_id_or_none())

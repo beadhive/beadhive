@@ -38,6 +38,8 @@ DIRECT_BD_ADMIN_SCOPES = {
         # bh-sj2bf `bh hive replicate`: restore the beads remote onboard's push guard unset
         # (`bd config set sync.remote`), the inverse of onboard's own admin `config unset`.
         "restore_beads_remote",
+        # ... and its rollback when a later publish/verify step fails (`config unset sync.remote`)
+        "_unset_beads_remote",
     },
     "hq.py": {
         # HQ bootstrap/backup administration and its diagnostic version probe.

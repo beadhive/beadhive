@@ -302,7 +302,7 @@ def test_a_cached_lease_hq_no_longer_has_at_all_stops_gating(
 
 def test_an_unresolvable_hive_is_not_this_guards_error_to_raise(hq, monkeypatch):
     def boom(*_a, **_k):
-        raise RuntimeError("no such hive")
+        raise typer.Exit(1)  # what ``registry.resolve_hive`` raises for an unknown hive
 
     monkeypatch.setattr(registry, "hive_dir_for", boom)
     guard.guard_primary("nope", cfg={})  # no raise: hive resolution errors belong to the verb
