@@ -98,11 +98,71 @@ def test_non_submission_refusal_raises_with_code():
     assert info.value.code == "stale_revision"
 
 
-@pytest.mark.parametrize("status", [401, 403, 404, 500, 502])
-def test_gateway_and_server_failures_are_unavailable(status):
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_gateway_refusals_before_the_service_are_unavailable(status):
     adapter, _ = _adapter(_json({"error": "no"}, status))
     with pytest.raises(HqUnavailable):
         adapter.admit("f", {"a": 1}, signer=lambda r: "", expected_revision="r", deadline=_later())
+
+
+def _writes(adapter):
+    """Every non-idempotent write the adapter sends, each with expected revision ``r7``."""
+    signer = lambda record: "sig"  # noqa: E731
+    return {
+        "register_incarnation": lambda: adapter.register_incarnation(
+            ("p", 1), expected_revision="r7", frame_address="f", deadline=_later()
+        ),
+        "publish_manifest": lambda: adapter.publish_manifest(
+            {"host_id": "h"}, expected_revision="r7", deadline=_later()
+        ),
+        "admit": lambda: adapter.admit(
+            "f", {"a": 1}, signer=signer, expected_revision="r7", deadline=_later()
+        ),
+        "rebind": lambda: adapter.rebind(
+            {}, signer=signer, expected_revision="r7", deadline=_later()
+        ),
+        "release_policy": lambda: adapter.release_policy(
+            "f", {}, signer=signer, expected_revision="r7", deadline=_later()
+        ),
+    }
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+@pytest.mark.parametrize(
+    "name", ["register_incarnation", "publish_manifest", "admit", "rebind", "release_policy"]
+)
+def test_5xx_on_a_non_idempotent_write_is_outcome_unknown(name, status):
+    def handler(request):
+        body = json.loads(request.content)
+        if body.get("phase") == "plan":  # the plan phase writes nothing; the apply phase fails
+            return httpx.Response(200, json={"plan": {"head": "h"}})
+        return httpx.Response(status, json={"error": "boom"})
+
+    adapter, _ = _adapter(handler)
+    with pytest.raises(HqOutcomeUnknown) as info:
+        _writes(adapter)[name]()
+    assert info.value.expected_revision == "r7"
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_5xx_on_the_plan_phase_writes_nothing_so_is_unavailable(status):
+    adapter, calls = _adapter(_json({"error": "boom"}, status))
+    with pytest.raises(HqUnavailable):
+        _writes(adapter)["rebind"]()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_5xx_on_idempotent_submissions_and_reads_stays_unavailable(status):
+    adapter, _ = _adapter(_json({"error": "boom"}, status))
+    for call in (
+        lambda: adapter.submit_heartbeat(ANCHOR, {}, request_id="rq", deadline=_later()),
+        lambda: adapter.submit_hive_lease(ANCHOR, "p", {}, deadline=_later()),
+        lambda: adapter.read_authority(deadline=_later()),
+        lambda: adapter.read_history(since="r0", deadline=_later()),
+    ):
+        with pytest.raises(HqUnavailable):
+            call()
 
 
 @pytest.mark.parametrize("status", [400, 413, 415])

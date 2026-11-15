@@ -84,8 +84,13 @@ class HqServiceAdapter:
         *,
         deadline: float,
         expected_revision: str | None = None,
+        commit_write: bool = False,
     ) -> tuple[int, Any]:
-        """One request. Returns ``(status, json)`` for a 2xx; maps everything else."""
+        """One request. Returns ``(status, json)`` for a 2xx; maps everything else.
+
+        ``commit_write`` marks a non-idempotent write whose commit may precede the failure the
+        caller sees, so a ``5xx`` raises :class:`HqOutcomeUnknown` rather than ``HqUnavailable``.
+        """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise HqDeadline("deadline spent before the request")
@@ -111,10 +116,17 @@ class HqServiceAdapter:
             if write:
                 raise HqOutcomeUnknown(expected_revision, f"connection lost: {exc}") from exc
             raise HqUnavailable(f"hq-service read failed: {exc}") from exc
-        return response.status_code, self._decode(response)
+        return response.status_code, self._decode(
+            response, commit_write=commit_write, expected_revision=expected_revision
+        )
 
     @staticmethod
-    def _decode(response: httpx.Response) -> Any:
+    def _decode(
+        response: httpx.Response,
+        *,
+        commit_write: bool = False,
+        expected_revision: str | None = None,
+    ) -> Any:
         status = response.status_code
         try:
             payload: Any = response.json() if response.content else {}
@@ -132,8 +144,17 @@ class HqServiceAdapter:
             raise HqRefused(
                 "bad_request", str(message or f"hq-service refused the request ({status})")
             )
-        # 401/403/404/405 come from the Gateway before the service; 5xx is the service or the
-        # Gateway's own fault. All mean HQ could not be used, and nothing was written.
+        if commit_write and status >= 500:
+            # A Gateway 502/503/504 can arrive after the service committed, and a service 500 can
+            # be a post-commit error (a failed response build or commit acknowledgement), so
+            # the write may have landed. All 5xx are outcome-unknown for a non-idempotent write.
+            raise HqOutcomeUnknown(
+                expected_revision,
+                f"hq-service answered {status} to a write that may have committed"
+                + (f": {message}" if message else ""),
+            )
+        # 401/403/404/405 come from the Gateway before the service; on a read, an idempotent
+        # submission or a plan phase, 5xx means HQ could not be used and nothing was written.
         raise HqUnavailable(f"hq-service answered {status}" + (f": {message}" if message else ""))
 
     def _submission(
@@ -219,7 +240,12 @@ class HqServiceAdapter:
         # frame_address and any password are SQL-adapter-only inputs: no login, no secret here.
         body = {"route": list(route), "expected_revision": expected_revision}
         _, payload = self._call(
-            "POST", "/incarnations", body, deadline=deadline, expected_revision=expected_revision
+            "POST",
+            "/incarnations",
+            body,
+            deadline=deadline,
+            expected_revision=expected_revision,
+            commit_write=True,
         )
         return self._revision(payload)
 
@@ -235,6 +261,7 @@ class HqServiceAdapter:
             body,
             deadline=deadline,
             expected_revision=expected_revision,
+            commit_write=True,
         )
         return self._revision(payload)
 
@@ -261,6 +288,7 @@ class HqServiceAdapter:
             body,
             deadline=deadline,
             expected_revision=expected_revision,
+            commit_write=True,
         )
         return self._revision(payload)
 
@@ -335,7 +363,12 @@ class HqServiceAdapter:
             "signature": signature,
         }
         _, payload = self._call(
-            "POST", path, apply_body, deadline=deadline, expected_revision=expected_revision
+            "POST",
+            path,
+            apply_body,
+            deadline=deadline,
+            expected_revision=expected_revision,
+            commit_write=True,
         )
         return self._revision(payload)
 
