@@ -361,7 +361,8 @@ class HqPort(HqLiveness, HqAdmission, HqReads, HqOperator, Protocol):
 `refused`), `revision` and `refusal` (a stable code). The SQL adapter returns `pending` from a
 `submit_*` method and `read_result` resolves it. The hq-service adapter returns the final
 outcome directly. Callers that wait for a verdict, as `publish_hive_lease` does today, call
-`read_result` either way. (Section 7 D4 supersedes the SQL adapter's in-process pending map: `read_result` becomes stateless.)
+`read_result` either way. (Section 7 D4 supersedes the SQL adapter's in-process pending map:
+`read_result` becomes stateless.)
 
 `FrameAnchor` is today's `PrincipalBinding` plus the authority head it was read at. The SQL
 adapter needs both for `publish_inbox`'s `expected_head` and routed-table check. The
@@ -431,10 +432,12 @@ the `*Unknown` publication errors to `HqOutcomeUnknown`, everything else definit
 `HqRefused`). It registers itself with `register_sql_adapter` on import, and `select_hq_port`
 imports it on demand when `sql` is chosen.
 
-Notes: `SqlRuntimeOperator.publish` gained an `authority_signer=` argument (the port's keyless contract)
-beside `operator_key`; `read_history` is not a SQL route (the restore floor is checked inside each
-verified read) [kept: section 7 D1 deletes the stub]; `register_incarnation` needs the SQL-only provisioning password at construction [superseded by section 7 D2]; `admit` takes the already-built next authority state, because the grant rules stay in
-`SqlControlPlane` [superseded by section 7 D3]. Callers are not yet re-pointed at the port.
+Notes: `SqlRuntimeOperator.publish` gained an `authority_signer=` argument (the port's keyless
+contract) beside `operator_key`; `read_history` is not a SQL route (the restore floor is checked
+inside each verified read) [kept: section 7 D1 deletes the stub]; `register_incarnation` needs the
+SQL-only provisioning password at construction [superseded by section 7 D2]; `admit` takes the
+already-built next authority state, because the grant rules stay in `SqlControlPlane`
+[superseded by section 7 D3]. Callers are not yet re-pointed at the port.
 
 ## 7. Decisions: SQL-route contract gaps (bh-tn3c3, 2026-11-15)
 
