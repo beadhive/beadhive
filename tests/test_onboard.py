@@ -6,6 +6,8 @@ Exercises the ENGINE only, with fake steps/checks (no real git/bd). Asserts on t
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import typer
 
@@ -351,35 +353,71 @@ def test_bd_init_keeps_remote_with_push_access(monkeypatch):
     assert ["bd", "config", "unset", "sync.remote"] not in calls
 
 
-def test_has_push_access_fail_closed_when_gh_absent(monkeypatch):
+def _perm(monkeypatch, perm):
+    from beadhive import registry
+
+    monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
+    monkeypatch.setattr(
+        registry, "run", lambda *a, **k: _Ok_json(json.dumps({"viewerPermission": perm}))
+    )
+
+
+def test_has_push_access_unknown_when_gh_absent(monkeypatch):
     from beadhive import registry
 
     monkeypatch.setattr(registry.shutil, "which", lambda _n: None)
-    assert registry.has_push_access("github", "stablyai", "orca") is False
+    ans = registry.has_push_access("github", "stablyai", "orca")
+    assert (ans.state, ans.cause) == ("unknown", "gh-missing")
+    assert not ans  # legacy truthiness stays fail-closed
 
 
-def test_has_push_access_reads_only_is_no_access(monkeypatch):
+def test_has_push_access_unknown_for_non_github_provider(monkeypatch):
+    from beadhive import registry
+
+    ans = registry.has_push_access("gitlab", "grp", "proj")
+    assert (ans.state, ans.cause) == ("unknown", "no-probe")
+
+
+def test_has_push_access_unknown_on_nonzero_exit(monkeypatch):
+    from beadhive import registry
+
+    class _Fail:
+        returncode = 1
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
+    monkeypatch.setattr(registry, "run", lambda *a, **k: _Fail())
+    ans = registry.has_push_access("github", "stablyai", "orca")
+    assert (ans.state, ans.cause) == ("unknown", "probe-failed")
+
+
+@pytest.mark.parametrize("payload", ["not json", '{"viewerPermission": ""}', "[]", '{"x": 1}'])
+def test_has_push_access_unknown_on_unparseable_answer(monkeypatch, payload):
     from beadhive import registry
 
     monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
-    monkeypatch.setattr(
-        registry,
-        "run",
-        lambda *a, **k: _Ok_json('{"viewerPermission": "READ"}'),
-    )
-    assert registry.has_push_access("github", "stablyai", "orca") is False
+    monkeypatch.setattr(registry, "run", lambda *a, **k: _Ok_json(payload))
+    ans = registry.has_push_access("github", "stablyai", "orca")
+    assert (ans.state, ans.cause) == ("unknown", "unparseable")
 
 
-def test_has_push_access_write_permission_is_access(monkeypatch):
+@pytest.mark.parametrize("perm", ["READ", "TRIAGE", "NONE", "read"])
+def test_has_push_access_read_only_is_denied(monkeypatch, perm):
     from beadhive import registry
 
-    monkeypatch.setattr(registry.shutil, "which", lambda _n: "/usr/bin/gh")
-    monkeypatch.setattr(
-        registry,
-        "run",
-        lambda *a, **k: _Ok_json('{"viewerPermission": "WRITE"}'),
-    )
-    assert registry.has_push_access("github", "briancripe", "orca") is True
+    _perm(monkeypatch, perm)
+    ans = registry.has_push_access("github", "stablyai", "orca")
+    assert ans.state == "denied" and not ans
+
+
+@pytest.mark.parametrize("perm", ["ADMIN", "WRITE", "MAINTAIN"])
+def test_has_push_access_write_permission_is_confirmed(monkeypatch, perm):
+    from beadhive import registry
+
+    _perm(monkeypatch, perm)
+    ans = registry.has_push_access("github", "briancripe", "orca")
+    assert ans.state == "confirmed" and ans
 
 
 def _Ok_json(payload: str):

@@ -64,6 +64,30 @@ Flow (`hive.py`):
 
 `--dry-run` prints the plan and changes nothing.
 
+### Push-access probe: confirmed, denied, unknown
+
+Onboarding probes whether you can push to the repo (GitHub `viewerPermission` via `gh`) and the
+answer is **tri-state** (bh-9eua2):
+
+| Answer | Meaning | Onboard |
+| --- | --- | --- |
+| confirmed | `ADMIN` / `WRITE` / `MAINTAIN` | unchanged: beads remote kept, bead database published |
+| denied | a definite `READ` / `TRIAGE` / `NONE` | unchanged: `sync.remote` unset, local store |
+| unknown | no definite answer | **refused** before anything mutates |
+
+Unknown covers four causes, each named in the refusal with its remedy: `gh-missing` (gh not on
+PATH: install gh and `gh auth login`), `probe-failed` (gh exited nonzero: `gh auth status` /
+network), `unparseable` (bad JSON or an unrecognised permission) and `no-probe` (the provider has
+no probe). Previously every one of these silently took the denied path yet still registered the
+hive fleet-wide, so other frames then required a replica that was never published.
+
+**Non-github providers now refuse.** They used to be treated as no-access and onboarded local;
+they have no probe, so they are unknown and refuse unless opted in. The opt-in is the existing
+`--skip-check push-access-confirmed`: it knowingly accepts the local path (beads remote left
+unset, as for denied; bh-dhl6's rule that beads never point at a repo we cannot confirm we own
+is unchanged). External hives (pull-only) are exempt, and an already-initialized store is not
+re-probed.
+
 ### Declared footprint: zero by default, furnished on opt-in
 
 Onboarding makes in-repo changes **only when declared**. The default is **zero-footprint**:

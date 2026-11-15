@@ -335,6 +335,7 @@ def _stub_hive_init_prereqs(monkeypatch, tmp_path):
     monkeypatch.setattr(hive.registry, "classify", lambda *a, **k: "org-native")
     monkeypatch.setattr(hive.registry, "derive_prefix", lambda *a, **k: ("ac-api", []))
     monkeypatch.setattr(hive.registry, "org_policy", lambda *a, **k: "")
+    monkeypatch.setattr(hive.registry, "has_push_access", lambda *a, **k: True)  # no real gh probe
     monkeypatch.setattr(hive.registry, "register", lambda *a, **k: None)
     monkeypatch.setattr(
         hive, "run", lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="", stderr="")

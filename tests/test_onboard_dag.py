@@ -817,3 +817,116 @@ def test_act_beads_role_scopes_to_ctx_base_not_process_cwd(world, monkeypatch):
 
     assert fake.store[str(target)] == "contributor"
     assert fake.store[str(Path.cwd())] == "maintainer"  # runner's own cwd untouched
+
+
+# ---------------------------------------------------------------------------
+# Tri-state push access (bh-9eua2): unknown refuses before any mutation
+# ---------------------------------------------------------------------------
+
+
+def _probe(monkeypatch, state, cause=""):
+    monkeypatch.setattr(
+        registry, "has_push_access", lambda *a, **k: registry.PushAccess(state, cause)
+    )
+
+
+def _stub_store_steps(monkeypatch, calls):
+    """bd-init/publish touch the real bd; record instead and create `.beads/` like bd would."""
+
+    def _init(ctx):
+        calls.append("bd-init")
+        (ctx.base / ".beads").mkdir(exist_ok=True)
+
+    monkeypatch.setattr(onboard, "_act_bd_init", _init)
+    monkeypatch.setattr(onboard, "_act_publish", lambda ctx: calls.append("publish"))
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+
+
+@pytest.mark.parametrize(
+    ("cause", "needle"),
+    [
+        ("gh-missing", "install gh"),
+        ("probe-failed", "gh auth status"),
+        ("unparseable", "viewerPermission"),
+        ("no-probe", "only github hives"),
+    ],
+)
+def test_unknown_push_access_refuses_before_mutation(
+    world, synced, monkeypatch, capsys, cause, needle
+):
+    target = _make_repo(world, with_beads=False)
+    calls: list[str] = []
+    _stub_store_steps(monkeypatch, calls)
+    _probe(monkeypatch, "unknown", cause)
+    ctx = _ctx(world, target)
+
+    with pytest.raises(typer.Exit):
+        onboard.run_onboard(ctx)
+
+    failed = next(c for c in ctx.plan.checks if c.id == "push-access-confirmed")
+    assert failed.ok is False
+    assert cause in failed.detail and needle in failed.detail
+    assert "--skip-check push-access-confirmed" in failed.detail
+    assert calls == []  # bd-init / publish never ran
+    assert not (target / ".beads").exists()
+    assert registry.find_entry(config.load(), "github", "acme", "widget") is None
+    assert synced == []
+
+
+def test_unknown_push_access_opt_in_proceeds_local(world, synced, monkeypatch):
+    target = _make_repo(world, with_beads=False)
+    calls: list[str] = []
+    _stub_store_steps(monkeypatch, calls)
+    _probe(monkeypatch, "unknown", "gh-missing")
+    ctx = _ctx(world, target)
+
+    plan = onboard.run_onboard(ctx, skip_checks=["push-access-confirmed"])
+
+    assert next(c for c in plan.checks if c.id == "push-access-confirmed").skipped is True
+    assert calls == ["bd-init", "publish"]
+    assert plan.registered is True
+
+
+def test_unknown_push_access_opt_in_still_unsets_beads_remote(monkeypatch):
+    """bh-dhl6 holds: an opted-in unknown hive never keeps a remote we cannot confirm we own."""
+    from beadhive import onboard as ob
+
+    seen = []
+    monkeypatch.setattr(
+        ob.bd_mod,
+        "run",
+        lambda args, *a, **k: seen.append(list(args)) or type("R", (), {"returncode": 0})(),
+    )
+    _probe(monkeypatch, "unknown", "probe-failed")
+    ob._guard_beads_remote(
+        onboard.Ctx(hive="github/a/b", target="/t", provider="github", org="a", repo="b", cwd="/t")
+    )
+    assert ["config", "unset", "sync.remote"] in seen
+
+
+@pytest.mark.parametrize("state", ["confirmed", "denied"])
+def test_confirmed_and_denied_pass_the_probe_check_unchanged(world, synced, monkeypatch, state):
+    target = _make_repo(world, with_beads=False)
+    calls: list[str] = []
+    _stub_store_steps(monkeypatch, calls)
+    _probe(monkeypatch, state)
+    ctx = _ctx(world, target)
+
+    plan = onboard.run_onboard(ctx)
+
+    chk = next(c for c in plan.checks if c.id == "push-access-confirmed")
+    assert chk.ok is True and chk.skipped is False
+    assert calls == ["bd-init", "publish"]
+    assert plan.registered is True
+
+
+def test_external_hive_is_exempt_from_the_probe_check(world, synced, monkeypatch):
+    target = _make_repo(world, with_beads=False)
+    calls: list[str] = []
+    _stub_store_steps(monkeypatch, calls)
+    _probe(monkeypatch, "unknown", "gh-missing")
+    ctx = _ctx(world, target, kind="external", yes=True)
+
+    plan = onboard.run_onboard(ctx)
+
+    assert all(c.id != "push-access-confirmed" for c in plan.checks)

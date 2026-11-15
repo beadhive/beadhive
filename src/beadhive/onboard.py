@@ -711,11 +711,64 @@ def _chk_furnish_needs_ownership(ctx: Ctx) -> tuple[bool, str]:
     _ensure_derived(ctx)
     if not (ctx.furnish and ctx.furnish_explicit):
         return True, "ok"
-    if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
+    if _push_access(ctx).state == registry.PUSH_CONFIRMED:
         return True, f"push access to {ctx.org}/{ctx.repo} confirmed"
     return False, (
         f"no confirmed push access to {ctx.org}/{ctx.repo} — only the hive's owner may "
         "furnish it (drop --furnish/--claude/--agents/--skills for a zero-footprint onboard)"
+    )
+
+
+def _push_access(ctx: Ctx) -> registry.PushAccess:
+    """The tri-state push-access answer for this hive (bh-9eua2), normalized so a legacy bool
+    answer (True = confirmed, False = denied) still reads as a `PushAccess`."""
+    ans = registry.has_push_access(ctx.provider, ctx.org, ctx.repo)
+    if isinstance(ans, registry.PushAccess):
+        return ans
+    return registry.PushAccess(registry.PUSH_CONFIRMED if ans else registry.PUSH_DENIED)
+
+
+#: what an UNKNOWN push-access probe means, by cause category (named in the refusal)
+_UNKNOWN_CAUSES = {
+    registry.CAUSE_GH_MISSING: ("gh is not on PATH", "install gh and run `gh auth login`"),
+    registry.CAUSE_PROBE_FAILED: (
+        "the gh probe for viewerPermission failed",
+        "check `gh auth status` / network access",
+    ),
+    registry.CAUSE_UNPARSEABLE: (
+        "the gh probe returned an unparseable or unrecognised answer",
+        "check `gh repo view --json viewerPermission` by hand",
+    ),
+    registry.CAUSE_NO_PROBE: (
+        "provider has no push-access probe",
+        "only github hives can be probed",
+    ),
+}
+PUSH_ACCESS_CHECK_ID = "push-access-confirmed"
+
+
+def _push_access_applies(ctx: Ctx) -> bool:
+    """Only a fresh store (no `.beads/` yet) of a non-external hive: an external hive is
+    pull-only and never publishes; an initialized store is not re-guarded."""
+    _ensure_derived(ctx)
+    return ctx.kind != "external" and not (ctx.base / ".beads").exists()
+
+
+def _chk_push_access_known(ctx: Ctx) -> tuple[bool, str]:
+    """Refuse a fleet-registering onboard whose push access cannot be CONFIRMED or DENIED
+    (bh-9eua2): an unknown answer used to silently take the denied path (unset sync.remote,
+    local store) yet still register the hive fleet-wide. confirmed and denied pass untouched.
+    Overridable: `--skip-check push-access-confirmed` knowingly accepts the local path (the
+    beads remote is then left unset, exactly as for a denied hive — bh-dhl6 still holds)."""
+    _ensure_derived(ctx)
+    ans = _push_access(ctx)
+    if ans.state != registry.PUSH_UNKNOWN:
+        return True, f"push access {ans.state}"
+    what, remedy = _UNKNOWN_CAUSES.get(ans.cause, ("push access could not be probed", "retry"))
+    return False, (
+        f"cannot confirm push access to {ctx.org}/{ctx.repo} ({ans.cause}: {what}) — "
+        f"remedy: {remedy} and retry; or pass --skip-check {PUSH_ACCESS_CHECK_ID} to "
+        "onboard it knowingly as a local-only hive (beads remote left unset)"
     )
 
 
@@ -1637,8 +1690,9 @@ def _guard_beads_remote(ctx: Ctx) -> None:
     """`bd init` derives the Dolt `sync.remote` from git origin, so onboarding a repo we do NOT own
     would point our beads remote at THEIR upstream. Beads must live on a repo we own or nowhere
     (bh-dhl6): unless push access is confirmed (viewerPermission ADMIN/WRITE/MAINTAIN), unset the
-    remote. Fail-closed — gh absent / non-github / probe error all leave the remote unset."""
-    if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
+    remote. Fail-closed — denied and unknown (gh absent / non-github / probe error) both leave the
+    remote unset; an unknown hive only gets here when the operator opted in (bh-9eua2)."""
+    if _push_access(ctx).state == registry.PUSH_CONFIRMED:
         return
     res = bd_mod.run(["config", "unset", "sync.remote"], ctx.base, capture=True)
     if getattr(res, "returncode", 0) == 0:
@@ -2151,6 +2205,13 @@ def build_steps(ctx: Ctx) -> list[Step]:
                 "external hives are never furnished",
                 False,
                 _chk_external_no_furnish,
+            ),
+            Check(
+                PUSH_ACCESS_CHECK_ID,
+                "push access confirmed or denied",
+                True,
+                _chk_push_access_known,
+                applies=_push_access_applies,
             ),
             Check(
                 "furnish-needs-ownership",
