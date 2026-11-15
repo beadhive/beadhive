@@ -459,9 +459,10 @@ query-string refusal were a stopgap because the hq attestation hashed the path o
 contract. (`bh-401wo` also covers this; this document never presented a path-segment form.)
 
 **D2. `register_incarnation` credential is a per-call secret source.**
-`login_secret: Callable[[], str] | None`, mirroring `signer` ("keys never cross the port; callables
-do"). The SQL adapter calls it inside its transaction to set the new incarnation login's password
-and refuses with `HqRefused("provisioning_password_required")` when it is `None`. The hq-service
+`login_secret: Callable[[], str] | None = None` (keyword), mirroring `signer` ("keys never
+cross the port; callables do"). The SQL adapter calls it exactly once, inside its provisioning call,
+to set the new incarnation login's password and refuses with
+`HqRefused("provisioning_password_required")` when it is `None`. The hq-service
 adapter never calls it. The `SqlHqAdapter` constructor's `provisioning_password` is removed. Open
 for `bh-hq-3sa`: how a new incarnation's credential is issued on the api route; if the client must
 supply something, this slot carries it. Rationale: a constructor-held password is a long-lived

@@ -160,12 +160,10 @@ class SqlHqAdapter:
         *,
         broker: Any = None,
         clock: Callable[[], float] = time.time,
-        provisioning_password: str = "",
     ) -> None:
         from .hq_control_plane import SqlControlPlane
 
         self._plane = SqlControlPlane(dict(settings), broker=broker, clock=clock)
-        self._provisioning_password = provisioning_password
 
     # ---- openers (the existing seams) ----------------------------------------------------
 
@@ -308,18 +306,24 @@ class SqlHqAdapter:
 
     @_mapped
     def register_incarnation(
-        self, route: tuple, *, expected_revision: str, frame_address: str, deadline: float
+        self,
+        route: tuple,
+        *,
+        expected_revision: str,
+        frame_address: str,
+        login_secret: Callable[[], str] | None = None,
+        deadline: float,
     ) -> str:
-        if not self._provisioning_password:
+        if login_secret is None:
             raise HqRefused(
                 "provisioning_password_required",
-                "the SQL adapter creates the incarnation login and needs its password",
+                "the SQL adapter creates the incarnation login and needs a login_secret source",
             )
         return self._operator().provision_release_route(
             route,
             expected_revision=expected_revision,
             frame_address=frame_address,
-            password=self._provisioning_password,
+            password=login_secret(),  # the one call, inside provisioning
             deadline=deadline,
         )
 

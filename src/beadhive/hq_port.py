@@ -144,7 +144,13 @@ class HqAdmission(Protocol):
     ) -> dict: ...
     def preflight(self, *, route: str, deadline: float) -> dict: ...
     def register_incarnation(
-        self, route: tuple, *, expected_revision: str, frame_address: str, deadline: float
+        self,
+        route: tuple,
+        *,
+        expected_revision: str,
+        frame_address: str,
+        login_secret: Callable[[], str] | None = None,
+        deadline: float,
     ) -> str: ...
     def publish_manifest(
         self, manifest: Any, *, expected_revision: str, deadline: float
