@@ -30,6 +30,7 @@ from . import dolt_health, store_locator
 
 #: bd's refusal when ``bd bootstrap`` cannot take its exclusive workspace gates (bd 1.3.0,
 #: ``cmd/bd/bootstrap.go``). A substring match on bd's own wording is the only signal bd gives.
+#: Pinned to the supported bd range: tests/test_replica_bootstrap_refusal_contract.py.
 GATE_BUSY_MARKER = "refuses to run over live bd activity"
 
 #: bd's own env switch for shared-server mode — dropped from the gate-free attempt.
