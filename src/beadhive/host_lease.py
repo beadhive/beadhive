@@ -262,6 +262,18 @@ def _cas_or_reject(
     return LeaseOutcome(lease=lease, sha=result.sha, previous=previous)
 
 
+def refuse_local_only(prefix: str, host_id: str) -> None:
+    """Only a local-only hive's owning host may adopt (or take over) its lease (bh-sj2bf R5).
+
+    A forced takeover is refused as well, with no override: the hive's data does not exist on
+    any other host, so a takeover could only lead to a fresh mint."""
+    from . import frame_eligibility
+
+    refusal = frame_eligibility.local_only_lease_refusal(prefix, host_id)
+    if refusal:
+        raise HostLeaseRejected(refusal)
+
+
 def adopt(
     remote: str,
     prefix: str,
@@ -304,6 +316,7 @@ def adopt(
     from . import frame_eligibility
 
     frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=cwd, at=at)
+    refuse_local_only(prefix, host_id)
     sha, current = _read(remote, prefix, cwd=cwd)
     if expected is not None and sha != expected:
         raise HostLeaseRejected(

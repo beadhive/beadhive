@@ -135,6 +135,8 @@ def test_cli_adopt_reports_fence_and_proposal_persisted(monkeypatch, tmp_path):
     from beadhive import frame_eligibility
 
     monkeypatch.setattr(frame_eligibility, "require_eligible", lambda *a, **k: None)
+    # the local-only catalog read fails closed; this test has no catalog (bh-sj2bf)
+    monkeypatch.setattr(frame_eligibility, "local_only_lease_refusal", lambda *a, **k: None)
     monkeypatch.setattr(host_fence, "read_fence", lambda *a, **k: (None, None))
     monkeypatch.setattr(host_fence, "install_fence", lambda *a, **k: "fence-sha")
     monkeypatch.setattr(host_lease, "read", lambda *a, **k: None)

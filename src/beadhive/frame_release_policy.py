@@ -55,15 +55,17 @@ def attested_release(record, evidence=None):
     return None
 
 
-def unsafe_readers(state, evidence=None):
+def unsafe_readers(state, evidence=None, *, floor=MIN_RELEASE_POLICY_READER):
     """Frames that could not read a release_policy: ``(frame, release|None, kind)``.
 
     ``kind`` is ``"old"`` for a parseable release below the floor (never waivable) or
     ``"unknown"`` for no attested release or an unparseable one (waivable). ``evidence`` maps
     ``(frame, slot)`` to the release read from the evidence carrier (see :func:`attested_release`).
+    ``floor`` defaults to :data:`MIN_RELEASE_POLICY_READER`; other reader floors with the same
+    old/unknown semantics (``local_only_rollout.MIN_LOCAL_ONLY_READER``) pass their own.
     """
     evidence = evidence or {}
-    floor = Version(MIN_RELEASE_POLICY_READER)
+    floor = Version(floor)
     found = []
     for frame, entry in sorted((state.get("frames") or {}).items()):
         for slot in ("active", "candidate"):

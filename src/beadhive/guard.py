@@ -543,6 +543,41 @@ _WRITER, _FRAME, _LEGACY = "writer", "frame", "legacy"
 _HEALED = object()
 
 
+def _refuse_local_only_legacy(hive: str, cfg) -> None:
+    """Refuse a legacy host's write on a local-only hive it does not own (bh-sj2bf R5).
+
+    Fails CLOSED when the catalog or config cannot be read: an unreadable catalog could be hiding
+    a local-only marker, so the write is refused. The only pass-through is a hive that does not
+    resolve (unknown name, or a directory that belongs to no hive) — that is not this guard's
+    error to raise (same as :func:`primary_state`) and carries no marker."""
+    from . import host, registry  # lazy: keep guard import-light + cycle-free
+
+    def _unreadable(exc: Exception):
+        typer.echo(
+            f"✗ cannot read the hive catalog to check whether this hive is local-only to "
+            f"another host ({type(exc).__name__}: {exc}); refusing the write",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+
+    try:
+        settings = cfg if cfg is not None else config.load()
+    except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
+        _unreadable(exc)
+    try:
+        entry = registry.entry_for_dir(settings, registry.hive_dir_for(settings, hive)) or {}
+    except (ValueError, KeyError, FileNotFoundError, typer.Exit):
+        # unresolvable hive (``resolve_hive`` prints its own error and raises ``typer.Exit``):
+        # nothing to check a marker on, and the verb reports it
+        return
+    except Exception as exc:  # noqa: BLE001 — fail closed, see docstring
+        _unreadable(exc)
+    refusal = registry.local_only_refusal(entry, host.host_id_or_none())
+    if refusal:
+        typer.echo(f"✗ {refusal}", err=True)
+        raise typer.Exit(1)
+
+
 def _admit_primary(hive: str = "", *, cfg=None, verb: str = ""):
     """:func:`guard_primary`'s decision, returning WHAT it allowed on: ``(kind, state)`` (see
     :data:`_WRITER`), so :func:`primary_epoch` can answer the epoch from the same read instead
@@ -568,6 +603,10 @@ def _admit_primary(hive: str = "", *, cfg=None, verb: str = ""):
     except frame_eligibility.EligibilityError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
+    if frame_decision is None:
+        # Legacy (unbound) host: no eligibility predicate ran, so the local-only owner rule
+        # (bh-sj2bf R5) is applied here directly.
+        _refuse_local_only_legacy(hive, cfg)
     # The lease that very ``require_intake`` call read and found held (bh-25fvb), else read it.
     state = (
         frame_eligibility.admitted_primary(hive, after=calls)

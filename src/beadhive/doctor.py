@@ -831,6 +831,64 @@ def _section_beads_role(cfg):
     _render_beads_role(_data_beads_role(cfg))
 
 
+# ---- unpublished hives (bh-sj2bf, docs/design/local-only-hives.md R9) -------------------------
+# A registered hive whose bead database was never published (origin has no refs/dolt/data) and
+# that is not marked local-only fences every other frame's hives-ready, and a second-host onboard
+# would mint a divergent database. Detection probes the network (one `git ls-remote` per hive
+# with a local store), so it lives here, never in the conformance job. Silent — no header — when
+# there is nothing to report; a probe that cannot answer is never reported as unpublished.
+
+
+def _origin_dolt_data_state(path: Path) -> bool | None:
+    """True/False when `git ls-remote origin refs/dolt/data` answers, None when it cannot."""
+    res = run(
+        ["git", "ls-remote", "origin", "refs/dolt/data"], cwd=str(path), check=False, capture=True
+    )
+    if getattr(res, "returncode", 1) != 0:
+        return None
+    return bool((getattr(res, "stdout", "") or "").strip())
+
+
+def _data_unpublished(cfg) -> list[dict]:
+    """Registered hives that are unpublished and not local-only: not ``kind: hq``; no
+    ``local_only``, ``dolt_remote`` or ``stores``; a local store on this host; and origin
+    definitively carrying no ``refs/dolt/data``."""
+    findings = []
+    for e in registry.hives(cfg):
+        if e.get("local_only") or e.get("dolt_remote") or e.get("stores"):
+            continue
+        path = registry.hive_dir(e)
+        if not (path / ".beads").is_dir():
+            continue
+        if _origin_dolt_data_state(path) is not False:
+            continue
+        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
+        prefix = str(e.get("prefix", ""))
+        findings.append(
+            {
+                "hive": hive_id,
+                "prefix": prefix,
+                "remediation": [
+                    f"push access confirmed: {config.BINARY_ALIAS} hive replicate {prefix}",
+                    f"push denied, or an external hive: {config.BINARY_ALIAS} hive repair "
+                    f"--hive {hive_id} --local-only --yes",
+                    "push access unknown: fix gh/auth and re-run; never guess",
+                ],
+            }
+        )
+    return findings
+
+
+def _render_unpublished(findings: list[dict]) -> None:
+    if not findings:
+        return
+    typer.echo(f"\n# registered hive is unpublished and not local-only ({len(findings)})")
+    for f in findings:
+        typer.echo(f"  ⚠ {f['hive']} (prefix {f['prefix']}): origin has no refs/dolt/data")
+        for line in f["remediation"]:
+            typer.echo(f"    fix ({line})")
+
+
 # ---- bd routing section (bh-5lpl9.1) -------------------------------------------
 # bd falls back to its actor-based `routing.mode auto` heuristic when `routing.mode` is unset;
 # bh routes by subject and visibility instead (docs/design/beads-methodology-divergence-adr.md),
@@ -3551,6 +3609,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "node_id": _timed(timings, "node_id", _data_node_id, cfg),
         "beads_role": _timed(timings, "beads_role", _data_beads_role, cfg),
         "beads_routing": _timed(timings, "beads_routing", _data_beads_routing, cfg),
+        "unpublished": _timed(timings, "unpublished", _data_unpublished, cfg),
         "stores": _timed(timings, "stores", _data_stores, cfg),
         "store_engine": _timed(timings, "store_engine", _data_store_engine, cfg),
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
@@ -3689,7 +3748,7 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     ``inventory``, ``disk_usage``, ``worktree_disk_usage``, ``ram_backed``, ``fleet_health``,
     ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``hq_remotes``, ``node_id``, ``beads_role``, ``beads_routing``,
-    ``stores``, ``group_auth``, ``mcp``, ``harness_plugin``,
+    ``unpublished``, ``stores``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``, ``intake_holds``, ``intake_reports``,
     ``install``, ``observability``, ``build_verify``, ``tracker_adapters``, ``link_coverage``,
     ``writer_fence``,
@@ -3799,6 +3858,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_node_id(data["node_id"])
     _render_beads_role(data["beads_role"])
     _render_beads_routing(data.get("beads_routing") or [])
+    _render_unpublished(data.get("unpublished") or [])
     _render_stores(data.get("stores") or [])
     _render_store_engine(data["store_engine"])
     _render_dispatch(data["dispatch"])

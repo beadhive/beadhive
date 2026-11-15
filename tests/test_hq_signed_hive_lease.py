@@ -664,6 +664,8 @@ def test_adopt_without_hive_policy_never_moves_the_fence(tmp_path, monkeypatch):
     hive = tmp_path / "hive"
     (hive / ".git").mkdir(parents=True)
     monkeypatch.setattr("beadhive.frame_eligibility.require_eligible", lambda *a, **k: None)
+    # the local-only catalog read fails closed; this test has no catalog (bh-sj2bf)
+    monkeypatch.setattr("beadhive.frame_eligibility.local_only_lease_refusal", lambda *a, **k: None)
     monkeypatch.setattr(
         host_fence, "read_fence", lambda *a, **k: ("sha21", EpochFence(21, "host-a"))
     )

@@ -873,6 +873,8 @@ def _adopt_world(tmp_path, monkeypatch, frame, *, row, fence):
     (hive / ".git").mkdir(parents=True, exist_ok=True)
     installed = []
     monkeypatch.setattr("beadhive.frame_eligibility.require_eligible", lambda *a, **k: None)
+    # the local-only catalog read fails closed; this test has no catalog (bh-sj2bf)
+    monkeypatch.setattr("beadhive.frame_eligibility.local_only_lease_refusal", lambda *a, **k: None)
     monkeypatch.setattr("beadhive.host_lease._frame_plane", lambda cwd: plane)
     monkeypatch.setattr(host_fence, "read_fence", lambda *a, **k: ("sha-old", fence))
 
@@ -1041,6 +1043,7 @@ def test_git_hq_keeps_the_gitref_cas_placement_path(tmp_path, monkeypatch):
 
     monkeypatch.setattr("beadhive.gitref.cas", cas)
     monkeypatch.setattr("beadhive.frame_eligibility.require_eligible", lambda *a, **k: None)
+    monkeypatch.setattr("beadhive.frame_eligibility.local_only_lease_refusal", lambda *a, **k: None)
     monkeypatch.setattr("beadhive.host_lease.gitref.read_remote", lambda *a, **k: ("", None))
     from beadhive import gitref, host_lease
 

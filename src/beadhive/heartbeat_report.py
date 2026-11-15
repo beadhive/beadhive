@@ -86,29 +86,77 @@ def _excluded_here(entry: dict, caps: dict | None) -> bool:
     return False
 
 
-def measure_conformance(cfg=_UNSET, caps=_UNSET) -> list[dict]:
+def _local_only_elsewhere(entry: dict, host_id: str | None) -> bool:
+    """Whether the hive is local-only and owned by ANOTHER host (bh-sj2bf R4).
+
+    Owned by this host, or no marker: required as before. A host with no readable host_id
+    cannot prove it is not the owner, so the hive stays required (fail closed)."""
+    marker = registry.local_only_of(entry)
+    if marker is None or not host_id:
+        return False
+    return marker["owner_host"] != host_id
+
+
+#: hives-ready evidence cap (``ConformanceCheck.evidence`` max_length).
+EVIDENCE_CAP = 1024
+
+
+def _skip_evidence(groups: list[tuple[str, list[str]]], cap: int = EVIDENCE_CAP) -> str:
+    """``measured check passed; skipped (<why>): a, b; ...`` naming prefixes only — never host
+    ids or labels. Over ``cap``, the longest prefix list is truncated and ends ``, … (+N)``."""
+    shown = [list(names) for _, names in groups]
+
+    def render() -> str:
+        parts = ["measured check passed"]
+        for (why, names), keep in zip(groups, shown, strict=True):
+            if not names:
+                continue
+            text = ", ".join(keep)
+            if len(keep) < len(names):
+                text += f", … (+{len(names) - len(keep)})"
+            parts.append(f"skipped ({why}): {text}")
+        return "; ".join(parts)
+
+    text = render()
+    while len(text) > cap:
+        longest = max(range(len(shown)), key=lambda i: len(shown[i]))
+        if len(shown[longest]) <= 1:
+            return text[:cap]
+        shown[longest].pop()
+        text = render()
+    return text
+
+
+def measure_conformance(cfg=_UNSET, caps=_UNSET, host_id=_UNSET) -> list[dict]:
     """The slow host-local conformance checks (:data:`heartbeat_conformance.CACHED_CHECK_IDS`).
 
     Reads no authority, so the conformance job can run it on its own timer. Hives whose
-    ``frame_policy`` excludes this frame (by ``caps``, default the local manifest) are skipped
-    and named in the ``hives-ready`` evidence rather than required ready.
+    ``frame_policy`` excludes this frame (by ``caps``, default the local manifest), and
+    local-only hives owned by another host (by ``host_id``, default this host's), are skipped
+    and named in the ``hives-ready`` evidence rather than required ready. A hive that is both
+    is named once, under local-only.
     """
     config_check = _check("host-config-partition", config_valid)
     if cfg is _UNSET:
         cfg = _load_config()
     if caps is _UNSET:
         caps = _local_caps()
+    if host_id is _UNSET:
+        host_id = host.host_id_or_none()
     hives = registry.hives(cfg) if cfg is not None else []
-    skipped = [e for e in hives if _excluded_here(e, caps)]
-    required = [e for e in hives if e not in skipped]
+    local_only = [e for e in hives if _local_only_elsewhere(e, host_id)]
+    skipped = [e for e in hives if e not in local_only and _excluded_here(e, caps)]
+    required = [e for e in hives if e not in skipped and e not in local_only]
     ready = _check(
         "hives-ready",
         lambda: cfg is not None and bool(hives) and all(hive_ready(e) for e in required),
     )
-    if skipped and ready["status"] == "pass":
-        names = ", ".join(str(e.get("prefix", "?")) for e in skipped)
-        ready["evidence"] = (
-            f"measured check passed; skipped (frame_policy excludes this frame): {names}"
+    if (skipped or local_only) and ready["status"] == "pass":
+        ready["evidence"] = _skip_evidence(
+            [
+                ("frame_policy excludes this frame", [str(e.get("prefix", "?")) for e in skipped]),
+                ("local-only on another host", [str(e.get("prefix", "?")) for e in local_only]),
+            ]
         )
     return [config_check, ready]
 
@@ -273,7 +321,9 @@ def generate(
             measured_checks = {
                 item["id"]: item
                 for item in measure_conformance(
-                    cfg, manifest.capabilities.model_dump() if manifest.capabilities else None
+                    cfg,
+                    manifest.capabilities.model_dump() if manifest.capabilities else None,
+                    local_id,
                 )
             }
             checks = [

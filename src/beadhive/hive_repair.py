@@ -598,6 +598,17 @@ def _repair_server_database(cfg, hive: str, yes: bool, dry_run: bool) -> None:
     typer.echo("✓ dolt_server_database recorded")
 
 
+def require_one_mode(modes: list[bool]) -> None:
+    """Exactly one repair mode per invocation (shared with ``hive_local_only.repair_cli``)."""
+    if sum(bool(m) for m in modes) != 1:
+        typer.echo(
+            "✗ pass exactly one of --prefix <p>, --node-id, --role, --server-database, "
+            "--local-only",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
 def repair(
     hive: str,
     prefix: str = "",
@@ -608,13 +619,10 @@ def repair(
     yes: bool,
     dry_run: bool,
 ) -> None:
-    """CLI core: dispatch to exactly one of the four repair modes."""
-    modes = [bool(prefix), node_id, role, server_database]
-    if sum(modes) != 1:
-        typer.echo(
-            "✗ pass exactly one of --prefix <p>, --node-id, --role, --server-database", err=True
-        )
-        raise typer.Exit(1)
+    """CLI core: dispatch to exactly one of the four repair modes here; the fifth,
+    ``--local-only``, is :func:`beadhive.hive_local_only.repair_cli` (it imports this module,
+    never the reverse, which keeps the import graph acyclic)."""
+    require_one_mode([bool(prefix), node_id, role, server_database])
 
     cfg = config.load()
     if prefix:

@@ -352,6 +352,7 @@ def _observed_predicates(frame, policy):
         "conformance_pass",
         "capabilities_match_admission",
         "hive_requirements",
+        "local_only_owner",
         "executor_role",
         "available_capacity",
         "dispatch_enabled",

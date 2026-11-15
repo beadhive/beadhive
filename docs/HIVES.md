@@ -72,7 +72,7 @@ answer is **tri-state** (bh-9eua2):
 | Answer | Meaning | Onboard |
 | --- | --- | --- |
 | confirmed | `ADMIN` / `WRITE` / `MAINTAIN` | unchanged: beads remote kept, bead database published |
-| denied | a definite `READ` / `TRIAGE` / `NONE` | unchanged: `sync.remote` unset, local store |
+| denied | a definite `READ` / `TRIAGE` / `NONE` | `sync.remote` unset, local store, registered **local-only** (below) |
 | unknown | no definite answer | **refused** before anything mutates |
 
 Unknown covers four causes, each named in the refusal with its remedy: `gh-missing` (gh not on
@@ -87,6 +87,84 @@ they have no probe, so they are unknown and refuse unless opted in. The opt-in i
 unset, as for denied; bh-dhl6's rule that beads never point at a repo we cannot confirm we own
 is unchanged). External hives (pull-only) are exempt, and an already-initialized store is not
 re-probed.
+
+### Local-only hives (bh-sj2bf)
+
+A hive whose bead database was never published cannot be replicated: other frames cannot clone
+it, and a second host that onboards it would mint a second, unrelated database under the same
+prefix. Such a hive is registered **local-only** to the host that owns it, with
+`managed_repos[].local_only: {owner_host, reason}` ([CONFIGURATION](CONFIGURATION.md#local-only)).
+The design is [`docs/design/local-only-hives.md`](design/local-only-hives.md).
+
+A first onboard (no registry entry yet) records the marker, owned by this host's `host_id`, when:
+
+| Reason | When |
+| --- | --- |
+| `push-denied` | push access is **denied** and origin has no `refs/dolt/data` to bootstrap from |
+| `opt-in` | `bh hive onboard --local-only` (beads remote unset and nothing published, even with confirmed push access), or an unknown probe accepted with `--skip-check push-access-confirmed` |
+| `external` | `--kind external`: an external hive is never published |
+| `migrated` | `bh hive repair --local-only --yes` on an existing unpublished registration |
+
+`--local-only` applies to a first onboard only; it refuses on a hive already registered as
+replicated. A re-registration (`--force`) carries an existing marker unchanged. The onboard
+summary and its `warnings` name the registration; the `--json` result has no new property.
+
+What the marker changes:
+
+- **hives-ready.** Every other frame skips the hive instead of requiring a replica, and names it
+  in the evidence: `measured check passed; skipped (local-only on another host): tl` (prefixes
+  only, never host ids). The owner still requires it. A host with no readable `host_id` cannot
+  prove it is not the owner, so it still requires it (fails closed). A non-owning frame
+  therefore stays eligible for every other hive.
+- **Leases and claims.** Only the owner may lease or claim the hive's beads. A bound frame
+  fails the `local_only_owner` eligibility predicate (`frame <id> ineligible: local_only_owner`);
+  a legacy host is refused with `hive tl is local-only on host <label> (<host_id>); only that
+  host may lease or claim its beads`. A `--force` takeover is refused as well; there is no
+  override.
+- **Onboarding elsewhere.** On any other host, onboard refuses in its `resolve` step, before it
+  clones or creates a database, with the non-overridable check `local-only-owner`.
+- **Host retire.** `bh host retire` refuses while the host owns local-only hives (it would delete
+  the only copy) and names the remedy: `bh hive replicate <prefix>`, or remove the hive first.
+  There is no override.
+
+**Rollout floor.** A frame running a release older than 0.39.0 cannot read `local_only` (every
+config section forbids unknown keys), so writing it would fence that frame. Onboard (when it
+would record the marker) and `repair --local-only` refuse while any frame attests an older
+release; this has no override. Frames whose release is unknown are waived only with
+`--allow-unknown-readers`. Legacy hosts that are not frames cannot be measured and remain the
+operator's responsibility.
+
+**Leaving local-only:** `bh hive replicate <hive>`, run on the owner once it has push access:
+
+1. requires a **confirmed** push probe (denied or unknown refuses);
+2. refuses when origin already carries `refs/dolt/data` (another database was published there),
+   and refuses when origin cannot be probed (`git ls-remote` failure is never read as "empty");
+3. restores the beads remote, then publishes through onboard's publish leg;
+4. verifies that origin now carries `refs/dolt/data`;
+5. only then deletes `local_only`.
+
+Any failure leaves the hive local-only, and a failed publish or verify unsets the `sync.remote`
+it restored (warning if that unset fails too). **Recovery:** when origin already carries this
+hive's own `refs/dolt/data` (a publish that landed but whose marker clear did not),
+`bh hive replicate <hive> --already-published` restores the beads remote and clears the marker
+without publishing. `bh hive repair --local-only` likewise refuses an origin it cannot probe.
+`replicate` refuses an external hive. It also publishes an
+unpublished registration that has no marker.
+
+**Existing unpublished registrations.** `bh doctor` reports "registered hive is unpublished and
+not local-only" for an entry that is not `kind: hq`, has no `local_only`, `dolt_remote` or
+`stores`, has a local store on this host, and whose origin definitively carries no
+`refs/dolt/data`. On the host that holds the store:
+
+| Push probe | Fix |
+| --- | --- |
+| confirmed | `bh hive replicate <prefix>` |
+| denied, or external | `bh hive repair --hive <id> --local-only --yes` (reason `migrated`, or `external`) |
+| unknown | fix `gh` or auth and re-run; never guess |
+
+`repair --local-only` refuses when another host holds an unexpired lease for the prefix, when
+the entry already names a different owner, when this host has no store for it, and when origin
+already carries `refs/dolt/data`.
 
 ### Declared footprint: zero by default, furnished on opt-in
 
@@ -293,7 +371,9 @@ seat agent defs, and statusLine), `--skills` (role skills), `--observaloop` (obs
 `--agents` (AGENTS.md hint), `--plugin NAME` (enable a plugin integration for this hive,
 repeatable — e.g. `--plugin orca` registers the clone with orca; see
 [INTEGRATIONS](INTEGRATIONS.md#orca)), `--force` (re-register), `--kind`, `--prefix`,
-`--yes` (required for forks).
+`--yes` (required for forks). `--local-only` registers the hive local-only to this host and
+`--allow-unknown-readers` waives the rollout floor for frames of unknown release; see
+[Local-only hives](#local-only-hives-bh-sj2bf).
 
 ## `bh hive ls` / `bh hive ls --available`
 

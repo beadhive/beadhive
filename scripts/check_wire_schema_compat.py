@@ -848,6 +848,17 @@ _OPTIONAL_STRING_PARAM = {
 # their exact parameter order and behavior. This is an independent wire minor;
 # the runtime correction remains a package PATCH release.
 _APPROVED_OPTIONAL_REPAIR_PARAMS = {
+    # bh-sj2bf (operator approval 2026-11-15, recorded on bh-ndkos/bh-sj2bf): local-only hives
+    # append `--local-only` and the rollout-floor waiver `--allow-unknown-readers` to onboard and
+    # repair. Callers that omit them keep their exact request, output and exit codes.
+    "hive.onboard": {
+        "local_only": {"type": "boolean"},
+        "allow_unknown_readers": {"type": "boolean"},
+    },
+    "hive.repair": {
+        "local_only": {"type": "boolean"},
+        "allow_unknown_readers": {"type": "boolean"},
+    },
     "host.release-upgrade": {
         "frame_address": {"type": "string"},
         "password_stdin": {"type": "boolean"},

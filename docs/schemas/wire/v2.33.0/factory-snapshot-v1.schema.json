@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:wire-schema:factory.snapshot:1",
+  "title": "FactorySnapshot v1",
+  "type": "object",
+  "required": [
+    "schemaVersion", "hives", "worktrees", "edges", "workspaceRoot", "generatedAt", "coverage"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "hives": {"type": "array", "items": {"$ref": "#/$defs/HiveInfo"}},
+    "worktrees": {"type": "array", "items": {"$ref": "#/$defs/RigWorktree"}},
+    "edges": {"type": "array", "items": {"$ref": "#/$defs/CrossHiveEdge"}},
+    "workspaceRoot": {"type": ["string", "null"]},
+    "generatedAt": {"type": "number"},
+    "coverage": {"$ref": "#/$defs/FactoryCoverage"}
+  },
+  "$defs": {
+    "HiveInfo": {
+      "type": "object",
+      "required": ["prefix", "provider", "org", "repo", "kind"],
+      "additionalProperties": true,
+      "properties": {
+        "prefix": {"type": "string"},
+        "provider": {"type": "string"},
+        "org": {"type": "string"},
+        "repo": {"type": "string"},
+        "kind": {"type": "string"}
+      }
+    },
+    "RigWorktree": {
+      "type": "object",
+      "required": ["hive", "branch", "path", "beadId", "branchKind"],
+      "additionalProperties": true,
+      "properties": {
+        "hive": {"type": "string"},
+        "branch": {"type": "string"},
+        "path": {"type": "string"},
+        "beadId": {"type": ["string", "null"]},
+        "branchKind": {
+          "enum": ["issue", "epic", "batch", null],
+          "x-beadhive-closed-union": true
+        }
+      }
+    },
+    "CrossHiveEdge": {
+      "type": "object",
+      "required": ["from", "to", "kind", "details"],
+      "additionalProperties": true,
+      "properties": {
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "kind": {
+          "enum": ["dependency", "hub-sync", "contribution"],
+          "x-beadhive-closed-union": true
+        },
+        "details": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "SourceCoverage": {
+      "type": "object",
+      "required": ["state", "requested", "returned", "fromCache", "detail"],
+      "additionalProperties": true,
+      "properties": {
+        "state": {
+          "enum": ["complete", "partial", "unavailable"],
+          "x-beadhive-closed-union": true
+        },
+        "requested": {"type": ["number", "null"]},
+        "returned": {"type": ["number", "null"]},
+        "fromCache": {"type": "number"},
+        "detail": {"type": ["string", "null"]}
+      }
+    },
+    "FactoryCoverage": {
+      "type": "object",
+      "required": ["hives", "worktrees", "hubIssues", "hubDeps"],
+      "additionalProperties": true,
+      "properties": {
+        "hives": {"$ref": "#/$defs/SourceCoverage"},
+        "worktrees": {"$ref": "#/$defs/SourceCoverage"},
+        "hubIssues": {"$ref": "#/$defs/SourceCoverage"},
+        "hubDeps": {"$ref": "#/$defs/SourceCoverage"}
+      }
+    }
+  }
+}

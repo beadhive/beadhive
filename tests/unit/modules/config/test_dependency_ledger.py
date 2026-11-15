@@ -61,7 +61,7 @@ def test_dependency_ledger_records_indirect_adapter_patch_points_exactly(built):
     points = ledger["current"]["config_patch_points"]
 
     assert ledger["schema_version"] == 2
-    assert ledger["current"]["config_patch_point_count"] == 339
+    assert ledger["current"]["config_patch_point_count"] == 345
     provisioning_patches = {
         (point["line"], point["target"], point["facade_target"], point["kind"])
         for point in points
@@ -84,7 +84,7 @@ def test_dependency_ledger_records_indirect_adapter_patch_points_exactly(built):
         and point["target"] == "beadhive.config.load_host"
         and point["kind"] == "direct-facade"
     }
-    assert eligibility_host_patches == {96, 178, 180, 182, 197, 214, 225, 322, 417}
+    assert eligibility_host_patches == {96, 181, 183, 185, 200, 217, 228, 325, 420}
     expected = {
         (
             "tests/test_structural_facade_contracts.py",

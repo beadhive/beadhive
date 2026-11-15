@@ -519,6 +519,36 @@ def _step_push_hq(*, dry_run: bool) -> StepResult:
     return StepResult("push HQ", "would" if dry_run else "done", "")
 
 
+def owned_local_only(cfg, host_id: str) -> list[str]:
+    """Prefixes of the local-only hives this host owns (bh-sj2bf): their bead database exists
+    only here, so reclaiming the host would delete the only copy."""
+    return [
+        str(entry.get("prefix", ""))
+        for entry in registry.hives(cfg)
+        if (marker := registry.local_only_of(entry)) is not None and marker["owner_host"] == host_id
+    ]
+
+
+def _refuse_owned_local_only(cfg, host_id: str) -> None:
+    """``bh host retire`` refuses while this host owns local-only hives — no override, under
+    ``--dry-run`` too (local-only-hives.md, operator answer 5)."""
+    owned = owned_local_only(cfg, host_id)
+    if not owned:
+        return
+    typer.echo(
+        f"✗ refusing: this host owns local-only hives whose bead database exists only here: "
+        f"{', '.join(owned)}",
+        err=True,
+    )
+    typer.echo(
+        f"  retiring would delete the only copy. For each, run `{config.BINARY_ALIAS} hive "
+        f"replicate <prefix>` once it has push access, or remove the hive first "
+        f"(`{config.BINARY_ALIAS} hive rm`). There is no override.",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 @hosts.original_revision
 def retire(
     *, dry_run: bool = False, backup: bool = False, confirm: bool = False, purge: bool = False
@@ -553,6 +583,8 @@ def retire(
 
     tag = "DRY-RUN " if dry_run else ""
     typer.echo(f"{tag}host retire — {host_id} ({label})")
+
+    _refuse_owned_local_only(cfg, host_id)
 
     assessment = assess(cfg=cfg, hq_dir=hq_dir, host_id=host_id)
     _print_assessment(assessment)

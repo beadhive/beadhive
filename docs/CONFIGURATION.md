@@ -171,6 +171,7 @@ boundaries.
 | `execution_hives` (host document) | Optional list of hive prefixes the frame may execute (default: unset, no restriction). Frame `capabilities.isolation` also accepts `workstation` beside `kvm`, `microvm` and `container`. |
 | `managed_repos[].frame_policy.evict_after_s` | Required positive finite interval used by protected takeover policy. |
 | `managed_repos[].dolt_remote` | Optional HQ-declared desired Dolt remote for the hive (`dolt-remote-descriptor/v1`, [ADR](design/hq-dolt-remote-descriptor-adr.md)): `url` (required; `s3://bucket/path`, `aws://[table:bucket]/db`, `file:///abs`, `git+ssh://…`), `name` (default `origin`), `credentials` (host profile label; empty = ambient AWS chain). Absent keeps today's Git-origin behaviour. URLs with credentials, unknown S3 query keys or a location another hive already declares are refused with a value-free, path-specific error. Applied only by `bh hive remote --reconcile` and onboarding; see the [runbook](design/hq-dolt-remotes-runbook.md). |
+| `managed_repos[].local_only` | Optional `{owner_host, reason}` marking a hive whose bead database exists only on its owning host (never published; [local-only hives](#local-only)). `owner_host` is the owner's `host_id`; `reason` is `push-denied`, `opt-in`, `external` or `migrated`. Absent = replicated (today). Refused beside `dolt_remote` or `stores`. Readable from release 0.39.0; writers refuse while a frame attests an older release. |
 | `dolt.remote_credentials.<label>` | HOST-only credential source for descriptors naming `<label>`: `source` = `ambient` (default), `instance-role`, `aws-profile` (+ `aws_profile`) or `fnox` (+ `access_key_id`, `secret_access_key`, optional `session_token` fnox refs), plus optional `s3_checksums: when_required` (off by default; sets `AWS_RESPONSE_CHECKSUM_VALIDATION` and `AWS_REQUEST_CHECKSUM_CALCULATION` to `when_required` for every dolt/bd env using the profile and in the rendered server credentials file; required for multipart objects on Garage, see docs/TWO-STORES.md). Lookups only; values are injected into the one bd child that needs them and never printed, logged or stored. |
 
 Each HOST-local `hq.sql.<role>.tls_mode` independently accepts `required` (the default)
@@ -328,7 +329,34 @@ managed_repos:
 - Provider entries carry **no codes** (only org codes go in prefixes).
 - Re-registering a hive (`bh hive init`, a prefix repair) rewrites only the keys `register`
   owns (`provider`, `org`, `repo`, `prefix`, `kind`, `upstream`, `furnish`, `contribution`);
-  every other key on the entry — per-hive overrides, `frame_policy`, `stores` — is carried.
+  every other key on the entry — per-hive overrides, `frame_policy`, `stores`, `local_only` —
+  is carried.
+
+### `managed_repos[*].local_only` — local-only hives {#local-only}
+
+Optional, and absent by default (absent = replicated, today's behaviour). Present, it marks a
+hive whose bead database exists only on its owning host:
+
+```yaml
+managed_repos:
+  - {provider: "github", org: "acme", repo: "tool", prefix: "tl", kind: "prototype",
+     local_only: {owner_host: "6f1c…-uuid4", reason: "push-denied"}}
+```
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `owner_host` | string, required | The owning host's `host_id` (`host.yaml`): a non-empty, trimmed id, never a label or `frame_id` |
+| `reason` | enum, required | `push-denied`, `opt-in`, `external` or `migrated` |
+
+Presence is the flag: there is no `enabled: false` form, and clearing it deletes the key. It is
+fleet data that `register` does not own, so a forced re-register carries it. Only onboard (a
+first registration), `bh hive repair --local-only --yes` (sets it) and `bh hive replicate`
+(clears it after a verified publish) write it; do not hand-edit it. The `reason` members are
+frozen once published. It cannot be combined with `dolt_remote` or `stores`: an HQ-declared
+remote is already replicated. Config `schema_version` stays 1 (an optional key with an absent
+default is additive). Behaviour (hives-ready skip, owner-only leases and claims, onboarding
+refusal elsewhere, `bh host retire` refusal, the 0.39.0 rollout floor): see
+[HIVES](HIVES.md#local-only-hives-bh-sj2bf).
 
 ### `managed_repos[*].stores` — internal and public bead stores {#stores}
 
