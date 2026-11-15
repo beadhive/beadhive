@@ -20,6 +20,19 @@ bd's physical-root gate resolves to the hive's own, uncontended ``.beads/dolt``)
 store's ``dolt_mode: "server"`` metadata plus an explicit server endpoint keep the clone routed
 through the running shared server into the same database. Nothing on the host is stopped or
 restarted. The window is bd's own bounded one: bh never adds a wait or a retry loop of its own.
+
+Shared-server mode has two switches in bd (``doltserver.IsSharedServerMode``): the
+``BEADS_DOLT_SHARED_SERVER`` env var, and the ``dolt.shared-server`` key of the hive's tracked
+``.beads/config.yaml`` — which a furnished hive may set to ``true``. Dropping the env var alone
+leaves the config key on, so the gate would still resolve to the shared dir (bh-jktzj). The key is
+read through bd's viper config (``config.GetBool``), which binds every key to a ``BD_``-prefixed
+env var with ``.``/``-`` mapped to ``_`` and gives env precedence over config files
+(``internal/config/config.go`` ``SetEnvPrefix("BD")`` / ``AutomaticEnv``; pinned by bd's own
+``TestConfigPrecedence``). So the gate-free attempt sets ``BD_DOLT_SHARED_SERVER=false`` — an
+override scoped to that one bd process; the tracked file is never touched. ``BEADS_DOLT_DATA_DIR``
+is dropped as well: bd consults it first for the hive's own dolt dir
+(``doltserver.projectDoltDirPath``), so an override aimed at the shared dir would put the gate
+straight back on it, and the server clone (``CALL DOLT_CLONE``) never uses it to place data.
 """
 
 from __future__ import annotations
@@ -37,6 +50,11 @@ GATE_BUSY_MARKER = "refuses to run over live bd activity"
 SHARED_SERVER_ENV = "BEADS_DOLT_SHARED_SERVER"
 #: bd's env switch selecting the external-server clone path when no config is loaded yet.
 SERVER_MODE_ENV = "BEADS_DOLT_SERVER_MODE"
+#: bd's viper env binding of the tracked ``dolt.shared-server`` config key (``BD_`` prefix,
+#: ``.``/``-`` → ``_``); env beats ``.beads/config.yaml``, so ``false`` here turns the key off.
+SHARED_SERVER_CONFIG_ENV = "BD_DOLT_SHARED_SERVER"
+#: bd's env override of a hive's own dolt data dir — dropped from the gate-free attempt.
+DATA_DIR_ENV = "BEADS_DOLT_DATA_DIR"
 
 
 def gate_refused(result) -> bool:
@@ -49,10 +67,13 @@ def gate_refused(result) -> bool:
 
 def gate_free_env(env: Mapping[str, str]) -> dict[str, str]:
     """``env`` for the gate-free attempt: shared-server mode NOT activated for this one
-    invocation, external-server mode on, and the shared server's endpoint pinned explicitly
+    invocation — neither by bd's env switch nor by a tracked ``dolt.shared-server: true`` (its
+    ``BD_`` env binding forced ``false``) — no data-dir override that could aim the gate back at
+    the shared dir, external-server mode on, and the shared server's endpoint pinned explicitly
     (``dolt_health.server_endpoint``, bd's own resolution order) so the clone still lands on the
     running shared server. An endpoint the caller already set is kept."""
-    out = {k: v for k, v in env.items() if k != SHARED_SERVER_ENV}
+    out = {k: v for k, v in env.items() if k not in (SHARED_SERVER_ENV, DATA_DIR_ENV)}
+    out[SHARED_SERVER_CONFIG_ENV] = "false"
     host, port = dolt_health.server_endpoint()
     out.setdefault(dolt_health.ENV_SERVER_HOST, host)
     out.setdefault(dolt_health.ENV_SERVER_PORT, str(port))

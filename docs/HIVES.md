@@ -37,7 +37,12 @@ Flow (`hive.py`):
    started only if nothing answers. On a busy executor whose other hives' bd servers hold
    bd's shared Dolt gate, bd's bounded exclusive wait is refused; for a database that does
    not exist yet the bootstrap then re-runs once through the running shared server without
-   that gate — no bd server is ever stopped or restarted (bh-pjhwe). Otherwise
+   that gate — no bd server is ever stopped or restarted (bh-pjhwe). That retry also covers a
+   furnished hive whose tracked `.beads/config.yaml` sets `dolt.shared-server: true`: bd reads
+   that key through its config layer, where the `BD_DOLT_SHARED_SERVER` env binding outranks
+   config files, so the retry sets it `false` for that one bd process (the tracked file is never
+   edited) and drops any `BEADS_DOLT_DATA_DIR` that could aim the gate back at the shared dir
+   (bh-jktzj). Otherwise
    zero-footprint (default) runs `bd init --setup-exclude --shared-server …` with bd's stray
    `.gitignore` block relocated into `.git/info/exclude`, and furnished runs `bd init
    --prefix <p> --shared-server --skip-agents --skip-hooks --init-if-missing
