@@ -27,7 +27,6 @@ from typing import Any
 from .hq_port import (
     EvidenceReport,
     FrameAnchor,
-    HistorySinceFloor,
     HqDeadline,
     HqError,
     HqOutcomeUnknown,
@@ -50,7 +49,12 @@ def _classify(error: BaseException) -> HqError | None:
     from .hq_authority_enforce import AuthorityEnforcementError
     from .hq_control_plane import ControlPlaneError, HqLeaseUnknown
     from .hq_sql_capabilities import CapabilityProbeError
-    from .hq_sql_config import PublicationUnknown, SqlConfigError, SqlConfigUnavailable
+    from .hq_sql_config import (
+        PublicationUnknown,
+        SqlConfigDeadline,
+        SqlConfigError,
+        SqlConfigUnavailable,
+    )
     from .hq_sql_operator import AuthorityPublicationUnknown, SqlOperatorError
     from .hq_sql_placement import PlacementError, PlacementUnknown
     from .hq_sql_receiver import ReceiverError, ReceiverUnknown
@@ -79,7 +83,7 @@ def _classify(error: BaseException) -> HqError | None:
         return HqOutcomeUnknown(getattr(error, "request_id", None), str(error))
     if isinstance(error, PlacementUnknown):
         return HqOutcomeUnknown(getattr(error, "expected", None), str(error))
-    if isinstance(error, SqlRuntimeDeadline):
+    if isinstance(error, SqlRuntimeDeadline | SqlConfigDeadline):
         return HqDeadline(str(error))
     if isinstance(error, SqlRuntimeUnavailable | SqlConfigUnavailable | SqlTransportError):
         return HqUnavailable(str(error))
@@ -162,8 +166,6 @@ class SqlHqAdapter:
 
         self._plane = SqlControlPlane(dict(settings), broker=broker, clock=clock)
         self._provisioning_password = provisioning_password
-        #: ``request_id -> (binding, audience, expected head)`` for :meth:`read_result`.
-        self._pending: dict[str, tuple[Any, str, str | None]] = {}
 
     # ---- openers (the existing seams) ----------------------------------------------------
 
@@ -235,9 +237,14 @@ class SqlHqAdapter:
             request_id=request_id,
             deadline=deadline,
         )
-        self._pending[request_id] = (binding, str(envelope.get("audience", "")), anchor.head)
         return Submission(
-            request_id=request_id, digest=digest, outcome="pending", revision=anchor.head
+            request_id=request_id,
+            digest=digest,
+            outcome="pending",
+            revision=anchor.head,
+            audience=str(envelope.get("audience", "")),
+            expected_head=anchor.head,
+            anchor=anchor,
         )
 
     @_mapped
@@ -258,10 +265,10 @@ class SqlHqAdapter:
         receiver has answered; the caller polls, as ``publish_hive_lease`` does today."""
         if submission.outcome != "pending":
             return submission
-        known = self._pending.get(submission.request_id)
-        if known is None:
-            raise HqRefused("unknown_submission", "submission was not made through this adapter")
-        binding, audience, expected = known
+        if submission.anchor is None or submission.audience is None:
+            raise HqRefused("unknown_submission", "submission carries no SQL read context")
+        binding = _binding(submission.anchor)
+        audience, expected = submission.audience, submission.expected_head
         result = self._runtime().read_public_result(
             submission.request_id,
             request_sha256=submission.digest.removeprefix(_SHA_PREFIX),
@@ -273,7 +280,6 @@ class SqlHqAdapter:
         if result is None:
             return submission
         status, revision = result
-        self._pending.pop(submission.request_id, None)
         if status == "accepted" and revision:
             return Submission(
                 submission.request_id, submission.digest, "accepted", revision=revision
@@ -323,7 +329,9 @@ class SqlHqAdapter:
         if snapshot.commit_revision != expected_revision:
             raise HqRefused("revision_conflict", "the committed config revision changed")
         return store.publish_snapshot(
-            tuple(change(list(snapshot.documents))), expected_revision=expected_revision
+            tuple(change(list(snapshot.documents))),
+            expected_revision=expected_revision,
+            deadline=deadline,
         ).commit_revision
 
     @_mapped
@@ -435,13 +443,6 @@ class SqlHqAdapter:
             return store.load_snapshot_or_cached()
         return store.load_snapshot(revision=revision, deadline=deadline)
 
-    @_mapped
-    def read_history(self, *, since: str, deadline: float) -> HistorySinceFloor:
-        raise HqUnavailable(
-            "the SQL adapter verifies the restore floor inside each authority read; "
-            "there is no separate history read on this route"
-        )
-
     # ---- HqOperator ----------------------------------------------------------------------
 
     def _publish(self, state, signer, expected_revision, deadline, **extra) -> str:
@@ -495,14 +496,16 @@ class SqlHqAdapter:
 
     @_mapped
     def publish_config(self, documents: tuple, *, expected_revision: str, deadline: float) -> Any:
-        return self._store().publish_snapshot(documents, expected_revision=expected_revision)
+        return self._store().publish_snapshot(
+            documents, expected_revision=expected_revision, deadline=deadline
+        )
 
     @_mapped
     def recover_publication(
         self, publication_id: str, *, expected_revision: str, deadline: float
     ) -> Any:
         return self._store().recover_publication(
-            publication_id, expected_revision=expected_revision
+            publication_id, expected_revision=expected_revision, deadline=deadline
         )
 
 

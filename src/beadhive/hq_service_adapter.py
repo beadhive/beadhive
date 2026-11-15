@@ -328,7 +328,7 @@ class HqServiceAdapter:
         _, payload = self._call("GET", "/config", None, deadline=deadline)
         return self._verified("read_config", payload)
 
-    def read_history(self, *, since: str, deadline: float) -> HistorySinceFloor:
+    def _read_history(self, *, since: str, deadline: float) -> HistorySinceFloor:
         # The plane refuses query strings, so the floor is a path segment (not `?since=`).
         _, payload = self._call("GET", f"/history/{_seg(since)}", None, deadline=deadline)
         if not isinstance(payload, dict):
