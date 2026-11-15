@@ -414,3 +414,20 @@ G1 matters most. Without it, a frame on the hq-service adapter cannot fill the
 - **`bh-u0osy`.** `heartbeat_sender` keeps its loop and error reporting. It gets
   `renew_session` and `publish_evidence` from the port, plus `read_frame_anchor` once G1 is
   closed.
+
+## 6. Landed: the SQL adapter (`bh-v3dyp`)
+
+`src/beadhive/hq_sql_adapter.py` is the default (`hq.route: sql`) adapter. `SqlHqAdapter` is a
+thin class over today's openers, reached through `SqlControlPlane` (`_runtime_authority`,
+`_operator`, `config_store`), so every transaction, fence and fixed message is unchanged. It maps
+the port's value objects onto the SQL tuples and the SQL error classes onto the port taxonomy
+(`SqlRuntimeDeadline` to `HqDeadline`, the `*Unavailable`/transport errors to `HqUnavailable`,
+the `*Unknown` publication errors to `HqOutcomeUnknown`, everything else definite to
+`HqRefused`). It registers itself with `register_sql_adapter` on import, and `select_hq_port`
+imports it on demand when `sql` is chosen.
+
+Notes: `SqlRuntimeOperator.publish` gained an `authority_signer=` argument (the port's keyless contract)
+beside `operator_key`; `read_history` is not a SQL route (the restore floor is checked inside each
+verified read); `register_incarnation` needs the SQL-only provisioning password at construction;
+`admit` takes the already-built next authority state, because the grant rules stay in
+`SqlControlPlane`. Callers are not yet re-pointed at the port.

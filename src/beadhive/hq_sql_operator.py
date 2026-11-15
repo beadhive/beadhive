@@ -359,15 +359,20 @@ class SqlRuntimeOperator:
         state: dict,
         *,
         expected_revision: str,
-        operator_key: str,
+        operator_key: str = "",
         provisioned_route=None,
         release_upgrade=None,
         deadline=None,
+        authority_signer=None,
     ) -> str:
         """Sign current canonical catalog projection and exact authority CAS.
 
         Without *operator_key* in trusted mode (bh-l4q0s) the row carries the unsigned marker
-        :data:`beadhive.hq_authority_enforce.UNSIGNED_SIGNATURE` instead of a signature."""
+        :data:`beadhive.hq_authority_enforce.UNSIGNED_SIGNATURE` instead of a signature.
+
+        *authority_signer* (the HQ port's keyless contract, bh-v3dyp) replaces *operator_key*:
+        it receives the canonical record and returns the signature (or the unsigned marker), so
+        the key never crosses the port."""
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlOperatorError("original authority revision required")
         connection, deadline = self._open(deadline=deadline)
@@ -468,7 +473,15 @@ class SqlRuntimeOperator:
                     "state": state,
                     "hive_policies": policies,
                 }
-                if operator_key:
+                if authority_signer is not None:
+                    signature = authority_signer(signed)
+                    if signature != hq_authority_enforce.UNSIGNED_SIGNATURE:
+                        verify_authority(
+                            signed,
+                            signature,
+                            granted_public_key=self.settings["runtime_operator_public_key"],
+                        )
+                elif operator_key:
                     signature = sign_authority(signed, signing_key=operator_key)
                     verify_authority(
                         signed,
@@ -502,9 +515,13 @@ class SqlRuntimeOperator:
                 self.authority.fresh_runtime_head_fence(head, deadline=deadline)
                 sql.stage_authority()
                 crossed_commit = True
+                signed_label = (
+                    "unsigned (trusted)"
+                    if signature == hq_authority_enforce.UNSIGNED_SIGNATURE
+                    else "signed"
+                )
                 committed = sql.commit_authority(
-                    f"HQ {'signed' if operator_key else 'unsigned (trusted)'} authority "
-                    f"{state['revision']}",
+                    f"HQ {signed_label} authority {state['revision']}",
                     "HQ operator <hq-operator@localhost>",
                 )
                 if not committed or not isinstance(committed[0], str):
