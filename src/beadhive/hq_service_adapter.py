@@ -6,6 +6,11 @@ credential the Gateway authenticates (mTLS client certificate, or the auth proxy
 its socket), so no method carries a principal as an argument. Failures map onto the port's
 taxonomy; a method with no route raises :class:`HqUnavailable` and never reaches SQL.
 
+Wire-shape status (bh-bmb4t): hq-service at f69779c serves only GET /authority and the three
+signed submissions (hive-leases, heartbeats, registrations); those shapes are verified against
+hq-service-derived fixtures (``tests/test_hq_service_contract.py``). Every other route's body or
+response is a PROVISIONAL guess, marked ``PROVISIONAL`` below, until hq-service serves it.
+
 Verification of signed authority and the restore floor is a separate step (bh-j99c8). It plugs
 in through ``verifier``: authority-bearing reads (authority, eligibility, config) hand the
 response to it and return what it returns. With no verifier those reads fail closed, because the
@@ -191,6 +196,8 @@ class HqServiceAdapter:
 
     # ---- liveness -----------------------------------------------------------------------
 
+    # PROVISIONAL (bh-hq-e9z not served yet): renew/evidence request bodies and the
+    # `{revision}` response are unverified.
     def renew_session(self, anchor: FrameAnchor, *, deadline: float) -> SessionRoute:
         path = f"/sessions/{_seg(anchor.principal)}/{_seg(anchor.epoch)}/renew"
         _, payload = self._call("POST", path, {}, deadline=deadline)
@@ -246,6 +253,8 @@ class HqServiceAdapter:
         # frame_address and login_secret are SQL-adapter-only inputs: identity here is the
         # attested caller, so login_secret is never called. How the api route issues a
         # credential is open on hq-service bh-hq-3sa.
+        # PROVISIONAL (bh-hq-3sa not served yet): `{route, expected_revision}` body and
+        # `{revision}` response.
         body = {"route": list(route), "expected_revision": expected_revision}
         _, payload = self._call(
             "POST",
@@ -262,6 +271,7 @@ class HqServiceAdapter:
         host_id = document.get("host_id")
         if not host_id:
             raise HqRefused("bad_request", "manifest carries no host_id")
+        # PROVISIONAL (bh-hq-3sa not served yet): `{manifest, expected_revision}` and `{revision}`.
         body = {"manifest": document, "expected_revision": expected_revision}
         _, payload = self._call(
             "PUT",
@@ -289,6 +299,7 @@ class HqServiceAdapter:
         # The service derives the principal from committed authority, and stamps and signs the
         # grant itself under the service's own authority; `signer` is not used on this route.
         document = dict(request) if isinstance(request, Mapping) else dict(vars(request))
+        # PROVISIONAL (bh-hq-3sa not served yet): `{request, expected_revision}` and `{revision}`.
         body = {"request": document, "expected_revision": expected_revision}
         _, payload = self._call(
             "POST",
@@ -302,6 +313,8 @@ class HqServiceAdapter:
 
     # ---- reads --------------------------------------------------------------------------
 
+    # PROVISIONAL (bh-hq-9lh not served yet): GET /config and GET /eligibility/{frame}
+    # responses are unverified. GET /authority is verified (hq-service api/api.go).
     def read_authority(self, *, allow_expired: bool = False, deadline: float) -> Any:
         _, payload = self._call("GET", "/authority", None, deadline=deadline)
         return self._verified("read_authority", payload)
@@ -337,7 +350,10 @@ class HqServiceAdapter:
         return self._verified("read_config", payload)
 
     def _read_history(self, *, since: str, deadline: float) -> HistorySinceFloor:
-        # The plane refuses query strings, so the floor is a path segment (not `?since=`).
+        # PROVISIONAL (bh-hq-9lh not served yet): the `{commits, diff_summary}` response is a
+        # guess. The path segment is also provisional: the decided shape is
+        # `GET /history?since={floor}` (percent-encoded, no other keys until bh-hq-5vu), cut over
+        # ONLY after Gateway bh-gw-itkt lands (the Gateway refuses query strings until then).
         _, payload = self._call("GET", f"/history/{_seg(since)}", None, deadline=deadline)
         if not isinstance(payload, dict):
             raise HqUnavailable("hq-service history is not an object")

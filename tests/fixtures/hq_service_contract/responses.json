@@ -1,0 +1,12 @@
+{
+  "_source": "hq-service api/api.go and api/api_test.go at commit f69779c (origin/main; routes: GET /authority, POST /hive-leases/{prefix}, PUT /heartbeats/{request_id}, POST /registrations). Re-derive when more routes land (bh-bmb4t).",
+  "authority_200": {"head": "h1", "record": {"revision": 1, "note": "<&>"}, "signature": "sig"},
+  "authority_409_refused": {"outcome": "refused", "refusal": "authority_failed"},
+  "submission_200_accepted": {"outcome": "accepted", "revision": "rev-2"},
+  "submission_200_replayed": {"outcome": "replayed", "revision": "rev-2"},
+  "submission_409_refused": {"outcome": "refused", "refusal": "request_id_reused"},
+  "error_400_no_query": {"error": "no query parameters"},
+  "error_400_malformed": {"error": "body must be a signed registration request envelope"},
+  "error_415": {"error": "application/json required"},
+  "error_500": {"error": "hq storage unavailable"}
+}
