@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 339,
+    "config_patch_point_count": 343,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -560,28 +560,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2368,
+        "line": 2369,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2438,
+        "line": 2439,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2616,
+        "line": 2617,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2629,
+        "line": 2630,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -637,84 +637,84 @@
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 178,
+        "line": 181,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 180,
+        "line": 183,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 182,
+        "line": 185,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 197,
+        "line": 200,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 214,
+        "line": 217,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 224,
+        "line": 227,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
-        "kind": "direct-facade",
-        "line": 225,
-        "path": "tests/test_frame_eligibility.py",
-        "target": "beadhive.config.load_host"
-      },
-      {
-        "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
         "line": 228,
         "path": "tests/test_frame_eligibility.py",
+        "target": "beadhive.config.load_host"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 231,
+        "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 321,
+        "line": 324,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 322,
+        "line": 325,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config.hq_dir",
         "kind": "direct-facade",
-        "line": 323,
+        "line": 326,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.hq_dir"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 417,
+        "line": 420,
         "path": "tests/test_frame_eligibility.py",
         "target": "beadhive.config.load_host"
       },
@@ -1249,6 +1249,34 @@
         "line": 637,
         "path": "tests/test_hq_sql_session_int.py",
         "target": "beadhive.config.fleet_sql_selected"
+      },
+      {
+        "facade_target": "beadhive.config.hq_dir",
+        "kind": "direct-facade",
+        "line": 120,
+        "path": "tests/test_local_only_hives.py",
+        "target": "beadhive.config.hq_dir"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 262,
+        "path": "tests/test_local_only_hives.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 276,
+        "path": "tests/test_local_only_hives.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 951,
+        "path": "tests/test_local_only_hives.py",
+        "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
@@ -2392,7 +2420,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 92,
+    "production_config_importer_count": 94,
     "production_config_importers": [
       "src/beadhive/activity_publisher.py",
       "src/beadhive/agent_run_summary_reader.py",
@@ -2436,6 +2464,7 @@
       "src/beadhive/hitch_plugin.py",
       "src/beadhive/hive.py",
       "src/beadhive/hive_forward.py",
+      "src/beadhive/hive_local_only.py",
       "src/beadhive/hive_migrate.py",
       "src/beadhive/hive_ready.py",
       "src/beadhive/hive_repair.py",
@@ -2455,6 +2484,7 @@
       "src/beadhive/hq_seed.py",
       "src/beadhive/hub.py",
       "src/beadhive/kernel/daemon/contracts/__init__.py",
+      "src/beadhive/local_only_rollout.py",
       "src/beadhive/localloop.py",
       "src/beadhive/log.py",
       "src/beadhive/mcp.py",
@@ -2708,6 +2738,11 @@
       },
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/hive_local_only.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/hive_migrate.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
@@ -2799,6 +2834,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/kernel/daemon/contracts/__init__.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/local_only_rollout.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {
@@ -2957,7 +2997,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 179,
+    "test_config_importer_count": 180,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -3077,6 +3117,7 @@
       "tests/test_hq_sql_session_int.py",
       "tests/test_hub.py",
       "tests/test_identity.py",
+      "tests/test_local_only_hives.py",
       "tests/test_localloop.py",
       "tests/test_log.py",
       "tests/test_mcp.py",

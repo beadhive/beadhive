@@ -678,6 +678,13 @@ _SECRET_PATHS = {"dep auth", "harness auth"}
 _HQ_READS = {"hq beadyard", "hq intake", "hq status"}
 _OVERRIDE_NAMES = {"force", "yes", "skip_check"}
 
+# CLI parameters appended to an operation that already publishes MCP-only surface extras after
+# its CLI parameters. The published catalog is append-only by position, so these are placed after
+# those extras (the CLI flag order itself is unchanged). bh-sj2bf, operator option A 2026-11-15.
+_CLI_PARAMETERS_AFTER_SURFACE_EXTRAS = {
+    "hive.onboard": ("local_only", "allow_unknown_readers"),
+}
+
 _MCP_RESOURCE_DIVERGENCE = {
     "alerts.show": "alerts is the established singleton collection resource",
     "config.get": "a dotted config key is addressed directly under the config resource",
@@ -1011,12 +1018,18 @@ def _build_operations() -> tuple[OperationSpec, ...]:
     result = []
     for name in sorted(names):
         path, parameters = rows.get(name, ("", []))
-        param_by_name = {parameter.name: parameter for parameter in parameters}
+        late = _CLI_PARAMETERS_AFTER_SURFACE_EXTRAS.get(name, ())
+        param_by_name = {
+            parameter.name: parameter for parameter in parameters if parameter.name not in late
+        }
         for _surface_name, surface_params in filter(
             None, (_MCP_TOOLS.get(name), _MCP_RESOURCES.get(name))
         ):
             for parameter_name in surface_params:
                 param_by_name.setdefault(parameter_name, _extra_parameter(parameter_name))
+        for parameter in parameters:
+            if parameter.name in late:
+                param_by_name[parameter.name] = parameter
         parameters = list(param_by_name.values())
         hq_write = (
             name.startswith("hq.") and name not in {_operation_name(p) for p in _HQ_READS}

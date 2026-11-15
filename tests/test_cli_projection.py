@@ -101,7 +101,7 @@ def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     # (bh-pc9rf, wire 2.24.0), then `work outbox reopen` (bh-ih484, wire 2.25.0), then
     # `work validation reindex` (bh-0qazu, wire 2.26.0), then `work delivery sweep` (bh-qwv0t),
     # then `backfill decide` and `backfill view decisions` (bh-2sicb, wire 2.30.0)
-    assert len(declarations) == 308
+    assert len(declarations) == 309
     assert {
         "hq.beadyard",
         "hq.beadyard-adopt",

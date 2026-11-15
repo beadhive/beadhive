@@ -3613,6 +3613,34 @@
       "title": "LegacyBeadsConfig",
       "type": "object"
     },
+    "LocalOnlyMarker": {
+      "additionalProperties": false,
+      "description": "``managed_repos[*].local_only`` — the hive's bead database exists only on its owning host.\n\nPresence is the flag: there is no ``enabled: false`` form, and clearing it deletes the key.\nAbsent is today's replicated behaviour.",
+      "properties": {
+        "owner_host": {
+          "description": "The owning host's host_id (host.yaml); the only host that may lease, claim or onboard this hive.",
+          "title": "Owner Host",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the hive is local-only: `push-denied` (no push access at onboard), `opt-in` (explicit --local-only), `external` (an external hive never replicates) or `migrated` (an existing unpublished registration recorded by `bh hive repair --local-only`).",
+          "enum": [
+            "push-denied",
+            "opt-in",
+            "external",
+            "migrated"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner_host",
+        "reason"
+      ],
+      "title": "LocalOnlyMarker",
+      "type": "object"
+    },
     "LogConfig": {
       "additionalProperties": false,
       "description": "Diagnostics logging (structlog dual-mode pipeline).",
@@ -3777,6 +3805,18 @@
           "default": null,
           "description": "Hive kind; forks also carry `upstream`. `hq` marks the Factory HQ singleton store (registry.HQ_KIND) — not a hive, and excluded from hive-level operations; it is written by `bh hq init`, not by `bh hive init`.",
           "title": "Kind"
+        },
+        "local_only": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalOnlyMarker"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Marks a hive whose bead database exists only on its owning host (never published). Absent = replicated (today's behavior). Refused alongside `dolt_remote` or `stores`."
         },
         "observaloop": {
           "anyOf": [
