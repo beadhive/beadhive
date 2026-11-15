@@ -41,7 +41,7 @@ from typing import Any, NamedTuple
 import typer
 
 from . import bd as bd_mod
-from . import jsonout, registry, safety, store_locator
+from . import config, jsonout, registry, safety, store_locator
 from . import plugins as _plugins
 from .storage_migrate import SHARED_SERVER_CONFIG_KEY, SHARED_SERVER_FLAG
 from .storage_migrate import origin_has_dolt_data as _probe_origin_has_dolt_data
@@ -125,6 +125,9 @@ class OnboardPlan:
     warnings: list[str] = field(default_factory=list)  # fenced step failures (non-fatal)
     prefix: str = ""
     kind: str = ""
+    # bh-sj2bf: the local_only reason this run registered (push-denied | opt-in | external),
+    # "" when the registration is replicated or unchanged. Text/warnings only (no JSON field).
+    local_only: str = ""
 
     @property
     def failures(self) -> list[CheckResult]:
@@ -181,6 +184,11 @@ class Ctx:
     # `--hub-sync`, the pre-bh-d5jhc.1 behavior); False = skip the hub step entirely (`hive
     # init`'s default, or explicit `--no-hub-sync`).
     hub_sync: bool | None = False
+    # bh-sj2bf: explicit --local-only (reason opt-in): register this hive local-only to this
+    # host, unset sync.remote and skip publication even when push access is confirmed.
+    local_only: bool = False
+    # bh-sj2bf rollout floor: waive frames whose release is unknown (never an older release).
+    allow_unknown_readers: bool = False
     # ---- derived once by _ensure_derived, read by checks + actions ----
     existing: Any = None
     upstream: str = ""
@@ -190,6 +198,7 @@ class Ctx:
     reconfigure: bool = False
     furnish_explicit: bool = False  # declared this invocation (flag or installer) vs sticky
     _derived: bool = False
+    _local_only_reason: str | None = None  # memo of _local_only_reason (None = not computed)
 
     @property
     def base(self) -> Path:
@@ -769,6 +778,111 @@ def _chk_push_access_known(ctx: Ctx) -> tuple[bool, str]:
         f"cannot confirm push access to {ctx.org}/{ctx.repo} ({ans.cause}: {what}) — "
         f"remedy: {remedy} and retry; or pass --skip-check {PUSH_ACCESS_CHECK_ID} to "
         "onboard it knowingly as a local-only hive (beads remote left unset)"
+    )
+
+
+# ---- local-only hives (bh-sj2bf, docs/design/local-only-hives.md) ----------
+
+
+def _local_only_reason(ctx: Ctx) -> str:
+    """The ``local_only.reason`` this onboard will register, or "" (replicated / unchanged).
+
+    Only a FIRST onboard (no registry entry yet) writes the marker; a re-registration carries
+    an existing one (it is not register-owned) and an existing unpublished registration is
+    `bh hive repair --local-only`'s job. In order: ``external`` (an external hive is never
+    published), ``opt-in`` (explicit ``--local-only``), then — for a fresh store the push guard
+    will leave without a beads remote, when origin carries no ``refs/dolt/data`` to bootstrap
+    from — ``push-denied`` (a definite denied probe) or ``opt-in`` (an unknown probe the operator
+    accepted with ``--skip-check push-access-confirmed``). Memoized: checks and the register
+    action agree on one answer computed before any mutation."""
+    if ctx._local_only_reason is not None:
+        return ctx._local_only_reason
+    _ensure_derived(ctx)
+    reason = ""
+    if ctx.existing is None:
+        if ctx.kind == "external":
+            reason = registry.LOCAL_ONLY_EXTERNAL
+        elif ctx.local_only:
+            reason = registry.LOCAL_ONLY_OPT_IN
+        elif not (ctx.base / ".beads").exists():
+            state = _push_access(ctx).state
+            if state != registry.PUSH_CONFIRMED and not _origin_has_dolt_data(ctx):
+                reason = (
+                    registry.LOCAL_ONLY_PUSH_DENIED
+                    if state == registry.PUSH_DENIED
+                    else registry.LOCAL_ONLY_OPT_IN
+                )
+    ctx._local_only_reason = reason
+    return reason
+
+
+LOCAL_ONLY_OWNER_CHECK_ID = "local-only-owner"
+
+
+def _chk_local_only_owner(ctx: Ctx) -> tuple[bool, str]:
+    """Refuse onboarding a local-only hive on a host that does not own it (R6) — never
+    overridable. Evaluated in ``resolve``, before ``clone`` and ``bd-init``, so a refused
+    onboard clones nothing and creates no database. Reads the existing fleet registry entry
+    directly (the derivation has not run yet)."""
+    from . import host
+
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo) if ctx.cfg else None
+    marker = registry.local_only_of(entry)
+    if marker is None:
+        return True, "not local-only"
+    owner = marker["owner_host"]
+    if owner == host.host_id_or_none():
+        return True, f"local-only to this host ({marker['reason']})"
+    tail = (
+        "External hives are never replicated; work on that host."
+        if marker["reason"] == registry.LOCAL_ONLY_EXTERNAL
+        else "Work on that host, or have its owner run "
+        f"`bh hive replicate {entry.get('prefix', '')}` once it has push access."
+    )
+    return False, (
+        f"{ctx.org}/{ctx.repo} (prefix {entry.get('prefix', '')}) is local-only on host "
+        f"{registry.host_label(owner)} ({owner}): its bead database exists only there and was "
+        "never published. Onboarding here would create a second, divergent database under the "
+        f"same prefix. {tail}"
+    )
+
+
+def _chk_local_only_first_onboard(ctx: Ctx) -> tuple[bool, str]:
+    """``--local-only`` declares a FIRST onboard's registration; it never rewrites an existing
+    replicated one (that is ``bh hive repair --local-only --yes``)."""
+    entry = registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo) if ctx.cfg else None
+    if entry is None or registry.local_only_of(entry) is not None:
+        return True, "first onboard" if entry is None else "already local-only"
+    return False, (
+        f"--local-only applies to a first onboard: {ctx.org}/{ctx.repo} is already registered "
+        "as replicated; record an existing unpublished registration with "
+        "`bh hive repair --local-only --yes` on the host that holds its store"
+    )
+
+
+def _will_be_local_only(ctx: Ctx) -> bool:
+    return bool(_local_only_reason(ctx))
+
+
+def _chk_local_only_host_id(ctx: Ctx) -> tuple[bool, str]:
+    """A local-only registration records this host's ``host_id`` — never an empty owner."""
+    from . import host
+
+    if host.host_id_or_none():
+        return True, "host.yaml host_id readable"
+    return False, (
+        "this onboard registers a local-only hive owned by this host, but host.yaml (the "
+        f"host_id) is missing or unreadable — run `{config.BINARY_ALIAS} config init` to mint it"
+    )
+
+
+def _chk_local_only_readers(ctx: Ctx) -> tuple[bool, str]:
+    """Rollout floor (R3): never write ``local_only`` while a frame cannot read it."""
+    from . import local_only_rollout
+
+    why = local_only_rollout.refusal(allow_unknown_readers=ctx.allow_unknown_readers)
+    return (why is None), why or (
+        f"every measured frame reads local_only (>= {local_only_rollout.MIN_LOCAL_ONLY_READER})"
     )
 
 
@@ -1692,6 +1806,9 @@ def _guard_beads_remote(ctx: Ctx) -> None:
     (bh-dhl6): unless push access is confirmed (viewerPermission ADMIN/WRITE/MAINTAIN), unset the
     remote. Fail-closed — denied and unknown (gh absent / non-github / probe error) both leave the
     remote unset; an unknown hive only gets here when the operator opted in (bh-9eua2)."""
+    if ctx.local_only:
+        _unset_beads_remote_local_only(ctx)
+        return
     if _push_access(ctx).state == registry.PUSH_CONFIRMED:
         return
     res = bd_mod.run(["config", "unset", "sync.remote"], ctx.base, capture=True)
@@ -1700,6 +1817,13 @@ def _guard_beads_remote(ctx: Ctx) -> None:
             "• beads remote: unset sync.remote — no confirmed push access to "
             f"{ctx.org}/{ctx.repo}; beads stay local (bh-dhl6)."
         )
+
+
+def _unset_beads_remote_local_only(ctx: Ctx) -> None:
+    """``--local-only``: unset ``sync.remote`` whatever the push access (bh-sj2bf)."""
+    res = bd_mod.run(["config", "unset", "sync.remote"], ctx.base, capture=True)
+    if getattr(res, "returncode", 0) == 0:
+        typer.echo("• beads remote: unset sync.remote — --local-only; beads stay on this host.")
 
 
 def _act_publish(ctx: Ctx) -> None:
@@ -1728,6 +1852,12 @@ def _act_publish(ctx: Ctx) -> None:
     if ctx.kind == "external" or _hq_remote_descriptor(ctx) is not None:
         return
     if _partitioned_entry(ctx) is not None:
+        return
+    if ctx.local_only:
+        # bh-sj2bf: an explicit local-only hive is never published; an already-initialized
+        # store may still carry its remote (the fresh-store guard did not run on it).
+        if bd_mod.sync_remote(ctx.base):
+            _unset_beads_remote_local_only(ctx)
         return
     if not bd_mod.sync_remote(ctx.base):
         return
@@ -1762,7 +1892,11 @@ def _act_publish(ctx: Ctx) -> None:
 
 
 def _act_register(ctx: Ctx) -> None:
+    from . import host
+
     if ctx.reconfigure:
+        reason = _local_only_reason(ctx)
+        marker = {"owner_host": host.host_id_or_none() or "", "reason": reason} if reason else None
         registry.register(
             ctx.provider,
             ctx.org,
@@ -1774,9 +1908,12 @@ def _act_register(ctx: Ctx) -> None:
             # Contribution-plane marker (bh-uxam.1): today always "pull" — upstream is a read
             # rail only (worktree.push_branch refuses it); nothing yet consumes it for a PR.
             contribution="pull" if ctx.kind == "external" else "",
+            local_only=marker,
         )
         if ctx.plan is not None:
             ctx.plan.registered = True
+        if reason:
+            _note_local_only(ctx, reason)
     else:
         typer.echo(
             f"ℹ hive already configured: prefix '{ctx.prefix}' (kind={ctx.kind})"
@@ -1785,6 +1922,24 @@ def _act_register(ctx: Ctx) -> None:
             "to change just the prefix).",
             err=True,
         )
+
+
+def _note_local_only(ctx: Ctx, reason: str) -> None:
+    """Surface a local-only registration in text and in the plan's warnings (R7 Q7: no JSON
+    property in this version)."""
+    tail = (
+        "external hives are never replicated"
+        if reason == registry.LOCAL_ONLY_EXTERNAL
+        else f"run `{config.BINARY_ALIAS} hive replicate {ctx.prefix}` once it has push access"
+    )
+    warning = (
+        f"registered {ctx.org}/{ctx.repo} as local-only to this host (reason: {reason}) — its "
+        f"bead database is not published and other hosts skip it; {tail}"
+    )
+    typer.echo(f"{_GLYPH_WARN} {warning}", err=True)
+    if ctx.plan is not None:
+        ctx.plan.local_only = reason
+        ctx.plan.warnings.append(warning)
 
 
 def _act_node_id(ctx: Ctx) -> None:
@@ -2110,7 +2265,23 @@ def build_steps(ctx: Ctx) -> list[Step]:
         "resolve",
         "resolve triplet",
         _noop,
-        checks=[Check("valid-triplet", "valid triplet", False, _chk_valid_triplet)],
+        checks=[
+            Check("valid-triplet", "valid triplet", False, _chk_valid_triplet),
+            # bh-sj2bf R6: before clone/bd-init, so a refused onboard creates no database.
+            Check(
+                LOCAL_ONLY_OWNER_CHECK_ID,
+                "hive is local-only to its owning host",
+                False,
+                _chk_local_only_owner,
+            ),
+            Check(
+                "local-only-first-onboard",
+                "--local-only needs a first onboard",
+                False,
+                _chk_local_only_first_onboard,
+                applies=lambda c: c.local_only,
+            ),
+        ],
     )
     clone = Step(
         "clone",
@@ -2218,6 +2389,22 @@ def build_steps(ctx: Ctx) -> list[Step]:
                 "furnish needs push access",
                 False,
                 _chk_furnish_needs_ownership,
+            ),
+            # bh-sj2bf: a local-only registration names its owner and must be readable by
+            # every frame before it is written (rollout floor) — neither is overridable.
+            Check(
+                "local-only-host-id",
+                "local-only owner host_id readable",
+                False,
+                _chk_local_only_host_id,
+                applies=_will_be_local_only,
+            ),
+            Check(
+                "local-only-readers",
+                "every frame can read local_only",
+                False,
+                _chk_local_only_readers,
+                applies=_will_be_local_only,
             ),
         ],
     )

@@ -153,6 +153,8 @@ class OnboardHiveRequest:
     dry_run: bool = False
     skip_check: str = ""
     hub_sync: bool | None = None
+    local_only: bool = False
+    allow_unknown_readers: bool = False
 
 
 @dataclass(frozen=True, slots=True)

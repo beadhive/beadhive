@@ -1443,6 +1443,8 @@ def execute_onboard(
     dry_run=False,
     skip_check="",
     hub_sync=None,
+    local_only=False,
+    allow_unknown_readers=False,
 ):
     """Execute end-to-end onboarding and return its structured semantic plan.
 
@@ -1476,6 +1478,8 @@ def execute_onboard(
         kind=kind,
         prefix=prefix,
         hub_sync=hub_sync,
+        local_only=local_only,
+        allow_unknown_readers=allow_unknown_readers,
     )
     ctx.steps = _ob.build_steps(ctx)
     skips = [item.strip() for item in skip_check.split(",") if item.strip()]
@@ -1502,6 +1506,8 @@ def onboard(
     skip_check="",
     hub_sync=None,
     as_json=False,
+    local_only=False,
+    allow_unknown_readers=False,
 ):
     """Compatibility presentation facade around :func:`execute_onboard`."""
     from . import jsonout
@@ -1534,6 +1540,8 @@ def onboard(
                 dry_run=dry_run,
                 skip_check=skip_check,
                 hub_sync=hub_sync,
+                local_only=local_only,
+                allow_unknown_readers=allow_unknown_readers,
             )
             target = Path(plan.target)
             ctx = type("OnboardIdentity", (), {"hive": plan.hive})()
@@ -1638,8 +1646,22 @@ def ls(
             typer.echo("# No registered hives.")
             return
         typer.echo(f"# Registered hives ({len(rows)})")
+    notes = {} if show_available else _local_only_notes(config.load())
     for row in rows:
-        typer.echo(f"  {row}")
+        note = notes.get(row)
+        typer.echo(f"  {row}  {note}" if note else f"  {row}")
+
+
+def _local_only_notes(cfg) -> dict[str, str]:
+    """``provider/org/repo`` -> ``local-only (owner <label>)`` for every local-only hive
+    (bh-sj2bf): text only — the JSON contracts carry no local_only property in this version."""
+    notes = {}
+    for e in cfg.get("managed_repos", []) or []:
+        marker = registry.local_only_of(e)
+        if marker is not None:
+            owner = registry.host_label(marker["owner_host"])
+            notes[f"{e['provider']}/{e['org']}/{e['repo']}"] = f"local-only (owner {owner})"
+    return notes
 
 
 def status_payload(cfg=None) -> dict:
@@ -1689,11 +1711,14 @@ def status(hive_id: str = "", as_json: bool = False) -> None:
         typer.echo(json.dumps(payload, indent=2, default=str))
         return
     hives = payload["hives"]
+    notes = _local_only_notes(cfg)
     typer.echo(f"# Registered hives ({len(hives)})")
     for h in hives:
         extra = h["kind"]
         if h.get("upstream"):
             extra += f", fork of {h['upstream']}"
+        if note := notes.get(f"{h['provider']}/{h['org']}/{h['repo']}"):
+            extra += f", {note}"
         typer.echo(f"  {h['prefix']:<12} {h['provider']}/{h['org']}/{h['repo']} ({extra})")
     typer.echo(f"\n# Prefix collisions ({len(payload['collisions'])})")
     for col in payload["collisions"]:
@@ -1723,6 +1748,8 @@ def init(
     dry_run=False,
     skip_check="",
     cwd=None,
+    local_only=False,
+    allow_unknown_readers=False,
 ):
     """Onboard the current (already-local) repo as a hive — a thin wrapper that builds the
     onboarding ``Ctx`` and calls ``onboard.run_onboard`` (no clone, no hub sync).
@@ -1763,5 +1790,7 @@ def init(
         kind=kind,
         prefix=prefix,
         hub_sync=False,
+        local_only=local_only,
+        allow_unknown_readers=allow_unknown_readers,
     )
     _run_onboard(ctx, dry_run, skip_check)

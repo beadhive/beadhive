@@ -2347,6 +2347,19 @@ def hive_onboard(
         "--json",
         help="emit the versioned onboarding result as JSON (bh progress is carried in text)",
     ),
+    local_only: bool = typer.Option(
+        False,
+        "--local-only",
+        help="register this hive local-only to this host (reason opt-in): its bead database is "
+        "never published (sync.remote is unset even with push access) and only this host may "
+        "lease or claim it; first onboard only (see docs/HIVES.md)",
+    ),
+    allow_unknown_readers: bool = typer.Option(
+        False,
+        "--allow-unknown-readers",
+        help="local-only rollout floor: waive frames whose release is unknown; a frame below "
+        "the minimum local-only reader release can never be waived",
+    ),
 ):
     from . import hive, hive_services, jsonout
     from .modules.hives import OnboardHiveRequest
@@ -2378,6 +2391,8 @@ def hive_onboard(
                 dry_run=dry_run,
                 skip_check=skip_check,
                 hub_sync=hub_sync,
+                local_only=local_only,
+                allow_unknown_readers=allow_unknown_readers,
             )
             result = hive_services.hive_lifecycle_service().onboard(request)
             _render_onboard_result(result)
@@ -2677,8 +2692,9 @@ def hive_migrate_storage(
     "(--node-id) set this HOST's node_id (~/.config/bd/config.yaml) from bh's own host "
     "identity; (--role) set the hive's beads.role (git config) from its registry kind; "
     "(--server-database) record the shared-server database name a server-mode hive already "
-    "resolves, so it stops being re-derived. Idempotent; --yes required to mutate, --dry-run "
-    "to preview.",
+    "resolves, so it stops being re-derived; (--local-only) record an existing unpublished "
+    "registration as local-only to this host (reason migrated, or external), on the host that "
+    "holds its store. Idempotent; --yes required to mutate, --dry-run to preview.",
 )
 def hive_repair_cmd(
     prefix: str = typer.Option("", "--prefix", help="target canonical prefix (no trailing hyphen)"),
@@ -2705,9 +2721,30 @@ def hive_repair_cmd(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="print the detect/preview and change nothing"
     ),
+    local_only: bool = typer.Option(
+        False,
+        "--local-only",
+        help="record an existing unpublished registration as local-only to this host "
+        "(refuses when another host holds an unexpired lease or the entry names another owner)",
+    ),
+    allow_unknown_readers: bool = typer.Option(
+        False,
+        "--allow-unknown-readers",
+        help="--local-only rollout floor: waive frames whose release is unknown; a frame below "
+        "the minimum local-only reader release can never be waived",
+    ),
 ):
-    from . import hive_repair
+    from . import hive_local_only, hive_repair
 
+    if local_only:
+        hive_local_only.repair_cli(
+            hive,
+            other_modes=[bool(prefix), node_id, role, server_database],
+            yes=yes,
+            dry_run=dry_run,
+            allow_unknown_readers=allow_unknown_readers,
+        )
+        return
     hive_repair.repair(
         hive=hive,
         prefix=prefix,
@@ -2717,6 +2754,20 @@ def hive_repair_cmd(
         yes=yes,
         dry_run=dry_run,
     )
+
+
+@hive_app.command(
+    "replicate",
+    help="publish a local-only hive's bead database and clear its local_only marker — owner "
+    "host only, needs confirmed push access; refuses an external hive or an origin that already "
+    "carries refs/dolt/data. Publish first, flip second: any failure leaves it local-only.",
+)
+def hive_replicate_cmd(
+    hive_id: str = typer.Argument(..., metavar="HIVE", help="hive prefix or provider/org/repo"),
+):
+    from . import hive_local_only
+
+    hive_local_only.replicate_cli(hive_id)
 
 
 @hive_app.command("ready", help="check whether this repo is set up for AGF (read-only).")

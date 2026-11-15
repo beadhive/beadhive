@@ -125,7 +125,7 @@ hive init|furnish:boolean:o,claude:boolean:o,skills:boolean:o,observaloop:boolea
 hive list|available:boolean:o,as_json:boolean:o,limit:integer:o,cursor:string:o
 hive migrate|hive_id:string:o,dry_run:boolean:o
 hive migrate-storage|hive_id:string:o,dry_run:boolean:o,confirm:boolean:o,keep_pre_migrate:boolean:o
-hive onboard|hive_id:string:r,clone_url:string:o,furnish:boolean:o,claude:boolean:o,skills:boolean:o,observaloop:boolean:o,agents:boolean:o,opencode:boolean:o,codex:boolean:o,global_grant:boolean:o,force:boolean:o,kind:string:o,prefix:string:o,yes:boolean:o,plugin:array:o,dry_run:boolean:o,skip_check:string:o,hub_sync:boolean:o,as_json:boolean:o
+hive onboard|hive_id:string:r,clone_url:string:o,furnish:boolean:o,claude:boolean:o,skills:boolean:o,observaloop:boolean:o,agents:boolean:o,opencode:boolean:o,codex:boolean:o,global_grant:boolean:o,force:boolean:o,kind:string:o,prefix:string:o,yes:boolean:o,plugin:array:o,dry_run:boolean:o,skip_check:string:o,hub_sync:boolean:o,as_json:boolean:o,local_only:boolean:o,allow_unknown_readers:boolean:o
 hive policy|action:string:o,key:string:o,value:string:o,hive_id:string:o,as_json:boolean:o
 hive prefix|provider:string:r,org:string:r,repo:string:r,kind:string:o
 hive project-issues|hive_id:string:r,dry_run:boolean:o,as_json:boolean:o
@@ -133,7 +133,8 @@ hive ready|verbose:boolean:o,as_json:boolean:o
 hive reclaim|hive_id:string:r,dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 hive remote|hive:string:o,all_hives:boolean:o,reconcile:boolean:o,dry_run:boolean:o,as_json:boolean:o
 hive remote sync|hive_id:string:r,store:string:r,pull_only:boolean:o,dry_run:boolean:o,as_json:boolean:o,force_with_lease:string:o,confirm:boolean:o
-hive repair|prefix:string:o,node_id:boolean:o,role:boolean:o,server_database:boolean:o,hive:string:o,yes:boolean:o,dry_run:boolean:o
+hive replicate|hive_id:string:r
+hive repair|prefix:string:o,node_id:boolean:o,role:boolean:o,server_database:boolean:o,hive:string:o,yes:boolean:o,dry_run:boolean:o,local_only:boolean:o,allow_unknown_readers:boolean:o
 hive retire|hive_id:string:r,dry_run:boolean:o,backup:boolean:o,confirm:boolean:o,purge:boolean:o
 hive rm|hive_id:string:r,dry_run:boolean:o,confirm:boolean:o
 hive status|hive_id:string:o,as_json:boolean:o

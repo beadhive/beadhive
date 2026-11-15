@@ -197,6 +197,8 @@ class KernelHiveLifecycle:
             dry_run=request.dry_run,
             skip_check=request.skip_check,
             hub_sync=request.hub_sync,
+            local_only=request.local_only,
+            allow_unknown_readers=request.allow_unknown_readers,
         )
         entry = registry.find_entry(
             self._load_config(),
