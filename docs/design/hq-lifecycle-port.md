@@ -368,9 +368,9 @@ hq-service adapter needs `principal` and `epoch` for the session paths.
 | Port error | Meaning | SQL adapter source today | hq-service adapter source |
 |---|---|---|---|
 | `HqRefused(code, reason)` | A definite, stable refusal; nothing was written | `SqlRuntimeFloorRefusal`, `SqlRuntimeCapabilityMissing`, `SqlOperatorError` before commit, `ControlPlaneError` identity mismatches, receiver refusals in `read_result` | `409 {outcome: refused, refusal: <code>}` and the codes in `conformance/*/v1/refusal-codes.json` |
-| `HqUnavailable` | HQ could not be reached or read; nothing was written | `SqlRuntimeUnavailable`, `SqlConfigUnavailable`, `SqlTransportError` | connect failure, `5xx`, Gateway refusal before the service |
+| `HqUnavailable` | HQ could not be reached or read; nothing was written | `SqlRuntimeUnavailable`, `SqlConfigUnavailable`, `SqlTransportError` | connect failure, Gateway refusal before the service, and `5xx` on a read, an idempotent submission (heartbeat, hive lease) or the plan phase of a plan/apply write |
 | `HqDeadline` | The caller's deadline ran out | `SqlRuntimeDeadline`, transport deadline | client timeout on the deadline |
-| `HqOutcomeUnknown(expected_revision)` | The write may have committed | `AuthorityPublicationUnknown`, `PublicationUnknown`, `ReceiverUnknown` | timeout or connection loss after the request body was sent |
+| `HqOutcomeUnknown(expected_revision)` | The write may have committed | `AuthorityPublicationUnknown`, `PublicationUnknown`, `ReceiverUnknown` | timeout or connection loss after the request body was sent, and any `5xx` (including `500`) on a non-idempotent write (register incarnation, publish manifest, admit, plan/apply apply phase): a Gateway `502/503/504` can follow the commit, and a `500` can be a post-commit error, so "nothing was written" cannot be claimed |
 
 `HqRefused.code` uses the hq-service refusal-code vocabulary where a code exists. That gives
 `bh-g76hp` its "refusals map to stable codes" criterion. The SQL adapter maps its existing
