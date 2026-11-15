@@ -475,7 +475,12 @@ class SqlRuntimeOperator:
                 }
                 if authority_signer is not None:
                     signature = authority_signer(signed)
-                    if signature != hq_authority_enforce.UNSIGNED_SIGNATURE:
+                    if signature == hq_authority_enforce.UNSIGNED_SIGNATURE:
+                        # Same fence as the key-less path: the unsigned marker is written only
+                        # on a trusted host, never because a signer returned it.
+                        if not hq_authority_enforce.trusted():
+                            raise SqlOperatorError("mutation requires separate --operator-key")
+                    else:
                         verify_authority(
                             signed,
                             signature,
