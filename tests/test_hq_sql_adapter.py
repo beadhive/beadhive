@@ -161,3 +161,75 @@ def test_read_result_of_a_foreign_submission_is_refused():
 
 def test_frame_anchor_is_a_value_object():
     assert FrameAnchor("p", "f", 1).head is None
+
+
+def test_withdraw_manifest_missing_is_a_stable_refusal():
+    from types import SimpleNamespace
+
+    store = SimpleNamespace(
+        load_snapshot=lambda deadline: SimpleNamespace(commit_revision="r1", documents=[]),
+        publish_snapshot=lambda *a, **k: pytest.fail("must not publish"),
+    )
+    adapter = _adapter(None)
+    adapter._store = lambda: store
+    with pytest.raises(HqRefused) as raised:
+        adapter.withdraw_manifest("h1", expected_revision="r1", deadline=1.0)
+    assert raised.value.code == "manifest_not_found"
+
+
+# ValueError families defined in hq_sql_* that the adapter cannot surface: none today. Add a
+# class here only with a reason it is unreachable from the adapter's openers.
+_UNREACHABLE: frozenset[str] = frozenset()
+
+
+def test_every_hq_sql_value_error_is_mapped_or_listed_unreachable():
+    import importlib
+    import inspect
+    import pkgutil
+
+    import beadhive
+
+    classes = {}
+    for info in pkgutil.iter_modules(beadhive.__path__):
+        if not info.name.startswith("hq_sql_"):
+            continue
+        module = importlib.import_module(f"beadhive.{info.name}")
+        for name, cls in inspect.getmembers(module, inspect.isclass):
+            if cls.__module__ == module.__name__ and issubclass(cls, ValueError):
+                classes[f"{module.__name__}.{name}"] = cls
+    assert classes, "enumeration found nothing"
+    from beadhive.hq_authority_enforce import AuthorityEnforcementError
+
+    classes["hq_authority_enforce.AuthorityEnforcementError"] = AuthorityEnforcementError
+    unmapped = []
+    for qualified, cls in classes.items():
+        if qualified in _UNREACHABLE:
+            continue
+        error = cls.__new__(cls)
+        Exception.__init__(error, "boom")
+        if hq_sql_adapter._classify(error) is None:
+            unmapped.append(qualified)
+    assert not unmapped, f"unmapped by SqlHqAdapter._classify: {unmapped}"
+
+
+@pytest.mark.parametrize(
+    ("path", "name", "kind"),
+    [
+        ("hq_sql_receiver", "ReceiverUnknown", HqOutcomeUnknown),
+        ("hq_sql_placement", "PlacementUnknown", HqOutcomeUnknown),
+        ("hq_sql_receiver", "ReceiverError", HqRefused),
+        ("hq_sql_placement", "PlacementError", HqRefused),
+        ("hq_sql_placement", "PlacementLost", HqRefused),
+        ("hq_sql_capabilities", "CapabilityProbeError", HqRefused),
+        ("hq_sql_runtime_schema", "RuntimeSchemaError", HqRefused),
+        ("hq_sql_signatures", "SqlSignatureError", HqRefused),
+        ("hq_authority_enforce", "AuthorityEnforcementError", HqRefused),
+    ],
+)
+def test_unknown_classes_map_to_outcome_unknown_and_errors_to_refusals(path, name, kind):
+    import importlib
+
+    cls = getattr(importlib.import_module(f"beadhive.{path}"), name)
+    error = cls.__new__(cls)
+    Exception.__init__(error, "boom")
+    assert type(hq_sql_adapter._classify(error)) is kind

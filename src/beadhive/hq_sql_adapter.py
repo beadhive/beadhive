@@ -47,9 +47,13 @@ def _classify(error: BaseException) -> HqError | None:
 
     Order matters: the specific unknown/deadline/unavailable classes subclass the generic
     ``ValueError`` families, so they are tested before the generic refusal."""
+    from .hq_authority_enforce import AuthorityEnforcementError
     from .hq_control_plane import ControlPlaneError, HqLeaseUnknown
+    from .hq_sql_capabilities import CapabilityProbeError
     from .hq_sql_config import PublicationUnknown, SqlConfigError, SqlConfigUnavailable
     from .hq_sql_operator import AuthorityPublicationUnknown, SqlOperatorError
+    from .hq_sql_placement import PlacementError, PlacementUnknown
+    from .hq_sql_receiver import ReceiverError, ReceiverUnknown
     from .hq_sql_runtime import (
         InboxUnknown,
         SqlRuntimeCapabilityMissing,
@@ -58,7 +62,9 @@ def _classify(error: BaseException) -> HqError | None:
         SqlRuntimeFloorRefusal,
         SqlRuntimeUnavailable,
     )
+    from .hq_sql_runtime_schema import RuntimeSchemaError
     from .hq_sql_session import SessionError
+    from .hq_sql_signatures import SqlSignatureError
     from .hq_sql_transport import SqlTransportError
 
     if isinstance(error, AuthorityPublicationUnknown):
@@ -69,6 +75,10 @@ def _classify(error: BaseException) -> HqError | None:
         return HqOutcomeUnknown(None, str(error))
     if isinstance(error, HqLeaseUnknown):
         return HqOutcomeUnknown(getattr(error, "expected_revision", None), str(error))
+    if isinstance(error, ReceiverUnknown):
+        return HqOutcomeUnknown(getattr(error, "request_id", None), str(error))
+    if isinstance(error, PlacementUnknown):
+        return HqOutcomeUnknown(getattr(error, "expected", None), str(error))
     if isinstance(error, SqlRuntimeDeadline):
         return HqDeadline(str(error))
     if isinstance(error, SqlRuntimeUnavailable | SqlConfigUnavailable | SqlTransportError):
@@ -85,6 +95,23 @@ def _classify(error: BaseException) -> HqError | None:
         return HqRefused("control_plane_refused", str(error))
     if isinstance(error, SqlRuntimeError | SessionError):
         return HqRefused("runtime_refused", str(error))
+    # Reachability: the placement/receiver/probe/schema/signature errors surface through the
+    # runtime and operator openers the adapter delegates to; none is caught by a parent above
+    # (they subclass ValueError directly), so each needs its own stable code. Every
+    # ValueError family defined in ``hq_sql_*`` is covered here or by a parent class above
+    # (see tests/test_hq_sql_adapter.py, which enumerates them).
+    if isinstance(error, ReceiverError):
+        return HqRefused("receiver_refused", str(error))
+    if isinstance(error, PlacementError):
+        return HqRefused("placement_refused", str(error))
+    if isinstance(error, CapabilityProbeError):
+        return HqRefused("capability_probe_failed", str(error))
+    if isinstance(error, RuntimeSchemaError):
+        return HqRefused("runtime_schema_refused", str(error))
+    if isinstance(error, SqlSignatureError):
+        return HqRefused("signature_refused", str(error))
+    if isinstance(error, AuthorityEnforcementError):
+        return HqRefused("authority_enforcement_refused", str(error))
     return None
 
 
@@ -324,7 +351,7 @@ class SqlHqAdapter:
         def change(documents: list) -> list:
             kept = [item for item in documents if item.path != path]
             if len(kept) == len(documents):
-                raise FileNotFoundError(path)
+                raise HqRefused("manifest_not_found", f"no manifest published for {host_id}")
             return kept
 
         return self._publish_documents(change, expected_revision, deadline)
