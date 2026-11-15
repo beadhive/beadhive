@@ -350,3 +350,19 @@ def test_hq_route_config_is_host_only_and_validated():
         HqConfig(route="fallback")
     with pytest.raises(ValueError):
         HqConfig(api={"client_cert": "/c.pem"})
+
+
+def test_register_incarnation_never_calls_login_secret():
+    adapter, calls = _adapter(_json({"revision": "r8"}))
+
+    def secret():
+        pytest.fail("the service adapter must not call login_secret")
+
+    adapter.register_incarnation(
+        ("p", 1),
+        expected_revision="r7",
+        frame_address="f",
+        login_secret=secret,
+        deadline=_later(),
+    )
+    assert calls

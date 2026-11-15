@@ -235,9 +235,17 @@ class HqServiceAdapter:
         raise _no_route("preflight")
 
     def register_incarnation(
-        self, route: tuple, *, expected_revision: str, frame_address: str, deadline: float
+        self,
+        route: tuple,
+        *,
+        expected_revision: str,
+        frame_address: str,
+        login_secret: Callable[[], str] | None = None,
+        deadline: float,
     ) -> str:
-        # frame_address and any password are SQL-adapter-only inputs: no login, no secret here.
+        # frame_address and login_secret are SQL-adapter-only inputs: identity here is the
+        # attested caller, so login_secret is never called. How the api route issues a
+        # credential is open on hq-service bh-hq-3sa.
         body = {"route": list(route), "expected_revision": expected_revision}
         _, payload = self._call(
             "POST",

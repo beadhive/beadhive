@@ -120,7 +120,6 @@ class _Operator:
 def _adapter(operator):
     adapter = object.__new__(hq_sql_adapter.SqlHqAdapter)
     adapter._operator = lambda: operator
-    adapter._provisioning_password = ""
     return adapter
 
 
@@ -135,6 +134,32 @@ def test_operator_publication_passes_the_signer_not_a_key():
     assert kwargs["authority_signer"] is signer
     assert kwargs["expected_revision"] == "h1"
     assert "operator_key" not in kwargs
+
+
+def test_register_incarnation_calls_login_secret_once_inside_provisioning():
+    calls = []
+
+    class Op:
+        def provision_release_route(self, route, **kwargs):
+            calls.append(("provision", kwargs["password"]))
+            return "head-3"
+
+    def secret():
+        calls.append("secret")
+        return "pw"
+
+    adapter = _adapter(Op())
+    assert (
+        adapter.register_incarnation(
+            ("p", "f", "h", "i", 1, "fp"),
+            expected_revision="h1",
+            frame_address="a",
+            login_secret=secret,
+            deadline=1.0,
+        )
+        == "head-3"
+    )
+    assert calls == ["secret", ("provision", "pw")]
 
 
 def test_register_incarnation_needs_the_sql_only_password():
