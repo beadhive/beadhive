@@ -119,9 +119,33 @@ class HistorySinceFloor:
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AdmissionRequest:
+    """Admission intent (design section 7 D3): admit ``authority`` to ``frame``.
+
+    ``authority`` is the candidate's validated
+    :class:`~beadhive.hq_framelease_contracts.ObservationAuthority` and ``public_key`` the
+    OpenSSH Ed25519 key it names. ``admitted`` asks for a trusted (open) admission, recorded
+    active; otherwise a pending candidate grant. ``desired`` is the frame's desired policy.
+    ``provisioned_route`` optionally names the incarnation route the write provisions; absent,
+    the adapter derives it from ``authority``.
+
+    The request carries no next state: the grant rules
+    (:func:`beadhive.hq_grant_rules.grant_transition`) build it on the SQL route, and
+    hq-service builds and signs it on the api route.
+    """
+
+    frame: str
+    authority: Any
+    public_key: str
+    desired: Mapping[str, Any]
+    admitted: bool = False
+    provisioned_route: tuple | None = None
+
+
 # ---- protocols (design section 3.2) -----------------------------------------------------
 # Types the design leaves to the SQL adapter's tuples (FrameComposite, FleetConfigSnapshot,
-# HostManifest, AdmissionRequest) are ``Any`` here until bh-v3dyp fixes them.
+# HostManifest) are ``Any`` here until bh-v3dyp fixes them.
 
 
 class HqLiveness(Protocol):
@@ -162,8 +186,18 @@ class HqAdmission(Protocol):
         self, anchor: FrameAnchor, envelope: dict, *, deadline: float
     ) -> Submission: ...
     def admit(
-        self, frame: str, request: Any, *, signer: Signer, expected_revision: str, deadline: float
-    ) -> str: ...
+        self,
+        frame: str,
+        request: AdmissionRequest,
+        *,
+        signer: Signer,
+        expected_revision: str,
+        deadline: float,
+    ) -> str:
+        """Admit ``request`` and return the new authority head. ``signer`` signs the next
+        state on the SQL route; on the api route hq-service builds and signs the grant itself
+        and ``signer`` is unused."""
+        ...
 
 
 class HqReads(Protocol):

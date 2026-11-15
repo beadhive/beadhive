@@ -25,6 +25,7 @@ from io import StringIO
 from typing import Any
 
 from .hq_port import (
+    AdmissionRequest,
     EvidenceReport,
     FrameAnchor,
     HqDeadline,
@@ -48,6 +49,7 @@ def _classify(error: BaseException) -> HqError | None:
     ``ValueError`` families, so they are tested before the generic refusal."""
     from .hq_authority_enforce import AuthorityEnforcementError
     from .hq_control_plane import ControlPlaneError, HqLeaseUnknown
+    from .hq_grant_rules import GrantRefused
     from .hq_sql_capabilities import CapabilityProbeError
     from .hq_sql_config import (
         PublicationUnknown,
@@ -97,6 +99,8 @@ def _classify(error: BaseException) -> HqError | None:
         return HqRefused("config_refused", str(error))
     if isinstance(error, ControlPlaneError):
         return HqRefused("control_plane_refused", str(error))
+    if isinstance(error, GrantRefused):
+        return HqRefused(error.code, str(error))
     if isinstance(error, SqlRuntimeError | SessionError):
         return HqRefused("runtime_refused", str(error))
     # Reachability: the placement/receiver/probe/schema/signature errors surface through the
@@ -376,16 +380,44 @@ class SqlHqAdapter:
 
     @_mapped
     def admit(
-        self, frame: str, request: Any, *, signer: Signer, expected_revision: str, deadline: float
+        self,
+        frame: str,
+        request: AdmissionRequest,
+        *,
+        signer: Signer,
+        expected_revision: str,
+        deadline: float,
     ) -> str:
-        """*request* is the already-built next authority state: ``{"state": dict,
-        "provisioned_route": tuple | None}``. The transition rules (trusted or candidate grant)
-        stay in ``SqlControlPlane.grant``; this publishes the result."""
-        return self._operator().publish(
-            request["state"],
+        """Compute the next authority state from the intent with the shared grant rules
+        (:func:`beadhive.hq_grant_rules.grant_transition`) and publish it signed by *signer*.
+        A trusted (``admitted``) request first passes ``open_admission_guard``, as
+        ``SqlControlPlane.admit_open`` does."""
+        from .hq_control_plane import open_admission_guard
+        from .hq_grant_rules import grant_transition
+
+        if not isinstance(request, AdmissionRequest):
+            raise HqRefused("admission_request_invalid", "admit takes an AdmissionRequest")
+        if request.frame != frame or request.authority.frame_id != frame:
+            raise HqRefused("admission_frame_mismatch", "admission request names another frame")
+        desired = open_admission_guard(request.desired) if request.admitted else request.desired
+        operator = self._operator()
+        head, original, _crossref, _policies = operator.load(deadline=deadline)
+        transition = grant_transition(
+            original,
+            head=head,
+            expected=expected_revision,
+            authority=request.authority,
+            public_key=request.public_key,
+            desired=desired,
+            admitted=request.admitted,
+            now=self._plane.clock(),
+            operator_public_key=self._plane.settings["runtime_operator_public_key"],
+        )
+        return operator.publish(
+            transition.state,
             expected_revision=expected_revision,
             authority_signer=signer,
-            provisioned_route=request.get("provisioned_route"),
+            provisioned_route=request.provisioned_route or transition.provisioned_route,
             deadline=deadline,
         )
 

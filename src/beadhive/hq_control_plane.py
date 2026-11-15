@@ -1963,9 +1963,8 @@ class SqlControlPlane:
 
     def grant(self, authority, public_key, desired, *, expected, operator_key, admitted=False):
         from .host_heartbeat_core import ObservationAuthority
-        from .hq_authority_payload import authority_payload
-        from .hq_sql_operator import SqlRuntimeOperator
-        from .hq_sql_signatures import fingerprint, public_key_problem
+        from .hq_grant_rules import GrantRefused, grant_transition
+        from .hq_sql_signatures import public_key_problem
 
         _require_operator_key(operator_key)
 
@@ -1988,76 +1987,26 @@ class SqlControlPlane:
         budget = self._operator_deadline()
         try:
             head, original, _crossref, _policies = operator.load(deadline=budget)
-            if (
-                head != expected
-                or not admitted
-                and (
-                    authority.candidate_expires_at is None
-                    or authority.candidate_expires_at <= self.clock()
-                )
-                or fingerprint(public_key) != authority.key_fingerprint
-                or authority.key_fingerprint
-                == fingerprint(self.settings["runtime_operator_public_key"])
-                or any(
-                    record["authority"]["key_fingerprint"] == authority.key_fingerprint
-                    or record["authority"]["holder_identity"] == authority.holder_identity
-                    for _, record in guard.records(original)
-                )
-            ):
-                raise ControlPlaneError("candidate grant identity or original CAS invalid")
-            state = json.loads(json.dumps(original))
-            entry = state["frames"].setdefault(
-                authority.frame_id,
-                {"active": None, "candidate": None, "retired": [], "epoch_floor": -1},
+            transition = grant_transition(
+                original,
+                head=head,
+                expected=expected,
+                authority=authority,
+                public_key=public_key,
+                desired=desired,
+                admitted=admitted,
+                now=self.clock(),
+                operator_public_key=self.settings["runtime_operator_public_key"],
             )
-            if entry["candidate"] is not None or authority.epoch <= entry["epoch_floor"]:
-                raise ControlPlaneError("candidate exists or epoch does not advance")
-            if admitted and entry["active"] is not None:
-                raise ControlPlaneError("open admission: frame already has an active incarnation")
-            entry["active" if admitted else "candidate"] = {
-                "authority": authority_payload(authority),
-                "public_key": public_key.strip(),
-                "state": "active" if admitted else "pending",
-                "desired": desired,
-                "cordoned": False,
-                "drain_deadline": None,
-                "receipt": {
-                    "sequence": 0,
-                    "sha": "",
-                    "first_seen": None,
-                    "consecutive": 0,
-                    "lease": None,
-                    "registration": None,
-                },
-            }
-            entry["epoch_floor"] = authority.epoch
-            state["revision"] += 1
-            state["issued_at"] = self.clock()
-            state["expires_at"] = guard.operator_signed_expiry(original, state["issued_at"])
-            state["domain"] = (
-                guard.DOMAIN_V2
-                if any(
-                    row["authority"].get("beadyard_id") is not None
-                    for _, row in guard.records(state)
-                )
-                else guard.DOMAIN
-            )
-            guard.validate_state(state)
-            principal = SqlRuntimeOperator.principal_for(authority)
             return operator.publish(
-                state,
+                transition.state,
                 expected_revision=expected,
                 operator_key=operator_key,
-                provisioned_route=(
-                    principal,
-                    authority.frame_id,
-                    authority.holder_identity,
-                    authority.instance_ref,
-                    authority.epoch,
-                    authority.key_fingerprint,
-                ),
+                provisioned_route=transition.provisioned_route,
                 deadline=budget,
             )
+        except GrantRefused as exc:
+            raise ControlPlaneError(str(exc)) from None
         except ValueError as exc:
             if isinstance(exc, ControlPlaneError):
                 raise
