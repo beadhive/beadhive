@@ -1,8 +1,8 @@
 # Local-only hive registration — design note
 
-> Status: **proposed, awaiting operator approval** (bh-ndkos). Implements part 2 of the
-> bh-dl3su decision (option B). Implementation: bh-sj2bf, blocked on this note. Part 1, the
-> tri-state push-access probe and the explicit opt-in flag, is bh-9eua2 and is not changed here.
+> Status: **approved 2026-11-15** (bh-ndkos; operator answers in the bh-ndkos approval
+> comment), implemented by bh-sj2bf. Implements part 2 of the bh-dl3su decision (option B).
+> Part 1, the tri-state push-access probe, is bh-9eua2 and is not changed here.
 > Line references are to `main` at f17b4b93 (2026-11-15).
 
 ## Problem
