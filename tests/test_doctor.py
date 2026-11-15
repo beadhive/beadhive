@@ -1339,6 +1339,7 @@ _DOCTOR_SECTIONS = {
     "node_id",
     "beads_role",
     "beads_routing",
+    "unpublished",
     "stores",
     "store_engine",
     "dispatch",
