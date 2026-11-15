@@ -727,8 +727,111 @@ def _save_managed_repos(kept) -> None:
         config.save(host_cfg)
 
 
-def register(group, org, repo, prefix, kind, upstream="", furnish="", contribution=""):
-    """`group` is the repo-group path (a hive identity triplet's first segment)."""
+# ---- local-only hives (bh-sj2bf, docs/design/local-only-hives.md) ------------
+
+LOCAL_ONLY_KEY = "local_only"
+LOCAL_ONLY_PUSH_DENIED = "push-denied"
+LOCAL_ONLY_OPT_IN = "opt-in"
+LOCAL_ONLY_EXTERNAL = "external"
+LOCAL_ONLY_MIGRATED = "migrated"
+
+
+def local_only_of(entry) -> dict | None:
+    """The entry's ``local_only`` marker as ``{owner_host, reason}``, or None when the hive is
+    replicated (the key is absent). Presence is the flag."""
+    marker = (entry or {}).get(LOCAL_ONLY_KEY) if hasattr(entry or {}, "get") else None
+    if not marker or not hasattr(marker, "get"):
+        return None
+    return {
+        "owner_host": str(marker.get("owner_host", "") or ""),
+        "reason": str(marker.get("reason", "") or ""),
+    }
+
+
+def host_label(host_id_: str) -> str:
+    """The human label of ``host_id_`` from its HQ host manifest, falling back to the id —
+    display only, never an identity (R1)."""
+    from . import hosts
+
+    try:
+        return str(hosts.load(config.hq_dir(), host_id_).label) or host_id_
+    except Exception:  # noqa: BLE001 — display fallback: an unreadable manifest shows the id
+        return host_id_
+
+
+def local_only_blocks(entry, host_id_: str | None) -> bool:
+    """Pure: True when the entry is local-only and ``host_id_`` is not (or cannot prove it is)
+    its owner. A replicated entry (no marker) never blocks."""
+    marker = local_only_of(entry)
+    if marker is None:
+        return False
+    return not (host_id_ and marker["owner_host"] == host_id_)
+
+
+def local_only_refusal(entry, host_id_: str | None) -> str | None:
+    """Why ``host_id_`` may NOT lease or claim this hive's beads, or None when it may.
+
+    None when the entry carries no ``local_only`` marker, or when ``host_id_`` is its owner.
+    A host that cannot name itself (``host_id_`` empty/None) cannot prove it is the owner, so
+    it is refused (fail closed). Pure apart from the display-only owner label lookup."""
+    if not local_only_blocks(entry, host_id_):
+        return None
+    owner = local_only_of(entry)["owner_host"]
+    prefix = str((entry or {}).get("prefix", "") or "")
+    return (
+        f"hive {prefix} is local-only on host {host_label(owner)} ({owner}); only that host "
+        "may lease or claim its beads"
+    )
+
+
+def local_only_marker(owner_host: str, reason: str):
+    """The flow-style ``local_only`` mapping register/repair write (never an empty owner)."""
+    if not str(owner_host or "").strip():
+        raise ValueError("local_only.owner_host must name a host_id — never recorded empty")
+    m = CommentedMap()
+    m[DQ("owner_host")] = DQ(owner_host)
+    m[DQ("reason")] = DQ(reason)
+    m.fa.set_flow_style()
+    return m
+
+
+def set_local_only(group, org, repo, marker) -> None:
+    """Write (``marker`` a ``{owner_host, reason}`` mapping) or delete (``marker`` None) the
+    ``local_only`` key of one registered entry, under the same director registry guard and
+    write transaction as :func:`register`. Raises ``LookupError`` when the hive is not
+    registered. Every other key of the entry is preserved."""
+    from . import guard  # lazy: guard imports registry (avoid an import cycle)
+    from .identity import resolve_actor
+
+    guard.guard_hq_registry_write(guard.HQ_FLEET, resolve_actor())
+    key = f"{group}/{org}/{repo}"
+    scope = (
+        config.SCOPE_FLEET
+        if config.fleet_sql_selected() or config.fleet_path().is_file()
+        else config.SCOPE_HOST
+    )
+    with config._write_transaction(scope):
+        base = _managed_repos_base()
+        entry = next((e for e in base if _key(e) == key), None)
+        if entry is None:
+            raise LookupError(f"{key} is not registered")
+        if marker is None:
+            if LOCAL_ONLY_KEY in entry:
+                del entry[LOCAL_ONLY_KEY]
+        else:
+            entry[DQ(LOCAL_ONLY_KEY)] = local_only_marker(marker["owner_host"], marker["reason"])
+        _save_managed_repos(base)
+
+
+def register(
+    group, org, repo, prefix, kind, upstream="", furnish="", contribution="", local_only=None
+):
+    """`group` is the repo-group path (a hive identity triplet's first segment).
+
+    ``local_only`` (``{owner_host, reason}``) records the hive as local-only to its owning host
+    (bh-sj2bf). Absent, a prior entry's marker is carried across like every key register does
+    not own; it is written whatever the config scope, so a host-only registry carries it into
+    the fleet when the host joins."""
     from . import guard  # lazy: guard imports registry (avoid an import cycle)
     from .identity import resolve_actor
 
@@ -744,11 +847,12 @@ def register(group, org, repo, prefix, kind, upstream="", furnish="", contributi
         base = _managed_repos_base()
         prior = next((e for e in base if _key(e) == key), None)
         kept = [e for e in base if _key(e) != key]
-        kept.append(
-            _carry_unowned(
-                _entry(group, org, repo, prefix, kind, upstream, furnish, contribution), prior
+        fresh = _entry(group, org, repo, prefix, kind, upstream, furnish, contribution)
+        if local_only is not None:
+            fresh[DQ(LOCAL_ONLY_KEY)] = local_only_marker(
+                local_only["owner_host"], local_only["reason"]
             )
-        )
+        kept.append(_carry_unowned(fresh, prior))
         kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
         _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)

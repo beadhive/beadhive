@@ -4472,6 +4472,38 @@ def adapter_problems(
     return []
 
 
+#: Why a hive is local-only (bh-sj2bf, docs/design/local-only-hives.md R1). The members are
+#: frozen once published: the additive contract gate compares enum members exactly.
+LOCAL_ONLY_REASONS = ("push-denied", "opt-in", "external", "migrated")
+
+
+class LocalOnlyMarker(_Section):
+    """``managed_repos[*].local_only`` — the hive's bead database exists only on its owning host.
+
+    Presence is the flag: there is no ``enabled: false`` form, and clearing it deletes the key.
+    Absent is today's replicated behaviour."""
+
+    owner_host: str = Field(
+        ...,
+        description="The owning host's host_id (host.yaml); the only host that may lease, claim "
+        "or onboard this hive.",
+    )
+    reason: Literal["push-denied", "opt-in", "external", "migrated"] = Field(
+        ...,
+        description="Why the hive is local-only: `push-denied` (no push access at onboard), "
+        "`opt-in` (explicit --local-only), `external` (an external hive never replicates) or "
+        "`migrated` (an existing unpublished registration recorded by `bh hive repair "
+        "--local-only`).",
+    )
+
+    @field_validator("owner_host")
+    @classmethod
+    def _owner_host_trimmed(cls, v: str) -> str:
+        if not v or v != v.strip():
+            raise ValueError("local_only.owner_host must be a non-empty trimmed host_id")
+        return v
+
+
 class ManagedRepoEntry(_Section):
     """One entry in ``managed_repos`` — a hive `bh hive init` maintains, with optional
     per-hive overrides of the sections above."""
@@ -4549,6 +4581,25 @@ class ManagedRepoEntry(_Section):
         description="Optional explicit internal/public bead stores (bh-lniwf.2). Absent = the "
         "one implicit store at the checkout's .beads (today's behavior).",
     )
+    local_only: LocalOnlyMarker | None = Field(
+        None,
+        description="Marks a hive whose bead database exists only on its owning host (never "
+        "published). Absent = replicated (today's behavior). Refused alongside `dolt_remote` "
+        "or `stores`.",
+    )
+
+    @model_validator(mode="after")
+    def _local_only_is_unreplicated(self):
+        """An HQ-declared remote (or explicit store set) is already replicated, so it cannot
+        also be local-only to one host (bh-sj2bf)."""
+        if self.local_only is not None and (
+            self.dolt_remote is not None or self.stores is not None
+        ):
+            raise ValueError(
+                "local_only cannot be combined with dolt_remote or stores — an HQ-declared "
+                "remote is already replicated"
+            )
+        return self
 
     @model_validator(mode="after")
     def _internal_prefix_is_hive_prefix(self):

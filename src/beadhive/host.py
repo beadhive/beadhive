@@ -197,6 +197,16 @@ def host_id() -> str:
     return str(load()["host_id"])
 
 
+def host_id_or_none() -> str | None:
+    """This host's ``host_id``, or None when ``host.yaml`` is missing or unreadable — the
+    "cannot name itself" answer callers that must fail closed (local-only hives, bh-sj2bf)
+    test for."""
+    try:
+        return host_id() or None
+    except Exception:  # noqa: BLE001 — an unreadable identity is "cannot name itself"
+        return None
+
+
 def label() -> str:
     return str(load()["label"])
 
