@@ -61,6 +61,7 @@ def test_gate_refused_for_a_new_database_reruns_once_without_the_shared_gate(mon
     assert seen[0]["BEADS_DOLT_SHARED_SERVER"] == "1"
     gate_free = seen[1]
     assert "BEADS_DOLT_SHARED_SERVER" not in gate_free
+    assert gate_free["BD_DOLT_SHARED_SERVER"] == "false"
     assert gate_free["BEADS_DOLT_SERVER_MODE"] == "1"
     assert gate_free["BEADS_DOLT_SERVER_HOST"] == "127.0.0.1"
     assert gate_free["BEADS_DOLT_SERVER_PORT"] == "43308"
@@ -106,6 +107,30 @@ def test_gate_free_env_keeps_an_endpoint_the_caller_set():
     )
     assert env["BEADS_DOLT_SERVER_HOST"] == "10.0.0.5"
     assert env["BEADS_DOLT_SERVER_PORT"] == "3999"
+
+
+def test_gate_free_env_turns_off_a_tracked_shared_server_config_key():
+    """bh-jktzj: a furnished hive's tracked ``dolt.shared-server: true`` is read by bd through
+    viper, whose ``BD_``-prefixed env binding outranks config.yaml — so the gate-free attempt
+    forces it ``false``, even over a caller that set it ``true``."""
+    env = replica_bootstrap.gate_free_env({"BD_DOLT_SHARED_SERVER": "true"})
+    assert env["BD_DOLT_SHARED_SERVER"] == "false"
+    assert replica_bootstrap.gate_free_env({})["BD_DOLT_SHARED_SERVER"] == "false"
+
+
+def test_gate_free_env_drops_a_data_dir_override(tmp_path):
+    """bh-jktzj: bd resolves BEADS_DOLT_DATA_DIR before the hive's own .beads/dolt, so one aimed
+    at the shared dir would put the gate right back on it."""
+    shared = str(store_locator.shared_server_dir() / "dolt")
+    env = replica_bootstrap.gate_free_env({"BEADS_DOLT_DATA_DIR": shared, "KEEP": "x"})
+    assert "BEADS_DOLT_DATA_DIR" not in env
+    assert env["KEEP"] == "x"
+
+
+def test_gate_free_env_leaves_the_caller_env_untouched():
+    caller = {"BEADS_DOLT_SHARED_SERVER": "1", "BEADS_DOLT_DATA_DIR": "/x"}
+    replica_bootstrap.gate_free_env(caller)
+    assert caller == {"BEADS_DOLT_SHARED_SERVER": "1", "BEADS_DOLT_DATA_DIR": "/x"}
 
 
 # ---------------------------------------------------------------------------

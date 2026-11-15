@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from beadhive import hive, hive_ready, onboard, store_locator
-from test_onboard_hq_remote import URL, FakeEngine, _cfg, _ctx, wired  # noqa: F401
+from beadhive import hive, hive_ready, onboard, replica_bootstrap, store_locator
+from test_onboard_hq_remote import URL, FakeEngine, _cfg, _ctx, _done, wired  # noqa: F401
 
 REAL_CLEANUP = hive.cleanup_failed_bd_init  # the `wired` fixture swaps in a recorder
 SERVER = {"dolt_mode": "server", "dolt_database": "widget"}
@@ -62,6 +62,84 @@ def test_tracked_scaffold_without_database_clones_from_the_descriptor(host, wire
     assert [c[:2] for c in fake.calls[:1]] == [("clone", URL)]
     assert fake.tracked_scaffold == [True]
     assert bd_calls == []  # never bd init / bd bootstrap (origin path)
+
+
+_GATE_REFUSAL = (
+    "Error: bd bootstrap refuses to run over live bd activity on this workspace: "
+    'workspace gate busy ("bd serve pid 4242")\n'
+)
+_TRACKED_SHARED = "dolt:\n  shared-server: true\n"
+
+
+def _busy_executor_bd(checkout, server):
+    """A ``bd bootstrap`` that models bd 1.3.0's gate resolution on a busy executor: the gate
+    lands on the shared Dolt dir — and is refused, other hives' bd servers hold it — whenever
+    shared-server mode resolves on (``BEADS_DOLT_SHARED_SERVER``, else the tracked
+    ``dolt.shared-server`` key, which viper's ``BD_DOLT_SHARED_SERVER`` env binding outranks) or
+    ``BEADS_DOLT_DATA_DIR`` names that dir."""
+    config = checkout / ".beads" / "config.yaml"
+
+    def shared_mode(env):
+        if env.get("BEADS_DOLT_SHARED_SERVER") in ("1", "true"):
+            return True
+        if "BD_DOLT_SHARED_SERVER" in env:
+            return env["BD_DOLT_SHARED_SERVER"] == "true"
+        return "shared-server: true" in config.read_text()
+
+    def bootstrap(env):
+        if shared_mode(env) or env.get("BEADS_DOLT_DATA_DIR") == str(server / "dolt"):
+            return _done(1, _GATE_REFUSAL)
+        return _done()
+
+    return bootstrap
+
+
+def test_tracked_shared_server_config_bootstraps_on_a_busy_executor(
+    host,
+    wired,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    """bh-jktzj: a furnished hive whose tracked config sets ``dolt.shared-server: true`` (and a
+    data-dir override aimed at the shared dir) still bootstraps gate-free — no server stopped,
+    the tracked file never touched."""
+    checkout, server = host
+    _scaffold(checkout)
+    config = checkout / ".beads" / "config.yaml"
+    config.write_text(_TRACKED_SHARED)
+    monkeypatch.setenv("BEADS_DOLT_DATA_DIR", str(server / "dolt"))
+    fake, bd_calls, cleanups = wired
+    bootstrap = _busy_executor_bd(checkout, server)
+    envs: list[dict] = []
+
+    def clone(cwd, url, *, env=None, extra_env=None, tracked_scaffold=False):
+        envs.append(dict(env or {}))
+        assert config.read_text() == _TRACKED_SHARED
+        return bootstrap(dict(env or {}))
+
+    monkeypatch.setattr(fake, "clone_remote", clone)
+    monkeypatch.setattr(hive, "restore_tracked_beads", lambda base: None)
+
+    _run(checkout)
+
+    assert len(envs) == 2  # bd's own bounded window, then exactly one gate-free attempt
+    assert envs[0]["BEADS_DOLT_SHARED_SERVER"] == "1"
+    assert envs[1]["BD_DOLT_SHARED_SERVER"] == "false"
+    assert "BEADS_DOLT_DATA_DIR" not in envs[1]
+    assert cleanups == []
+    assert config.read_text() == _TRACKED_SHARED
+    assert not any(args[:1] == ["dolt"] and "stop" in args for args in bd_calls)
+    assert "no bd server is stopped" in capsys.readouterr().err
+
+
+def test_without_the_override_a_tracked_shared_server_config_refuses_the_retry(host):
+    """The model above is faithful: the pre-bh-jktzj retry env is still refused."""
+    checkout, server = host
+    (checkout / ".beads" / "config.yaml").write_text(_TRACKED_SHARED)
+    bootstrap = _busy_executor_bd(checkout, server)
+    old_retry = {"BEADS_DOLT_SERVER_MODE": "1"}
+    assert bootstrap(old_retry).returncode == 1
+    assert bootstrap(replica_bootstrap.gate_free_env(old_retry)).returncode == 0
 
 
 def test_existing_database_keeps_the_skip(host, wired, capsys):  # noqa: F811
