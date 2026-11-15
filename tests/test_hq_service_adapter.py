@@ -263,7 +263,8 @@ def test_env_overrides_config(monkeypatch):
     assert isinstance(select_hq_port(cfg), HqServiceAdapter)
 
 
-def test_no_silent_fallback():
+def test_no_silent_fallback(monkeypatch):
+    monkeypatch.setattr("beadhive.hq_service_adapter._load_sql_adapter", lambda: None)
     with pytest.raises(HqRouteError):
         select_hq_port({"hq": {"route": "api"}})  # api unconfigured: not sql
     with pytest.raises(HqRouteError):

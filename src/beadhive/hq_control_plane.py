@@ -3329,6 +3329,13 @@ def _registry_fence_reader(prefix):
     return None if record is None else EpochFence.from_record(record)
 
 
+def host_sql_settings():
+    """This host's validated ``hq.sql`` settings, as the SQL control plane and the SQL port
+    adapter (bh-v3dyp) both take them."""
+    cfg = config.load_host().get("hq", {})
+    return _validated_sql_binding(cfg.get("sql", {})).model_dump()
+
+
 def control_plane(hq_dir=None):
     # Backend connection/trust must be available before fleet/effective resolution.
     cfg = config.load_host().get("hq", {})

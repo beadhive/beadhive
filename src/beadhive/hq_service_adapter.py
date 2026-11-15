@@ -420,6 +420,12 @@ def adapter_from_config(
     return HqServiceAdapter(httpx.Client(**kwargs), verifier=verifier)
 
 
+def _load_sql_adapter() -> None:
+    """Import the SQL adapter, which registers itself as the ``sql`` route on import (bh-v3dyp).
+    Lazy so that choosing ``api`` never loads the SQL openers."""
+    from . import hq_sql_adapter  # noqa: F401
+
+
 def select_hq_port(
     host_config: Mapping[str, Any],
     *,
@@ -431,6 +437,9 @@ def select_hq_port(
     chosen = route or configured_route(host_config)
     if chosen == "sql":
         factory = sql_adapter_factory()
+        if factory is None:
+            _load_sql_adapter()
+            factory = sql_adapter_factory()
         if factory is None:
             raise HqRouteError("hq.route is sql but no SQL adapter is registered (bh-v3dyp)")
         return factory()
