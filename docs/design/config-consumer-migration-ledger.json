@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 343,
+    "config_patch_point_count": 345,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -1274,7 +1274,21 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 951,
+        "line": 1003,
+        "path": "tests/test_local_only_hives.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 1039,
+        "path": "tests/test_local_only_hives.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 1055,
         "path": "tests/test_local_only_hives.py",
         "target": "beadhive.config.load"
       },

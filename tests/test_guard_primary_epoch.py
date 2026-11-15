@@ -111,6 +111,8 @@ def install(monkeypatch):
         monkeypatch.setattr(guard, "writer_state", world.writer_state)
         monkeypatch.setattr(guard, "primary_state", world.primary_state)
         monkeypatch.setattr(guard, "_renew_liveness_hint", lambda *a, **k: None)
+        # the local-only catalog read fails closed and these worlds have no catalog (bh-sj2bf)
+        monkeypatch.setattr(guard, "_refuse_local_only_legacy", lambda *a, **k: None)
         if isinstance(world, HealingWorld):  # the real refusal path, with HQ's re-read stubbed
             monkeypatch.setattr(host_lease, "refresh_cached", world.refresh_cached)
             monkeypatch.setattr(guard.config, "hq_dir", lambda: Path("/nonexistent-hq"))
