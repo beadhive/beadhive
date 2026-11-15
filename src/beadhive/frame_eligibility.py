@@ -165,6 +165,13 @@ def _waive_authority(frame, facts, caps, predicates):
     return tuple(result), tuple(waived)
 
 
+def _local_only_owner(hive, frame) -> bool:
+    """A local-only hive (bh-sj2bf) may be leased or claimed only by its owning host."""
+    from . import registry
+
+    return not registry.local_only_blocks(hive if isinstance(hive, dict) else {}, frame.host_id)
+
+
 def _hive_compatible(hive, caps) -> bool:
     requires = hive.get("requires", {}) if isinstance(hive, dict) else None
     compatible = isinstance(requires, dict)
@@ -259,6 +266,7 @@ def _eligible_session(frame, hive, facts) -> EligibilityDecision:
             ("conformance_pass", bool(trusted_emergency or beat.conformance_pass)),
             ("capabilities_match_admission", bool(caps) and caps == desired.get("caps")),
             ("hive_requirements", _hive_compatible(hive, caps)),
+            ("local_only_owner", _local_only_owner(hive, frame)),
             ("executor_role", frame.role != "viewer"),
             (
                 "available_capacity",
@@ -406,6 +414,7 @@ def eligible(frame: hosts.HostManifest, hive: dict, facts: EligibilityFacts) -> 
             ),
             ("capabilities_match_admission", bool(caps) and caps == desired.get("caps")),
             ("hive_requirements", compatible),
+            ("local_only_owner", _local_only_owner(hive, frame)),
             ("executor_role", frame.role != "viewer"),
             (
                 "available_capacity",
@@ -536,6 +545,23 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
         **({"prefix": prefix} if isinstance(prefix, str) and prefix else {}),
     )
     return eligible(frame, hive or {}, facts)
+
+
+def local_only_lease_refusal(prefix, host_id):
+    """Why ``host_id`` may not adopt or take over ``prefix``'s lease because the hive is
+    local-only to another host (bh-sj2bf R5), or None. Applied directly by the lease paths so an
+    unbound legacy host, for which no eligibility predicate runs, is refused too. A catalog that
+    cannot be read here leaves the decision to the eligibility read."""
+    from . import config, registry
+
+    try:
+        entry = next(
+            (e for e in registry.hives(config.load()) if str(e.get("prefix", "")) == prefix),
+            None,
+        )
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+    return registry.local_only_refusal(entry, host_id)
 
 
 def _catalog_entry(prefix):

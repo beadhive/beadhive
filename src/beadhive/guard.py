@@ -543,6 +543,23 @@ _WRITER, _FRAME, _LEGACY = "writer", "frame", "legacy"
 _HEALED = object()
 
 
+def _refuse_local_only_legacy(hive: str, cfg) -> None:
+    """Refuse a legacy host's write on a local-only hive it does not own (bh-sj2bf R5).
+
+    An unresolvable hive is not this guard's error to raise (same as :func:`primary_state`)."""
+    from . import host, registry  # lazy: keep guard import-light + cycle-free
+
+    try:
+        settings = cfg if cfg is not None else config.load()
+        entry = registry.entry_for_dir(settings, registry.hive_dir_for(settings, hive)) or {}
+    except Exception:  # noqa: BLE001 — see docstring
+        return
+    refusal = registry.local_only_refusal(entry, host.host_id_or_none())
+    if refusal:
+        typer.echo(f"✗ {refusal}", err=True)
+        raise typer.Exit(1)
+
+
 def _admit_primary(hive: str = "", *, cfg=None, verb: str = ""):
     """:func:`guard_primary`'s decision, returning WHAT it allowed on: ``(kind, state)`` (see
     :data:`_WRITER`), so :func:`primary_epoch` can answer the epoch from the same read instead
@@ -568,6 +585,10 @@ def _admit_primary(hive: str = "", *, cfg=None, verb: str = ""):
     except frame_eligibility.EligibilityError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
+    if frame_decision is None:
+        # Legacy (unbound) host: no eligibility predicate ran, so the local-only owner rule
+        # (bh-sj2bf R5) is applied here directly.
+        _refuse_local_only_legacy(hive, cfg)
     # The lease that very ``require_intake`` call read and found held (bh-25fvb), else read it.
     state = (
         frame_eligibility.admitted_primary(hive, after=calls)

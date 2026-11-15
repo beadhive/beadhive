@@ -112,6 +112,7 @@ def test_enrolled_frame_requires_host_local_beadyard_pin(candidate, tmp_path, mo
         "conformance_pass",
         "capabilities_match_admission",
         "hive_requirements",
+        "local_only_owner",
         "executor_role",
         "dispatch_enabled",
     ],
@@ -136,6 +137,8 @@ def test_each_predicate_explains_failure(candidate, predicate):
         facts = replace(facts, desired={**facts.desired, "caps": {}})
     elif predicate == "hive_requirements":
         hive = {"requires": {"isolation": "container"}}
+    elif predicate == "local_only_owner":
+        hive = {"prefix": "tl", "local_only": {"owner_host": "elsewhere", "reason": "opt-in"}}
     elif predicate == "executor_role":
         frame = frame.model_copy(update={"role": "viewer"})
     else:

@@ -328,6 +328,9 @@ def adopt(
     from . import frame_eligibility
 
     frame_eligibility.require_eligible(host_id, {"prefix": prefix}, hq_dir=hq_cwd, at=at)
+    # bh-sj2bf R5: a legacy host runs no eligibility predicate — refuse a non-owner of a
+    # local-only hive here, before the fence moves (no --force override).
+    host_lease.refuse_local_only(prefix, host_id)
 
     # ---- precondition: this host must actually CARRY the hive (bh-1atj) --------------
     # BEFORE phase 0, so a host with nothing on it cannot reach either CAS. A skip chain
