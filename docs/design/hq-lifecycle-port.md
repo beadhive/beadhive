@@ -130,7 +130,7 @@ map it onto section 3. Route paths are under `/hq/lifecycle/v0`. Route status is
 | `hq_control_plane.py:SqlControlPlane.read_placement` / `require_frame_placeable` | via `read_frame_composite(session_prefix=...)`: director placement row | `publish_hive_lease`, `host_adopt` placement check | `HqReads.read_eligibility(session_prefix=...)` | `GET /eligibility/{frame}` (planned; placement holder is one of its inputs) |
 | `hq_sql_runtime.py:SqlRuntimeAuthority.read_release_catalog_row` (O1) | R the release catalog row for a measured digest `AS OF` the verified head | `SqlControlPlane.read_eligibility`, `heartbeat_report` (measured beat release admission) | `HqReads.read_release_catalog_row` | **GAP** (or part of the eligibility payload, to settle in `bh-hq-9lh`) |
 | `hq_sql_config.py:SqlFleetConfigRevisionStore.load_snapshot` / `load_snapshot_or_cached` (O4, O5) | R committed `hq_config_*` documents at HEAD (or a revision), the config restore floor, then the cached snapshot in trusted mode | `hq_control_plane.attach_fleet_config` -> `config_store.load_fleet` / `fleet_snapshot` (every fleet-scope config read), `SqlControlPlane.load_host_manifest`, `fleet_roster.load` / `exists` / `manifest_paths` (`bh host list`, `bh host show`), `hq_open_admission`, `frame_release_upgrade`, `hq_authority_fleet_mode.show` | `HqReads.read_config` | `GET /config` (planned, `bh-hq-9lh`) |
-| `hq_sql_config.py:SqlFleetConfigRevisionStore.authority_binding` (O4) | R bound config head vs latest, and whether every commit between them is a tolerated edit | `hq_authority_expiry._config_bound`, `hq_authority_fleet_mode.refresh`, `hq_authority_fence_notice.probe_authority` | `HqReads.read_history` | `GET /history?since={floor}` (planned, `bh-hq-9lh`) |
+| `hq_sql_config.py:SqlFleetConfigRevisionStore.authority_binding` (O4) | R bound config head vs latest, and whether every commit between them is a tolerated edit | `hq_authority_expiry._config_bound`, `hq_authority_fleet_mode.refresh`, `hq_authority_fence_notice.probe_authority` | `HqReads.read_history` (superseded by section 7 D1: adapter-private `_read_history`) | `GET /history?since={floor}` (planned, `bh-hq-9lh`) |
 | `hq_sql_runtime.py:SqlRuntimeAuthority._check_floor`, `_check_provisioning_descendant` (inside O1/O3 reads) | R `dolt_log` ancestry and `DOLT_DIFF_SUMMARY` since the local floor | every verified read above | adapter-internal (`bh-j99c8`) | `GET /history?since={floor}` (planned) |
 
 ### 2.4 Operator publication
@@ -174,7 +174,7 @@ fallback between adapters.
   expiry, and the restore floor (sequence and head). The SQL adapter does this with
   `verified_state_at` and `_check_floor`. The hq-service adapter does it over the response plus
   `GET /history?since={floor}` (`bh-j99c8`). Callers never see an unverified record, and the
-  floor is not a port method.
+  floor is not a port method (confirmed by section 7 D1: `read_history` leaves the public protocol).
 - **Keys never cross the port boundary.** Methods that publish signed records take a
   `signer` callable, not a key. The SQL adapter calls it inside its transaction, as
   `SqlRuntimeOperator.publish` signs today. The hq-service adapter calls it between a plan read
@@ -250,7 +250,8 @@ class HqAdmission(Protocol):
     ) -> str:
         """Session/evidence tables and stamp triggers for one incarnation; returns the new head.
         SQL: provision_release_route (also creates the login).  API: POST /incarnations
-        (no login, no secret; `frame_address` and the password are SQL-adapter-only inputs)."""
+        (no login, no secret; `frame_address` and the password are SQL-adapter-only inputs).
+        Superseded by section 7 D2: the password comes from a per-call `login_secret` callable."""
 
     def publish_manifest(self, manifest: HostManifest, *, expected_revision: str,
                          deadline: float) -> str:
@@ -267,7 +268,8 @@ class HqAdmission(Protocol):
               expected_revision: str, deadline: float) -> str:
         """Trusted (open) or candidate admission; returns the new authority head.
         SQL: SqlControlPlane.admit_open / grant -> SqlRuntimeOperator.publish.
-        API: POST /admissions/{frame} (principal from committed authority)."""
+        API: POST /admissions/{frame} (principal from committed authority).
+        Superseded by section 7 D3: `request` is an intent-only `AdmissionRequest`, not a pre-built state."""
 
 
 class HqReads(Protocol):
@@ -307,7 +309,9 @@ class HqReads(Protocol):
     def read_history(self, *, since: str, deadline: float) -> HistorySinceFloor:
         """Commits and diff summary since `since`, for the caller's own append-only check
         and the config-edit tolerance (authority_binding).
-        SQL: dolt_log / DOLT_DIFF_SUMMARY.  API: GET /history?since={floor}."""
+        SQL: dolt_log / DOLT_DIFF_SUMMARY.  API: GET /history?since={floor}.
+        SUPERSEDED by section 7 D1: not a public HqReads method; the hq-service adapter keeps a
+        private `_read_history(since)` and the SQL stub is deleted."""
 
 
 class HqOperator(Protocol):
@@ -357,7 +361,8 @@ class HqPort(HqLiveness, HqAdmission, HqReads, HqOperator, Protocol):
 `refused`), `revision` and `refusal` (a stable code). The SQL adapter returns `pending` from a
 `submit_*` method and `read_result` resolves it. The hq-service adapter returns the final
 outcome directly. Callers that wait for a verdict, as `publish_hive_lease` does today, call
-`read_result` either way.
+`read_result` either way. (Section 7 D4 supersedes the SQL adapter's in-process pending map:
+`read_result` becomes stateless.)
 
 `FrameAnchor` is today's `PrincipalBinding` plus the authority head it was read at. The SQL
 adapter needs both for `publish_inbox`'s `expected_head` and routed-table check. The
@@ -410,7 +415,8 @@ G1 matters most. Without it, a frame on the hq-service adapter cannot fill the
   calls exactly one route, with the caller's identity.
 - **`bh-j99c8`.** Verification is a private step of the hq-service adapter: every response
   carrying authority is checked against the signature and the local floor, with
-  `read_history(since=floor)` feeding the same append-only check `_check_floor` runs today.
+  `read_history(since=floor)` feeding the same append-only check `_check_floor` runs today
+  (superseded by section 7 D1: this is the adapter's private `_read_history`, not a port method).
 - **`bh-u0osy`.** `heartbeat_sender` keeps its loop and error reporting. It gets
   `renew_session` and `publish_evidence` from the port, plus `read_frame_anchor` once G1 is
   closed.
@@ -426,8 +432,63 @@ the `*Unknown` publication errors to `HqOutcomeUnknown`, everything else definit
 `HqRefused`). It registers itself with `register_sql_adapter` on import, and `select_hq_port`
 imports it on demand when `sql` is chosen.
 
-Notes: `SqlRuntimeOperator.publish` gained an `authority_signer=` argument (the port's keyless contract)
-beside `operator_key`; `read_history` is not a SQL route (the restore floor is checked inside each
-verified read); `register_incarnation` needs the SQL-only provisioning password at construction;
-`admit` takes the already-built next authority state, because the grant rules stay in
-`SqlControlPlane`. Callers are not yet re-pointed at the port.
+Notes: `SqlRuntimeOperator.publish` gained an `authority_signer=` argument (the port's keyless
+contract) beside `operator_key`; `read_history` is not a SQL route (the restore floor is checked
+inside each verified read) [kept: section 7 D1 deletes the stub]; `register_incarnation` needs the
+SQL-only provisioning password at construction [superseded by section 7 D2]; `admit` takes the
+already-built next authority state, because the grant rules stay in `SqlControlPlane`
+[superseded by section 7 D3]. Callers are not yet re-pointed at the port.
+
+## 7. Decisions: SQL-route contract gaps (bh-tn3c3, 2026-11-15)
+
+Operator-approved decisions for the gaps found while wiring callers to the SQL adapter. Each keeps
+the port route-neutral: callers never branch on sql vs api.
+
+**D1. `read_history` leaves the public `HqReads` protocol.** History is only consumed by the
+hq-service adapter's own verifier (`bh-j99c8`), matching section 3.1 ("the floor is not a port
+method") and section 5 ("verification is a private step of the hq-service adapter"). The
+hq-service adapter keeps a private `_read_history(since)` using `GET /history?since={floor}`; the
+SQL stub is deleted. An operator tool that needs history later gets its own deliberate method.
+Rationale: a public method nobody outside the adapter calls widens the port for no caller, and the
+SQL route has no equivalent (the floor is checked inside each verified read). Implemented by
+`bh-ygm4s`.
+
+*History path.* History is `GET /history?since={floor}` end to end: Gateway `bh-gw-itkt`,
+hq-service `bh-hq-c8m`, beadhive `bh-bmb4t`. The Gateway's earlier path-segment form and its
+query-string refusal were a stopgap because the hq attestation hashed the path only; neither is the
+contract. (`bh-401wo` also covers this; this document never presented a path-segment form.)
+
+**D2. `register_incarnation` credential is a per-call secret source.**
+`login_secret: Callable[[], str] | None`, mirroring `signer` ("keys never cross the port; callables
+do"). The SQL adapter calls it inside its transaction to set the new incarnation login's password
+and refuses with `HqRefused("provisioning_password_required")` when it is `None`. The hq-service
+adapter never calls it. The `SqlHqAdapter` constructor's `provisioning_password` is removed. Open
+for `bh-hq-3sa`: how a new incarnation's credential is issued on the api route; if the client must
+supply something, this slot carries it. Rationale: a constructor-held password is a long-lived
+secret on the adapter and makes the adapter route-specific to build; a callable keeps the secret
+out of the port and scoped to one call. Implemented by `bh-l3ne7`.
+
+**D3. `admit` takes a typed `AdmissionRequest`, not a pre-built next state.** The value object
+describes intent: frame, candidate authority and public key, desired, admitted, optional
+`provisioned_route`. The grant transition rules move out of `SqlControlPlane.grant`
+(`hq_control_plane.py:1135`) into a pure, I/O-free function; the SQL adapter computes the next state
+with it and signs with `signer`. hq-service implements the same rules server-side (it builds and
+signs the grant); a shared conformance corpus of grant cases keeps the two in lockstep. `signer`
+stays on the port (SQL uses it, api ignores it, documented). The request body is agreed with
+hq-service `bh-hq-3sa` before it is built. Rationale: a pre-built state is only expressible on the
+SQL route, where the client owns the rules; intent is the one shape both routes can accept.
+Implemented by `bh-exm7k`.
+
+**D4. `read_result` is stateless.** `Submission` gains optional `audience` and `expected_head`
+fields, filled by the SQL adapter's submit; `read_result` rebuilds the `read_public_result` call
+from the submission plus the runtime login. The in-process `_pending` map is removed, so any
+process can read a submission's outcome after a restart. Rationale: a process-local map breaks the
+"callers that wait call `read_result`" contract across restarts and across processes. Implemented
+by `bh-ygm4s`.
+
+**D5. Deadlines on `publish_config` and `recover_publication`.** `deadline` is threaded into
+`SqlConfigStore.publish_snapshot` and `recover_publication`, as `load_snapshot` already does
+(`hq_sql_config.py:827`). A deadline spent before the write is sent raises `HqDeadline`; once the
+write may have been sent the result is `HqOutcomeUnknown` (`recover_publication` is the existing
+recovery path). Rationale: section 3.1 requires every method to honor `deadline`, and the config
+writes were the exception. Implemented by `bh-ygm4s`.
