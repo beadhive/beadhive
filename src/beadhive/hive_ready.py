@@ -58,7 +58,7 @@ def _repo_root(cwd=None) -> Path:
     return Path(res.stdout.strip()) if res.returncode == 0 else Path.cwd()
 
 
-def _has_bundled_skill(cfg=None, entry=None) -> bool:
+def _has_bundled_skill(cfg=None, entry=None, root: Path = Path()) -> bool:
     """True when role skills are available: plugin installed (plugin mode) OR local skills/ dir.
 
     In plugin mode: accepts the agf plugin install as equivalent to a local skills copy.
@@ -68,14 +68,14 @@ def _has_bundled_skill(cfg=None, entry=None) -> bool:
         if _is_plugin_installed(plugin):
             return True
         # Local override (.claude/agents/<seat>.md) also OK even in plugin mode.
-    dst = Path("skills")
+    dst = root / "skills"
     if not dst.is_dir():
         return False
     names = {p.name for p in config.skills_src().iterdir() if p.is_dir()}
     return any((dst / n).is_dir() for n in names)
 
 
-def _has_bundled_agent(cfg=None, entry=None) -> bool:
+def _has_bundled_agent(cfg=None, entry=None, root: Path = Path()) -> bool:
     """True when seat agents are available: plugin installed (plugin mode) OR local .claude/agents/.
 
     In plugin mode: accepts the agf plugin install as equivalent to local agent files.
@@ -85,7 +85,7 @@ def _has_bundled_agent(cfg=None, entry=None) -> bool:
         plugin = config.claude_plugin_name(cfg, entry)
         if _is_plugin_installed(plugin):
             return True
-    dst = Path(".claude") / "agents"
+    dst = root / ".claude" / "agents"
     if not dst.is_dir():
         return False
     names = {p.name for p in config.agents_src().iterdir() if p.suffix == ".md"}
@@ -182,7 +182,7 @@ def _tracker_adapter_checks(cfg, entry) -> list[Check]:
     ]
 
 
-def _link_coverage_check(cfg, entry) -> list[Check]:
+def _link_coverage_check(cfg, entry, root: Path | None = None) -> list[Check]:
     """One INFORMATIONAL line with the cached link-coverage ratios (``docs/BACKFILL.md``
     "Coverage"). Opt-in: nothing, and the cache is not even opened, unless
     ``backfill.coverage.enabled``. Never required, so a low or missing figure is a ``warn`` /
@@ -190,7 +190,7 @@ def _link_coverage_check(cfg, entry) -> list[Check]:
     from . import backfill_coverage  # lazy: only an enabled check pays for the import
 
     try:
-        advisory = backfill_coverage.advisory_for(cfg, entry, Path.cwd(), config.home())
+        advisory = backfill_coverage.advisory_for(cfg, entry, root or Path.cwd(), config.home())
     except Exception as exc:  # noqa: BLE001 - advisory: an unreadable config never fails readiness
         return [Check("link coverage", False, "warn", f"unavailable: {exc}")]
     if advisory is None:
@@ -554,7 +554,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.append(
         _required(
             "beads initialized",
-            Path(".beads").is_dir(),
+            (root / ".beads").is_dir(),
             ".beads/",
             f"missing — `{config.BINARY_ALIAS} hive init`",
         )
@@ -576,7 +576,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     # Declared footprint: tracked furniture is required only on furnished hives;
     # zero-footprint hives (the default) are green without any repo files.
     furnished = registry.furnish_of(entry) == "full" if entry is not None else False
-    settings_ok = Path(".claude/settings.json").exists()
+    settings_ok = (root / ".claude/settings.json").exists()
     if furnished:
         checks.append(
             _required(
@@ -599,8 +599,8 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
         )
     plugin_mode = config.claude_source(cfg, entry) == "plugin"
     plugin_name = config.claude_plugin_name(cfg, entry)
-    skills_ok = _has_bundled_skill(cfg, entry)
-    agents_ok = _has_bundled_agent(cfg, entry)
+    skills_ok = _has_bundled_skill(cfg, entry, root)
+    agents_ok = _has_bundled_agent(cfg, entry, root)
     skills_ok_detail = (
         f"agf plugin '{plugin_name}' installed" if (plugin_mode and skills_ok) else "skills/"
     )
@@ -647,7 +647,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.append(_git_workspace_check(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.extend(_tracker_adapter_checks(cfg, entry))
-    checks.extend(_link_coverage_check(cfg, entry))
+    checks.extend(_link_coverage_check(cfg, entry, root))
     checks.extend(_build_verify_checks(cfg, entry, root))
     checks.append(_grant_check(cfg, root, provider, org, repo))
     checks.append(_codex_sandbox_check(cfg, root, provider, org, repo))
