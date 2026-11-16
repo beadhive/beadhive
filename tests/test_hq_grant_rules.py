@@ -327,3 +327,51 @@ def test_sql_admit_refuses_an_untyped_or_mismatched_request(frame, request_of):
             frame, request_of(_authority(key), key), signer=str, expected_revision="h", deadline=1.0
         )
     assert operator.published == []
+
+
+# ---- HqServiceAdapter.admit (provisional D3 body, pending bh-hq-3sa on hq-service main) -----
+
+
+def test_api_admit_sends_the_intent_and_never_signs():
+    import json
+
+    import httpx
+
+    from beadhive.hq_authority_payload import authority_payload
+    from beadhive.hq_service_adapter import HqServiceAdapter
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"revision": "r8"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://hq")
+    adapter = HqServiceAdapter(client)
+    key = _key()
+    authority = _authority(key)
+    request = AdmissionRequest(
+        frame="frame2",
+        authority=authority,
+        public_key=key,
+        desired=DESIRED,
+        provisioned_route=("p", "frame2", "host2", "vm2", 1, "fp"),
+    )
+
+    def signer(record):
+        raise AssertionError("the api route never signs")
+
+    head = adapter.admit("frame2", request, signer=signer, expected_revision="r7", deadline=1e12)
+    assert head == "r8"
+    (sent,) = calls
+    assert (sent.method, sent.url.path) == ("POST", "/hq/lifecycle/v0/admissions/frame2")
+    assert json.loads(sent.content) == {
+        "request": {
+            "frame": "frame2",
+            "candidate": {"authority": authority_payload(authority), "public_key": key},
+            "desired": DESIRED,
+            "admitted": False,
+            "provisioned_route": ["p", "frame2", "host2", "vm2", 1, "fp"],
+        },
+        "expected_revision": "r7",
+    }

@@ -490,8 +490,10 @@ admitted, now, operator_public_key) -> GrantTransition(state, provisioned_route)
 fleet gate (`open_admission_guard`) reads process state and stays with the caller. The grant
 corpus runner is `tests/test_hq_grant_conformance.py`, reading `conformance/grant/v1` from
 hq-service in place (`HQ_GRANT_CORPUS`); the cases themselves are hq-service's to add
-(`bh-hq-2p6`). Open: hq-service does not yet serve `POST /admissions/{frame}`, so the api
-adapter's request body is not yet fixed against a served contract.
+(`bh-hq-2p6`). `HqServiceAdapter.admit` sends the intent, PROVISIONALLY:
+`{"request": {"frame", "candidate": {"authority", "public_key"}, "desired", "admitted",
+"provisioned_route"}, "expected_revision"}`. hq-service `bh-hq-3sa` (`POST /admissions/{frame}`)
+has not reached hq-service main, so this body is re-checked when it lands.
 
 **D4. `read_result` is stateless.** `Submission` gains optional `audience` and `expected_head`
 fields, filled by the SQL adapter's submit; `read_result` rebuilds the `read_public_result` call

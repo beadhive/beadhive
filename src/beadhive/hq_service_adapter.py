@@ -296,10 +296,32 @@ class HqServiceAdapter:
     def admit(
         self, frame: str, request: Any, *, signer: Signer, expected_revision: str, deadline: float
     ) -> str:
-        # The service derives the principal from committed authority, and stamps and signs the
-        # grant itself under the service's own authority; `signer` is not used on this route.
-        document = dict(request) if isinstance(request, Mapping) else dict(vars(request))
-        # PROVISIONAL (bh-hq-3sa not served yet): `{request, expected_revision}` and `{revision}`.
+        # The service derives the principal from committed authority, and builds, stamps and
+        # signs the grant itself under the service's own authority (design section 7 D3);
+        # `signer` is not used on this route.
+        # PROVISIONAL (bh-hq-3sa not served yet): the D3 intent body `{request,
+        # expected_revision}` and the `{revision}` response are not fixed against a served
+        # contract; hq-service bh-hq-3sa (POST /admissions/{frame}) has not reached hq-service
+        # main. Re-check when it lands (bh-thurg).
+        from .hq_port import AdmissionRequest
+
+        if isinstance(request, AdmissionRequest):
+            from .hq_authority_payload import authority_payload
+
+            document = {
+                "frame": request.frame,
+                "candidate": {
+                    "authority": authority_payload(request.authority),
+                    "public_key": request.public_key,
+                },
+                "desired": dict(request.desired),
+                "admitted": request.admitted,
+                "provisioned_route": (
+                    None if request.provisioned_route is None else list(request.provisioned_route)
+                ),
+            }
+        else:
+            document = dict(request) if isinstance(request, Mapping) else dict(vars(request))
         body = {"request": document, "expected_revision": expected_revision}
         _, payload = self._call(
             "POST",
