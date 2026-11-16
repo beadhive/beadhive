@@ -480,6 +480,21 @@ hq-service `bh-hq-3sa` before it is built. Rationale: a pre-built state is only 
 SQL route, where the client owns the rules; intent is the one shape both routes can accept.
 Implemented by `bh-exm7k`.
 
+*Landed (`bh-exm7k`).* `hq_port.AdmissionRequest(frame, authority, public_key, desired,
+admitted=False, provisioned_route=None)`. The rules are
+`hq_grant_rules.grant_transition(original, *, head, expected, authority, public_key, desired,
+admitted, now, operator_public_key) -> GrantTransition(state, provisioned_route)`; it raises
+`GrantRefused` with a stable `code` (`identity_or_cas_invalid`,
+`candidate_exists_or_epoch_stale`, `frame_already_active`), which the SQL adapter maps to
+`HqRefused(code)`. `SqlControlPlane.grant` and `SqlHqAdapter.admit` both call it; the trusted
+fleet gate (`open_admission_guard`) reads process state and stays with the caller. The grant
+corpus runner is `tests/test_hq_grant_conformance.py`, reading `conformance/grant/v1` from
+hq-service in place (`HQ_GRANT_CORPUS`); the cases themselves are hq-service's to add
+(`bh-hq-2p6`). `HqServiceAdapter.admit` sends the intent, PROVISIONALLY:
+`{"request": {"frame", "candidate": {"authority", "public_key"}, "desired", "admitted",
+"provisioned_route"}, "expected_revision"}`. hq-service `bh-hq-3sa` (`POST /admissions/{frame}`)
+has not reached hq-service main, so this body is re-checked when it lands.
+
 **D4. `read_result` is stateless.** `Submission` gains optional `audience` and `expected_head`
 fields, filled by the SQL adapter's submit; `read_result` rebuilds the `read_public_result` call
 from the submission plus the runtime login. The in-process `_pending` map is removed, so any
