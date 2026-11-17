@@ -235,7 +235,10 @@ def impl__managed_for_entry(e, root: str) -> list:
 
 
 def _read_managed(cfg):
-    """[(prefix, path, branch)] for every linked worktree under the shadow root."""
+    """[(prefix, path, branch)] for every linked worktree git has registered for a managed hive.
+    ``impl__emit`` does not filter by root (git's registry is authoritative), so a worktree under
+    the in-use macOS legacy $TMPDIR root is listed too; the primary root is passed only for
+    parity and the legacy rows are labelled by ``flag_legacy_root`` (bh-uwlsw)."""
     root = str(config.worktrees_root().resolve())
     out = []
     for e in cfg.get("managed_repos", []) or []:
@@ -284,26 +287,26 @@ def impl_unregistered_worktrees(cfg):
     managed_repos (bh-ea1i). The status/list sweep otherwise iterates only the hive registry, so a
     repo with worktrees on disk but no registration is silently omitted. This walks the wt root
     itself (``<root>/<provider>/<org>/<repo>/<leaf>``) so such orphans are surfaced, not dropped."""
-    root = config.worktrees_root().resolve()
-    if not root.exists():
-        return []
     registered = {
         (str(e.get("provider")), str(e.get("org")), str(e.get("repo")))
         for e in (cfg.get("managed_repos", []) or [])
     }
     out = []
-    for leaf in sorted(root.glob("*/*/*/*")):
-        if not leaf.is_dir():
+    for root in (r.resolve() for r in config.worktrees_roots()):
+        if not root.exists():
             continue
-        parts = leaf.relative_to(root).parts
-        if len(parts) != 4:
-            continue
-        provider, org, repo, leaf_name = parts
-        if (provider, org, repo) in registered:
-            continue
-        if not (leaf / ".git").exists():
-            continue  # a plain dir, not a linked git worktree
-        out.append((f"{provider}/{org}/{repo}", leaf_name, str(leaf), _worktree_branch(leaf)))
+        for leaf in sorted(root.glob("*/*/*/*")):
+            if not leaf.is_dir():
+                continue
+            parts = leaf.relative_to(root).parts
+            if len(parts) != 4:
+                continue
+            provider, org, repo, leaf_name = parts
+            if (provider, org, repo) in registered:
+                continue
+            if not (leaf / ".git").exists():
+                continue  # a plain dir, not a linked git worktree
+            out.append((f"{provider}/{org}/{repo}", leaf_name, str(leaf), _worktree_branch(leaf)))
     return out
 
 
@@ -425,7 +428,7 @@ def _inventory_observations(hive: str = "") -> list[dict]:
         ident = workspace_identity()
         cwd = Path.cwd()
         try:
-            under_worktrees = cwd.resolve().is_relative_to(config.worktrees_root().resolve())
+            under_worktrees = config.root_containing(cwd) is not None
         except OSError:
             under_worktrees = False
         registered_cwd = False
@@ -872,9 +875,8 @@ def impl__status_scope(cfg, hive: str, all_rows: list) -> tuple:
     # Try to resolve from cwd; fall through to all-hives on failure
     ident = workspace_identity()
     cwd = Path.cwd()
-    root = config.worktrees_root()
     try:
-        under_wts = cwd.resolve().is_relative_to(root.resolve())
+        under_wts = config.root_containing(cwd) is not None
     except OSError:
         under_wts = False
 

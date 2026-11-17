@@ -178,6 +178,21 @@ class WorktreesConfig(_Section):
             "Env: BH_WORKTREES_ALLOW_TMPFS=1."
         ),
     )
+    macos_use_temp: bool = Field(
+        False,
+        description=(
+            "macOS only. Off by default: the ephemeral default root is NOT under $TMPDIR, "
+            "because macOS periodic cleanup purges old files there and has gutted long-lived "
+            "worktrees. True opts back into <os-temp>/bh-worktrees."
+        ),
+    )
+    macos_root: str = Field(
+        "",
+        description=(
+            "macOS only. Default worktree root when ephemeral and not using $TMPDIR. Empty "
+            "(default) uses the disk root: `path` or ~/.beadhive/worktrees."
+        ),
+    )
     max_live: int = Field(
         64,
         ge=0,

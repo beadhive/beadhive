@@ -10,9 +10,21 @@ import os
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from beadhive import config, hive, worktree
 
 SUFFIX = "github/o/r"
+
+
+@pytest.fixture(autouse=True)
+def _os_temp_elsewhere(tmp_path, monkeypatch):
+    """The sandbox-grant logic keys off whether the root is under the OS temp dir (bh-uwlsw).
+    pytest's tmp_path lives under it, so point the OS temp dir at a sibling directory: these
+    tests exercise roots OUTSIDE it unless a test opts back in."""
+    other = tmp_path / "_os_temp"
+    other.mkdir()
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(other))
 
 
 def test_grant_block_roundtrips_through_tomllib():

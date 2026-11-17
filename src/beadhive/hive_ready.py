@@ -281,10 +281,11 @@ def _codex_sandbox_check(cfg, root: Path, provider: str, org: str, repo: str) ->
     (see hive.py's comment above `_CODEX_MARK_START`) — a hive with a stale per-hive grant is
     NOT rescued by an otherwise-valid global one, so `cur is False` still reports off rather than
     falling through to the global check."""
-    if config.worktrees_ephemeral(cfg):
-        return Check(
-            "codex sandbox", False, "na", "ephemeral worktrees (OS temp) — always reachable"
-        )
+    # Keyed off the EFFECTIVE root, not worktrees.ephemeral: the macOS ephemeral default is the
+    # disk root, outside $TMPDIR (bh-uwlsw). A legacy in-use $TMPDIR root is covered by the OS
+    # temp dir, so checking the primary root is sufficient.
+    if not config.worktrees_root_needs_grant(cfg):
+        return Check("codex sandbox", False, "na", "worktree root under OS temp — always reachable")
     wt_root = config.worktrees_root(cfg)
     if config.codex_default_sandbox_covers(wt_root):
         return Check("codex sandbox", False, "ok", f"{wt_root} is under cwd/$TMPDIR")
@@ -313,7 +314,7 @@ def _codex_sandbox_check(cfg, root: Path, provider: str, org: str, repo: str) ->
         False,
         "off",
         f"{wt_root} is outside Codex's default sandbox (cwd + $TMPDIR) — "
-        "set worktrees.ephemeral: true, move worktrees.path under $TMPDIR, "
+        "move worktrees.path under $TMPDIR (not advisable on macOS, which purges it), "
         f"launch codex with --add-dir {wt_root}, or "
         f"`{config.BINARY_ALIAS} hive init --codex`",
     )

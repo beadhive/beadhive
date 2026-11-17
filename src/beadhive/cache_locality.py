@@ -195,7 +195,12 @@ def configured_ephemeral(checkout: Path) -> bool | None:
     try:
         cfg = config.load()
         root = config.worktrees_root(cfg).expanduser().absolute()
-        checkout.absolute().relative_to(root)
+        try:
+            checkout.absolute().relative_to(root)
+        except ValueError:
+            # an in-use macOS legacy $TMPDIR root (bh-uwlsw) still holds managed checkouts
+            if config.root_containing(checkout, cfg) is None:
+                return False
         return config.worktrees_ephemeral(cfg)
     except ValueError:
         return False

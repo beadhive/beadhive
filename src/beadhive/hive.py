@@ -1019,10 +1019,11 @@ def _commit_scaffolding(base=None) -> bool:
 
 
 def _install_sandbox_grant(cfg, provider: str, org: str, repo: str, base=None) -> None:
-    # Ephemeral worktrees live in the (already sandbox-writable) OS temp dir — no grant to
-    # write. Grants are a persistent-mode (ephemeral=false) feature.
-    if config.worktrees_ephemeral(cfg):
-        typer.echo("✓ --claude: ephemeral worktrees (OS temp) — no sandbox grant needed")
+    # A root under the (already sandbox-writable) OS temp dir needs no grant. Keyed off where the
+    # EFFECTIVE root resolves, not worktrees.ephemeral: the macOS ephemeral default is the disk
+    # root (bh-uwlsw). A legacy in-use $TMPDIR root is covered by the OS temp dir itself.
+    if not config.worktrees_root_needs_grant(cfg):
+        typer.echo("✓ --claude: worktree root under OS temp — no sandbox grant needed")
         return
     base = _base(base)
     (base / ".claude").mkdir(exist_ok=True)
@@ -1071,10 +1072,9 @@ def grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
 
 
 def _install_global_sandbox_grant(cfg) -> None:
-    # Ephemeral worktrees live in the (already sandbox-writable) OS temp dir — no grant to
-    # write. Mirrors _install_sandbox_grant.
-    if config.worktrees_ephemeral(cfg):
-        typer.echo("✓ --claude --global: ephemeral worktrees (OS temp) — no sandbox grant needed")
+    # Root under the OS temp dir needs no grant (see _install_sandbox_grant).
+    if not config.worktrees_root_needs_grant(cfg):
+        typer.echo("✓ --claude --global: worktree root under OS temp — no sandbox grant needed")
         return
     home = config.claude_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -1236,10 +1236,9 @@ def _write_codex_grant_block(f: Path, value: str, replace_fn, label: str) -> boo
 
 
 def _install_codex_sandbox_grant(cfg, provider: str, org: str, repo: str, base=None) -> None:
-    # Ephemeral worktrees live in the (already sandbox-writable) OS temp dir — no grant to
-    # write. Grants are a persistent-mode (ephemeral=false) feature. Mirrors _install_sandbox_grant.
-    if config.worktrees_ephemeral(cfg):
-        typer.echo("✓ --codex: ephemeral worktrees (OS temp) — no sandbox grant needed")
+    # Root under the OS temp dir needs no grant (see _install_sandbox_grant).
+    if not config.worktrees_root_needs_grant(cfg):
+        typer.echo("✓ --codex: worktree root under OS temp — no sandbox grant needed")
         return
     base = _base(base)
     subtree = _sandbox_subtree(cfg, provider, org, repo)
@@ -1288,8 +1287,8 @@ def codex_grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str)
 
 
 def _install_global_codex_sandbox_grant(cfg) -> None:
-    if config.worktrees_ephemeral(cfg):
-        typer.echo("✓ --codex --global: ephemeral worktrees (OS temp) — no sandbox grant needed")
+    if not config.worktrees_root_needs_grant(cfg):
+        typer.echo("✓ --codex --global: worktree root under OS temp — no sandbox grant needed")
         return
     root = _global_sandbox_root(cfg)
     f = config.codex_home() / "config.toml"

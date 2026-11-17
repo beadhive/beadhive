@@ -784,7 +784,8 @@ def impl_bead_and_parent(
         bead_id: str | None = _bead_id_from_branch(branch)
     else:
         # Fallback for callers that do not supply the branch ref (legacy / no-op path).
-        rel = Path(path).relative_to(config.worktrees_root())
+        base = config.root_containing(path) or config.worktrees_root()
+        rel = Path(path).resolve().relative_to(base)
         leaf = rel.parts[-1] if len(rel.parts) >= 4 else ""
         main = registry.hive_dir(entry)
         bead_id = None

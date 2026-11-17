@@ -96,12 +96,10 @@ def _entry_for_path(cfg, path: Path):
     """Reverse a shadow-root worktree path back to its hive entry via the triplet segments.
     Returns the registered entry, else a synthesized minimal entry from the triplet; None when
     `path` is not a `<provider>/<org>/<repo>/<leaf>` worktree under the shadow root."""
-    root = config.worktrees_root()
-    try:
-        rel = path.resolve().relative_to(root.resolve())
-    except (ValueError, OSError):
+    root = config.root_containing(path)
+    if root is None:
         return None
-    parts = rel.parts
+    parts = path.resolve().relative_to(root).parts
     if len(parts) < 4:
         return None
     provider, org, repo = parts[0], parts[1], parts[2]
@@ -134,12 +132,7 @@ def current_hive(cfg):
         entry = find_entry(cfg, provider, org, repo)
         return entry or {"provider": provider, "org": org, "repo": repo, "prefix": repo}
     cwd = Path.cwd()
-    root = config.worktrees_root()
-    try:
-        under = cwd.resolve().is_relative_to(root.resolve())
-    except OSError:
-        under = False
-    if under:
+    if config.root_containing(cwd) is not None:
         return _entry_for_path(cfg, cwd)
     return None
 

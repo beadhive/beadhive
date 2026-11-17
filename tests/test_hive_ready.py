@@ -23,6 +23,16 @@ from beadhive_backfill.coverage import (
 from harness.world import git
 
 
+@pytest.fixture(autouse=True)
+def _os_temp_elsewhere(tmp_path, monkeypatch):
+    """The sandbox-grant logic keys off whether the root is under the OS temp dir (bh-uwlsw).
+    pytest's tmp_path lives under it, so point the OS temp dir at a sibling directory: these
+    tests exercise roots OUTSIDE it unless a test opts back in."""
+    other = tmp_path / "_os_temp"
+    other.mkdir()
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(other))
+
+
 def _make_repo(world, *, org="myorg", repo="myrepo"):
     main = world.ws_root / "github" / org / repo
     main.mkdir(parents=True)
@@ -426,14 +436,16 @@ _CODEX_ENTRY = {
 }
 
 
-def test_codex_sandbox_check_na_for_ephemeral_worktrees(world, capsys):
+def test_codex_sandbox_check_na_for_ephemeral_worktrees(world, capsys, monkeypatch):
     _make_ready(world)  # default config: worktrees.ephemeral omitted -> True
+    # the effective root (the harness's isolated one) is under the OS temp dir: always reachable
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(world.tmp))
 
     assert _run(verbose=True) == 0
     assert "- codex sandbox" in capsys.readouterr().out
 
 
-def test_codex_sandbox_check_ok_when_persistent_root_is_under_tmp(world, monkeypatch):
+def test_codex_sandbox_check_na_when_root_is_under_os_temp(world, monkeypatch):
     main = _make_ready(world)
     monkeypatch.delenv("BH_WORKTREES", raising=False)  # let worktrees.path drive the root
     cfg = config.load()
@@ -443,8 +455,54 @@ def test_codex_sandbox_check_ok_when_persistent_root_is_under_tmp(world, monkeyp
 
     checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
     (line,) = [c for c in checks if c.label == "codex sandbox"]
-    assert line.state == "ok"
+    assert line.state == "na"
     assert line.required is False
+
+
+def _macos_default(world, monkeypatch):
+    """Simulate macOS on Linux by injection: darwin host, OS temp elsewhere, DEFAULT config
+    (worktrees.ephemeral unset -> true), so the effective root is the disk root (bh-uwlsw)."""
+    from beadhive import config_paths
+
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    monkeypatch.delenv("WS_WORKTREES", raising=False)
+    monkeypatch.setattr(config_paths, "host_platform", lambda: "darwin")
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: None)
+    cfg = config.load()
+    cfg["worktrees"] = {"path": str(world.tmp / "disk-wt")}  # ephemeral omitted: default true
+    config.save(cfg)
+    assert config.worktrees_ephemeral(config.load()) is True
+    assert config.worktrees_root_needs_grant(config.load()) is True
+    return main
+
+
+def test_macos_default_ephemeral_codex_sandbox_is_not_na(world, monkeypatch):
+    main = _macos_default(world, monkeypatch)
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "off"  # the disk root is outside the sandbox and has no grant
+    assert "worktrees.ephemeral: true" not in line.detail  # no hint to flip an already-on knob
+
+
+def test_macos_default_ephemeral_codex_sandbox_ok_after_grant(world, monkeypatch):
+    main = _macos_default(world, monkeypatch)
+    hive._install_codex_sandbox_grant(config.load(), "github", "myorg", "myrepo", base=main)
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "ok"
+
+
+def test_macos_legacy_temp_root_needs_no_separate_grant(world, monkeypatch):
+    """A legacy in-use $TMPDIR root is under the OS temp dir the sandbox already makes
+    writable, so covering the primary (disk) root is sufficient."""
+    from beadhive import config_paths
+
+    _macos_default(world, monkeypatch)
+    os_temp = Path(config.tempfile.gettempdir())
+    (os_temp / "bh-worktrees" / "github" / "o" / "r" / "bh-old").mkdir(parents=True)
+    legacy = config.legacy_temp_root(config.load())
+    assert legacy is not None and config_paths.under_os_temp(legacy)
 
 
 def test_codex_sandbox_check_off_when_persistent_root_is_unreachable(world, monkeypatch):
