@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 345,
+    "config_patch_point_count": 351,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -448,6 +448,48 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
+        "line": 381,
+        "path": "tests/test_config_worktrees.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 457,
+        "path": "tests/test_config_worktrees.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.claude_home",
+        "kind": "direct-facade",
+        "line": 485,
+        "path": "tests/test_config_worktrees.py",
+        "target": "beadhive.config.claude_home"
+      },
+      {
+        "facade_target": "beadhive.config.codex_home",
+        "kind": "direct-facade",
+        "line": 486,
+        "path": "tests/test_config_worktrees.py",
+        "target": "beadhive.config.codex_home"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 555,
+        "path": "tests/test_config_worktrees.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
+        "line": 585,
+        "path": "tests/test_config_worktrees.py",
+        "target": "beadhive.config.load"
+      },
+      {
+        "facade_target": "beadhive.config.load",
+        "kind": "direct-facade",
         "line": 45,
         "path": "tests/test_config_worktrees_manager.py",
         "target": "beadhive.config.load"
@@ -847,49 +889,49 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "string-facade",
-        "line": 505,
+        "line": 508,
         "path": "tests/test_hive_plugin_installer.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.claude_source",
         "kind": "string-facade",
-        "line": 506,
+        "line": 509,
         "path": "tests/test_hive_plugin_installer.py",
         "target": "beadhive.config.claude_source"
       },
       {
         "facade_target": "beadhive.config.orca_enabled",
         "kind": "direct-facade",
-        "line": 275,
+        "line": 285,
         "path": "tests/test_hive_ready.py",
         "target": "beadhive.config.orca_enabled"
       },
       {
         "facade_target": "beadhive.config.orca_enabled",
         "kind": "direct-facade",
-        "line": 283,
+        "line": 293,
         "path": "tests/test_hive_ready.py",
         "target": "beadhive.config.orca_enabled"
       },
       {
         "facade_target": "beadhive.config.orca_enabled",
         "kind": "direct-facade",
-        "line": 292,
+        "line": 302,
         "path": "tests/test_hive_ready.py",
         "target": "beadhive.config.orca_enabled"
       },
       {
         "facade_target": "beadhive.config.validate_cmd",
         "kind": "direct-facade",
-        "line": 335,
+        "line": 345,
         "path": "tests/test_hive_ready.py",
         "target": "beadhive.config.validate_cmd"
       },
       {
         "facade_target": "beadhive.config.orca_enabled",
         "kind": "direct-facade",
-        "line": 402,
+        "line": 412,
         "path": "tests/test_hive_ready.py",
         "target": "beadhive.config.orca_enabled"
       },

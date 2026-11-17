@@ -5431,6 +5431,18 @@
           "title": "Init",
           "type": "array"
         },
+        "macos_root": {
+          "default": "",
+          "description": "macOS only. Default worktree root when ephemeral and not using $TMPDIR. Empty (default) uses the disk root: `path` or ~/.beadhive/worktrees.",
+          "title": "Macos Root",
+          "type": "string"
+        },
+        "macos_use_temp": {
+          "default": false,
+          "description": "macOS only. Off by default: the ephemeral default root is NOT under $TMPDIR, because macOS periodic cleanup purges old files there and has gutted long-lived worktrees. True opts back into <os-temp>/bh-worktrees.",
+          "title": "Macos Use Temp",
+          "type": "boolean"
+        },
         "manager": {
           "const": "native",
           "default": "native",

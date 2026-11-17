@@ -116,6 +116,7 @@ def _teardown_rows(rows, root: Path, result: TeardownResult, *, dry_run: bool) -
         # reclaims after the worktree dir is gone.
         candidates: list[Path] = []
         p = target.parent.resolve()
+        root = config.root_containing(target) or root  # old $TMPDIR worktrees (bh-uwlsw)
         while root in p.parents and p != root:
             candidates.append(p)
             p = p.parent

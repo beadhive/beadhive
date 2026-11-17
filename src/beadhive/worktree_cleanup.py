@@ -136,7 +136,7 @@ def impl__rmdir_empty_parents(leaf_path, cfg):
     shadow root itself, stays root's job."""
     reclaim_empty_parents(
         leaf_path,
-        config.worktrees_root(),
+        config.root_containing(leaf_path) or config.worktrees_root(),
         enabled=config.worktrees_cfg(cfg).get("rmdir_empty", True),
     )
 
@@ -482,7 +482,8 @@ def impl_enforce_live_cap(cfg) -> None:
     if cap <= 0:
         return
     root = config.worktrees_root(cfg)
-    live = impl_live_worktree_dirs(root)
+    roots = config.worktrees_roots(cfg)  # includes an in-use macOS legacy $TMPDIR root
+    live = [d for r in roots for d in impl_live_worktree_dirs(r)]
     if len(live) < cap:
         return
     typer.echo(
@@ -494,7 +495,7 @@ def impl_enforce_live_cap(cfg) -> None:
         prune()
     except Exception:  # noqa: BLE001 — a failed reclaim falls through to the refusal
         pass
-    remaining = len(impl_live_worktree_dirs(root))
+    remaining = sum(len(impl_live_worktree_dirs(r)) for r in roots)
     if remaining < cap:
         return
     typer.echo(

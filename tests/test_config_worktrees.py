@@ -325,3 +325,315 @@ def test_validate_cmd_explicit_config_only():
     cfg = {"worktrees": {"toolchain": "npm"}, "work": {"validate": {"submit": "just fast"}}}
     assert config.validate_cmd(cfg, {}, "submit") == "just fast"
     assert config.validate_cmd({}, None) == "just check"  # unset ⇒ the hard default
+
+
+# ---- macOS: $TMPDIR is purged by periodic cleanup (bh-uwlsw) -----------------------------
+
+
+def _darwin(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    fake_tmp = tmp_path / "var-folders-T"
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
+    monkeypatch.setattr(config_paths, "host_platform", lambda: "darwin")
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: None)
+    return fake_tmp
+
+
+def test_macos_default_root_is_not_under_tmpdir(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    root = config.worktrees_root({})
+    assert root == config.disk_worktrees_root({})
+    assert fake_tmp not in root.parents and root != fake_tmp / "bh-worktrees"
+
+
+def test_macos_root_key_overrides_the_default(monkeypatch, tmp_path):
+    _darwin(monkeypatch, tmp_path)
+    cfg = {"worktrees": {"macos_root": str(tmp_path / "keep")}}
+    assert config.worktrees_root(cfg) == tmp_path / "keep"
+
+
+def test_macos_use_temp_opts_back_into_tmpdir(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    cfg = {"worktrees": {"macos_use_temp": True}}
+    assert config.worktrees_root(cfg) == fake_tmp / "bh-worktrees"
+
+
+def _populate(root):
+    leaf = root / "github" / "org" / "repo" / "bh-old"
+    leaf.mkdir(parents=True)
+    return leaf
+
+
+def test_macos_in_use_temp_root_no_longer_receives_new_worktrees(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    old = _populate(fake_tmp / "bh-worktrees")
+    assert config.worktrees_root({}) == config.disk_worktrees_root({})  # new ones: disk root
+    assert config.worktrees_roots({}) == [config.disk_worktrees_root({}), fake_tmp / "bh-worktrees"]
+    assert config.root_containing(old, {}) == (fake_tmp / "bh-worktrees").resolve()
+    warning = config.legacy_temp_warning({})
+    assert warning and "abandon" in warning and str(fake_tmp / "bh-worktrees") in warning
+
+
+def test_macos_existing_bead_resolves_under_temp_new_bead_under_disk(monkeypatch, tmp_path):
+    from beadhive import worktree
+
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "load", lambda: {})
+    old = _populate(fake_tmp / "bh-worktrees")
+    entry = {"provider": "github", "org": "org", "repo": "repo"}
+    assert worktree.wt_dir(entry, "bh-old") == old  # existing: found by its existing path
+    new = worktree.wt_dir(entry, "bh-new")  # new: disk root
+    assert new == config.disk_worktrees_root({}) / "github/org/repo/bh-new"
+    assert fake_tmp not in new.parents
+
+
+def test_macos_empty_temp_root_is_not_in_use(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    (fake_tmp / "bh-worktrees" / "github" / "org" / "repo").mkdir(parents=True)  # drained
+    assert config.legacy_temp_root({}) is None
+    assert config.worktrees_roots({}) == [config.disk_worktrees_root({})]
+    assert config.legacy_temp_warning({}) is None
+
+
+def test_macos_use_temp_has_no_legacy_root_or_warning(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    _populate(fake_tmp / "bh-worktrees")
+    cfg = {"worktrees": {"macos_use_temp": True}}
+    assert config.worktrees_roots(cfg) == [fake_tmp / "bh-worktrees"]
+    assert config.legacy_temp_warning(cfg) is None
+
+
+def test_non_macos_has_no_legacy_root(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "host_platform", lambda: "linux")
+    _populate(fake_tmp / "bh-worktrees")
+    assert config.legacy_temp_root({}) is None
+
+
+def test_macos_persistent_mode_and_env_are_unchanged(monkeypatch, tmp_path):
+    _darwin(monkeypatch, tmp_path)
+    cfg = {"worktrees": {"ephemeral": False, "path": str(tmp_path / "p")}}
+    assert config.worktrees_root(cfg) == tmp_path / "p"
+    monkeypatch.setenv("BH_WORKTREES", str(tmp_path / "env"))
+    assert config.worktrees_root({}) == tmp_path / "env"
+
+
+def test_non_macos_default_is_unchanged(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "host_platform", lambda: "linux")
+    assert config.worktrees_root({}) == fake_tmp / "bh-worktrees"
+
+
+def test_macos_legacy_root_warns_in_doctor_and_claim_but_not_when_drained(
+    monkeypatch, tmp_path, capsys
+):
+    from beadhive import doctor, worktree
+
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    old = _populate(fake_tmp / "bh-worktrees")
+    assert "abandon" in doctor._legacy_temp_root_warnings({})[0]
+    worktree._warn_legacy_temp_root({})
+    assert "still holds worktrees" in capsys.readouterr().err
+    old.rmdir()  # drained: only empty directories remain
+    assert doctor._legacy_temp_root_warnings({}) == []
+    worktree._warn_legacy_temp_root({})
+    assert capsys.readouterr().err == ""
+
+
+def test_macos_cwd_inside_a_legacy_temp_worktree_still_resolves_identity(monkeypatch, tmp_path):
+    from beadhive import worktree
+
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    old = _populate(fake_tmp / "bh-worktrees")
+    assert worktree.cwd_identity({}, old) == (("github", "org", "repo"), "bh-old")
+    assert worktree.cwd_worktree_dir({}, old) == old.resolve()
+
+
+# ---- macOS: sandbox grants follow the EFFECTIVE root, not worktrees.ephemeral (bh-uwlsw) -----
+
+
+def _macos_cfg(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "load", lambda: {})
+    assert config.worktrees_ephemeral({}) is True  # default config: the ephemeral knob is ON
+    return fake_tmp
+
+
+def test_macos_default_ephemeral_root_needs_a_grant_but_a_temp_root_does_not(monkeypatch, tmp_path):
+    fake_tmp = _macos_cfg(monkeypatch, tmp_path)
+    assert config.worktrees_root_needs_grant({}) is True  # disk root, outside $TMPDIR
+    opted_in = {"worktrees": {"macos_use_temp": True}}
+    assert config.worktrees_root({**opted_in}) == fake_tmp / "bh-worktrees"
+    assert config.worktrees_root_needs_grant(opted_in) is False
+
+
+def test_linux_ephemeral_default_still_needs_no_grant(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "host_platform", lambda: "linux")
+    assert config.worktrees_root({}) == fake_tmp / "bh-worktrees"
+    assert config.worktrees_root_needs_grant({}) is False
+
+
+def test_macos_default_ephemeral_installs_claude_and_codex_grants_for_the_disk_root(
+    monkeypatch, tmp_path
+):
+    import json
+
+    from beadhive import hive
+
+    _macos_cfg(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "claude_home", lambda: tmp_path / "claude-home")
+    monkeypatch.setattr(config, "codex_home", lambda: tmp_path / "codex-home")
+    base = tmp_path / "clone"
+    base.mkdir()
+    subprocess = __import__("subprocess")
+    subprocess.run(["git", "init", "-q", str(base)], check=True)
+
+    hive._install_sandbox_grant({}, "github", "o", "r", base=base)
+    data = json.loads((base / ".claude" / "settings.local.json").read_text())
+    (entry,) = data["sandbox"]["filesystem"]["allowWrite"]
+    assert entry.endswith("/worktrees/github/o/r")  # the disk root subtree, not $TMPDIR
+
+    hive._install_global_sandbox_grant({})
+    glob = json.loads((tmp_path / "claude-home" / "settings.json").read_text())
+    assert any(e.endswith("/worktrees") for e in glob["sandbox"]["filesystem"]["allowWrite"])
+
+    hive._install_codex_sandbox_grant({}, "github", "o", "r", base=base)
+    assert "/worktrees/github/o/r" in (base / ".codex" / "config.toml").read_text()
+    hive._install_global_codex_sandbox_grant({})
+    assert "/worktrees" in (tmp_path / "codex-home" / "config.toml").read_text()
+
+
+def test_macos_use_temp_still_skips_the_grant(monkeypatch, tmp_path, capsys):
+    from beadhive import hive
+
+    _macos_cfg(monkeypatch, tmp_path)
+    cfg = {"worktrees": {"macos_use_temp": True}}
+    base = tmp_path / "clone"
+    base.mkdir()
+    hive._install_sandbox_grant(cfg, "github", "o", "r", base=base)
+    assert "no sandbox grant needed" in capsys.readouterr().out
+    assert not (base / ".claude").exists()
+
+
+def test_macos_legacy_temp_root_is_covered_by_the_os_temp_dir_not_a_second_grant(
+    monkeypatch, tmp_path
+):
+    fake_tmp = _macos_cfg(monkeypatch, tmp_path)
+    old = _populate(fake_tmp / "bh-worktrees")
+    legacy = config.legacy_temp_root({})
+    assert legacy is not None and config.under_os_temp(old)
+    assert config.under_os_temp(legacy)  # sandbox-writable already: the primary-root grant suffices
+
+
+def test_macos_doctor_warns_on_a_stale_grant_and_classifies_the_root(monkeypatch, tmp_path):
+    import json
+
+    from beadhive import doctor
+
+    _macos_cfg(monkeypatch, tmp_path)
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    path = tmp_path / "github" / "acme" / "zf"
+    (path / ".beads").mkdir(parents=True)
+    (path / ".claude").mkdir()
+    (path / ".claude" / "settings.local.json").write_text(
+        json.dumps({"sandbox": {"filesystem": {"allowWrite": ["~/gone/github/acme/zf"]}}})
+    )
+    warns = doctor._data_warnings({}, tmp_path, [entry], set(), set(), set(), set())
+    assert any("sandbox grant is stale" in w for w in warns)
+    # the disk root under home is a known home entry on macOS even with ephemeral on
+    assert config.disk_worktrees_root({}).name in doctor._configurable_home_entries({})
+
+
+def test_linux_ephemeral_doctor_does_not_warn_on_a_stale_grant(monkeypatch, tmp_path):
+    import json
+
+    from beadhive import doctor
+
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "host_platform", lambda: "linux")
+    monkeypatch.setattr(config, "load", lambda: {})
+    assert config.worktrees_root({}) == fake_tmp / "bh-worktrees"
+    entry = {"provider": "github", "org": "acme", "repo": "zf", "prefix": "zf", "kind": "personal"}
+    path = tmp_path / "github" / "acme" / "zf"
+    (path / ".beads").mkdir(parents=True)
+    (path / ".claude").mkdir()
+    (path / ".claude" / "settings.local.json").write_text(
+        json.dumps({"sandbox": {"filesystem": {"allowWrite": ["~/gone/github/acme/zf"]}}})
+    )
+    warns = doctor._data_warnings({}, tmp_path, [entry], set(), set(), set(), set())
+    assert not any("sandbox grant is stale" in w for w in warns)
+
+
+def test_codex_unreachable_hint_does_not_suggest_the_already_on_ephemeral_knob():
+    import inspect
+
+    from beadhive import worktree
+
+    src = inspect.getsource(worktree._refuse_if_codex_unreachable)
+    assert "worktrees.ephemeral: true" not in src
+    assert "hive init --codex" in src
+
+
+# ---- bead in BOTH roots, stray directory, legacy-root inventory (bh-uwlsw) -------------------
+
+
+def test_macos_bead_in_both_roots_primary_wins_and_nothing_is_created(monkeypatch, tmp_path):
+    from beadhive import worktree
+
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "load", lambda: {})
+    legacy = _populate(fake_tmp / "bh-worktrees")  # .../bh-old
+    primary = config.disk_worktrees_root({}) / "github/org/repo/bh-old"
+    primary.mkdir(parents=True)
+    entry = {"provider": "github", "org": "org", "repo": "repo"}
+    before = sorted(p for p in tmp_path.rglob("*") if p.is_dir())
+    assert worktree.wt_dir(entry, "bh-old") == primary  # primary root wins
+    assert sorted(p for p in tmp_path.rglob("*") if p.is_dir()) == before  # nothing created
+    assert legacy.is_dir()  # the legacy copy is untouched
+
+
+def test_macos_legacy_warning_tells_how_to_clear_a_stray_directory(monkeypatch, tmp_path):
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    _populate(fake_tmp / "bh-worktrees")  # a leaf directory that is not a registered worktree
+    warning = config.legacy_temp_warning({})
+    assert warning and "stray directory" in warning and "remove it by hand" in warning
+
+
+def test_inventory_lists_and_labels_a_registered_legacy_root_worktree(monkeypatch, tmp_path):
+    import subprocess
+
+    from beadhive import worktree, worktree_inventory
+
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    main = tmp_path / "main"
+    main.mkdir()
+    for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=main,
+            check=True,
+            capture_output=True,
+        )
+    legacy = fake_tmp / "bh-worktrees" / "github" / "org" / "repo" / "bh-old"
+    legacy.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "wt/bead/bh-old", str(legacy)],
+        cwd=main,
+        check=True,
+        capture_output=True,
+    )
+    entry = {"prefix": "r", "provider": "github", "org": "org", "repo": "repo"}
+    monkeypatch.setattr(worktree_inventory.registry, "hive_dir", lambda _e: main)
+    rows = worktree_inventory.impl__managed_for_entry(entry, str(config.worktrees_root({})))
+    assert [(p, b) for _prefix, p, b in rows] == [(str(legacy), "wt/bead/bh-old")]
+    import dataclasses
+
+    @dataclasses.dataclass
+    class _St:
+        path: str
+        legacy_root: bool = False
+
+    (flagged,) = worktree_inventory.flag_legacy_root([_St(str(legacy))], config.worktrees_root({}))
+    assert flagged.legacy_root is True  # labelled as outside the primary root, not dropped
+    assert worktree.cwd_worktree_dir({}, legacy) == legacy.resolve()

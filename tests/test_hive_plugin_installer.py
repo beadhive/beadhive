@@ -243,13 +243,16 @@ def test_do_claude_copy_mode_calls_agents_installer(tmp_path):
     mock_plugin.assert_not_called()
 
 
-def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path, capsys):
+def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path, capsys, monkeypatch):
     """Regression: the settings, sandbox grant, and CLAUDE.md AGF hint
     are local + idempotent, so they must land BEFORE the fallible external `claude` CLI
     plugin install — and a plain re-run after the failure must converge. The failure
     itself is fenced (v0.2.0 field report): it warns with the manual recovery commands
     and NEVER aborts onboarding."""
-    from beadhive import onboard
+    from beadhive import config, onboard
+
+    # a root OUTSIDE the OS temp dir needs a grant (bh-uwlsw); tmp_path is under the real one
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "os-temp"))
 
     class FakeCtx:
         base = tmp_path
