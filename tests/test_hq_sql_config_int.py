@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from beadhive.hq_document_validation import with_fleet_json
 from beadhive.hq_sql_config import (
     InitialSeedReceipt,
     PublicationUnknown,
@@ -166,9 +167,12 @@ def test_explicit_plaintext_query_and_publication_direct_and_through_tcp_proxy(t
             del settings[role]["ca_file"]
             del settings[role]["server_name"]
         store = SqlFleetConfigRevisionStore(settings, broker=_Broker())
-        documents = (
-            FleetConfigDocument("beadyard.json", new_document()),
-            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        # The store publishes fleet.json beside fleet.yaml (bh-vrqne); the seed plan does too.
+        documents = with_fleet_json(
+            (
+                FleetConfigDocument("beadyard.json", new_document()),
+                FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+            )
         )
         store.initialize_snapshot(
             documents, expected_schema_parent=parent, publication_id=str(uuid.uuid4())
@@ -204,9 +208,12 @@ def test_public_initial_seed_and_original_receipt_survive_later_publication(tmp_
         store = SqlFleetConfigRevisionStore(settings, broker=_Broker())
         identity_raw = new_document()
         owner = parse_document(identity_raw)
-        documents = (
-            FleetConfigDocument("beadyard.json", identity_raw),
-            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        # The store publishes fleet.json beside fleet.yaml (bh-vrqne); the seed plan does too.
+        documents = with_fleet_json(
+            (
+                FleetConfigDocument("beadyard.json", identity_raw),
+                FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+            )
         )
         publication_id = str(uuid.uuid4())
         receipt = store.initialize_snapshot(
@@ -281,9 +288,12 @@ def test_two_publishers_compete_for_one_empty_config_singleton(tmp_path, monkeyp
     with _empty_config_server(tmp_path) as (port, parent, settings):
         identity_raw = new_document()
         owner = parse_document(identity_raw)
-        documents = (
-            FleetConfigDocument("beadyard.json", identity_raw),
-            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        # The store publishes fleet.json beside fleet.yaml (bh-vrqne); the seed plan does too.
+        documents = with_fleet_json(
+            (
+                FleetConfigDocument("beadyard.json", identity_raw),
+                FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+            )
         )
         ids = [str(uuid.uuid4()) for _ in range(1 if same_intent else 2)]
         if same_intent:
@@ -359,9 +369,12 @@ def test_first_publication_uncertain_transport_keeps_original_intent(
         store = SqlFleetConfigRevisionStore(settings, broker=_Broker())
         identity_raw = new_document()
         owner = parse_document(identity_raw)
-        documents = (
-            FleetConfigDocument("beadyard.json", identity_raw),
-            FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        # The store publishes fleet.json beside fleet.yaml (bh-vrqne); the seed plan does too.
+        documents = with_fleet_json(
+            (
+                FleetConfigDocument("beadyard.json", identity_raw),
+                FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+            )
         )
         publication_id = str(uuid.uuid4())
         original_execute = hq_sql_config._BoundedCursor.execute
@@ -924,7 +937,7 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
                     assert cursor.fetchall() == ()
                 root.close()
             published = store.publish_snapshot(updated, expected_revision=initial)
-            assert published.documents == updated
+            assert published.documents == with_fleet_json(updated)
             assert published.commit_revision != initial
             restarted = SqlFleetConfigRevisionStore(settings, broker=_Broker())
             assert restarted.load_snapshot().commit_revision == published.commit_revision
@@ -951,7 +964,7 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             assert recovered.publication_id == unknown.publication_id
             assert recovered.expected_revision == published.commit_revision
             assert recovered.publication_sequence == 3
-            assert recovered.documents_sha256 == _digest(original)
+            assert recovered.documents_sha256 == _digest(with_fleet_json(original))
             assert recovered.observed_head == after_unknown.load_snapshot().commit_revision
             with pytest.raises(SqlConfigError, match="identity or parent mismatch"):
                 after_unknown.recover_publication(unknown.publication_id, expected_revision=initial)
@@ -1191,7 +1204,7 @@ def test_committed_sql_config_publication_and_floor(tmp_path, monkeypatch):
             repaired = repair_store.repair_snapshot(
                 original, expected_revision=raw.expected_revision
             )
-            assert repaired.documents == original
+            assert repaired.documents == with_fleet_json(original)
             assert repair_store.load_snapshot().commit_revision == repaired.commit_revision
             _negative_server_certificates(tmp_path)
             for certificate in ("wrong-name", "expired"):

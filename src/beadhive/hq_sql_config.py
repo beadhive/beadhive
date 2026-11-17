@@ -55,10 +55,12 @@ from .beadyard_identity import (
     validate_publication_identity,
 )
 from .hq_document_validation import (
+    FLEET_JSON_PATH,
     DocumentValidationError,
     validate_documents,
     validate_documents_memoized,
     validate_repair_carrier,
+    with_fleet_json,
 )
 from .hq_sql_deadline import flock_until
 from .hq_sql_transport import FnoxBroker, SqlTransportError, connect
@@ -111,7 +113,7 @@ MAX_BYTES = 4 * 1024 * 1024
 _COMMITTED_CACHE: dict[tuple, tuple] = {}
 _COMMITTED_CACHE_LIMIT = 16
 PATH = re.compile(
-    r"beadyard\.json|fleet\.yaml|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
+    r"beadyard\.json|fleet\.yaml|fleet\.json|workspace(?:-[A-Za-z0-9_-]+)?\.toml|allowed_signers|"
     r"hosts/[A-Za-z0-9_-]+\.yaml|"
     r"hives/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.yaml"
 )
@@ -221,6 +223,8 @@ def _kind(path):
         return "beadyard"
     if path == "fleet.yaml":
         return "fleet"
+    if path == FLEET_JSON_PATH:
+        return "fleet_json"
     if path.startswith("workspace"):
         return "workspace"
     if path == "allowed_signers":
@@ -321,8 +325,8 @@ def _check_carrier(documents, *, version=None):
                 source = tomllib.loads(document.content)
             except (ValueError, UnicodeError):
                 raise SqlConfigError("workspace configuration syntax invalid") from None
-        elif document.path in ("allowed_signers", DOCUMENT_PATH):
-            continue
+        elif document.path in ("allowed_signers", DOCUMENT_PATH, FLEET_JSON_PATH):
+            continue  # fleet.json is cross-checked against fleet.yaml by validate_documents
         else:
             try:
                 source = YAML(typ="safe").load(document.content)
@@ -353,6 +357,28 @@ def _validate(documents):
     _validate_carrier(documents)
     try:
         validate_documents(documents)
+    except DocumentValidationError as exc:
+        raise SqlConfigError(str(exc)) from None
+
+
+def _validated_with_fleet_json(documents):
+    """Validate the caller's documents, then add ``fleet.json`` (bh-vrqne).
+
+    Any incoming ``fleet.json`` is dropped first and regenerated, so a read-back snapshot
+    republished after a ``fleet.yaml`` edit never carries a stale projection. The projection is
+    built only AFTER ``_validate`` accepted the fleet: a refused fleet raises here with nothing
+    derived, and the caller has written nothing.
+    """
+    typed = isinstance(documents, tuple) and all(
+        isinstance(d, FleetConfigDocument) for d in documents
+    )
+    if typed:
+        documents = tuple(d for d in documents if d.path != FLEET_JSON_PATH)
+    _validate(documents)
+    if not typed:
+        return documents  # _validate refused it; only a stubbed validator reaches here
+    try:
+        return with_fleet_json(documents)
     except DocumentValidationError as exc:
         raise SqlConfigError(str(exc)) from None
 
@@ -1142,7 +1168,7 @@ class SqlFleetConfigRevisionStore:
         refreshed parent. Normal load remains unavailable until a verified seed
         commit has been installed as the host's initial floor.
         """
-        _validate(documents)
+        documents = _validated_with_fleet_json(documents)
         _publication_uuid(publication_id)
         if not isinstance(expected_schema_parent, str) or not expected_schema_parent:
             raise SqlConfigError("original schema parent required")
@@ -1455,6 +1481,10 @@ class SqlFleetConfigRevisionStore:
         from . import hq_authority_fence_notice as notice
 
         probe = notice.probe_authority(self)
+        try:  # the notice must judge the documents actually committed (with fleet.json)
+            documents = _validated_with_fleet_json(documents)
+        except Exception:  # noqa: BLE001 - the core refuses the invalid candidate itself
+            pass
         notice.announce_before(probe, expected_revision, documents)
         try:
             published = self._publish_snapshot_core(
@@ -1475,7 +1505,7 @@ class SqlFleetConfigRevisionStore:
         publication_id=None,
         deadline=None,
     ):
-        _validate(documents)
+        documents = _validated_with_fleet_json(documents)
         _require_time(deadline)
         if not isinstance(expected_revision, str) or not expected_revision:
             raise SqlConfigError("original expected configuration revision required")

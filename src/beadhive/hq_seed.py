@@ -26,7 +26,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 
 from .beadyard_identity import BeadyardIdentityError, identity_in_documents, parse_id
-from .hq_document_validation import DocumentValidationError
+from .hq_document_validation import DocumentValidationError, with_fleet_json
 from .hq_sql_config import (
     InitialSeedReceipt,
     PublicationUnknown,
@@ -315,6 +315,9 @@ def plan(
         issues.extend(relocation_issues)
         central = tuple(projected if doc.path == "fleet.yaml" else doc for doc in raw)
         _validate(central)
+        # The SQL store publishes fleet.json beside fleet.yaml (bh-vrqne): plan the same
+        # documents so the durable intent's digest and count equal what gets committed.
+        central = with_fleet_json(central)
     except (SeedError, SqlConfigError, DocumentValidationError) as exc:
         central = raw
         issues.append(str(exc))

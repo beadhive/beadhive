@@ -8,6 +8,7 @@ No validated document is rewritten or normalized here.
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import tomllib
@@ -180,6 +181,82 @@ def _parse_yaml(content: str, kind: str) -> Mapping[str, Any]:
     return parsed
 
 
+FLEET_JSON_PATH = "fleet.json"
+
+
+#: Largest magnitude a float64 holds exactly (2**53 - 1).
+_MAX_SAFE_INT = 2**53 - 1
+
+
+def _json_safe(node: Any) -> Any:
+    """Plain JSON data only: a YAML value JSON cannot carry exactly is refused, never coerced."""
+    if node is None or isinstance(node, (bool, str)):
+        return node
+    if isinstance(node, int):
+        # A Go/JS float64 reader loses integers beyond 2**53 silently; the fleet schema does not
+        # bound integers, so refuse rather than publish a projection a reader would misread.
+        if abs(node) > _MAX_SAFE_INT:
+            raise DocumentValidationError("fleet_json", "<root>", "integer_out_of_safe_range")
+        return node
+    if isinstance(node, float):
+        if node != node or node in (float("inf"), float("-inf")):
+            raise DocumentValidationError("fleet_json", "<root>", "non_finite_number")
+        return node
+    if isinstance(node, Mapping):
+        if not all(isinstance(key, str) for key in node):
+            raise DocumentValidationError("fleet_json", "<root>", "non_string_key")
+        return {key: _json_safe(value) for key, value in node.items()}
+    if isinstance(node, (list, tuple)):
+        return [_json_safe(item) for item in node]
+    raise DocumentValidationError("fleet_json", "<root>", "non_json_value")
+
+
+def canonical_fleet_json(fleet_yaml: str) -> str:
+    """The canonical JSON projection of ``fleet.yaml`` (the ``fleet.json`` document, bh-vrqne).
+
+    Canonical means the ruamel safe, duplicate-key-refusing load of ``fleet.yaml`` (the same load
+    :func:`validate_document` applies) dumped with sorted keys, compact ``(",", ":")`` separators,
+    ``ensure_ascii=False`` (raw UTF-8, not ``\\u`` escapes), ``allow_nan=False`` and NO trailing
+    newline: the convention of the repo's other canonical-JSON helpers. A value JSON cannot carry
+    exactly (a YAML date or timestamp, a non-string key, NaN/Infinity) raises
+    :class:`DocumentValidationError` rather than being coerced, so no projection can diverge
+    silently from the YAML.
+    """
+    parsed = _json_safe(_parse_yaml(fleet_yaml, "fleet"))
+    return json.dumps(
+        parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
+
+
+def with_fleet_json(
+    documents: tuple[FleetConfigDocument, ...],
+) -> tuple[FleetConfigDocument, ...]:
+    """``documents`` with ``fleet.json`` regenerated from ``fleet.yaml``, right after it.
+
+    Any incoming ``fleet.json`` is dropped and recomputed (a caller republishing a read-back
+    snapshot never carries a stale one); idempotent. Placement after ``fleet.yaml`` is
+    deterministic and keeps the beadyard identity document last. ``fleet.yaml`` is NOT validated
+    here: callers validate first, so a refused fleet never gets a projection. No ``fleet.yaml``
+    returns the documents unchanged for the caller's own refusal.
+    """
+    base = tuple(doc for doc in documents if doc.path != FLEET_JSON_PATH)
+    fleet = next((doc for doc in base if doc.path == "fleet.yaml"), None)
+    if fleet is None:
+        return base
+    projection = FleetConfigDocument(FLEET_JSON_PATH, canonical_fleet_json(fleet.content))
+    index = base.index(fleet) + 1
+    return (*base[:index], projection, *base[index:])
+
+
+def _validate_fleet_json(content: str) -> None:
+    try:
+        parsed = json.loads(content)
+    except ValueError:
+        raise DocumentValidationError("fleet_json", "<root>", "json_syntax") from None
+    if not isinstance(parsed, dict):
+        raise DocumentValidationError("fleet_json", "<root>", "mapping_required")
+
+
 def _validate_workspace(content: str) -> None:
     try:
         parsed = tomllib.loads(content)
@@ -229,6 +306,9 @@ def validate_document(path: str, content: str) -> None:
         return
     if path == "fleet.yaml":
         validate_settings_mapping(_parse_yaml(content, "fleet"), scope="fleet")
+        return
+    if path == FLEET_JSON_PATH:
+        _validate_fleet_json(content)
         return
     if match := _HOST_PATH.fullmatch(path):
         raw = dict(_parse_yaml(content, "host"))
@@ -284,6 +364,17 @@ def validate_documents(documents: tuple[FleetConfigDocument, ...]) -> None:
         validate_document(document.path, document.content)
     if "fleet.yaml" not in seen:
         raise DocumentValidationError("snapshot", "fleet.yaml", "required")
+    _check_fleet_json_matches(documents)
+
+
+def _check_fleet_json_matches(documents: tuple[FleetConfigDocument, ...]) -> None:
+    """A present ``fleet.json`` must be exactly the projection of the ``fleet.yaml`` beside it."""
+    projection = next((doc for doc in documents if doc.path == FLEET_JSON_PATH), None)
+    if projection is None:
+        return
+    fleet = next(doc for doc in documents if doc.path == "fleet.yaml")
+    if projection.content != canonical_fleet_json(fleet.content):
+        raise DocumentValidationError("fleet_json", "<root>", "projection_mismatch")
 
 
 #: Ordered-snapshot digests that already passed :func:`validate_documents` in this process.
@@ -373,6 +464,9 @@ def validate_repair_carrier(documents: tuple[FleetConfigDocument, ...]) -> None:
         if path == DOCUMENT_PATH:
             validate_document(path, document.content)
             continue
+        if path == FLEET_JSON_PATH:
+            _validate_fleet_json(document.content)
+            continue
         if _WORKSPACE_PATH.fullmatch(path):
             try:
                 parsed = tomllib.loads(document.content)
@@ -388,7 +482,10 @@ def validate_repair_carrier(documents: tuple[FleetConfigDocument, ...]) -> None:
 
 
 __all__ = (
+    "FLEET_JSON_PATH",
     "DocumentValidationError",
+    "canonical_fleet_json",
+    "with_fleet_json",
     "clear_validated_snapshots",
     "validate_document",
     "validate_documents",

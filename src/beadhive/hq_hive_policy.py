@@ -15,6 +15,7 @@ from dataclasses import replace
 from ruamel.yaml import YAML
 
 from . import hq_authority_guard as guard
+from .hq_document_validation import FLEET_JSON_PATH
 from .modules.config.contracts import ManagedRepoEntry
 from .modules.config.domain.ports import FleetConfigSnapshot
 
@@ -160,7 +161,8 @@ def config_head_tolerated(
     The SQL authority signs a ``hive_policies`` projection against one config head
     (`bound`, H0). A later head (`current`, H1) is tolerated iff it carries the same
     backend and generation, the same beadyard identity, every document other than
-    ``fleet.yaml`` byte-identical (same paths, order and content: ``hosts/*.yaml``,
+    ``fleet.yaml`` and its derived ``fleet.json`` projection byte-identical (same paths, order
+    and content: ``hosts/*.yaml``,
     ``allowed_signers``, ``beadyard.json`` ...), and its fleet catalog projects to exactly
     the signed `policies` once the projection is rebased onto H0 (so only the per-item
     ``config_head`` provenance may differ). Every ``managed_repos[].frame_policy``, prefix
@@ -177,10 +179,13 @@ def config_head_tolerated(
         return False
 
     def rest(snapshot):
+        # fleet.json is a pure function of fleet.yaml (bh-vrqne), so the fleet.yaml-derived
+        # policy and default checks below already cover its content; comparing it would fence
+        # an unrelated fleet.yaml edit and the first republish that adds it.
         return tuple(
             (document.path, document.content)
             for document in snapshot.documents
-            if document.path != FLEET_DOCUMENT
+            if document.path not in (FLEET_DOCUMENT, FLEET_JSON_PATH)
         )
 
     try:
