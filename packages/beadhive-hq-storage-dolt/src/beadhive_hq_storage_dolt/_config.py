@@ -107,6 +107,8 @@ def config_document_kind(path: str) -> str:
         return "beadyard"
     if path == "fleet.yaml":
         return "fleet"
+    if path == "fleet.json":  # root FLEET_JSON_PATH: the canonical projection of fleet.yaml
+        return "fleet_json"
     if path.startswith("workspace"):
         return "workspace"
     if path == "allowed_signers":

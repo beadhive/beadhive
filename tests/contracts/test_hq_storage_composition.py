@@ -234,6 +234,7 @@ def test_adapter_config_publication_encoding_matches_roots() -> None:
     assert CONFIG_TABLES == hq_sql_config.TABLES
     documents = (
         FleetConfigDocument("fleet.yaml", "hq:\n  mode: dolt-server\n"),
+        FleetConfigDocument("fleet.json", '{"hq":{"mode":"dolt-server"}}'),
         FleetConfigDocument("beadyard.json", "{}\n"),
         FleetConfigDocument("workspace-extra.toml", "[x]\n"),
         FleetConfigDocument("allowed_signers", "k\n"),

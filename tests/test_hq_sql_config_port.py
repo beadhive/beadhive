@@ -20,6 +20,11 @@ import uuid
 import pytest
 from tests.harness.clock import FakeClock
 
+from beadhive.hq_document_validation import (
+    canonical_fleet_json,
+    validate_documents,
+    with_fleet_json,
+)
 from beadhive.hq_sql_config import (
     TABLES,
     PublicationRecovery,
@@ -30,7 +35,11 @@ from beadhive.hq_sql_config import (
     publication_changes,
     publish_documents,
 )
-from beadhive.modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+from beadhive.modules.config.domain.ports import (
+    FleetConfigDocument,
+    FleetConfigSnapshot,
+    ordered_documents_digest,
+)
 from beadhive_hq_storage import ChangeSet, InMemoryHqStorage, Revision
 
 DOCUMENTS = (
@@ -69,11 +78,14 @@ class _Recording:
 
 
 def _documents_at(fake: InMemoryHqStorage, revision: str) -> tuple[FleetConfigDocument, ...]:
-    return tuple(
+    # The fake lists names sorted, losing publication order (the SQL store keeps an ordinal);
+    # restore the one order this bead defines: fleet.json directly after fleet.yaml.
+    rows = [
         FleetConfigDocument(name.split("/", 1)[1], raw.decode())
         for name, raw in fake.read_at(Revision(revision))
         if name.startswith("hq_config_documents/")
-    )
+    ]
+    return tuple(sorted(rows, key=lambda d: "fleet.yaml\x00" if d.path == "fleet.json" else d.path))
 
 
 @pytest.fixture
@@ -115,7 +127,7 @@ def test_an_applied_publication_returns_the_exact_committed_snapshot(world) -> N
     parent = str(fake.head())
     published = store.publish_snapshot(DOCUMENTS, expected_revision=parent)
     assert published.commit_revision == str(fake.head()) != parent
-    assert published.documents == DOCUMENTS
+    assert published.documents == with_fleet_json(DOCUMENTS)
     assert preflights == [parent]
     ((verb, operation, expected),) = history.calls
     assert (verb, expected) == ("publish", parent)
@@ -309,3 +321,131 @@ def test_lookup_unavailable_is_recovery_unavailable(world) -> None:
 
     with pytest.raises(SqlConfigError, match="recovery unavailable"):
         confirmed_publication(_Down(), str(uuid.uuid4()), expected_revision=str(fake.head()))
+
+
+# --- fleet.json: the canonical projection of fleet.yaml (bh-vrqne) ---------------------------
+
+#: Pinned so a change to the digest function (which this bead must not make) fails loudly:
+#: configs without the new document keep exactly this digest.
+_LEGACY_DIGEST = "d20d95c329ba368292f9f4985ebf3e06cc2483182476f37cc4b25d1ec302be33"
+
+
+def _stored(fake: InMemoryHqStorage) -> tuple[FleetConfigDocument, ...]:
+    return _documents_at(fake, str(fake.head()))
+
+
+def test_a_publication_commits_fleet_json_as_the_canonical_load_of_fleet_yaml(world) -> None:
+    store, fake, history, _ = world
+    fleet = (
+        "schema_version: 1\nhq:\n  mode: dolt-server\nmanaged_repos:\n"
+        '  - provider: github\n    org: o\n    repo: "caf\u00e9"\n'
+    )
+    store.publish_snapshot(
+        (FleetConfigDocument("fleet.yaml", fleet), DOCUMENTS[1]),
+        expected_revision=str(fake.head()),
+    )
+    paths = [doc.path for doc in _stored(fake)]
+    assert paths == ["fleet.yaml", "fleet.json", "workspace.toml"]
+    projection = _stored(fake)[1].content
+    assert projection == (
+        '{"hq":{"mode":"dolt-server"},"managed_repos":[{"org":"o","provider":"github",'
+        '"repo":"caf\u00e9"}],"schema_version":1}'
+    )  # sorted keys, compact, raw UTF-8 (not an escape), no trailing newline
+    assert projection == canonical_fleet_json(fleet)
+    # It is a committed document like any other: on the wire and under the digest.
+    sent = dict(history.calls and fake.read_at(fake.head()))
+    assert sent["hq_config_documents/fleet.json"] == projection.encode("utf-8")
+
+
+def test_repair_also_emits_fleet_json(world) -> None:
+    store, fake, _, _ = world
+    store.repair_snapshot(DOCUMENTS, expected_revision=str(fake.head()))
+    fleet, projection = _stored(fake)[:2]
+    assert projection.path == "fleet.json"
+    assert projection.content == canonical_fleet_json(fleet.content)
+
+
+def test_a_stale_fleet_json_in_a_republished_snapshot_is_regenerated(world) -> None:
+    store, fake, _, _ = world
+    first = store.publish_snapshot(DOCUMENTS, expected_revision=str(fake.head()))
+    edited = tuple(
+        FleetConfigDocument(d.path, NEXT[0].content) if d.path == "fleet.yaml" else d
+        for d in first.documents  # still carries the old fleet.json
+    )
+    store.publish_snapshot(edited, expected_revision=first.commit_revision)
+    assert dict((d.path, d.content) for d in _stored(fake))["fleet.json"] == (
+        canonical_fleet_json(NEXT[0].content)
+    )
+
+
+@pytest.mark.parametrize(
+    "fleet",
+    [
+        "schema_version: true\n",  # refused by the settings schema
+        "hq:\n  mode: dolt-server\n  token: abc\n",  # a secret key
+        "hq:\n  mode: dolt-server\nwhen: 2026-01-02\n",  # a YAML date JSON cannot carry
+        "hq:\n  mode: dolt-server\n? [a]\n: b\n",  # a non-string key
+        "- not\n- a mapping\n",
+        "hq: [unterminated\n",
+    ],
+)
+def test_a_refused_fleet_publishes_nothing_and_derives_no_fleet_json(world, fleet) -> None:
+    store, fake, history, _ = world
+    parent = str(fake.head())
+    for publish in (store.publish_snapshot, store.repair_snapshot):
+        with pytest.raises(SqlConfigError):
+            publish(
+                (FleetConfigDocument("fleet.yaml", fleet), DOCUMENTS[1]), expected_revision=parent
+            )
+    assert history.calls == []  # nothing reached the port: no fleet.json, no other document
+    assert str(fake.head()) == parent
+    assert _stored(fake) == ()
+
+
+def test_configs_without_the_new_document_keep_their_digest_and_still_validate() -> None:
+    assert ordered_documents_digest(DOCUMENTS) == _LEGACY_DIGEST
+    validate_documents(DOCUMENTS)  # a stored snapshot from before this change still reads
+    projected = with_fleet_json(DOCUMENTS)
+    assert ordered_documents_digest(projected) != _LEGACY_DIGEST  # the new document is covered
+    assert with_fleet_json(projected) == projected  # idempotent
+    validate_documents(projected)
+
+
+def test_a_reader_that_ignores_unknown_documents_is_unaffected(world) -> None:
+    store, fake, _, _ = world
+    store.publish_snapshot(DOCUMENTS, expected_revision=str(fake.head()))
+    known = {"fleet.yaml", "workspace.toml"}
+    seen = [doc for doc in _stored(fake) if doc.path in known]
+    assert seen == list(DOCUMENTS)
+
+
+def test_a_fleet_json_that_disagrees_with_fleet_yaml_is_refused() -> None:
+    forged = (
+        DOCUMENTS[0],
+        FleetConfigDocument("fleet.json", '{"hq":{"mode":"git"}}'),
+        DOCUMENTS[1],
+    )
+    with pytest.raises(Exception, match="projection_mismatch"):
+        validate_documents(forged)
+
+
+def test_the_git_projection_does_not_carry_fleet_json() -> None:
+    from beadhive.hq_transition import project_latest_to_git
+
+    with_beadyard = (
+        *with_fleet_json(DOCUMENTS),
+        FleetConfigDocument("beadyard.json", f'{{"beadyard_id":"{uuid.uuid4()}"}}\n'),
+    )
+    paths = [doc.path for doc in project_latest_to_git(with_beadyard)]
+    assert "fleet.json" not in paths
+
+
+def test_canonical_fleet_json_refuses_integers_a_float64_reader_would_round() -> None:
+    from beadhive.hq_document_validation import DocumentValidationError
+
+    assert canonical_fleet_json(f"n: {2**53 - 1}\nm: -{2**53 - 1}\n") == (
+        f'{{"m":-{2**53 - 1},"n":{2**53 - 1}}}'
+    )
+    for value in (2**53, -(2**53), 10**30):
+        with pytest.raises(DocumentValidationError):
+            canonical_fleet_json(f"n: {value}\n")
