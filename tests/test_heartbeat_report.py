@@ -11,6 +11,16 @@ from beadhive.hq_framelease_contracts import HeartbeatError
 from beadhive.hq_sql_runtime_schema import inbox_table
 
 
+@pytest.fixture(autouse=True)
+def _local_failure_log(monkeypatch, tmp_path_factory):
+    """Keep the local failure log out of the real bh home and the retry delay at zero."""
+    home = tmp_path_factory.mktemp("bh-home")
+    monkeypatch.setattr(report, "bh_home", lambda: home)
+    monkeypatch.setenv(report.RETRY_DELAY_ENV, "0")
+    monkeypatch.setenv(report.RETRIES_ENV, "0")
+    return home
+
+
 @pytest.fixture
 def plane(monkeypatch):
     release = {"id": "beadhive-factory-v0.21.3", "digest": "sha256:" + "a" * 64}
@@ -677,3 +687,52 @@ def test_hives_ready_still_requires_hive_whose_frame_policy_matches(monkeypatch)
 def test_hives_ready_requires_all_when_caps_unknown(monkeypatch):
     check, seen = _hives_ready(monkeypatch, [_ARM], None, set())
     assert check["status"] == "fail" and seen == ["arm"]
+
+
+def test_failure_log_names_hive_and_subcheck_and_stays_out_of_evidence(
+    monkeypatch, tmp_path, _local_failure_log
+):
+    _stub_hive(monkeypatch, tmp_path, ping=_ping(124, "secret-token"))
+    assert report.hive_ready({"prefix": "bh"}) is False
+    line = (_local_failure_log / report.FAILURE_LOG_RELATIVE_PATH).read_text()
+    assert "hive=bh" in line and "subcheck=database_ping" in line and "exit_124" in line
+    assert "secret-token" not in line
+    monkeypatch.setattr(report, "hive_ready", lambda _e: False)
+    checks = report.measure_conformance(cfg={"hives": []}, caps=None, host_id=None)
+    assert all("secret" not in c["evidence"] and "bh" not in c["evidence"] for c in checks)
+
+
+def test_failure_log_names_probe_readiness_subcheck(monkeypatch, tmp_path, _local_failure_log):
+    _stub_hive(monkeypatch, tmp_path, ready=False, ping=_ping())
+    report.hive_ready({"prefix": "xy"})
+    line = (_local_failure_log / report.FAILURE_LOG_RELATIVE_PATH).read_text()
+    assert "hive=xy" in line and "subcheck=probe_readiness" in line
+
+
+def test_settled_ready_survives_one_transient_failure(monkeypatch):
+    results = iter([False, True])
+    sleeps = []
+    monkeypatch.setattr(report, "hive_ready", lambda _e: next(results))
+    monkeypatch.setenv(report.RETRY_DELAY_ENV, "7")
+    monkeypatch.setenv(report.RETRIES_ENV, "2")
+    assert report.hive_ready_settled({}, sleep=sleeps.append) is True
+    assert sleeps == [7.0]
+
+
+def test_settled_ready_reports_failure_after_bounded_attempts(monkeypatch):
+    attempts = []
+    sleeps = []
+    monkeypatch.setattr(report, "hive_ready", lambda _e: attempts.append(1) or False)
+    monkeypatch.setenv(report.RETRIES_ENV, "3")
+    assert report.hive_ready_settled({}, sleep=sleeps.append) is False
+    assert len(attempts) == 4 and len(sleeps) == 3
+
+
+def test_settled_ready_defaults_are_conservative(monkeypatch):
+    monkeypatch.delenv(report.RETRY_DELAY_ENV)
+    monkeypatch.delenv(report.RETRIES_ENV)
+    attempts = []
+    sleeps = []
+    monkeypatch.setattr(report, "hive_ready", lambda _e: attempts.append(1) or False)
+    assert report.hive_ready_settled({}, sleep=sleeps.append) is False
+    assert len(attempts) == 3 and sleeps == [30.0, 30.0]

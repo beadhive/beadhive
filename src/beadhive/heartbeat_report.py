@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 from datetime import UTC, datetime
 
 import typer
@@ -28,16 +30,81 @@ def config_valid() -> bool:
     return not any(item["level"] == "error" for item in validate_config(effective))
 
 
+#: Local, never-published failure log (relative to :func:`bh_home`). Holds hive prefix, sub-check
+#: and a fixed reason code only -- never command output, paths or credentials.
+FAILURE_LOG_RELATIVE_PATH = "logs/conformance-failures.log"
+RETRIES_ENV = "BH_CONFORMANCE_RETRIES"
+RETRY_DELAY_ENV = "BH_CONFORMANCE_RETRY_DELAY"
+DEFAULT_RETRIES = 2
+DEFAULT_RETRY_DELAY = 30.0
+
+
+def _env_number(name: str, default, cast):
+    try:
+        value = cast(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _log_failure(entry: dict, subcheck: str, reason: str, *, clock=time.time) -> None:
+    """Append one local line naming the failing hive and sub-check. Best effort, never raises."""
+    try:
+        path = bh_home() / FAILURE_LOG_RELATIVE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.fromtimestamp(clock(), UTC).isoformat(timespec="seconds")
+        prefix = str(entry.get("prefix", "?")).replace("\n", " ")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{stamp} hives-ready hive={prefix} subcheck={subcheck} reason={reason}\n")
+    except Exception:  # noqa: S110 - diagnostics must never break measurement
+        pass
+
+
 def hive_ready(entry: dict) -> bool:
-    """Measure readiness and database reachability without retaining command output."""
+    """Measure readiness and database reachability without retaining command output.
+
+    A failure is recorded in the local failure log (hive + sub-check only), not in evidence."""
     from . import bd
     from .hive_ready import probe_readiness
 
     directory = registry.hive_dir(entry)
-    if not directory.is_dir() or not probe_readiness(cwd=directory).ready:
+    if not directory.is_dir():
+        _log_failure(entry, "hive_dir", "missing")
         return False
-    result = bd.routes(directory).database_ping(timeout=20)
-    return result.returncode == 0 and json.loads(result.stdout).get("status") == "ok"
+    if not probe_readiness(cwd=directory).ready:
+        _log_failure(entry, "probe_readiness", "not_ready")
+        return False
+    try:
+        result = bd.routes(directory).database_ping(timeout=20)
+    except Exception as exc:
+        _log_failure(entry, "database_ping", type(exc).__name__)
+        return False
+    if result.returncode != 0:
+        _log_failure(entry, "database_ping", f"exit_{result.returncode}")
+        return False
+    try:
+        ok = json.loads(result.stdout).get("status") == "ok"
+    except Exception:
+        _log_failure(entry, "database_ping", "unparseable")
+        return False
+    if not ok:
+        _log_failure(entry, "database_ping", "status_not_ok")
+    return ok
+
+
+def hive_ready_settled(entry: dict, *, sleep=time.sleep) -> bool:
+    """:func:`hive_ready` with bounded remeasure, so one post-wake blip is not published.
+
+    ``BH_CONFORMANCE_RETRIES`` extra attempts (default 2), ``BH_CONFORMANCE_RETRY_DELAY``
+    seconds apart (default 30). ``sleep`` is injectable for tests."""
+    retries = _env_number(RETRIES_ENV, DEFAULT_RETRIES, int)
+    delay = _env_number(RETRY_DELAY_ENV, DEFAULT_RETRY_DELAY, float)
+    for attempt in range(retries + 1):
+        if hive_ready(entry):
+            return True
+        if attempt < retries:
+            sleep(delay)
+    return False
 
 
 def _check(name, predicate) -> dict:
@@ -149,7 +216,7 @@ def measure_conformance(cfg=_UNSET, caps=_UNSET, host_id=_UNSET) -> list[dict]:
     required = [e for e in hives if e not in skipped and e not in local_only]
     ready = _check(
         "hives-ready",
-        lambda: cfg is not None and bool(hives) and all(hive_ready(e) for e in required),
+        lambda: cfg is not None and bool(hives) and all(hive_ready_settled(e) for e in required),
     )
     if (skipped or local_only) and ready["status"] == "pass":
         ready["evidence"] = _skip_evidence(
