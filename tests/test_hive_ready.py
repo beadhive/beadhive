@@ -970,3 +970,68 @@ def test_missing_coverage_cache_hints_at_refresh_and_never_fails_readiness(world
     assert checks["link coverage"].state == "off"
     assert "never computed" in checks["link coverage"].detail
     assert _COV_REFRESH in checks["link coverage"].detail
+
+
+def test_probe_readiness_ignores_process_cwd_for_repo_files(world):
+    """Probing two hives from a third directory resolves .beads and .claude/settings.json
+    against each probed repo, not the process cwd (bh-9grrq)."""
+    _fake_plugin(world)
+    _install_plugin(world)
+    full = world.ws_root / "github" / "myorg" / "full"
+    bare = world.ws_root / "github" / "myorg" / "bare"
+    for repo in (full, bare):
+        repo.mkdir(parents=True)
+        git("init", "-q", "-b", "main", cwd=repo)
+    (full / ".beads").mkdir()
+    (full / ".claude").mkdir()
+    (full / ".claude" / "settings.json").write_text("{}\n")
+    _register(world, repo="full", prefix="fl", furnish="full")
+    _register(world, repo="bare", prefix="br", furnish="full", hq=False)
+    elsewhere = world.ws_root / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / ".beads").mkdir()  # a decoy that must not satisfy either probe
+    world.chdir(elsewhere)
+
+    def states(result):
+        return {c.label: c.state for c in result.checks}
+
+    full_states = states(hive_ready.probe_readiness(cwd=full))
+    bare_states = states(hive_ready.probe_readiness(cwd=bare))
+    assert full_states["beads initialized"] == "ok"
+    assert full_states["claude settings"] == "ok"
+    assert bare_states["beads initialized"] != "ok"
+    assert bare_states["claude settings"] != "ok"
+
+
+def test_probe_readiness_resolves_bundled_skills_and_agents_against_probed_root(world):
+    """Copy mode: the local skills/ and .claude/agents/ are looked up under the probed repo,
+    not the process cwd (bh-9grrq). Plugin mode would return early before either helper."""
+    _fake_plugin(world)
+    full = world.ws_root / "github" / "myorg" / "full"
+    bare = world.ws_root / "github" / "myorg" / "bare"
+    for repo in (full, bare):
+        repo.mkdir(parents=True)
+        git("init", "-q", "-b", "main", cwd=repo)
+    (full / "skills" / "demo-skill").mkdir(parents=True)
+    (full / ".claude" / "agents").mkdir(parents=True)
+    (full / ".claude" / "agents" / "developer.md").write_text("agent\n")
+    _register(world, repo="full", prefix="fl", furnish="full")
+    _register(world, repo="bare", prefix="br", furnish="full", hq=False)
+    cfg = config.load()
+    cfg["claude"] = {"source": "copy"}
+    config.save(cfg)
+    elsewhere = world.ws_root / "elsewhere"
+    # Decoy cwd that holds the files: pre-fix code would find them here for BOTH probes.
+    (elsewhere / "skills" / "demo-skill").mkdir(parents=True)
+    (elsewhere / ".claude" / "agents").mkdir(parents=True)
+    (elsewhere / ".claude" / "agents" / "developer.md").write_text("agent\n")
+    world.chdir(elsewhere)
+
+    def states(result):
+        return {c.label: c.state for c in result.checks}
+
+    full_states = states(hive_ready.probe_readiness(cwd=full))
+    bare_states = states(hive_ready.probe_readiness(cwd=bare))
+    for label in ("skills", "agents"):
+        assert full_states[label] == "ok", label
+        assert bare_states[label] != "ok", label
