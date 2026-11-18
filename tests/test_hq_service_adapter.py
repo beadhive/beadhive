@@ -47,13 +47,6 @@ def _json(payload, status=200):
     return lambda request: httpx.Response(status, json=payload)
 
 
-def test_publish_evidence_posts_report():
-    adapter, calls = _adapter(_json({"revision": "r3"}))
-    adapter.publish_evidence(ANCHOR, EvidenceReport({"k": 1}), deadline=_later())
-    assert json.loads(calls[0].content) == {"k": 1}
-    assert calls[0].url.path.endswith("/sessions/frame_a/7/evidence")
-
-
 def test_heartbeat_accepted_and_refusal_is_a_stable_code():
     adapter, calls = _adapter(_json({"outcome": "accepted", "revision": "r9"}))
     sub = adapter.submit_heartbeat(ANCHOR, {"request": {}}, request_id="rq1", deadline=_later())

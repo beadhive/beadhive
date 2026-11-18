@@ -10,8 +10,9 @@ Wire-shape status (bh-bmb4t): hq-service at f69779c serves only GET /authority a
 signed submissions (hive-leases, heartbeats, registrations); those shapes are verified against
 hq-service-derived fixtures (``tests/test_hq_service_contract.py``). Every other route's body or
 response is a PROVISIONAL guess, marked ``PROVISIONAL`` below, until hq-service serves it.
-Session renew (bh-nqr4b) is the exception: it is pinned to the hq-service conformance corpus
-``conformance/session/v1`` (commit 205fd5b, ``tests/test_hq_service_renew_contract.py``).
+Session renew (bh-nqr4b) and session evidence (bh-xtznm) are the exceptions: both are pinned to
+the hq-service conformance corpus ``conformance/session/v1`` (commit 205fd5b,
+``tests/test_hq_service_renew_contract.py``, ``tests/test_hq_service_evidence_contract.py``).
 
 Verification of signed authority and the restore floor is a separate step (bh-j99c8). It plugs
 in through ``verifier``: authority-bearing reads (authority, eligibility, config) hand the
@@ -35,6 +36,7 @@ from .hq_port import (
     FrameAnchor,
     HistorySinceFloor,
     HqDeadline,
+    HqNoCurrentBeat,
     HqOutcomeUnknown,
     HqPort,
     HqRefused,
@@ -85,6 +87,31 @@ RENEW_REFUSALS = frozenset(
         "request_not_canonical",
         "request_size_invalid",
         "seq_not_advanced",
+        "unprovisioned_principal",
+    }
+)
+
+#: Refusal codes POST .../evidence can return as a definite, non-retryable refusal: the report's
+#: own (``no_current_beat``, ``evidence_digest_unmatched``, ``evidence_invalid``) and the path,
+#: grant and HTTP-layer rules it shares with renew. ``no_current_beat`` surfaces as
+#: :class:`HqNoCurrentBeat`; every other code as :class:`HqRefused` with the code unchanged (an
+#: unlisted non-retryable code too, so a newer service code is never mistaken for an outage).
+EVIDENCE_REFUSALS = frozenset(
+    {
+        "authority_failed",
+        "content_type_invalid",
+        "epoch_future",
+        "epoch_stale",
+        "evidence_digest_unmatched",
+        "evidence_invalid",
+        "grant_retired",
+        "incarnation_unprovisioned",
+        "no_current_beat",
+        "no_current_grant",
+        "path_invalid",
+        "path_principal_mismatch",
+        "request_malformed",
+        "request_size_invalid",
         "unprovisioned_principal",
     }
 )
@@ -322,14 +349,45 @@ class HqServiceAdapter:
             outcome=outcome,
         )
 
-    # PROVISIONAL (bh-hq-e9z evidence not wired yet, bh-xtznm): the evidence request body and
-    # `{revision}` response are unverified.
     def publish_evidence(
         self, anchor: FrameAnchor, report: EvidenceReport, *, deadline: float
     ) -> SessionRoute:
+        """Post the beat's measurement report (``{method, checks, free_sessions}``) to the
+        session evidence route.
+
+        The route is scope ``lifecycle:session`` and the body is the report as unsigned JSON:
+        the beat's signature already binds the report through ``report_digest``, which the
+        service compares with the canonical sha256 of this report. Key order does not matter;
+        the canonical bytes are sent so a re-post is byte-identical. ``no_current_beat`` (the
+        service holds no accepted beat yet) raises :class:`HqNoCurrentBeat`: renew, then post
+        again.
+
+        Retry safety: the service stores a report once, keyed by its digest, and a repeat is
+        ``200 replayed`` (the stored report untouched, the measurement re-stamped), so
+        re-posting the same bytes after a 503, a timeout or a lost connection is safe.
+        """
+        try:
+            body = json.dumps(
+                dict(report.payload), sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
+        except (TypeError, ValueError) as exc:
+            raise HqRefused("evidence_invalid", f"report is not JSON-encodable: {exc}") from exc
         path = f"/sessions/{_seg(anchor.principal)}/{_seg(anchor.epoch)}/evidence"
-        _, payload = self._call("POST", path, dict(report.payload), deadline=deadline)
-        return SessionRoute(anchor.principal, anchor.epoch, payload.get("revision"))
+        try:
+            _, payload = self._call(
+                "POST", path, None, deadline=deadline, raw_body=body, envelope_errors=True
+            )
+        except HqRefused as exc:
+            if exc.code == "no_current_beat":
+                raise HqNoCurrentBeat(exc.reason) from exc
+            raise
+        outcome = payload.get("outcome") if isinstance(payload, dict) else None
+        digest = payload.get("digest") if isinstance(payload, dict) else None
+        if outcome not in ("accepted", "replayed") or not isinstance(digest, str) or not digest:
+            raise HqUnavailable(f"hq-service returned an unusable evidence result: {payload!r}")
+        if digest != "sha256:" + hashlib.sha256(body).hexdigest():
+            raise HqUnavailable("hq-service stored a different report digest than the one sent")
+        return SessionRoute(anchor.principal, anchor.epoch, outcome=outcome, digest=digest)
 
     def submit_heartbeat(
         self, anchor: FrameAnchor, envelope: dict, *, request_id: str, deadline: float

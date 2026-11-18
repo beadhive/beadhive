@@ -1,0 +1,28 @@
+{
+  "name": "evidence-unknown-principal",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "evidence",
+  "note": "attested as itself, not in the committed registry",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_x",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {}
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_x/3/evidence",
+    "content_type": "application/json",
+    "body": "{\"checks\": [{\"evidence\": \"measured check passed\", \"id\": \"installed-release\", \"status\": \"pass\"}, {\"evidence\": \"measured check passed\", \"id\": \"hives-ready\", \"status\": \"pass\"}], \"free_sessions\": 0, \"method\": \"installed-package-v1\"}"
+  },
+  "expect": {
+    "status": 409,
+    "code": "unprovisioned_principal",
+    "retryable": false,
+    "effects": {
+      "writes": "none"
+    }
+  }
+}
