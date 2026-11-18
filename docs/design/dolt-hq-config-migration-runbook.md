@@ -112,6 +112,10 @@ Rollback risk, operator note: an older `bh` reading a snapshot that carries `fle
 reject the unknown document path. The republish is one-way until every frame runs a version that
 knows `fleet.json`; no additional operator step is required beyond being aware of this.
 
+The session flags (`hq.session_via_port`, `hq.session_dual_write`) are HOST-only, never touch
+`fleet.yaml` or `fleet.json`, and roll back independently of this republish; see the
+[session renew and evidence cutover runbook](hq-service-session-cutover-runbook.md).
+
 ## Readiness and deprecation assessment
 
 The runbook is an operator procedure, not a record that a deployment occurred. See the

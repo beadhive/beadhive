@@ -508,3 +508,8 @@ by `bh-ygm4s`.
 write may have been sent the result is `HqOutcomeUnknown` (`recover_publication` is the existing
 recovery path). Rationale: section 3.1 requires every method to honor `deadline`, and the config
 writes were the exception. Implemented by `bh-ygm4s`.
+
+## Operator runbook
+
+The beadhive side of the hq-service session Cutover (flags, ordering, verification, rollback) is
+in the [session renew and evidence cutover runbook](hq-service-session-cutover-runbook.md).
