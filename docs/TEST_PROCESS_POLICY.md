@@ -108,6 +108,47 @@ Watch item: `tests/test_hq_authority_backend.py::test_real_foreign_holder_takeov
 failed once under 3-way concurrency during bh-p4bbw. Host contention is unconfirmed; if it recurs,
 diagnose contention before reaching for retries or longer sleeps.
 
+## Staged hq-service session test (bh-zephr)
+
+`tests/test_hq_session_staged_e2e.py` drives session renew then evidence through the HQ port (the
+real sender, report module, hq-service adapter and client-owned renew seq) and asserts the cutover
+ordering from the bh-a3369 review: evidence accepted straight after the process's own renew; a cold
+incarnation posts nothing before its renew is accepted; a forced `no_current_beat` is exactly one
+renew-and-retry; the renew timer and the conformance job interleaved produce no
+`evidence_digest_unmatched` / `seq_not_advanced`; G1 (an `api` host with no SQL frame runtime
+refuses both with nothing posted).
+
+One test body, two backends behind the `make_stack` fixture (`tests/harness/hq_session_stack.py`):
+
+- **fake** (every lane): `tests/harness/fake_hq_service.py`, an in-process fake of hq-service's
+  session routes built from the hq-service conformance corpus (205fd5b) and its
+  `store/session.go` rules, on a mocked clock. No network, no sleeping. Its rules are pinned by
+  `tests/test_fake_hq_service.py`; its file docstring lists the rules it does not enforce.
+- **staged** (opt-in, otherwise a clean skip): marker `staged_hq_service`. No gate lane reaches a
+  staged stack.
+
+Operator step (a real staged run; record the result on bh-zephr, not in the test):
+
+```sh
+BH_STAGED_HQ_SERVICE=1 \
+BH_STAGED_HQ_URL=<staged base url> BH_STAGED_HQ_SIGNING_KEY=<abs path of the frame key> \
+BH_STAGED_HQ_PRINCIPAL=<principal> BH_STAGED_HQ_FRAME=<frame id> BH_STAGED_HQ_HOLDER=<holder> \
+BH_STAGED_HQ_INSTANCE=<instance_ref> BH_STAGED_HQ_EPOCH=<committed epoch> \
+[BH_STAGED_HQ_CLIENT_CERT=<path> BH_STAGED_HQ_CLIENT_KEY=<path> BH_STAGED_HQ_CA_CERT=<path>] \
+[BH_STAGED_HQ_AUDIENCE=<audience> BH_STAGED_HQ_CONFIG_REVISION=<revision>] \
+uv run pytest tests/test_hq_session_staged_e2e.py -m staged_hq_service
+```
+
+The variables are read by NAME; values (key and certificate paths included) are never printed. The
+principal must be a provisioned, granted incarnation whose grant names the public half of the
+signing key. The run posts real renews and evidence for that principal: use a staged incarnation,
+never a production one. The faults it needs (the outage, the refusals, `no_current_beat`) are
+answered by a client-side transport before the request reaches the service; the renew and evidence
+that follow are real. The interleaving runs one fixed sequential ordering on the real service; the
+exhaustive orderings and the overlap inside one renew (no cross-process lock, bh-ktd2x) run
+against the fake only. Re-run no sooner than the next wall-clock second: a fresh seq state rebases
+above `int(now)`, which must exceed the floor an earlier run left.
+
 ## Selective validation
 
 Closure certification and the selective-CI policy are retired. Selective validation is defined
