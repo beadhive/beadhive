@@ -10,6 +10,8 @@ Wire-shape status (bh-bmb4t): hq-service at f69779c serves only GET /authority a
 signed submissions (hive-leases, heartbeats, registrations); those shapes are verified against
 hq-service-derived fixtures (``tests/test_hq_service_contract.py``). Every other route's body or
 response is a PROVISIONAL guess, marked ``PROVISIONAL`` below, until hq-service serves it.
+Session renew (bh-nqr4b) is the exception: it is pinned to the hq-service conformance corpus
+``conformance/session/v1`` (commit 205fd5b, ``tests/test_hq_service_renew_contract.py``).
 
 Verification of signed authority and the restore floor is a separate step (bh-j99c8). It plugs
 in through ``verifier``: authority-bearing reads (authority, eligibility, config) hand the
@@ -52,6 +54,41 @@ _DEFAULT_AUTHORITY = "http://hq"
 Verifier = Callable[[str, Any], Any]
 """``verifier(method, payload) -> verified result`` for an authority-bearing read."""
 
+BeatSource = Callable[[FrameAnchor], Any]
+"""``beat_source(anchor) -> HeartbeatLease`` (or its mapping): the unsigned beat to renew with,
+stamped with the sender's current ``renewTime`` and the next ``seq``."""
+
+#: Refusal codes POST .../renew can return as a definite, non-retryable refusal
+#: (``conformance/session/v1/refusal-codes.json`` plus the HTTP-layer pre-rule codes). Each
+#: surfaces as :class:`HqRefused` with the code unchanged; an unlisted non-retryable code is
+#: refused the same way, so a newer service code is never mistaken for an outage.
+RENEW_REFUSALS = frozenset(
+    {
+        "authority_failed",
+        "beat_not_fresh",
+        "beat_schema_invalid",
+        "beat_signature_invalid",
+        "candidate_expired",
+        "content_type_invalid",
+        "epoch_future",
+        "epoch_stale",
+        "floor_unprovisioned",
+        "grant_retired",
+        "identity_mismatch",
+        "incarnation_unprovisioned",
+        "lease_duration_below_intervals",
+        "lease_duration_out_of_range",
+        "no_current_grant",
+        "path_invalid",
+        "path_principal_mismatch",
+        "request_malformed",
+        "request_not_canonical",
+        "request_size_invalid",
+        "seq_not_advanced",
+        "unprovisioned_principal",
+    }
+)
+
 
 def _seg(value: object) -> str:
     """One path segment, percent-encoded so it can never add or alter a segment."""
@@ -75,9 +112,13 @@ class HqServiceAdapter:
         client: httpx.Client,
         *,
         verifier: Verifier | None = None,
+        beat_source: BeatSource | None = None,
+        signing_key: str | None = None,
     ) -> None:
         self._client = client
         self._verifier = verifier
+        self._beat_source = beat_source
+        self._signing_key = signing_key
 
     # ---- transport ----------------------------------------------------------------------
 
@@ -90,18 +131,25 @@ class HqServiceAdapter:
         deadline: float,
         expected_revision: str | None = None,
         commit_write: bool = False,
+        raw_body: bytes | None = None,
+        envelope_errors: bool = False,
     ) -> tuple[int, Any]:
         """One request. Returns ``(status, json)`` for a 2xx; maps everything else.
 
         ``commit_write`` marks a non-idempotent write whose commit may precede the failure the
         caller sees, so a ``5xx`` raises :class:`HqOutcomeUnknown` rather than ``HqUnavailable``.
+        ``raw_body`` sends exactly those bytes (a signed canonical document must not be
+        re-encoded); ``envelope_errors`` reads a non-2xx body as the ``{"error": {...}}`` envelope.
         """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise HqDeadline("deadline spent before the request")
         headers = {DEADLINE_HEADER: str(max(1, int(remaining * 1000)))}
         kwargs: dict[str, Any] = {"headers": headers, "timeout": remaining}
-        if body is not None:
+        if raw_body is not None:
+            kwargs["content"] = raw_body
+            headers["Content-Type"] = "application/json"
+        elif body is not None:
             kwargs["content"] = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
             headers["Content-Type"] = "application/json"
         write = method != "GET"
@@ -121,9 +169,40 @@ class HqServiceAdapter:
             if write:
                 raise HqOutcomeUnknown(expected_revision, f"connection lost: {exc}") from exc
             raise HqUnavailable(f"hq-service read failed: {exc}") from exc
+        if envelope_errors and not 200 <= response.status_code < 300:
+            self._raise_envelope(response)
         return response.status_code, self._decode(
             response, commit_write=commit_write, expected_revision=expected_revision
         )
+
+    @staticmethod
+    def _raise_envelope(response: httpx.Response) -> None:
+        """Map an ADR bh-hq-pio.5 error envelope onto the port taxonomy; return when the body
+        is not one (the caller's ordinary status mapping then applies).
+
+        - ``deadline_exceeded`` -> :class:`HqDeadline` (the service ran out of our deadline).
+        - ``retryable`` (503 transient, 409 CAS conflict) -> :class:`HqUnavailable`: nothing was
+          committed, or the write is idempotent and the same bytes replay.
+        - 401 -> :class:`HqUnavailable`: the credential/attestation, not the request, failed.
+        - 405 -> :class:`HqUnavailable`: a route defect this client never causes.
+        - any other 400/409/413/415 code -> :class:`HqRefused` carrying the code.
+        """
+        try:
+            payload = response.json()
+        except ValueError:
+            return
+        error = payload.get("error") if isinstance(payload, dict) else None
+        code = error.get("code") if isinstance(error, dict) else None
+        if not isinstance(code, str) or not code:
+            return
+        message = str(error.get("message") or code)
+        status = response.status_code
+        if code == "deadline_exceeded":
+            raise HqDeadline(message)
+        if error.get("retryable") is True or status in (401, 405) or status >= 500:
+            raise HqUnavailable(f"hq-service answered {status} {code}: {message}")
+        if status in (400, 409, 413, 415):
+            raise HqRefused(code, message)
 
     @staticmethod
     def _decode(
@@ -196,13 +275,55 @@ class HqServiceAdapter:
 
     # ---- liveness -----------------------------------------------------------------------
 
-    # PROVISIONAL (bh-hq-e9z not served yet): renew/evidence request bodies and the
-    # `{revision}` response are unverified.
     def renew_session(self, anchor: FrameAnchor, *, deadline: float) -> SessionRoute:
-        path = f"/sessions/{_seg(anchor.principal)}/{_seg(anchor.epoch)}/renew"
-        _, payload = self._call("POST", path, {}, deadline=deadline)
-        return SessionRoute(anchor.principal, anchor.epoch, payload.get("revision"))
+        """Post one frame-signed canonical FrameLease to the session renew route.
 
+        The body is the canonical (sorted, compact, ASCII) signed envelope, byte for byte: the
+        service refuses any other encoding of the same document (``request_not_canonical``).
+        ``renewTime`` and ``seq`` come from the beat source; the service stamps liveness with its
+        own clock. ``replayed`` (the same beat sent again) is a success, like ``accepted``.
+        """
+        from .hq_framelease_contracts import HeartbeatLease
+        from .hq_sql_signatures import SqlSignatureError, canonical, sign_heartbeat
+
+        if self._beat_source is None or not self._signing_key:
+            raise HqUnavailable(
+                "renew_session: no beat source and frame signing key are configured; "
+                "refusing to send an unsigned renewal"
+            )
+        try:
+            lease = HeartbeatLease.model_validate(self._beat_source(anchor))
+        except ValueError as exc:
+            raise HqRefused(
+                "beat_schema_invalid", f"beat source built an invalid lease: {exc}"
+            ) from exc
+        if (lease.frame_id, lease.epoch) != (anchor.frame, anchor.epoch) or (
+            (anchor.holder and lease.holderIdentity != anchor.holder)
+            or (anchor.instance and lease.instance_ref != anchor.instance)
+        ):
+            raise HqRefused("identity_mismatch", "the beat is not for this frame anchor")
+        try:
+            body = canonical(sign_heartbeat(lease, signing_key=self._signing_key))
+        except SqlSignatureError as exc:
+            raise HqRefused("beat_signature_invalid", str(exc)) from exc
+        path = f"/sessions/{_seg(anchor.principal)}/{_seg(anchor.epoch)}/renew"
+        _, payload = self._call(
+            "POST", path, None, deadline=deadline, raw_body=body, envelope_errors=True
+        )
+        outcome = payload.get("outcome") if isinstance(payload, dict) else None
+        until = payload.get("accepted_until") if isinstance(payload, dict) else None
+        if outcome not in ("accepted", "replayed") or type(until) not in (int, float):
+            raise HqUnavailable(f"hq-service returned an unusable renew result: {payload!r}")
+        return SessionRoute(
+            anchor.principal,
+            anchor.epoch,
+            self._revision(payload),
+            accepted_until=until,
+            outcome=outcome,
+        )
+
+    # PROVISIONAL (bh-hq-e9z evidence not wired yet, bh-xtznm): the evidence request body and
+    # `{revision}` response are unverified.
     def publish_evidence(
         self, anchor: FrameAnchor, report: EvidenceReport, *, deadline: float
     ) -> SessionRoute:

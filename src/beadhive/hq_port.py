@@ -90,6 +90,9 @@ class SessionRoute:
     principal: str
     epoch: int
     revision: str | None = None
+    #: Renew only: the server-stamped lease expiry (epoch seconds) and ``accepted`` | ``replayed``.
+    accepted_until: float | None = None
+    outcome: str | None = None
 
 
 @dataclass(frozen=True)
