@@ -415,6 +415,7 @@ class HqServiceAdapter:
             self._revision(payload),
             accepted_until=until,
             outcome=outcome,
+            beat=_sent_beat(body),
         )
 
     def publish_evidence(
@@ -761,6 +762,22 @@ def adapter_from_config(
         seq_store=_renew_seq_store,
         clock=clock,
     )
+
+
+def _sent_beat(body: bytes) -> Any:
+    """The ``HeartbeatLease`` inside the signed renew *body* the service accepted, or ``None``.
+
+    Parsed from the bytes actually sent, never from the beat source: a pending beat that was
+    resent byte for byte may digest an older conformance report than the cache holds now, and
+    the evidence post must match the beat the service holds (bh-a3369)."""
+    from .hq_framelease_contracts import HeartbeatLease
+
+    try:
+        spec = dict(json.loads(body)["spec"])
+        spec.pop("signature", None)
+        return HeartbeatLease.model_validate_json(json.dumps(spec))
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def _renew_seq_store() -> Any:

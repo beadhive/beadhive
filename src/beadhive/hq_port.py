@@ -105,6 +105,10 @@ class SessionRoute:
     #: Evidence only: the canonical sha256 digest of the stored report (``accepted`` | ``replayed``
     #: is in ``outcome``); evidence carries no revision.
     digest: str | None = None
+    #: Renew only (the hq-service adapter): the validated ``HeartbeatLease`` the service accepted,
+    #: parsed from the exact signed bytes sent (a resent pending beat included), so a caller
+    #: can post the evidence of that very beat (bh-a3369). ``None`` where an adapter has none.
+    beat: Any = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
