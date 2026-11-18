@@ -110,7 +110,23 @@ content), so the first republish that adds it does not unbind authority. Integer
 
 Rollback risk, operator note: an older `bh` reading a snapshot that carries `fleet.json` may
 reject the unknown document path. The republish is one-way until every frame runs a version that
-knows `fleet.json`; no additional operator step is required beyond being aware of this.
+knows `fleet.json`.
+
+**Ordering requirement (bh-se4se):** upgrade every frame and host to a `bh` that knows
+`fleet.json` BEFORE the first live HQ republish (any publish or repair against the live store).
+Do not republish while any frame is still on an older build. The older-reader `PATH` pattern in
+`hq_sql_config.py` (`PATH`) is what an older build checks each committed document path against; a
+build whose pattern lacks `fleet.json` is inferred to fail the whole snapshot read closed, not
+just skip the extra document. That behaviour was inferred from the path pattern and **not run**
+against an older build (unverified). Nothing in the release preflight or the frame-upgrade
+ordering enforces this today; it is an operator ordering step. Enforcement is a separate decision,
+not made here.
+
+**CI gap, recorded (bh-se4se):** the Dolt integration tests that prove real-store document
+ordering (`tests/test_hq_sql_config_int.py`, `tests/contracts/test_hq_storage_composition.py`) are
+marked `integration` / `dolt_server` and run in no hosted CI today. Until a gate that CI or the
+release preflight is known to execute runs them, run them by hand on a Dolt-capable host before a
+live republish.
 
 The session flags (`hq.session_via_port`, `hq.session_dual_write`) are HOST-only, never touch
 `fleet.yaml` or `fleet.json`, and roll back independently of this republish; see the
