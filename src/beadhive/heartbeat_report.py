@@ -494,6 +494,11 @@ def conformance_cache_path():
     return bh_home() / heartbeat_conformance.CACHE_RELATIVE_PATH
 
 
+def sql_plane():
+    """The SQL control plane when this host has a frame runtime, else ``None``."""
+    return _sql_plane()
+
+
 def _sql_plane():
     from .hq_control_plane import SqlControlPlane, control_plane
 

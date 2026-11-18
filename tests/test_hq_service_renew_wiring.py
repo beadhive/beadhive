@@ -37,6 +37,12 @@ def fixed_clock(monkeypatch):
     monkeypatch.setattr(hq_service_adapter, "time", types.SimpleNamespace(monotonic=lambda: NOW))
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """The renew seq state lives under the bh home: never the developer's own."""
+    monkeypatch.setenv("BH_HOME", str(tmp_path / "bh-home"))
+
+
 @pytest.fixture
 def key(tmp_path):
     private = Ed25519PrivateKey.generate()
