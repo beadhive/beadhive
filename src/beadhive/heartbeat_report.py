@@ -288,6 +288,37 @@ def _manifest_release_ok(plane, head, manifest_release, measured, desired) -> bo
     return admits(manifest_release, desired, row)
 
 
+REPORT_METHOD = "installed-package-v1"
+
+
+def report_digest(report: dict) -> str:
+    """The canonical ``sha256:`` digest of a conformance report ``{method, checks,
+    free_sessions}``: what a beat signs as ``report_digest`` and the HQ service recomputes."""
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+
+
+def lease_report(lease: HeartbeatLease) -> dict:
+    """The exact report *lease* digested, rebuilt from the lease itself.
+
+    :func:`generate` derives the beat's ``conformance.checks`` and ``free_sessions`` from this
+    very report, so rebuilding it from them is lossless. The digest is re-checked: a lease
+    whose report cannot be rebuilt byte-for-byte raises rather than posting a different
+    report than the one the beat bound."""
+    report = {
+        "method": REPORT_METHOD,
+        "checks": [check.model_dump() for check in lease.conformance.checks],
+        "free_sessions": lease.free_sessions,
+    }
+    if report_digest(report) != lease.report_digest:
+        raise HeartbeatError("beat report cannot be rebuilt from its lease")
+    return report
+
+
 def generate(
     plane,
     *,
@@ -401,7 +432,7 @@ def generate(
             ]
         conformant = all(item["status"] == "pass" for item in checks)
         report = {
-            "method": "installed-package-v1",
+            "method": REPORT_METHOD,
             "checks": checks,
             "free_sessions": free_sessions if conformant else 0,
         }
@@ -430,10 +461,7 @@ def generate(
                     "checks": checks,
                 },
                 "free_sessions": report["free_sessions"],
-                "report_digest": "sha256:"
-                + hashlib.sha256(
-                    json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
-                ).hexdigest(),
+                "report_digest": report_digest(report),
             }
         )
     except HeartbeatError:
@@ -523,12 +551,14 @@ def _session_opener(plane):
     return opener, binding["database"]
 
 
-def session_renewer():
+def session_renewer(select_port=None):
     """The frame's :class:`~beadhive.hq_sql_session.SessionRenewer`, or ``None`` when this host
     has no SQL frame runtime (git HQ keeps its signed beat and has no session row)."""
     from .hq_sql_session import SessionRenewer
 
     plane = _sql_plane()
+    if session_via_port():
+        return _port_renewer(plane, select_port)
     if plane is None:
         return None
     opener, database = _session_opener(plane)
@@ -562,7 +592,7 @@ def session_evidence(plane, route):
         )
 
 
-def publish_session_evidence():
+def publish_session_evidence(select_port=None):
     """One evidence-row UPDATE after a conformance run, when the data switched this frame on.
 
     Returns the route written, or ``None`` when there is no SQL runtime; raises
@@ -570,6 +600,8 @@ def publish_session_evidence():
     from .hq_sql_session import publish_evidence, resolve_route
 
     plane = _sql_plane()
+    if session_via_port():
+        return _publish_evidence_via_port(plane, select_port)
     if plane is None:
         return None
     opener, database = _session_opener(plane)
@@ -586,6 +618,173 @@ def publish_session_evidence():
         return publish_evidence(connection, report, database=database)
     finally:
         connection.close()
+
+
+# ---- session liveness through the HQ port (bh-osom7) ---------------------------------------
+
+SESSION_VIA_PORT_ENV = "BH_HQ_SESSION_VIA_PORT"
+
+
+def session_via_port() -> bool:
+    """Whether session renew and conformance evidence go through the HQ port.
+
+    ``BH_HQ_SESSION_VIA_PORT`` (``1``/``true``/``yes``/``on``; any other set value is off)
+    overrides the host ``hq.session_via_port`` setting, which defaults off. An unreadable
+    host config is off, so the direct SQL path never depends on this read."""
+    raw = os.environ.get(SESSION_VIA_PORT_ENV)
+    if raw:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    try:
+        hq = config.load_host().get("hq")
+        return bool(hq.get("session_via_port")) if hasattr(hq, "get") else False
+    except Exception:  # noqa: BLE001 - off: the unchanged SQL path
+        return False
+
+
+def _port_deadline(plane) -> float:
+    timeout = plane.settings["runtime"]["operation_timeout"] if plane is not None else 30.0
+    return time.monotonic() + timeout
+
+
+def _port_anchor(plane):
+    """This frame's route as a port anchor, from its own SQL runtime principal.
+
+    hq-service serves no per-frame route (design gap G1), so the api route needs this host's
+    SQL frame runtime for the anchor too; without one nothing is sent (``HqUnavailable``)."""
+    from .hq_port import FrameAnchor, HqUnavailable
+
+    if plane is None:
+        raise HqUnavailable("no SQL frame runtime to resolve this frame's route")
+    binding = plane._runtime_authority().load_frame_binding(expected_head=None)
+    return FrameAnchor(
+        principal=binding.principal,
+        frame=binding.frame_id,
+        epoch=binding.epoch,
+        holder=binding.holder_identity,
+        instance=binding.instance_ref,
+        carrier=binding.inbox_table,
+    )
+
+
+def _select_port(select):
+    """``(port, route)``: *select* is the sender's port factory (``hq.route`` -> adapter),
+    injected so this module never imports the adapter that imports it back."""
+    from .hq_port import HqRouteError, configured_route
+
+    if select is None:
+        raise HqRouteError("hq.session_via_port is on but no HQ port selector was supplied")
+    return select(), configured_route(config.load_host())
+
+
+def host_config():
+    """The loaded host config, for the sender's port selector."""
+    return config.load_host()
+
+
+def _unswitched(exc: BaseException) -> BaseException:
+    """The SQL session ``NotSwitched`` behind a port refusal, so a legacy incarnation stays a
+    skip on the SQL route; every other port error is returned unchanged."""
+    from .hq_sql_session import NotSwitched
+
+    cause = exc.__cause__
+    return cause if isinstance(cause, NotSwitched) else exc
+
+
+def _port_renewer(plane, select):
+    """A renewer whose every tick is one ``HqPort.renew_session`` on the ``hq.route`` adapter.
+
+    ``None`` only where the direct path is also ``None`` (route ``sql``, no frame runtime).
+    On the api route a missing runtime is a failed renewal: the tick raises ``HqUnavailable``
+    and nothing is sent. No tick falls back to the SQL session path."""
+    from .hq_sql_session import SessionRenewer, SessionRoute, evidence_table, session_table
+
+    port, route = _select_port(select)
+    if plane is None and route == "sql":
+        return None
+
+    class PortRenewer(SessionRenewer):
+        def __init__(self):
+            super().__init__(lambda: None)
+            self._anchor = None
+
+        def tick(self):
+            try:
+                if self._anchor is None:
+                    self._anchor = _port_anchor(plane)
+                result = port.renew_session(self._anchor, deadline=_port_deadline(plane))
+            except BaseException as exc:
+                self._anchor = self.route = None
+                unwrapped = _unswitched(exc)
+                if unwrapped is exc:
+                    raise
+                raise unwrapped from exc
+            self.route = SessionRoute(
+                result.principal,
+                result.epoch,
+                session_table(result.principal, result.epoch),
+                evidence_table(result.principal, result.epoch),
+            )
+            self.renewals += 1
+            return self.route
+
+    return PortRenewer()
+
+
+def port_evidence(plane, anchor, route: str):
+    """The :class:`~beadhive.hq_port.EvidenceReport` to post on *route* for *anchor*.
+
+    api: the exact ``{method, checks, free_sessions}`` report the beat digested, rebuilt from
+    the same cached-conformance lease (:func:`lease_report`, digest re-checked). sql: the
+    evidence-row fields. A frame that cannot build a beat has nothing to post on api
+    (``HqUnavailable``); on sql the row says ``unavailable``, as the direct path does."""
+    from .hq_port import EvidenceReport, HqUnavailable
+
+    try:
+        lease = generate(plane, cached=True)
+        if route == "api":
+            return EvidenceReport(lease_report(lease))
+        release = lease.release.model_dump()
+        return EvidenceReport(
+            {
+                "epoch": anchor.epoch,
+                "release_id": str(release["id"]),
+                "release_digest": str(release["digest"]),
+                "profile": lease.conformance.profile,
+                "status": lease.conformance.status,
+                "report_digest": lease.report_digest,
+            }
+        )
+    except HeartbeatError as exc:
+        if route == "api":
+            raise HqUnavailable(f"no beat report to post ({refusal_category(exc)})") from None
+        measured = installed_release()
+        return EvidenceReport(
+            {
+                "epoch": anchor.epoch,
+                "release_id": str(measured["id"]),
+                "release_digest": str(measured["digest"]),
+                "profile": "",
+                "status": "unavailable",
+                "report_digest": "",
+            }
+        )
+
+
+def _publish_evidence_via_port(plane, select):
+    """:func:`publish_session_evidence` through ``HqPort.publish_evidence``; any refusal
+    (``HqNoCurrentBeat`` included) is raised, never retried or re-routed."""
+    port, route = _select_port(select)
+    if plane is None and route == "sql":
+        return None
+    try:
+        anchor = _port_anchor(plane)
+        report = port_evidence(plane, anchor, route)
+        return port.publish_evidence(anchor, report, deadline=_port_deadline(plane))
+    except Exception as exc:
+        unwrapped = _unswitched(exc)
+        if unwrapped is exc:
+            raise
+        raise unwrapped from exc
 
 
 def send_cached_beat(*, free_sessions: int = 0) -> str:

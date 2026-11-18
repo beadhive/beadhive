@@ -2813,6 +2813,12 @@
           "title": "Route",
           "type": "string"
         },
+        "session_via_port": {
+          "default": false,
+          "description": "HOST-only. Route this frame's session renew and conformance-evidence post through the HQ port, on the adapter `hq.route` selects, instead of the direct SQL session calls. Off (default) keeps the direct SQL path unchanged. `BH_HQ_SESSION_VIA_PORT` (`1`/`true`) overrides it for one process. A port renew that cannot be sent is a failed renewal, never a silent SQL fallback.",
+          "title": "Session Via Port",
+          "type": "boolean"
+        },
         "sql": {
           "$ref": "#/$defs/HqSqlConfig"
         }
