@@ -435,8 +435,11 @@ def _publish_evidence() -> None:
     from .heartbeat_report import publish_session_evidence
     from .hq_sql_session import NotSwitched
 
+    kwargs = _port_kwargs()
+    if kwargs:
+        kwargs["renew_first"] = True  # port path only: an accepted renew before the evidence
     try:
-        publish_session_evidence(**_port_kwargs())
+        publish_session_evidence(**kwargs)
     except NotSwitched:
         return
 

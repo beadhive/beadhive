@@ -1877,6 +1877,16 @@ class HqConfig(_Section):
             "failed renewal, never a silent SQL fallback."
         ),
     )
+    session_dual_write: bool = Field(
+        False,
+        description=(
+            "HOST-only. With `hq.session_via_port` on and `hq.route: api`, also run the direct "
+            "SQL session-row and evidence-row writes after the HQ service accepted its write. "
+            "Off (default) leaves the port as the only writer. Do not enable until the SQL and "
+            "service liveness floors are known not to be shared (bh-ubpoc). "
+            "`BH_HQ_SESSION_DUAL_WRITE` (`1`/`true`) overrides it for one process."
+        ),
+    )
     api: HqApiConfig = Field(default_factory=HqApiConfig)
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
     release_catalog: HqReleaseCatalogConfig = Field(default_factory=HqReleaseCatalogConfig)
