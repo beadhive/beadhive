@@ -384,6 +384,22 @@ def _beat(free_sessions: int) -> str:
     return send_cached_beat(free_sessions=free_sessions)
 
 
+def _select_port():
+    """The HQ port ``hq.route`` selects (only asked for when ``hq.session_via_port`` is on)."""
+    from .heartbeat_report import host_config
+    from .hq_service_adapter import select_hq_port
+
+    return select_hq_port(host_config())
+
+
+def _port_kwargs() -> dict:
+    """The port selector for the session calls, only when ``hq.session_via_port`` is on; flag
+    off, the calls are made exactly as before."""
+    from .heartbeat_report import session_via_port
+
+    return {"select_port": _select_port} if session_via_port() else {}
+
+
 def _renew(*, loop: bool, interval: float) -> int:
     """One renewal (or ``--loop``); a frame whose data has not switched is a no-op."""
     import threading
@@ -391,7 +407,7 @@ def _renew(*, loop: bool, interval: float) -> int:
     from .heartbeat_report import session_renewer
     from .hq_sql_session import NotSwitched
 
-    renewer = session_renewer()
+    renewer = session_renewer(**_port_kwargs())
     if renewer is None:
         print("session renewal skipped: no dolt-server frame runtime", file=sys.stderr)
         return 0
@@ -420,7 +436,7 @@ def _publish_evidence() -> None:
     from .hq_sql_session import NotSwitched
 
     try:
-        publish_session_evidence()
+        publish_session_evidence(**_port_kwargs())
     except NotSwitched:
         return
 
