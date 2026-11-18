@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -130,3 +131,38 @@ def test_binding_read_failure_keeps_exact_head_notices(monkeypatch, capsys):
     )
     err = capsys.readouterr().err
     assert "unbind HQ authority" in err and "are fenced" in err
+
+
+def test_first_republish_notice_judges_the_documents_with_fleet_json(monkeypatch, capsys):
+    """bh-vrqne: the advisory notice sees the committed documents (fleet.json included) and
+    agrees with config_head_tolerated for a first republish (H0 has no fleet.json)."""
+    from beadhive import hq_authority_fence_notice as notice
+    from beadhive.hq_document_validation import FLEET_JSON_PATH
+    from beadhive.hq_hive_policy import config_head_tolerated
+
+    store = _binding_store(monkeypatch)
+    # the shared tolerance fixtures are not schema-valid hosts; schema validation is not under test
+    monkeypatch.setattr("beadhive.hq_sql_config._validate", lambda documents: None)
+    seen = []
+    real = notice.announce_before
+    monkeypatch.setattr(
+        notice,
+        "announce_before",
+        lambda probe, head, documents=None: (
+            seen.append((probe, documents)),
+            real(probe, head, documents),
+        )[1],
+    )
+    store.publish_snapshot(tolerance.documents(tolerance.FLEET), expected_revision=tolerance.H0)
+    probe, documents = seen[0]
+    assert FLEET_JSON_PATH in [d.path for d in documents]
+    assert all(d.path != FLEET_JSON_PATH for d in probe.bound_snapshot.documents)
+    direct = config_head_tolerated(
+        probe.bound_snapshot,
+        replace(probe.bound_snapshot, documents=tuple(documents)),
+        probe.policies,
+        valid_until=probe.expires_at,
+        now=min(probe.bound_snapshot.fetched_at, probe.expires_at - 1),
+    )
+    assert direct is True
+    assert capsys.readouterr().err == ""  # and the notice agrees: nothing announced

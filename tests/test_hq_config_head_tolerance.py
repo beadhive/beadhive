@@ -244,3 +244,49 @@ def test_committed_snapshot_at_is_floor_free_pinned_and_memoized(monkeypatch, tm
     )
     with pytest.raises(hq_sql_config.SqlConfigError, match="pin"):
         store.committed_snapshot_at(object(), H1)
+
+
+# --- bh-vrqne: fleet.json is a pure projection of fleet.yaml and never fences by itself ---------
+
+
+def _with_json(snapshot):
+    from beadhive.hq_document_validation import with_fleet_json
+
+    return replace(snapshot, documents=with_fleet_json(snapshot.documents))
+
+
+def test_unrelated_fleet_edit_is_tolerated_with_fleet_json_on_both_heads():
+    bound = _with_json(BOUND)
+    current = _with_json(_snapshot(H1, fleet=FLEET + "work:\n  max_commits: 9\n"))
+    assert bound.documents != BOUND.documents
+    assert [d.content for d in bound.documents if d.path == "fleet.json"] != [
+        d.content for d in current.documents if d.path == "fleet.json"
+    ]
+    assert config_head_tolerated(bound, current, SIGNED, valid_until=EXPIRES, now=NOW)
+
+
+def test_first_republish_adding_fleet_json_is_tolerated():
+    current = _with_json(_snapshot(H1))
+    assert any(d.path == "fleet.json" for d in current.documents)
+    assert _tolerated(current)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"fleet": FLEET.replace("max_sessions: 2", "max_sessions: 3")},
+        {"fleet": FLEET + "hq:\n  default_authority_mode: trusted\n"},
+    ],
+    ids=["frame_policy", "default-authority-mode"],
+)
+def test_frame_relevant_fleet_edit_still_fences_with_fleet_json_on_both_heads(change):
+    bound = _with_json(BOUND)
+    assert not config_head_tolerated(
+        bound, _with_json(_snapshot(H1, **change)), SIGNED, valid_until=EXPIRES, now=NOW
+    )
+
+
+def test_differing_non_fleet_document_still_fences_with_fleet_json_present():
+    bound = _with_json(BOUND)
+    current = _with_json(_snapshot(H1, host=HOST + "label: changed\n"))
+    assert not config_head_tolerated(bound, current, SIGNED, valid_until=EXPIRES, now=NOW)

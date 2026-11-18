@@ -208,6 +208,9 @@ def project_latest_to_git(documents) -> tuple[FleetConfigDocument, ...]:
                 item.path, output.getvalue() if item.path == "fleet.yaml" else item.content
             )
             for item in source
+            # fleet.json is an SQL-only projection (bh-vrqne); the Git store does not carry it,
+            # and the flipped fleet.yaml would make it stale.
+            if item.path != "fleet.json"
         )
         validate_documents(projected)
         if identity_in_documents(source, required=True) != identity_in_documents(

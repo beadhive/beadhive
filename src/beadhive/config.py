@@ -173,6 +173,42 @@ def disk_worktrees_root(cfg=None) -> Path:
     return _config_paths.disk_worktrees_root(_facade(), cfg)
 
 
+def host_platform() -> str:
+    return _config_paths.host_platform()
+
+
+def macos_purges_temp(cfg=None) -> bool:
+    return _config_paths.macos_purges_temp(_facade(), cfg)
+
+
+def macos_worktrees_root(cfg=None) -> Path:
+    return _config_paths.macos_worktrees_root(_facade(), cfg)
+
+
+def under_os_temp(path: Path) -> bool:
+    return _config_paths.under_os_temp(path)
+
+
+def worktrees_root_needs_grant(cfg=None) -> bool:
+    return _config_paths.worktrees_root_needs_grant(_facade(), cfg)
+
+
+def legacy_temp_root(cfg=None) -> Path | None:
+    return _config_paths.legacy_temp_root(_facade(), cfg)
+
+
+def worktrees_roots(cfg=None) -> list[Path]:
+    return _config_paths.worktrees_roots(_facade(), cfg)
+
+
+def root_containing(path, cfg=None) -> Path | None:
+    return _config_paths.root_containing(_facade(), path, cfg)
+
+
+def legacy_temp_warning(cfg=None) -> str | None:
+    return _config_paths.legacy_temp_warning(_facade(), cfg)
+
+
 def worktrees_root_refusal(cfg=None) -> str | None:
     return _config_paths.worktrees_root_refusal(_facade(), cfg)
 

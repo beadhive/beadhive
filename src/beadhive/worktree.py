@@ -248,8 +248,14 @@ def _bead_id_from_branch(branch: str) -> str | None:
 
 def wt_dir(entry, leaf: str) -> Path:
     """<root>/<provider>/<org>/<repo>/<leaf> — mirrors registry.hive_dir under the shadow root."""
-    root = config.worktrees_root()
-    return root / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"]) / leaf
+    rel = Path(str(entry["provider"]), str(entry["org"]), str(entry["repo"]), leaf)
+    roots = config.worktrees_roots()
+    # An EXISTING worktree is found in whichever root holds it (the primary first); a new one is
+    # always created under the primary root (bh-uwlsw: macOS keeps old $TMPDIR worktrees reachable).
+    for root in roots:
+        if (root / rel).exists():
+            return root / rel
+    return roots[0] / rel
 
 
 def _resolve_entry(cfg, hive):
@@ -268,13 +274,14 @@ def _resolve_entry(cfg, hive):
 
 def _entry_for_path(cfg, path: Path):
     """Reverse a worktree path back to its hive entry via the triplet segments under root."""
-    root = config.worktrees_root()
-    try:
-        rel = path.resolve().relative_to(root.resolve())
-    except (ValueError, OSError):
-        typer.echo(f"✗ {path} is not under the managed worktree root {root}", err=True)
-        raise typer.Exit(1) from None
-    parts = rel.parts
+    root = config.root_containing(path)
+    if root is None:
+        typer.echo(
+            f"✗ {path} is not under the managed worktree root {config.worktrees_root()}",
+            err=True,
+        )
+        raise typer.Exit(1)
+    parts = path.resolve().relative_to(root).parts
     if len(parts) < 4:
         typer.echo(f"✗ {path} is not a <provider>/<org>/<repo>/<leaf> worktree", err=True)
         raise typer.Exit(1)
@@ -805,9 +812,9 @@ def cwd_identity(cfg=None, cwd=None):
       - neither → ``(None, '')``.
     """
     here = Path(cwd) if cwd else Path.cwd()
-    root = config.worktrees_root(cfg)
+    root = config.root_containing(here, cfg)
     try:
-        parts = here.resolve().relative_to(root.resolve()).parts
+        parts = here.resolve().relative_to(root).parts if root else ()
     except (ValueError, OSError):
         parts = ()
     if len(parts) >= 4:
@@ -825,14 +832,16 @@ def cwd_worktree_dir(cfg=None, cwd=None) -> Path | None:
     can be located even when ``cwd`` is nested below the worktree root. ``None`` for the main clone
     (under $GIT_WORKSPACE, not the shadow root) and anywhere outside the shadow root."""
     here = Path(cwd) if cwd else Path.cwd()
-    root = config.worktrees_root(cfg)
+    root = config.root_containing(here, cfg)
+    if root is None:
+        return None
     try:
-        parts = here.resolve().relative_to(root.resolve()).parts
+        parts = here.resolve().relative_to(root).parts
     except (ValueError, OSError):
         return None
     if len(parts) < 4:
         return None
-    return root.resolve().joinpath(*parts[:4])
+    return root.joinpath(*parts[:4])
 
 
 def _commits_behind(main: Path, branch: str, base: str) -> int:
@@ -924,12 +933,33 @@ def _refuse_if_codex_unreachable(cfg, entry, main: Path, target: Path) -> None:
     typer.echo(
         f"✗ worktree root {target} is outside Codex's default sandbox (cwd + $TMPDIR) — "
         "this session cannot write there.\n"
-        "  Fix one: set worktrees.ephemeral: true (OS temp, always reachable) · "
-        "move worktrees.path under $TMPDIR · "
+        "  Fix one: install the grant with `bh hive init --codex` · "
+        "move worktrees.path under $TMPDIR (macOS purges it) · "
         f"relaunch codex with --add-dir {wt_root}",
         err=True,
     )
     raise typer.Exit(1)
+
+
+def _warn_legacy_temp_root(cfg) -> None:
+    """Loud notice on claim/ensure while macOS still has worktrees under the purged $TMPDIR."""
+    message = config.legacy_temp_warning(cfg)
+    if message:
+        typer.echo(f"⚠ {message}", err=True)
+
+
+def _repair_if_gutted(main: Path, target: Path, branch: str) -> None:
+    """Re-attach path: a dir that lost its ``.git`` file (macOS $TMPDIR purge, bh-uwlsw) is
+    repaired when provably safe, else refused with the reason — never silently reused."""
+    from . import worktree_repair
+
+    if not worktree_repair.is_gutted(target):
+        return
+    result = worktree_repair.repair_gutted(main, target, branch)
+    if not result.ok:
+        typer.echo(f"✗ {result.reason}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ {result.reason}", err=True)
 
 
 def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
@@ -952,7 +982,9 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
         typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
         raise typer.Exit(1)
     _refuse_if_codex_unreachable(cfg, entry, main, target)
+    _warn_legacy_temp_root(cfg)
     if target.exists():
+        _repair_if_gutted(main, target, br)
         if bead:  # only a single-bead child branch tracks a refreshable container tip
             _repoint_if_stale(cfg, entry, main, br, target, base_bead or bead)
         warn_init_rules_drift(cfg, entry, target)

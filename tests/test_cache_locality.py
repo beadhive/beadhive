@@ -96,6 +96,7 @@ def test_configured_ephemeral_uses_authoritative_managed_root_class(tmp_path) ->
         load=lambda: cfg,
         worktrees_root=lambda value: root,
         worktrees_ephemeral=lambda value: False,
+        root_containing=lambda path, value: None,
     )
     with patch.object(cache_locality, "config", configured):
         assert cache_locality.configured_ephemeral(checkout) is False

@@ -11,7 +11,7 @@ triplet path:
 
 | `ephemeral` | root | grants | lifecycle |
 |---|---|---|---|
-| `true` (default) | `<os-temp>/bh-worktrees` (disk-backed temp only — see [RAM-backed roots](#ram-backed-roots-tmpfs--ramfs)) | none needed (temp is sandbox-writable) | session-scoped, disposable |
+| `true` (default) | `<os-temp>/bh-worktrees` (disk-backed temp only — see [RAM-backed roots](#ram-backed-roots-tmpfs--ramfs)); on macOS the disk root instead — see [below](#macos-tmpdir-is-purged-bh-uwlsw) | none needed **only while the effective root is under the OS temp dir**; otherwise `bh hive init --claude` / `--codex` grants apply | session-scoped, disposable |
 | `false` | `worktrees.path` (default `~/.beadhive/worktrees`) | `bh hive init --claude` writes per-hive grants | persistent |
 
 Default-ephemeral keeps adoption zero-config: agents create a worktree, use it, and dispose
@@ -25,6 +25,69 @@ bh config set worktrees.ephemeral false --scope host
 ```
 
 `$BH_WORKTREES` (legacy alias `WS_WORKTREES`) overrides the root in either mode (advanced / testing).
+
+## macOS: `$TMPDIR` is purged (bh-uwlsw)
+
+> **Caveat: hosts that already have worktrees under `$TMPDIR`.** On macOS every NEW worktree
+> is created outside `$TMPDIR`, but worktrees that already live in `<os-temp>/bh-worktrees` stay
+> exposed to the purge until you drain them. bh keeps finding them (it never moves or deletes a
+> worktree for you) and warns loudly in `bh doctor` and on every `claim`/`ensure` until the
+> temp root holds none. Drain it by finishing each bead there or running
+> `bh work abandon <id> --rm`; empty leftover org/host directories do not count as "in use".
+
+macOS periodic cleanup (dirhelper) deletes files under `$TMPDIR` (`/var/folders/.../T`) that
+have not been accessed for about three days. A long-lived epic worktree there once lost its
+`.git` file and 138 tracked files, and `git worktree list` showed it `prunable`. So on macOS the
+**ephemeral default root is not `<os-temp>/bh-worktrees`**: it is `worktrees.macos_root` when
+set, else the disk root (`worktrees.path`, default `~/.beadhive/worktrees`). Setting
+`worktrees.ephemeral` therefore cannot send a seat back under `$TMPDIR` (see bh-suick).
+
+- `worktrees.macos_root` (host-owned, default empty) overrides the macOS default root.
+- `worktrees.macos_use_temp: true` (host-owned) opts back into `<os-temp>/bh-worktrees`; then
+  the temp root is the primary root and no migration warning is shown.
+- `$BH_WORKTREES` and `worktrees.ephemeral: false` + `worktrees.path` behave as before.
+
+**Sandbox grants follow the effective root, not `worktrees.ephemeral`.** Because the macOS
+ephemeral default is the disk root (outside `$TMPDIR`), a sandboxed Claude/Codex seat cannot
+write there without a grant. `bh hive init --claude` / `--codex` (and `--global`), `bh hive
+ready`'s `codex sandbox` line and `bh doctor`'s stale-grant warning all key off whether the
+resolved root is under the OS temp dir (`worktrees_root_needs_grant()`), so the macOS default
+gets a grant installed and checked. The grant covers the primary root only: a legacy in-use
+`$TMPDIR` root is under the OS temp dir, which the sandbox already makes writable, so it needs
+no grant of its own.
+
+A leftover directory that is not a registered worktree (a stray leaf under the legacy temp
+root) also keeps the legacy-root warning on; remove it by hand to clear the warning.
+
+**New vs existing resolution.** Creating a worktree always uses the primary root
+(`worktrees_root()`: disk root on macOS). Locating an existing one searches the primary root
+first, then the in-use legacy temp root (`worktrees_roots()`), so claim, resume, ensure, show,
+abandon, merge, prune/reclaim, doctor, `bh worktree list`/`status`, epic container and seat
+worktrees, and cwd-to-hive reverse mapping all still find a bead that lives under `$TMPDIR`.
+The live-worktree cap counts both roots. `bh worktree status` flags rows outside the primary
+root as legacy.
+
+**Gutted-worktree repair.** When `bh work claim` / `resume` re-attaches a directory that has lost
+its `.git` file, bh repairs it instead of failing, but only when it can prove that is safe:
+the directory is still registered in the main clone (`worktrees/<name>/gitdir` names it), HEAD
+is on the expected bead branch, no merge/rebase/cherry-pick is in progress, the index has no
+staged changes, and no tracked file on disk differs from HEAD. Then it re-creates the `.git`
+file, rebuilds the index if it is missing, and restores only the *missing* tracked files
+(never overwriting an existing file; untracked files are left alone). Otherwise it refuses with
+the reason and changes nothing.
+
+Known limitations of repair:
+
+- **Deletions are not detected.** Missing tracked files are restored, so a deliberate
+  uncommitted `rm` of a tracked file made while the `.git` file is also gone cannot be told
+  from a purge and is resurrected (an unstaged deletion next to a modified file is refused,
+  because of the modified file).
+- **Sparse-checkout and submodule worktrees are refused** (`core.sparseCheckout`, an
+  `info/sparse-checkout` file or skip-worktree entries; `.gitmodules` or gitlink entries in
+  HEAD). An index rebuilt from HEAD would drop skip-worktree bits and materialise files outside
+  the cone. Repair these by hand.
+- **Failure rolls back.** If restoring files fails after the `.git` file was written, repair
+  removes the `.git` file (and any index it created) and refuses, leaving the directory as found.
 
 ## RAM-backed roots (tmpfs / ramfs)
 
@@ -979,9 +1042,10 @@ is **additive only**:
 
 ## Claude Code sandbox (persistent mode)
 
-This applies only when `worktrees.ephemeral: false`. Ephemeral worktrees live in the OS temp
-dir, which the sandbox already makes writable — no grant is involved, and `bh hive init
---claude` says so and writes nothing.
+This applies whenever the effective worktree root is outside the OS temp dir (`worktrees.ephemeral:
+false`, a RAM-backed temp fallback, or the macOS default). A root under the OS temp dir is
+already sandbox-writable — no grant is involved, and `bh hive init --claude` says so and writes
+nothing.
 
 In persistent mode the shadow root lives under `$HOME`, outside any project. Claude Code's
 optional sandbox makes the project cwd and the session tmpdir writable but **not** `$HOME` —
@@ -1030,8 +1094,9 @@ profile / `config.toml`, or `--add-dir`). Codex's own **default** `workspace-wri
 (`docs/spikes/bh-a7so.8-codex-empirical.md`, Evidence 8:
 `sandbox: workspace-write [workdir, /tmp, $TMPDIR]`).
 
-That means a **persistent** worktree root (`worktrees.ephemeral: false`, e.g. under
-`~/.beadhive/worktrees`) sits outside a Codex sub-agent's own default sandbox even though
+That means a worktree root outside the OS temp dir (`worktrees.ephemeral: false`, the macOS
+default, or a RAM-backed temp fallback, e.g. under `~/.beadhive/worktrees`) sits outside a
+Codex sub-agent's own default sandbox even though
 `bh work assign`/`claim` (run by a human, an orchestrator, or Codex itself) can provision it
 just fine — the worktree exists, the bead looks claimed, and then the same session's own
 `apply_patch`/file-edit tool calls can't write into it.

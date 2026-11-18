@@ -222,6 +222,8 @@ def test_codex_installer_gated_by_flag_and_recorded(world, synced, monkeypatch):
     monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
     ctx = _ctx(world, target, codex=True)
     ctx.cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wts")}
+    # the grant is only written for a root OUTSIDE the OS temp dir (bh-uwlsw); tmp_path is under it
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(world.tmp / "os-temp"))
 
     plan = onboard.run_onboard(ctx)
 

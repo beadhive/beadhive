@@ -100,6 +100,18 @@ does not assert a cross-database atomic commit. A rollback cannot authorize
 work from stale observations: current protected policy and a fresh signed
 heartbeat still govern frame eligibility.
 
+## fleet.json projection (bh-vrqne)
+
+Every publish and repair now also commits `fleet.json`, the canonical JSON projection of
+`fleet.yaml`, beside it. It is derived, never hand-edited, and ignored by the signed-authority
+head-tolerance check (the `fleet.yaml`-derived policy and default checks already cover its
+content), so the first republish that adds it does not unbind authority. Integers beyond
+2^53 - 1 in `fleet.yaml` are refused when projecting (a float64 reader would round them).
+
+Rollback risk, operator note: an older `bh` reading a snapshot that carries `fleet.json` may
+reject the unknown document path. The republish is one-way until every frame runs a version that
+knows `fleet.json`; no additional operator step is required beyond being aware of this.
+
 ## Readiness and deprecation assessment
 
 The runbook is an operator procedure, not a record that a deployment occurred. See the

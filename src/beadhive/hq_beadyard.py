@@ -23,6 +23,7 @@ from pathlib import Path
 from . import config, hq_authority_enforce
 from .beadyard_identity import DOCUMENT_PATH, BeadyardIdentityError, parse_document, parse_id
 from .beadyard_identity_file import create_identity, read_identity
+from .hq_document_validation import with_fleet_json
 from .modules.config.domain.ports import FleetConfigDocument
 
 
@@ -779,7 +780,11 @@ def adopt_legacy(
             raise BeadyardOperationError("HQ identity adoption original revision changed")
         owner = create_identity(pending)
         content = (pending / DOCUMENT_PATH).read_text()
-        documents = snapshot.documents + (FleetConfigDocument(DOCUMENT_PATH, content),)
+        # The SQL store publishes fleet.json beside fleet.yaml (bh-vrqne); the durable intent
+        # digest must already cover it or the witness of this very publication would not match.
+        documents = with_fleet_json(
+            snapshot.documents + (FleetConfigDocument(DOCUMENT_PATH, content),)
+        )
         intent = _start_sql_adoption(
             pending, expected_revision=expected_revision, documents=documents
         )

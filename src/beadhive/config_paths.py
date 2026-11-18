@@ -154,11 +154,40 @@ def _in_use(root: Path) -> bool:
         return False
 
 
+MACOS_USE_TEMP_KEY = "worktrees.macos_use_temp"
+MACOS_ROOT_KEY = "worktrees.macos_root"
+
+
+def host_platform() -> str:
+    """``sys.platform``; the single seam tests inject to exercise the macOS branch on Linux."""
+    return sys.platform
+
+
+def macos_purges_temp(api, cfg=None) -> bool:
+    """True on macOS unless ``worktrees.macos_use_temp`` opts back in. macOS periodic cleanup
+    (dirhelper) purges files under ``$TMPDIR`` not accessed for ~3 days, which gutted a
+    long-lived epic worktree (bh-uwlsw), so the temp dir is not a safe default root there."""
+    if api.host_platform() != "darwin":
+        return False
+    return not bool(api.worktrees_cfg(cfg).get("macos_use_temp", False))
+
+
+def macos_worktrees_root(api, cfg=None) -> Path:
+    """Default root on macOS: ``worktrees.macos_root`` when set, else the disk root
+    (``worktrees.path`` or ``<home>/worktrees``) -- never under ``$TMPDIR``."""
+    value = api.worktrees_cfg(cfg).get("macos_root")
+    if value:
+        return Path(str(value)).expanduser()
+    return api.disk_worktrees_root(cfg)
+
+
 def worktrees_root(api, cfg=None) -> Path:
     """Resolve the shadow worktree root. ``$BH_WORKTREES`` wins; persistent mode uses the disk
     root. Ephemeral mode (default) prefers ``<os-temp>/bh-worktrees`` but that is RAM on many
     Linux hosts, so unless ``worktrees.allow_tmpfs`` opts in it falls back to the disk-backed
-    root (bh-xzsdf). Migration: a RAM-backed temp root that ALREADY holds worktrees keeps
+    root (bh-xzsdf).
+    On macOS the default is the disk root instead (bh-uwlsw).
+    Migration: a RAM-backed temp root that ALREADY holds worktrees keeps
     resolving (so in-flight beads stay reachable); :func:`worktrees_root_refusal` then blocks
     creating anything new there until it drains or the host opts in. An *explicitly* RAM-backed
     root (env / path) is likewise never silently moved."""
@@ -167,6 +196,11 @@ def worktrees_root(api, cfg=None) -> Path:
         return Path(value).expanduser()
     if api.worktrees_ephemeral(cfg):
         temp_root = Path(tempfile.gettempdir()) / "bh-worktrees"
+        # macOS purges $TMPDIR, so every NEW worktree goes outside it (bh-uwlsw), even when the
+        # temp root still holds old ones: those stay reachable through ``worktrees_roots`` (a
+        # lookup-order change) and are never moved automatically.
+        if api.macos_purges_temp(cfg):
+            return api.macos_worktrees_root(cfg)
         if (
             api.worktrees_allow_tmpfs(cfg)
             or not api.is_memory_backed(temp_root)
@@ -174,6 +208,87 @@ def worktrees_root(api, cfg=None) -> Path:
         ):
             return temp_root
     return api.disk_worktrees_root(cfg)
+
+
+def under_os_temp(path: Path) -> bool:
+    """True when ``path`` is under the OS temp dir (the always-sandbox-writable ``gettempdir``)."""
+    try:
+        Path(path).expanduser().resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def worktrees_root_needs_grant(api, cfg=None) -> bool:
+    """True when the EFFECTIVE primary root is outside the OS temp dir, so a sandboxed seat
+    needs an explicit write grant for it. Keyed off where the root really resolves, never off
+    ``worktrees.ephemeral``: on macOS (bh-uwlsw) and on Linux hosts whose temp dir is RAM-backed
+    the ephemeral default resolves to the disk root. A legacy in-use ``$TMPDIR`` root needs no
+    grant of its own: it is under the OS temp dir, which sandboxes already make writable."""
+    return not api.under_os_temp(api.worktrees_root(cfg))
+
+
+def _holds_worktrees(root: Path) -> bool:
+    """True when ``root`` holds at least one ``<provider>/<org>/<repo>/<leaf>`` directory.
+    Empty provider/org/repo directories left behind after reclaim do not count."""
+    try:
+        return root.is_dir() and any(p.is_dir() for p in root.glob("*/*/*/*"))
+    except OSError:
+        return False
+
+
+def legacy_temp_root(api, cfg=None) -> Path | None:
+    """The purge-exposed ``<os-temp>/bh-worktrees`` when macOS no longer defaults there but it
+    still holds worktrees (bh-uwlsw); else ``None``. Existing beads in it keep resolving, but
+    nothing new is created there."""
+    if not api.macos_purges_temp(cfg) or api._env("worktrees"):
+        return None
+    temp_root = Path(tempfile.gettempdir()) / "bh-worktrees"
+    if temp_root == api.worktrees_root(cfg) or not _holds_worktrees(temp_root):
+        return None
+    return temp_root
+
+
+def worktrees_roots(api, cfg=None) -> list[Path]:
+    """Every root an EXISTING worktree may live under: the primary ``worktrees_root`` first,
+    then the in-use legacy temp root (macOS only). Look existing paths up through this; create
+    new ones under ``worktrees_root`` only."""
+    roots = [api.worktrees_root(cfg)]
+    legacy = api.legacy_temp_root(cfg)
+    if legacy is not None:
+        roots.append(legacy)
+    return roots
+
+
+def root_containing(api, path, cfg=None) -> Path | None:
+    """The (resolved) worktree root holding ``path``, or ``None`` when it is under none."""
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return None
+    for root in api.worktrees_roots(cfg):
+        try:
+            base = root.resolve()
+            resolved.relative_to(base)
+        except (ValueError, OSError):
+            continue
+        return base
+    return None
+
+
+def legacy_temp_warning(api, cfg=None) -> str | None:
+    """Loud text when macOS still has worktrees under the purge-exposed temp root, else ``None``."""
+    legacy = api.legacy_temp_root(cfg)
+    if legacy is None:
+        return None
+    return (
+        f"macOS purges $TMPDIR and {legacy} still holds worktrees: they can lose their .git "
+        "file and tracked files without warning (bh-uwlsw). New worktrees are created under "
+        f"{api.worktrees_root(cfg)}. Drain the old ones: finish or `bh work abandon <id> --rm` "
+        "each bead there (bh never moves or deletes them for you); once none remain this "
+        "warning stops. A stray directory that is not a worktree also counts: remove it by "
+        "hand to clear the warning."
+    )
 
 
 def worktrees_root_refusal(api, cfg=None) -> str | None:

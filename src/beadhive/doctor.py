@@ -323,6 +323,12 @@ def _section_provenance():
 # ---- worktrees section (shared by `doctor` and `config show`) ---------------
 
 
+def _legacy_temp_root_warnings(cfg) -> list[str]:
+    """macOS still has worktrees under the purge-exposed ``$TMPDIR`` root (bh-uwlsw)."""
+    message = config.legacy_temp_warning(cfg)
+    return [message] if message else []
+
+
 def _data_worktrees(cfg) -> dict:
     """Worktrees section: effective bead/session branches, root, ephemerality, init-rule count."""
     w = config.worktrees_cfg(cfg)
@@ -342,7 +348,8 @@ def _data_worktrees(cfg) -> dict:
 def _render_worktrees(d: dict) -> None:
     typer.echo("\n# Worktrees")
     typer.echo(f"  ephemeral: {str(d['ephemeral']).lower()}")
-    note = "  (OS temp, session-scoped)" if d["ephemeral"] else "  (persistent; sandbox grants on)"
+    in_temp = config.under_os_temp(Path(d["root"]))
+    note = "  (OS temp, session-scoped)" if in_temp else "  (disk; sandbox grants on)"
     typer.echo(f"  root: {d['root']}{note}")
     typer.echo("  branch prefix: wt/  (all managed worktree branches)")
     typer.echo(f"  bead:    {d['bead']}")
@@ -2708,7 +2715,7 @@ _KNOWN_HOME_ENTRIES = frozenset(
 
 def _configurable_home_entries(cfg) -> set[str]:
     """Basenames of the independently relocatable stores (hq, hub, cache, hitch, and —
-    persistent mode only — worktrees) that currently resolve under `config.home()`. Each
+    worktrees) that currently resolve under `config.home()`. Each
     honours its own override (`$BH_HQ`, `hitch.root`, `worktrees.path`, …), so its expected
     name is read from the accessor rather than assumed; one relocated elsewhere just drops out
     of this set instead of tripping a false positive."""
@@ -2719,8 +2726,9 @@ def _configurable_home_entries(cfg) -> set[str]:
         config.cache_dir(),
         config.hitch_config_dir_root(cfg),
     ]
-    if not config.worktrees_ephemeral(cfg):
-        candidates.append(config.worktrees_root(cfg))
+    # Always classify the root (bh-uwlsw): on macOS the ephemeral default is the disk root under
+    # home. A root under the OS temp dir simply drops out below (not a home entry).
+    candidates.append(config.worktrees_root(cfg))
     names = set()
     for p in candidates:
         try:
@@ -2924,7 +2932,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
         elif not (path / ".beads").is_dir():
             warns.append(f"hive '{e['prefix']}' has no .beads/ (not initialized)")
         elif (
-            not config.worktrees_ephemeral(cfg)
+            config.worktrees_root_needs_grant(cfg)
             and hive.grant_is_current(cfg, path, e["provider"], e["org"], e["repo"]) is False
         ):
             warns.append(
@@ -2984,6 +2992,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _orphaned_dolt_server_warnings()
     warns += _channel_drift_warnings(cfg, hives)
     warns += _orphan_safety_ref_warnings(cfg)
+    warns += _legacy_temp_root_warnings(cfg)
     warns += doctor_ram.warnings(_data_ram_backed(cfg))
     return warns
 

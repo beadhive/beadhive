@@ -38,6 +38,14 @@ def _outer_broker_environment_removed(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _conformance_remeasure_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hives-ready remeasure (bh-7akxs) never retries or waits in a test by default; a test of
+    the retry sets the env itself and injects a fake sleeper."""
+    monkeypatch.setenv("BH_CONFORMANCE_RETRIES", "0")
+    monkeypatch.setenv("BH_CONFORMANCE_RETRY_DELAY", "0")
+
+
 @pytest.fixture(scope="session")
 def _outbox_state_home(tmp_path_factory: pytest.TempPathFactory):
     return tmp_path_factory.mktemp("xdg-state")

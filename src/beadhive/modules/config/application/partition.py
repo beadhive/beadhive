@@ -69,6 +69,8 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "host.frame_bridge",
         "host.frame_id",
         "worktrees.allow_tmpfs",
+        "worktrees.macos_root",
+        "worktrees.macos_use_temp",
         "worktrees.max_live",
         "worktrees.ram_warn_gib",
     }

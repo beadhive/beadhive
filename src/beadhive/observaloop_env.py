@@ -118,9 +118,7 @@ def load_worktree_env(cfg=None) -> None:
     try:
         # This runs on every command's startup and the worktree module's import tree costs about
         # 0.25 s: outside the shadow root there is no overlay, so skip it there (bh-lwz8a).
-        try:
-            Path.cwd().resolve().relative_to(config.worktrees_root(cfg).resolve())
-        except (ValueError, OSError):
+        if config.root_containing(Path.cwd(), cfg) is None:
             return
         from . import worktree
 
