@@ -26,6 +26,7 @@ import hashlib
 import json
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -213,6 +214,14 @@ class HqServiceAdapter:
         - 401 -> :class:`HqUnavailable`: the credential/attestation, not the request, failed.
         - 405 -> :class:`HqUnavailable`: a route defect this client never causes.
         - any other 400/409/413/415 code -> :class:`HqRefused` carrying the code.
+
+        Decision (bh-1bsvh): an unknown non-retryable code on any other 4xx (403, 404, 422 ...)
+        stays :class:`HqUnavailable`, not :class:`HqRefused`. The conformance corpus has no such
+        code, so there is no contract for one; the status is the Gateway's or a version skew, not
+        a verdict on this request, and a caller treats ``HqRefused`` as a definite, permanent
+        refusal of the request. Unavailable is the fail-safe reading: nothing is assumed
+        committed, the operation can be retried once the deployment is fixed. Revisit if
+        hq-service ever documents a 4xx refusal code outside 400/409/413/415.
         """
         try:
             payload = response.json()
@@ -650,9 +659,18 @@ def adapter_from_config(
     *,
     verifier: Verifier | None = None,
     transport: httpx.BaseTransport | None = None,
+    beat_source: BeatSource | None = None,
+    signing_key: str | None = None,
 ) -> HqServiceAdapter:
     """Build the adapter from the host's ``hq.api`` section. A missing endpoint is an error,
-    not a reason to try another adapter."""
+    not a reason to try another adapter.
+
+    Renewal signs a beat with the frame key. Unless injected (tests), the beat source is the
+    sender's own builder (:func:`_frame_beat_source`) and the key is the recorded per-host
+    signing key (``host.yaml`` ``signing_key``, the one ``heartbeat_sender beat`` signs with);
+    no new configuration is read. Either one missing leaves renew raising
+    :class:`HqUnavailable` before anything is sent.
+    """
     hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
     api = hq.get("api") if isinstance(hq, Mapping) else None
     api = api if isinstance(api, Mapping) else {}
@@ -675,7 +693,46 @@ def adapter_from_config(
         kwargs["verify"] = ca or True
         if cert:
             kwargs["cert"] = (cert, key)
-    return HqServiceAdapter(httpx.Client(**kwargs), verifier=verifier)
+    return HqServiceAdapter(
+        httpx.Client(**kwargs),
+        verifier=verifier,
+        beat_source=beat_source if beat_source is not None else _frame_beat_source,
+        signing_key=signing_key if signing_key is not None else _host_signing_key(),
+    )
+
+
+def _host_signing_key() -> str | None:
+    """The recorded per-host frame signing key path, or ``None`` when none is recorded or it
+    is not an absolute path. Read-only; the path is never logged or put in an error."""
+    from . import host
+
+    try:
+        key = host.signing_key()
+    except Exception:  # noqa: BLE001 - an unreadable host identity is "no key"
+        return None
+    return key if key and Path(key).is_absolute() else None
+
+
+def _frame_beat_source(anchor: FrameAnchor) -> Any:
+    """The unsigned beat for *anchor*, built by the same generator ``heartbeat_sender beat``
+    uses (``heartbeat_report.generate(..., cached=True)``): next ``seq``, ``renewTime`` now,
+    ``key_id`` from the frame route and the ``report_digest`` of the cached conformance report.
+
+    It reads this host's SQL frame authority, so a host without one, or any failure measuring
+    the beat, is :class:`HqUnavailable` carrying only a fixed category (the underlying text can
+    hold credential references).
+    """
+    from . import heartbeat_report
+
+    try:
+        plane = heartbeat_report._sql_plane()
+        if plane is None:
+            raise heartbeat_report.HeartbeatError("measured heartbeat requires SQL frame authority")
+        return heartbeat_report.generate(plane, cached=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HqUnavailable(
+            f"renew_session: no beat available ({heartbeat_report.refusal_category(exc)})"
+        ) from None
 
 
 def _load_sql_adapter() -> None:
