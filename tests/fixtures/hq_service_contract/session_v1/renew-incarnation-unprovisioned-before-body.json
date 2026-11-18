@@ -1,0 +1,47 @@
+{
+  "name": "renew-incarnation-unprovisioned-before-body",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "renew",
+  "note": "the liveness row is required before the body is read",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_a",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {
+      "frame_principal_a": {
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+        "grant": "active",
+        "candidate_expires_at": null,
+        "floor": {
+          "sequence": 0,
+          "digest": "",
+          "first_seen": null
+        },
+        "observation": null,
+        "evidence": [],
+        "liveness": null
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_a/3/renew",
+    "content_type": "application/json",
+    "body": "not json"
+  },
+  "expect": {
+    "status": 409,
+    "code": "incarnation_unprovisioned",
+    "retryable": false,
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

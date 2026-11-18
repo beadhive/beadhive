@@ -1,3 +1,5 @@
+import hashlib
+import json
 import subprocess
 from io import StringIO
 from types import SimpleNamespace
@@ -736,3 +738,32 @@ def test_settled_ready_defaults_are_conservative(monkeypatch):
     monkeypatch.setattr(report, "hive_ready", lambda _e: attempts.append(1) or False)
     assert report.hive_ready_settled({}, sleep=sleeps.append) is False
     assert len(attempts) == 3 and sleeps == [30.0, 30.0]
+
+
+# ---- the evidence report is the report the beat digested (bh-osom7) -----------------------
+
+
+def test_lease_report_is_byte_equal_to_the_beat_digest(plane, cache):
+    from beadhive import heartbeat_conformance as hc
+
+    hc.refresh(report.measure_conformance, path=cache, clock=lambda: 1_800_000_000.0)
+    lease = report.generate(plane, cached=True, now=1_800_000_060.0)
+    rebuilt = report.lease_report(lease)
+    assert set(rebuilt) == {"method", "checks", "free_sessions"}
+    assert report.report_digest(rebuilt) == lease.report_digest
+    # the digest the service recomputes over the posted canonical bytes
+    posted = json.dumps(rebuilt, sort_keys=True, separators=(",", ":")).encode()
+    assert "sha256:" + hashlib.sha256(posted).hexdigest() == lease.report_digest
+
+
+def test_nonconformant_beat_reports_zero_free_sessions_in_the_rebuilt_report(plane, cache):
+    lease = report.generate(plane, cached=True, now=1_800_000_000.0)  # no cache: nonconformant
+    assert lease.conformance.status == "non-conformant"
+    assert report.lease_report(lease)["free_sessions"] == 0
+
+
+def test_lease_report_refuses_a_lease_whose_report_does_not_rebuild(plane, cache):
+    lease = report.generate(plane, cached=True, now=1_800_000_000.0)
+    forged = lease.model_copy(update={"report_digest": "sha256:" + "0" * 64})
+    with pytest.raises(HeartbeatError):
+        report.lease_report(forged)

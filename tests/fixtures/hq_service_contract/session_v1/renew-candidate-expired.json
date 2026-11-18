@@ -1,0 +1,52 @@
+{
+  "name": "renew-candidate-expired",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "renew",
+  "note": "a candidate grant past its window",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_a",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {
+      "frame_principal_a": {
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+        "grant": "candidate",
+        "candidate_expires_at": 1792999999,
+        "floor": {
+          "sequence": 0,
+          "digest": "",
+          "first_seen": null
+        },
+        "observation": null,
+        "evidence": [],
+        "liveness": {
+          "renewed_at": null,
+          "measured_at": null,
+          "evidence_status": "unmeasured",
+          "evidence_digest": null
+        }
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_a/3/renew",
+    "content_type": "application/json",
+    "body": "{\"apiVersion\":\"frame.beadhive.ai/v1alpha1\",\"kind\":\"FrameLease\",\"metadata\":{\"name\":\"frame-a\"},\"spec\":{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-a\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-a\",\"instance_ref\":\"inst-host-a\",\"intervalSeconds\":60,\"key_id\":\"SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:33:20Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":1,\"signature\":{\"algorithm\":\"ed25519\",\"keyId\":\"SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw\",\"scope\":\"payload\",\"value\":\"XEWZWdCwxurH95XNk2MEVL+FTR2TTutWhluYr/PA/8TkyQoKMDbgKIHiGWAkVVBXcBH1mzA72UAfIa+al0PuBg==\"},\"state_seen\":\"active\"}}"
+  },
+  "expect": {
+    "status": 409,
+    "code": "candidate_expired",
+    "retryable": false,
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

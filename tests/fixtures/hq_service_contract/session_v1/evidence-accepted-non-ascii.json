@@ -1,0 +1,66 @@
+{
+  "name": "evidence-accepted-non-ascii",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "evidence",
+  "note": "the digest is over Python's canonical form (ensure_ascii); evidence length counts characters, not bytes",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_a",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {
+      "frame_principal_a": {
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+        "grant": "active",
+        "candidate_expires_at": null,
+        "floor": {
+          "sequence": 1,
+          "digest": "sha256:b90eb4a31cdac36870aa73bb3262a68fe38ea005c4ecba2b996fe1781833c4c7",
+          "first_seen": 1792999990
+        },
+        "observation": {
+          "sequence": 1,
+          "digest": "sha256:b90eb4a31cdac36870aa73bb3262a68fe38ea005c4ecba2b996fe1781833c4c7",
+          "first_seen": 1792999990,
+          "accepted_until": 1793000290,
+          "report_digest": "sha256:e3a68b9aaa95ec2784e729dc633c26fd74bffd422264769464bbcdcd932641db"
+        },
+        "evidence": [],
+        "liveness": {
+          "renewed_at": 1792999990,
+          "measured_at": null,
+          "evidence_status": "unmeasured",
+          "evidence_digest": null
+        }
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_a/3/evidence",
+    "content_type": "application/json",
+    "body": "{\"method\": \"installed-package-v1\", \"free_sessions\": 0, \"checks\": [{\"id\": \"installed-release\", \"status\": \"pass\", \"evidence\": \"mesur\u00e9 <ok> & fine \ud83d\ude00\"}]}"
+  },
+  "expect": {
+    "status": 200,
+    "outcome": "accepted",
+    "digest": "sha256:e3a68b9aaa95ec2784e729dc633c26fd74bffd422264769464bbcdcd932641db",
+    "effects": {
+      "evidence": {
+        "digest": "sha256:e3a68b9aaa95ec2784e729dc633c26fd74bffd422264769464bbcdcd932641db",
+        "created_at": 1793000000
+      },
+      "liveness": {
+        "measured_at": 1793000000,
+        "evidence_status": "conformant",
+        "evidence_digest": "sha256:e3a68b9aaa95ec2784e729dc633c26fd74bffd422264769464bbcdcd932641db"
+      }
+    }
+  }
+}

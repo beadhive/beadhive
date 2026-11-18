@@ -47,23 +47,6 @@ def _json(payload, status=200):
     return lambda request: httpx.Response(status, json=payload)
 
 
-def test_renew_session_is_one_route_with_identity_in_path():
-    adapter, calls = _adapter(_json({"revision": "r2"}))
-    route = adapter.renew_session(ANCHOR, deadline=_later())
-    assert route.revision == "r2"
-    (request,) = calls
-    assert (request.method, request.url.path) == ("POST", f"{PREFIX}/sessions/frame_a/7/renew")
-    assert request.headers["content-type"] == "application/json"
-    assert 0 < int(request.headers["X-Beadhive-Deadline-Ms"]) <= 30_000
-
-
-def test_publish_evidence_posts_report():
-    adapter, calls = _adapter(_json({"revision": "r3"}))
-    adapter.publish_evidence(ANCHOR, EvidenceReport({"k": 1}), deadline=_later())
-    assert json.loads(calls[0].content) == {"k": 1}
-    assert calls[0].url.path.endswith("/sessions/frame_a/7/evidence")
-
-
 def test_heartbeat_accepted_and_refusal_is_a_stable_code():
     adapter, calls = _adapter(_json({"outcome": "accepted", "revision": "r9"}))
     sub = adapter.submit_heartbeat(ANCHOR, {"request": {}}, request_id="rq1", deadline=_later())
@@ -178,7 +161,7 @@ def test_malformed_calls_are_bad_request_refusals(status):
 def test_spent_deadline_never_calls_and_is_deadline():
     adapter, calls = _adapter(_json({}))
     with pytest.raises(HqDeadline):
-        adapter.renew_session(ANCHOR, deadline=time.monotonic() - 1)
+        adapter.publish_evidence(ANCHOR, EvidenceReport({}), deadline=time.monotonic() - 1)
     assert not calls
 
 

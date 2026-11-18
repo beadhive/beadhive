@@ -1,0 +1,58 @@
+{
+  "name": "evidence-path-epoch-not-an-integer",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "evidence",
+  "note": "same path binding as renew",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_a",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {
+      "frame_principal_a": {
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+        "grant": "active",
+        "candidate_expires_at": null,
+        "floor": {
+          "sequence": 1,
+          "digest": "sha256:9737d360f1cdc0b12bb2c368ee858cf09b339e206b79098a707b73acc00b8aa9",
+          "first_seen": 1792999990
+        },
+        "observation": {
+          "sequence": 1,
+          "digest": "sha256:9737d360f1cdc0b12bb2c368ee858cf09b339e206b79098a707b73acc00b8aa9",
+          "first_seen": 1792999990,
+          "accepted_until": 1793000290,
+          "report_digest": "sha256:b4286f57472f5a3a92270511205399deb4bcbe10fa8b988ee3c63abddd1ad7bf"
+        },
+        "evidence": [],
+        "liveness": {
+          "renewed_at": 1792999990,
+          "measured_at": null,
+          "evidence_status": "unmeasured",
+          "evidence_digest": null
+        }
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_a/abc/evidence",
+    "content_type": "application/json",
+    "body": "{\"checks\": [{\"evidence\": \"measured check passed\", \"id\": \"installed-release\", \"status\": \"pass\"}, {\"evidence\": \"measured check passed\", \"id\": \"hives-ready\", \"status\": \"pass\"}], \"free_sessions\": 0, \"method\": \"installed-package-v1\"}"
+  },
+  "expect": {
+    "status": 400,
+    "code": "path_invalid",
+    "retryable": false,
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

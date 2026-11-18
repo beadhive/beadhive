@@ -724,6 +724,8 @@ the copy.
 - [HQ lifecycle port](design/hq-lifecycle-port.md) — every place bh opens the HQ SQL server,
   and the port (liveness, admission, reads, operator publication) that maps each one onto an
   hq.lifecycle.v0 route for the hq-service adapter (ADR 0005), with the routes still missing.
+- [Session renew and evidence cutover runbook](design/hq-service-session-cutover-runbook.md) — the
+  beadhive side of hq-service Cutover steps 5-6: flags, ordering, verification, rollback.
 
 ## Signed-mode inbox retention
 

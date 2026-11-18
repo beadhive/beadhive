@@ -39,6 +39,15 @@ class HqRefused(HqError):
         self.reason = reason or code
 
 
+class HqNoCurrentBeat(HqRefused):
+    """Evidence was refused because the service holds no accepted beat to bind it to
+    (``no_current_beat``). Nothing was written. The caller can act on it: renew the session,
+    then post the same report again."""
+
+    def __init__(self, reason: str = "") -> None:
+        super().__init__("no_current_beat", reason)
+
+
 class HqUnavailable(HqError):
     """HQ could not be reached or read. Nothing was written."""
 
@@ -90,6 +99,16 @@ class SessionRoute:
     principal: str
     epoch: int
     revision: str | None = None
+    #: Renew only: the server-stamped lease expiry (epoch seconds) and ``accepted`` | ``replayed``.
+    accepted_until: float | None = None
+    outcome: str | None = None
+    #: Evidence only: the canonical sha256 digest of the stored report (``accepted`` | ``replayed``
+    #: is in ``outcome``); evidence carries no revision.
+    digest: str | None = None
+    #: Renew only (the hq-service adapter): the validated ``HeartbeatLease`` the service accepted,
+    #: parsed from the exact signed bytes sent (a resent pending beat included), so a caller
+    #: can post the evidence of that very beat (bh-a3369). ``None`` where an adapter has none.
+    beat: Any = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
