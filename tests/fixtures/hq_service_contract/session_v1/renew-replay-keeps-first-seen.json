@@ -1,0 +1,59 @@
+{
+  "name": "renew-replay-keeps-first-seen",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "renew",
+  "note": "a replay never moves first_seen or accepted_until forward",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_a",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {
+      "frame_principal_a": {
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+        "grant": "active",
+        "candidate_expires_at": null,
+        "floor": {
+          "sequence": 1,
+          "digest": "sha256:8ad8c71f77cdff63945fd1263d7a0dd6f9987fad08898ce8e1ea4daf00a631d3",
+          "first_seen": 1792999900
+        },
+        "observation": {
+          "sequence": 1,
+          "digest": "sha256:8ad8c71f77cdff63945fd1263d7a0dd6f9987fad08898ce8e1ea4daf00a631d3",
+          "first_seen": 1792999900,
+          "accepted_until": 1793000200,
+          "report_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "evidence": [],
+        "liveness": {
+          "renewed_at": 1792999900,
+          "measured_at": null,
+          "evidence_status": "unmeasured",
+          "evidence_digest": null
+        }
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_a/3/renew",
+    "content_type": "application/json",
+    "body": "{\"apiVersion\":\"frame.beadhive.ai/v1alpha1\",\"kind\":\"FrameLease\",\"metadata\":{\"name\":\"frame-a\"},\"spec\":{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-a\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-a\",\"instance_ref\":\"inst-host-a\",\"intervalSeconds\":60,\"key_id\":\"SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:32:40Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":1,\"signature\":{\"algorithm\":\"ed25519\",\"keyId\":\"SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw\",\"scope\":\"payload\",\"value\":\"3GED2/OzzCyb5+xxddRBl6rgKF/WDdOhPYMioHsvLIfA+iclmnjeAmkrC+4+A+bMqkyo+Xd/2kevX5RW8IhWDQ==\"},\"state_seen\":\"active\"}}"
+  },
+  "expect": {
+    "status": 200,
+    "outcome": "replayed",
+    "revision": "sha256:8ad8c71f77cdff63945fd1263d7a0dd6f9987fad08898ce8e1ea4daf00a631d3",
+    "accepted_until": 1793000200,
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

@@ -1,0 +1,151 @@
+{
+  "_comment": "Code registry for conformance/session/v1 (POST /sessions/{principal}/{epoch}/renew and /evidence), under the error envelope of ADR bh-hq-pio.5: every non-2xx body is {\"error\":{\"code\",\"message\",\"retryable\",\"requestId\",\"details\"}}. Each entry: the HTTP status, retryable, and the message clients see in error.message; an optional note is authoring commentary and is never served. A code heartbeat/v1 also uses carries heartbeat/v1's Python message; every other code is normative and its message says what it means. 409 for every rule refusal; 400/413/415/401 for a call that never reaches a rule; 503 retryable for transient failure; 409 retryable for a CAS conflict. Owned by the corpus, not either implementation. Every code listed here is expected by a case; the codes only the HTTP layer emits are in conformance/http/v1/codes.json.",
+  "unprovisioned_principal": {
+    "status": 409,
+    "retryable": false,
+    "message": "unprovisioned frame principal"
+  },
+  "no_current_grant": {
+    "status": 409,
+    "retryable": false,
+    "message": "principal has no current operator-granted incarnation"
+  },
+  "grant_retired": {
+    "status": 409,
+    "retryable": false,
+    "message": "retired incarnation cannot publish evidence"
+  },
+  "candidate_expired": {
+    "status": 409,
+    "retryable": false,
+    "message": "candidate heartbeat grant expired"
+  },
+  "beat_not_fresh": {
+    "status": 409,
+    "retryable": false,
+    "message": "heartbeat first observation expired or future-skewed"
+  },
+  "seq_not_advanced": {
+    "status": 409,
+    "retryable": false,
+    "message": "heartbeat replays protected accepted floor"
+  },
+  "floor_unprovisioned": {
+    "status": 409,
+    "retryable": false,
+    "message": "protected observer floor was not provisioned"
+  },
+  "identity_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the identity differs from the protected grant",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "request_not_canonical": {
+    "status": 409,
+    "retryable": false,
+    "message": "the request payload is not canonical",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "request_size_invalid": {
+    "status": 413,
+    "retryable": false,
+    "message": "request size invalid",
+    "note": "HTTP 413 here; Python reports this as a refusal; normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "path_principal_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the attested principal is not the principal in the path",
+    "note": "normative (no Python reference); checked before any lookup, so it never reveals whether the path principal exists"
+  },
+  "epoch_stale": {
+    "status": 409,
+    "retryable": false,
+    "message": "the path epoch is below the principal's committed epoch",
+    "note": "normative (no Python reference)"
+  },
+  "epoch_future": {
+    "status": 409,
+    "retryable": false,
+    "message": "the path epoch is above the principal's committed epoch",
+    "note": "normative (no Python reference)"
+  },
+  "path_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "a path segment is not in canonical form",
+    "note": "normative (no Python reference); the epoch is a non-negative decimal integer without leading zeros"
+  },
+  "beat_signature_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "the beat is not signed by the granted key",
+    "note": "normative (no Python reference); Python folds this into authority_failed"
+  },
+  "beat_schema_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "the signed beat violates the FrameLease schema, including unknown fields and seq below 1",
+    "note": "normative (no Python reference); Python folds this into authority_failed"
+  },
+  "lease_duration_out_of_range": {
+    "status": 409,
+    "retryable": false,
+    "message": "leaseDurationSeconds is below 1 or above 900",
+    "note": "normative (no Python reference)"
+  },
+  "lease_duration_below_intervals": {
+    "status": 409,
+    "retryable": false,
+    "message": "leaseDurationSeconds is less than 3 * intervalSeconds",
+    "note": "normative (no Python reference)"
+  },
+  "request_malformed": {
+    "status": 400,
+    "retryable": false,
+    "message": "the body is not one JSON document",
+    "note": "normative (no Python reference)"
+  },
+  "content_type_invalid": {
+    "status": 415,
+    "retryable": false,
+    "message": "Content-Type is not application/json",
+    "note": "normative (no Python reference)"
+  },
+  "upstream_authentication_failed": {
+    "status": 401,
+    "retryable": false,
+    "message": "the gateway attestation is missing, invalid or for another scope",
+    "note": "normative (no Python reference); the existing api/attest.go code"
+  },
+  "no_current_beat": {
+    "status": 409,
+    "retryable": false,
+    "message": "evidence was posted before any beat was accepted for the principal",
+    "note": "normative (no Python reference)"
+  },
+  "evidence_digest_unmatched": {
+    "status": 409,
+    "retryable": false,
+    "message": "the report's canonical digest is not the report_digest of the principal's current beat",
+    "note": "normative (no Python reference)"
+  },
+  "evidence_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "the report is not a valid heartbeat measurement report",
+    "note": "normative (no Python reference)"
+  },
+  "authority_failed": {
+    "status": 409,
+    "retryable": false,
+    "message": "authentication or authority failed",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "incarnation_unprovisioned": {
+    "status": 409,
+    "retryable": false,
+    "message": "the incarnation is not registered with this service"
+  }
+}

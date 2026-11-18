@@ -1,0 +1,52 @@
+{
+  "name": "renew-not-canonical",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "renew",
+  "note": "valid JSON, not the canonical encoding the digest binds",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_a",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {
+      "frame_principal_a": {
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+        "grant": "active",
+        "candidate_expires_at": null,
+        "floor": {
+          "sequence": 0,
+          "digest": "",
+          "first_seen": null
+        },
+        "observation": null,
+        "evidence": [],
+        "liveness": {
+          "renewed_at": null,
+          "measured_at": null,
+          "evidence_status": "unmeasured",
+          "evidence_digest": null
+        }
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_a/3/renew",
+    "content_type": "application/json",
+    "body": "{\n \"apiVersion\": \"frame.beadhive.ai/v1alpha1\",\n \"kind\": \"FrameLease\",\n \"metadata\": {\n  \"name\": \"frame-a\"\n },\n \"spec\": {\n  \"audience\": \"hq\",\n  \"config_revision\": \"cfg-1\",\n  \"conformance\": {\n   \"checks\": [],\n   \"profile\": \"reviewed\",\n   \"status\": \"conformant\"\n  },\n  \"domain\": \"beadhive/frame-heartbeat/v1\",\n  \"epoch\": 3,\n  \"frame_id\": \"frame-a\",\n  \"free_sessions\": 0,\n  \"generation\": 0,\n  \"holderIdentity\": \"host-a\",\n  \"instance_ref\": \"inst-host-a\",\n  \"intervalSeconds\": 60,\n  \"key_id\": \"SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw\",\n  \"leaseDurationSeconds\": 300,\n  \"release\": {\n   \"digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n   \"id\": \"rel-1\"\n  },\n  \"renewTime\": \"2026-10-26T07:33:20Z\",\n  \"report_digest\": \"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\n  \"seq\": 1,\n  \"signature\": {\n   \"algorithm\": \"ed25519\",\n   \"keyId\": \"SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw\",\n   \"scope\": \"payload\",\n   \"value\": \"XEWZWdCwxurH95XNk2MEVL+FTR2TTutWhluYr/PA/8TkyQoKMDbgKIHiGWAkVVBXcBH1mzA72UAfIa+al0PuBg==\"\n  },\n  \"state_seen\": \"active\"\n }\n}"
+  },
+  "expect": {
+    "status": 409,
+    "code": "request_not_canonical",
+    "retryable": false,
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

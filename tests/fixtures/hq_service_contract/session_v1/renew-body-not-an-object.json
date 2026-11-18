@@ -1,0 +1,52 @@
+{
+  "name": "renew-body-not-an-object",
+  "source": "normative: ADR 0005, docs/DESIGN.md slice 2, docs/design/conformance-corpus.md; no Python reference",
+  "kind": "renew",
+  "note": "one JSON document that is not a FrameLease object is a schema error, not malformed JSON",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame_principal_a",
+    "scope": "lifecycle:session"
+  },
+  "given": {
+    "principals": {
+      "frame_principal_a": {
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+        "grant": "active",
+        "candidate_expires_at": null,
+        "floor": {
+          "sequence": 0,
+          "digest": "",
+          "first_seen": null
+        },
+        "observation": null,
+        "evidence": [],
+        "liveness": {
+          "renewed_at": null,
+          "measured_at": null,
+          "evidence_status": "unmeasured",
+          "evidence_digest": null
+        }
+      }
+    }
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/sessions/frame_principal_a/3/renew",
+    "content_type": "application/json",
+    "body": "[]"
+  },
+  "expect": {
+    "status": 409,
+    "code": "beat_schema_invalid",
+    "retryable": false,
+    "effects": {
+      "writes": "none"
+    }
+  }
+}
