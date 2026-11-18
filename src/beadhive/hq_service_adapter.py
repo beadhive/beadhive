@@ -24,8 +24,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -52,6 +55,8 @@ from .hq_port import (
 PREFIX = "/hq/lifecycle/v0"
 DEADLINE_HEADER = "X-Beadhive-Deadline-Ms"
 _DEFAULT_AUTHORITY = "http://hq"
+
+_log = logging.getLogger(__name__)
 
 Verifier = Callable[[str, Any], Any]
 """``verifier(method, payload) -> verified result`` for an authority-bearing read."""
@@ -141,11 +146,17 @@ class HqServiceAdapter:
         verifier: Verifier | None = None,
         beat_source: BeatSource | None = None,
         signing_key: str | None = None,
+        seq_store: Callable[[], Any] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._client = client
         self._verifier = verifier
         self._beat_source = beat_source
         self._signing_key = signing_key
+        #: Zero-arg factory of the local renew-seq store (``hq_renew_seq.RenewSeqStore``); with
+        #: none, the beat's own seq is sent as built (the caller then owns monotonicity).
+        self._seq_store = seq_store
+        self._clock = clock or (lambda: datetime.now(UTC).timestamp())
 
     # ---- transport ----------------------------------------------------------------------
 
@@ -213,6 +224,14 @@ class HqServiceAdapter:
         - 401 -> :class:`HqUnavailable`: the credential/attestation, not the request, failed.
         - 405 -> :class:`HqUnavailable`: a route defect this client never causes.
         - any other 400/409/413/415 code -> :class:`HqRefused` carrying the code.
+
+        Decision (bh-1bsvh): an unknown non-retryable code on any other 4xx (403, 404, 422 ...)
+        stays :class:`HqUnavailable`, not :class:`HqRefused`. The conformance corpus has no such
+        code, so there is no contract for one; the status is the Gateway's or a version skew, not
+        a verdict on this request, and a caller treats ``HqRefused`` as a definite, permanent
+        refusal of the request. Unavailable is the fail-safe reading: nothing is assumed
+        committed, the operation can be retried once the deployment is fixed. Revisit if
+        hq-service ever documents a 4xx refusal code outside 400/409/413/415.
         """
         try:
             payload = response.json()
@@ -310,6 +329,7 @@ class HqServiceAdapter:
         ``renewTime`` and ``seq`` come from the beat source; the service stamps liveness with its
         own clock. ``replayed`` (the same beat sent again) is a success, like ``accepted``.
         """
+        from . import hq_renew_seq
         from .hq_framelease_contracts import HeartbeatLease
         from .hq_sql_signatures import SqlSignatureError, canonical, sign_heartbeat
 
@@ -318,29 +338,77 @@ class HqServiceAdapter:
                 "renew_session: no beat source and frame signing key are configured; "
                 "refusing to send an unsigned renewal"
             )
-        try:
-            lease = HeartbeatLease.model_validate(self._beat_source(anchor))
-        except ValueError as exc:
-            raise HqRefused(
-                "beat_schema_invalid", f"beat source built an invalid lease: {exc}"
-            ) from exc
-        if (lease.frame_id, lease.epoch) != (anchor.frame, anchor.epoch) or (
-            (anchor.holder and lease.holderIdentity != anchor.holder)
-            or (anchor.instance and lease.instance_ref != anchor.instance)
-        ):
-            raise HqRefused("identity_mismatch", "the beat is not for this frame anchor")
-        try:
-            body = canonical(sign_heartbeat(lease, signing_key=self._signing_key))
-        except SqlSignatureError as exc:
-            raise HqRefused("beat_signature_invalid", str(exc)) from exc
         path = f"/sessions/{_seg(anchor.principal)}/{_seg(anchor.epoch)}/renew"
-        _, payload = self._call(
-            "POST", path, None, deadline=deadline, raw_body=body, envelope_errors=True
-        )
+        store = self._seq_store() if self._seq_store is not None else None
+        ident = (anchor.frame, anchor.holder, anchor.epoch)
+        state = store.load(*ident) if store is not None else None
+        now = self._clock()
+        pending = None
+        if state is not None and hq_renew_seq.resendable(state.pending, now):
+            # An unanswered beat still fresh: resend the same seq and bytes (a replay, not a
+            # second beat with another digest). No beat source read is needed.
+            pending = state.pending
+            body = pending.body.encode()
+            seq = pending.seq
+        else:
+            if deadline - time.monotonic() <= 0:
+                raise HqDeadline("deadline spent before the beat was built")
+            try:
+                lease = HeartbeatLease.model_validate(self._beat_source(anchor))
+            except ValueError as exc:
+                raise HqRefused(
+                    "beat_schema_invalid", f"beat source built an invalid lease: {exc}"
+                ) from exc
+            if (lease.frame_id, lease.epoch) != (anchor.frame, anchor.epoch) or (
+                (anchor.holder and lease.holderIdentity != anchor.holder)
+                or (anchor.instance and lease.instance_ref != anchor.instance)
+            ):
+                raise HqRefused("identity_mismatch", "the beat is not for this frame anchor")
+            if state is not None:
+                lease = lease.model_copy(
+                    update={"seq": hq_renew_seq.next_seq(state, lease.seq, now)}
+                )
+            try:
+                body = canonical(sign_heartbeat(lease, signing_key=self._signing_key))
+            except SqlSignatureError as exc:
+                raise HqRefused("beat_signature_invalid", str(exc)) from exc
+            seq = lease.seq
+            if state is not None:
+                pending = hq_renew_seq.Pending(
+                    seq,
+                    datetime.fromisoformat(lease.renewTime).timestamp(),
+                    lease.leaseDurationSeconds,
+                    body.decode(),
+                )
+                # Saved before sending: a crash or lost connection resends these exact bytes.
+                store.save(
+                    *ident, hq_renew_seq.SeqState(max(state.last_seq, seq), state.resync, pending)
+                )
+        try:
+            _, payload = self._call(
+                "POST", path, None, deadline=deadline, raw_body=body, envelope_errors=True
+            )
+        except (HqUnavailable, HqOutcomeUnknown, HqDeadline):
+            raise  # outcome unknown or nothing sent: the pending beat stays for an identical resend
+        except HqRefused as exc:
+            if state is not None:
+                # A verdict on that beat: it is never resent. After seq_not_advanced the floor is
+                # above what this client holds, so the next fresh beat rebases above the clock.
+                store.save(
+                    *ident,
+                    hq_renew_seq.SeqState(
+                        max(state.last_seq, seq),
+                        state.resync or exc.code == "seq_not_advanced",
+                        None,
+                    ),
+                )
+            raise
         outcome = payload.get("outcome") if isinstance(payload, dict) else None
         until = payload.get("accepted_until") if isinstance(payload, dict) else None
         if outcome not in ("accepted", "replayed") or type(until) not in (int, float):
             raise HqUnavailable(f"hq-service returned an unusable renew result: {payload!r}")
+        if state is not None:
+            store.save(*ident, hq_renew_seq.SeqState(max(state.last_seq, seq), False, None))
         return SessionRoute(
             anchor.principal,
             anchor.epoch,
@@ -650,9 +718,19 @@ def adapter_from_config(
     *,
     verifier: Verifier | None = None,
     transport: httpx.BaseTransport | None = None,
+    beat_source: BeatSource | None = None,
+    signing_key: str | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> HqServiceAdapter:
     """Build the adapter from the host's ``hq.api`` section. A missing endpoint is an error,
-    not a reason to try another adapter."""
+    not a reason to try another adapter.
+
+    Renewal signs a beat with the frame key. Unless injected (tests), the beat source is the
+    sender's own builder (:func:`_frame_beat_source`) and the key is the recorded per-host
+    signing key (``host.yaml`` ``signing_key``, the one ``heartbeat_sender beat`` signs with);
+    no new configuration is read. Either one missing leaves renew raising
+    :class:`HqUnavailable` before anything is sent.
+    """
     hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
     api = hq.get("api") if isinstance(hq, Mapping) else None
     api = api if isinstance(api, Mapping) else {}
@@ -675,7 +753,66 @@ def adapter_from_config(
         kwargs["verify"] = ca or True
         if cert:
             kwargs["cert"] = (cert, key)
-    return HqServiceAdapter(httpx.Client(**kwargs), verifier=verifier)
+    return HqServiceAdapter(
+        httpx.Client(**kwargs),
+        verifier=verifier,
+        beat_source=beat_source if beat_source is not None else _frame_beat_source,
+        signing_key=signing_key if signing_key is not None else _host_signing_key(),
+        seq_store=_renew_seq_store,
+        clock=clock,
+    )
+
+
+def _renew_seq_store() -> Any:
+    """The local renew-seq store, under the sender's per-host heartbeat cache directory."""
+    from . import heartbeat_report
+    from .hq_renew_seq import RenewSeqStore
+
+    return RenewSeqStore(heartbeat_report.bh_home() / "heartbeat")
+
+
+def _host_signing_key() -> str | None:
+    """The recorded per-host frame signing key path, or ``None`` when none is recorded or it
+    is not an absolute path. Read-only; the path is never logged or put in an error."""
+    from . import host
+
+    try:
+        key = host.signing_key()
+    except Exception as exc:  # noqa: BLE001 - an unreadable host identity is "no key"
+        # The class only: the text can carry paths.
+        _log.debug("frame signing key unavailable (%s)", type(exc).__name__)
+        return None
+    return key if key and Path(key).is_absolute() else None
+
+
+def _frame_beat_source(anchor: FrameAnchor) -> Any:
+    """The unsigned beat for *anchor*, built by the same generator ``heartbeat_sender beat``
+    uses (``heartbeat_report.generate(..., cached=True)``): next ``seq``, ``renewTime`` now,
+    ``key_id`` from the frame route and the ``report_digest`` of the cached conformance report.
+
+    It reads this host's SQL frame authority, so a host without one, or any failure measuring
+    the beat, is :class:`HqUnavailable` carrying only a fixed category (the underlying text can
+    hold credential references). The SQL plane is needed because the beat's grant-bound fields
+    (``audience``, ``config_revision``, ``beadyard_id``, ``state_seen``, the grant ``profile``)
+    come only from the frame's verified authority record, and hq-service (205fd5b) has no route
+    that serves a frame's grant: GET /authority is the operator authority, not the per-frame
+    grant (design gap G1, ``read_frame_anchor``). Only ``key_id`` (the signing key fingerprint),
+    the installed release and the cached conformance report are local, so a beat cannot be built
+    from the conformance cache alone. ``seq`` is NOT taken from here: the SQL row is only a
+    lower bound, see :mod:`beadhive.hq_renew_seq`. Retry caching of a built beat
+    (:meth:`HqServiceAdapter.renew_session`) needs no SQL read.
+    """
+    from . import heartbeat_report
+
+    try:
+        plane = heartbeat_report.sql_plane()
+        if plane is None:
+            raise heartbeat_report.HeartbeatError("measured heartbeat requires SQL frame authority")
+        return heartbeat_report.generate(plane, cached=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HqUnavailable(
+            f"renew_session: no beat available ({heartbeat_report.refusal_category(exc)})"
+        ) from None
 
 
 def _load_sql_adapter() -> None:
