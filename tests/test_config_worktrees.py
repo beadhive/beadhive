@@ -474,6 +474,20 @@ def test_linux_ephemeral_default_still_needs_no_grant(monkeypatch, tmp_path):
     assert config.worktrees_root_needs_grant({}) is False
 
 
+def test_linux_ram_backed_temp_default_root_now_needs_a_grant(monkeypatch, tmp_path):
+    # bh-uwlsw disclosed behaviour change: a RAM-backed (tmpfs) temp dir sends the ephemeral
+    # default to the disk root, outside $TMPDIR, so a sandboxed seat needs an explicit grant.
+    fake_tmp = _darwin(monkeypatch, tmp_path)
+    monkeypatch.setattr(config_paths, "host_platform", lambda: "linux")
+    monkeypatch.setattr(config_paths, "statfs_type", lambda _p: config_paths_magic("tmpfs"))
+    assert config.worktrees_root({}) != fake_tmp / "bh-worktrees"
+    assert config.worktrees_root_needs_grant({}) is True
+    # opting in to tmpfs keeps the temp root, which needs no grant
+    opted_in = {"worktrees": {"allow_tmpfs": True}}
+    assert config.worktrees_root(opted_in) == fake_tmp / "bh-worktrees"
+    assert config.worktrees_root_needs_grant(opted_in) is False
+
+
 def test_macos_default_ephemeral_installs_claude_and_codex_grants_for_the_disk_root(
     monkeypatch, tmp_path
 ):

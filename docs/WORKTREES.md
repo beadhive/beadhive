@@ -1218,11 +1218,15 @@ current grant, two defenses cover the rest, because bh can only see half the pic
 
 **Recommended Codex workflow**, in order of preference:
 
-1. **Leave `worktrees.ephemeral: true`** (the default) — worktrees live under the OS temp
-   dir, which Codex's default sandbox already covers. No grant, no flag, nothing to get out
-   of sync.
-2. If persistent worktrees are required, **point `worktrees.path` under `$TMPDIR`** (still
-   OS-temp, still covered by default) instead of under `$HOME`.
+1. **Check whether the effective root needs a grant.** The test is
+   `worktrees_root_needs_grant`: it is keyed off where the root really resolves, not off
+   `worktrees.ephemeral`. A root under the OS temp dir needs no grant (Codex's default sandbox
+   covers it). But the default ephemeral root resolves to the disk root, outside the temp dir,
+   on macOS (which purges temp) and on Linux hosts whose temp dir is RAM-backed (tmpfs), so
+   there the default needs a grant — steps 3 or 4.
+2. If persistent worktrees are required and you want no grant, **point `worktrees.path` under
+   `$TMPDIR`** (still OS-temp, still covered by default) instead of under `$HOME`, subject to
+   the same RAM-backed and macOS-purge rules.
 3. Otherwise, run **`bh hive init --codex`** once (and again after any `worktrees.path`
    move) so future Codex launches in this hive pick up the grant automatically.
 4. Or, **launch codex with `--add-dir <worktrees_root>`** (`bh worktree path` /

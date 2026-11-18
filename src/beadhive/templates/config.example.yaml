@@ -153,7 +153,9 @@ alerts:
 # bare `uv run` self-sufficient (extras are NEVER synced by default).
 worktrees:
   # ephemeral (default true if omitted): worktrees live in an OS temp dir, are session-
-  # scoped + disposable, and need no sandbox grant. `path` is ignored in this mode.
+  # scoped + disposable. `path` is not used for the primary root while the temp root is in
+  # effect, but on macOS and on Linux hosts with a RAM-backed temp dir the effective root falls
+  # back to the disk root, which DOES need a sandbox grant (`bh hive init --codex`/`--claude`).
   # Set false for persistent worktrees under `path` + harness sandbox-grant management
   # (`bh hive init --claude`). No resume of abandoned long-running tasks yet — agents are
   # expected to dispose of worktrees promptly.
