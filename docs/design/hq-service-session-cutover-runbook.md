@@ -113,7 +113,7 @@ and exits 0. After the service restart that frame then goes stale with no error.
 Check the build on each frame before flipping anything:
 
 ```sh
-bh config schema | grep -c 'hq.session_via_port\|hq.session_dual_write'
+bh config schema | grep -c -E 'hq\.session_via_port|hq\.session_dual_write'
 ```
 
 It must print `2`. On a build without the flags it prints `0` (run against an installed
@@ -197,7 +197,8 @@ step 5, at `origin/main` `205fd5b`.
 
 Two exposures, by which side of the restart a frame is flipped:
 
-- **Flipped too late** (after the restart): the carried stamp ages from the restart. Until the
+- **Flipped too late** (after the restart): the carried stamp is the frame's last direct renew
+  time, and it ages in wall-clock time (it does not restart from zero at the restart). Until the
   frame's first accepted renew, candidate admission refuses `session_stale` once the age reaches
   300 s. This is the service README's own stale window.
 - **Flipped too early** (while the old build still serves): the frame's SQL `_session` and
@@ -206,10 +207,21 @@ Two exposures, by which side of the restart a frame is flipped:
   for the session). Its renews meanwhile reach hq-service, which the old build does not read.
   The step 5 cutover rerun carries only what the old build's tables held at that moment.
 
-**Rule: keep the gap between flipping a frame and the restart under 300 s**, and do not leave a
-frame unflipped for more than 300 s after the restart. In practice: flip each frame inside the
-last 300 s before the restart (or immediately after it), run the verification renew, and do one
-frame first and verify before the rest.
+**The arithmetic, with g the gap from the flip to the restart.** Timers renew every 60 s, so the
+frame's last direct SQL write can already be up to 60 s old at the flip. After the flip no direct
+write happens. At the restart the cutover carries that stamp into `hq_live_incarnations`. The
+first port renew after the restart can land up to 60 s later, plus the restart downtime d. So
+when the stamp is first refreshed it is up to g + 120 s + d old, which must stay under the 300 s
+TTL: g must stay under about 180 s minus d. Separately, the old build judges the SQL session rows
+stale at 300 s of age, and those rows stop moving at the flip, so g + 60 s must stay under 300 s
+(g under 240 s). The tighter bound is the first.
+
+**Rule: keep the flip-to-restart gap to about 120 s or less**, flip one frame first and verify it
+before the rest, and run the restart promptly after the last flip. 300 s is the failure edge, not
+the target: a gap near 300 s has no margin at all. Do not leave a frame unflipped for long after
+the restart either, since its stamp keeps aging until its first accepted renew. In practice: flip
+each frame in the last couple of minutes before the restart (or immediately after it), and run
+the verification renew.
 
 ### What the operator sees on failure
 
@@ -226,8 +238,9 @@ source is the service side (its logs, or the envelope if you can see the respons
 did not verify what the service logs. The table below says what each code means once you have
 it. Registry: the corpus copy `tests/fixtures/hq_service_contract/session_v1/refusal-codes.json`
 (the service's `conformance/session/v1/refusal-codes.json`) and `conformance/http/v1/codes.json`;
-the adapter's `RENEW_REFUSALS` and `EVIDENCE_REFUSALS` carry the same names. All are
-non-retryable. HTTP status is 409 for a rule refusal, with these exceptions:
+the adapter's `RENEW_REFUSALS` and `EVIDENCE_REFUSALS` carry most of the same names (not
+`upstream_authentication_failed`, 401, which is in neither set). All are non-retryable. HTTP
+status is 409 for a rule refusal, with these exceptions:
 
 | Status | Codes |
 |---|---|
@@ -283,8 +296,9 @@ The readers found in `src/` (grep for `session_table`, `evidence_table`, `read_e
 - **Director failover observer:** `director_failover.py` `observe_sessions`, via
   `failover_observer.py` `session_staleness` (the storage port's `LivenessKind.SESSION` ages
   over the session rows), started from `host_daemon.py`. On a host that runs that loop a stale
-  SQL session row reads as a stale frame for failover. Whether that loop is enabled on your
-  frames was not checked.
+  SQL session row reads as a stale frame for failover. The loop is only built when
+  `host.daemon.failover.enabled` is true (default off, `host_daemon.py` ~line 1428), so frames are
+  unaffected unless an operator enabled it; whether it is enabled on your frames was not checked.
 - Not readers of the row stamps: `hq_placement_ops.py` `check` (grants on the same table
   names), `failover_policy.py` `bounds_from` (reads the liveness policy, not frame rows), and
   the writers in `heartbeat_report.py` and `hq_sql_session.py`.
@@ -324,7 +338,7 @@ On each frame, across at least two conformance intervals (so at least 10 minutes
    launchd: `$BH_HOME/heartbeat/renew.err.log` and `$BH_HOME/heartbeat/conformance.err.log`, the
    `StandardErrorPath` per verb in `heartbeat_sender.py`) over the same window.
 3. hq-service shows the frame fresh through the whole window. The read is the service's
-   eligibility route, `GET /eligibility/{frame}` (`hq.lifecycle.v0`), which returns
+   eligibility route, `GET /hq/lifecycle/v0/eligibility/{frame}` (`hq.lifecycle.v0`), which returns
    `liveness.session` and `liveness.evidence` with `verdict`, `age_s` and `ttl_s`. This is also
    the check that the port path is really in use: on a build without the flag the SQL writes
    continue and the service row stops moving after the restart. Expect
@@ -380,7 +394,8 @@ session row again, so the SQL-side readers, and the old build, recover within on
   3.1); the `bh config schema` check was run only against an installed `0.36.0` and a worktree
   build, and `bh config get hq.session_via_port` was not run with the flag set.
 - Whether the other HQ call paths on a host work under `hq.route: api` (section 4 step 2).
-- Whether the director failover loop is enabled on the frames (section 6).
+- Whether the director failover loop is enabled on the frames (section 6); it is off by default
+  (`host.daemon.failover.enabled`, `host_daemon.py`).
 - The `fleet.json` one-way statement (inferred, `bh-se4se`), the service's log content, and the
   Gateway route behind the `GET /eligibility/{frame}` read.
 - Behaviour of overlapping renews on a real service (fake-only; `bh-ktd2x`).
