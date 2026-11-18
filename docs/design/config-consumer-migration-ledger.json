@@ -462,28 +462,28 @@
       {
         "facade_target": "beadhive.config.claude_home",
         "kind": "direct-facade",
-        "line": 485,
+        "line": 499,
         "path": "tests/test_config_worktrees.py",
         "target": "beadhive.config.claude_home"
       },
       {
         "facade_target": "beadhive.config.codex_home",
         "kind": "direct-facade",
-        "line": 486,
+        "line": 500,
         "path": "tests/test_config_worktrees.py",
         "target": "beadhive.config.codex_home"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 555,
+        "line": 569,
         "path": "tests/test_config_worktrees.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 585,
+        "line": 599,
         "path": "tests/test_config_worktrees.py",
         "target": "beadhive.config.load"
       },
