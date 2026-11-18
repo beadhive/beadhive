@@ -336,6 +336,11 @@ testpaths = ["tests"]
 pythonpath = [".", "src"]
 markers = [
     "real_service: isolated Beads v1.3 HTTP conformance (opt in)",
+    # bh-zephr: the staged hq-service session test. Opt in with BH_STAGED_HQ_SERVICE=1 plus the
+    # BH_STAGED_HQ_* variables (tests/harness/hq_session_stack.py STAGED_ENV); it self-skips
+    # otherwise, so no gate lane ever reaches a staged stack. The same tests run against an
+    # in-process fake in every lane (the unmarked parametrization).
+    "staged_hq_service: needs a STAGED hq-service (operator step); opt in with BH_STAGED_HQ_SERVICE=1 (bh-zephr)",
     "integration: real process boundaries: bd AGF topology, signed-HQ backend, live daemons and CLI subprocesses (slower)",
     "pants_profile: executes the Pants engine; required by the Pants full gate only",
     # Not documentation: conftest's `_bound_concurrent_dolt_servers` makes a marked test hold one
