@@ -297,8 +297,9 @@ The readers found in `src/` (grep for `session_table`, `evidence_table`, `read_e
   `failover_observer.py` `session_staleness` (the storage port's `LivenessKind.SESSION` ages
   over the session rows), started from `host_daemon.py`. On a host that runs that loop a stale
   SQL session row reads as a stale frame for failover. The loop is only built when
-  `host.daemon.failover.enabled` is true (default off, `host_daemon.py` ~line 1428), so frames are
-  unaffected unless an operator enabled it; whether it is enabled on your frames was not checked.
+  `host.daemon.failover.enabled` is true (default off, `host_daemon.py` `_failover_loop`), so
+  frames are unaffected unless an operator enabled it; whether it is enabled on your frames was
+  not checked.
 - Not readers of the row stamps: `hq_placement_ops.py` `check` (grants on the same table
   names), `failover_policy.py` `bounds_from` (reads the liveness policy, not frame rows), and
   the writers in `heartbeat_report.py` and `hq_sql_session.py`.
@@ -338,7 +339,10 @@ On each frame, across at least two conformance intervals (so at least 10 minutes
    launchd: `$BH_HOME/heartbeat/renew.err.log` and `$BH_HOME/heartbeat/conformance.err.log`, the
    `StandardErrorPath` per verb in `heartbeat_sender.py`) over the same window.
 3. hq-service shows the frame fresh through the whole window. The read is the service's
-   eligibility route, `GET /hq/lifecycle/v0/eligibility/{frame}` (`hq.lifecycle.v0`), which returns
+   eligibility route, `GET /hq/lifecycle/v0/eligibility/{frame}` (`hq.lifecycle.v0`; the adapter
+   in `hq_service_adapter.py` `read_eligibility`, marked PROVISIONAL, calls `/eligibility/{frame}`
+   relative to its configured base, not this public path, and whether the Gateway exposes the
+   route to operators is still unverified), which returns
    `liveness.session` and `liveness.evidence` with `verdict`, `age_s` and `ttl_s`. This is also
    the check that the port path is really in use: on a build without the flag the SQL writes
    continue and the service row stops moving after the restart. Expect
@@ -385,6 +389,12 @@ session row again, so the SQL-side readers, and the old build, recover within on
   of the migration runbook.
 
 ## 10. Not verified by this runbook
+
+- **Documented gap, no flag-recognised indicator (bh-dp6aq):** neither `bh --version` nor
+  `bh config get` shows whether the installed build recognises `hq.session_via_port` or
+  `hq.session_dual_write`. A "flag recognised" indicator was considered and is deliberately not
+  built; until one exists, the check that the port path is in use is the service freshness read in
+  section 6 (SQL writes continue and the service row stops moving on a build without the flag).
 
 - A real staged pass of the end-to-end test (section 2).
 - Whether the Gateway exposes `GET /eligibility/{frame}` to operators (section 8).

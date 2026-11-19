@@ -5,6 +5,14 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## Unreleased — upgrade every frame before the first `fleet.json` republish
+
+- **Ordering requirement (bh-vrqne, bh-se4se).** Every publish and repair of the HQ SQL config now
+  also commits `fleet.json`. A `bh` that predates it is inferred to reject that unknown document
+  path and fail the whole snapshot read closed (inferred from the path pattern, not run). Upgrade
+  every frame and host first, then republish; the republish is one-way until then. See
+  [the migration runbook](design/dolt-hq-config-migration-runbook.md#fleetjson-projection-bh-vrqne).
+
 ## 0.37.1 → 0.38.0 — backfill for merge-heavy and forked repositories
 
 - **New, opt-in: the git reader's fork boundary and tag filters (bh-19q4u, #159).** The `git`
