@@ -1,4 +1,5 @@
-"""In-process fake of hq-service's session routes (renew and evidence), bh-zephr.
+"""In-process fake of hq-service's session routes (renew and evidence), bh-zephr, plus canned
+read routes (``reads``, bh-e437a).
 
 A transport-level stand-in for a staged hq-service, built from the hq-service conformance corpus
 (``conformance/session/v1`` and ``conformance/http/v1`` at commit 205fd5b) and the rules in its
@@ -117,6 +118,10 @@ class FakeHqService:
         #: every request the service SAW (injected client-side faults never reach it):
         #: ``(kind, outcome_or_code)`` in arrival order.
         self.seen: list[tuple[str, str]] = []
+        #: Read routes (bh-e437a): ``GET`` path under the plane prefix (``/authority``,
+        #: ``/config``, ``/eligibility/<frame>``) -> the JSON body served. Bodies are opaque
+        #: here; the client's response verifier gives them meaning. Unset paths are 404.
+        self.reads: dict[str, Any] = {}
 
     def provision(self, principal: str, **kwargs: Any) -> Principal:
         record = Principal(**kwargs)
@@ -130,6 +135,9 @@ class FakeHqService:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        if request.method == "GET" and path.removeprefix(PREFIX) in self.reads:
+            self.seen.append(("read", path.removeprefix(PREFIX)))
+            return httpx.Response(200, json=self.reads[path.removeprefix(PREFIX)])
         parts = path.removeprefix(PREFIX).split("/")
         if (
             request.method != "POST"

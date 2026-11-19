@@ -1828,7 +1828,14 @@ class HqApiConfig(_Section):
 class HqConfig(_Section):
     """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
 
-    mode: Literal["git", "dolt-server"] = "git"
+    mode: Literal["git", "dolt-server", "api"] = Field(
+        "git",
+        description=(
+            "HQ backend: `git` (default), `dolt-server` (the HQ SQL server) or `api` (a HOST "
+            "bootstrap that reaches HQ only through the hq-service, the same as `hq.route: "
+            "api`; it needs `hq.api` and carries no `hq.sql`)."
+        ),
+    )
     beadyard_id: str | None = Field(
         None,
         description=(
@@ -1925,6 +1932,18 @@ class HqConfig(_Section):
             "confirm the result interactively unless `--auto` is passed."
         ),
     )
+
+    @model_validator(mode="after")
+    def _api_route_binding(self):
+        """``hq.route: api`` (or ``hq.mode: api``) needs the service endpoint in ``hq.api``;
+        ``hq.sql`` is optional there and never consulted for HQ calls (bh-e437a)."""
+        explicit_route = "route" in self.model_fields_set
+        if self.mode == "api" and explicit_route and self.route != "api":
+            raise ValueError("hq.mode api needs hq.route api (or no hq.route)")
+        api_route = self.route == "api" if explicit_route else self.mode == "api"
+        if api_route and not (self.api.url or self.api.unix_socket):
+            raise ValueError("hq.route api needs hq.api.url or hq.api.unix_socket")
+        return self
 
 
 # ---- host (multi-host primary / host lease, bh-ytbb.6) ------------------------

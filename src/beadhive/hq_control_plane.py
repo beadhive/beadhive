@@ -17,6 +17,7 @@ from . import config, gitref, hq_authority_ceiling, hq_git_broker, hq_manifest_g
 from . import hq_authority_enforce as authority_mode
 from . import hq_authority_guard as guard
 from .hq_authority_enforce import enforced as authority_enforced
+from .hq_port import HqRouteError, HqUnavailable, configured_route
 from .run import run
 
 if TYPE_CHECKING:
@@ -1635,6 +1636,26 @@ def _validated_sql_binding(settings):
         raise ControlPlaneError("invalid SQL HOST binding") from None
 
 
+def _committed_host_manifest(snapshot, host_id: str):
+    """``hosts/<host_id>.yaml`` from a verified committed config snapshot, validated."""
+    from ruamel.yaml import YAML
+
+    from . import hosts
+
+    documents = [item for item in snapshot.documents if item.path == f"hosts/{host_id}.yaml"]
+    if not documents:
+        raise CommittedManifestAbsent(f"committed host manifest unavailable for {host_id}")
+    if len(documents) != 1:
+        raise ControlPlaneError("committed host manifest selection invalid")
+    try:
+        raw = YAML(typ="safe").load(documents[0].content)
+        if isinstance(raw, dict) and "state" not in raw:
+            raw = {**raw, "state": "active"}
+        return hosts.HostManifest.model_validate(raw)
+    except Exception:  # noqa: BLE001 - malformed committed input must not expose values
+        raise ControlPlaneError("committed host manifest invalid") from None
+
+
 class SqlControlPlane:
     """SQL config capability; runtime authority needs an explicit separate binding."""
 
@@ -1673,23 +1694,7 @@ class SqlControlPlane:
             raise ControlPlaneError(str(exc)) from None
 
     def load_host_manifest(self, host_id: str):
-        from ruamel.yaml import YAML
-
-        from . import hosts
-
-        snapshot = self.config_store().load_snapshot()
-        documents = [item for item in snapshot.documents if item.path == f"hosts/{host_id}.yaml"]
-        if not documents:
-            raise CommittedManifestAbsent(f"committed host manifest unavailable for {host_id}")
-        if len(documents) != 1:
-            raise ControlPlaneError("committed host manifest selection invalid")
-        try:
-            raw = YAML(typ="safe").load(documents[0].content)
-            if isinstance(raw, dict) and "state" not in raw:
-                raw = {**raw, "state": "active"}
-            return hosts.HostManifest.model_validate(raw)
-        except Exception:  # noqa: BLE001 - malformed committed input must not expose values
-            raise ControlPlaneError("committed host manifest invalid") from None
+        return _committed_host_manifest(self.config_store().load_snapshot(), host_id)
 
     def config_store(self, *, operator_key=None, duration=None, ceiling=None):
         from .hq_sql_config import SqlFleetConfigRevisionStore
@@ -3287,13 +3292,28 @@ def host_sql_settings():
 
 def control_plane(hq_dir=None):
     # Backend connection/trust must be available before fleet/effective resolution.
-    cfg = config.load_host().get("hq", {})
+    host_config = config.load_host()
+    if _route(host_config) == "api":
+        return api_control_plane(host_config)
+    cfg = host_config.get("hq", {})
     sql = _validated_sql_binding(cfg.get("sql", {}))
     if sql.enabled:
         return SqlControlPlane(sql.model_dump())
     if cfg.get("mode", "git") != "git":
         raise ControlPlaneError(f"unsupported HQ control-plane mode: {cfg.get('mode')}")
     return GitControlPlane(hq_dir or config.hq_dir(), authority_anchor=cfg.get("authority_anchor"))
+
+
+def sql_frame_plane(hq_dir=None):
+    """The SQL plane when ``hq.sql`` is enabled, whatever ``hq.route`` selects; else ``None``.
+    Only for the transitional api-host beat, which
+    still reads this host's SQL frame runtime (design gap G1, bh-65s71); every other caller
+    uses :func:`control_plane`."""
+    cfg = config.load_host().get("hq", {})
+    sql = _validated_sql_binding(cfg.get("sql", {}))
+    if sql.enabled:
+        return SqlControlPlane(sql.model_dump())
+    return None
 
 
 def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_local=False):
@@ -3305,6 +3325,11 @@ def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_
     cached verified snapshot in trusted mode (``load_snapshot_or_cached``, bh-kjxe9).
     """
     settings = bootstrap if bootstrap is not None else config.load_host().get("hq", {})
+    if _route({"hq": settings}) == "api":
+        store = api_control_plane({"hq": settings}).config_store()
+        if hive_local:
+            return store, store.load_snapshot_or_cached()
+        return store, store.load_snapshot()
     mode = settings.get("mode", "git")
     sql = _validated_sql_binding(settings.get("sql", {}))
     if sql.enabled:
@@ -3319,3 +3344,281 @@ def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_
     )
     store = plane.config_store(operator_key=operator_key)
     return store, store.load_snapshot()
+
+
+# ---- route=api: the control plane over the HQ port (bh-e437a) ------------------------------
+
+
+class HqPlaneUnavailable(HqUnavailable, ControlPlaneError):
+    """The api plane could not serve a call: no hq-service route for the method, or the
+    service could not be reached or read. Nothing was written, and SQL was never tried.
+
+    Both an :class:`~beadhive.hq_port.HqUnavailable` (the port taxonomy) and a
+    :class:`ControlPlaneError`, so a caller that already reports a control-plane refusal
+    (every ``except ValueError`` CLI path) reports this one the same way."""
+
+
+#: The control-plane methods a ``route: api`` host has no hq-service route for yet. Each raises
+#: :class:`HqPlaneUnavailable` naming itself; none falls back to SQL. Later beads of bh-6se58
+#: move names out of this set as the service gains the route.
+API_UNROUTED = frozenset(
+    {
+        "accept_observation",
+        "admit_open",
+        "bind_beadyard",
+        "eligibility_authority_status",
+        "fetch_config",
+        "grant",
+        "heartbeat",
+        "heartbeat_reference",
+        "hive_policy_binding",
+        "lifecycle",
+        "load_config_authority_snapshot",
+        "propose_hive_lease",
+        "prune_inbox",
+        "publish_hive_lease",
+        "publish_registration",
+        "publish_registration_evidence",
+        "read_hive_lease",
+        "read_hive_lease_record",
+        "read_placement",
+        "release_policy",
+        "release_upgrade",
+        "renew",
+        "require_frame_placeable",
+        "require_hive_policy",
+        "watch_state",
+    }
+)
+
+#: Seconds a committed config snapshot read through the port stays valid when the service
+#: names no validity (the SQL store's default ``hq.sql.cache_ttl``).
+API_CONFIG_VALID_FOR_S = 30.0
+
+#: Seconds one api-plane read may take end to end (the SQL plane's default operation timeout).
+API_DEADLINE_S = 15.0
+
+
+def _no_api_route(method: str) -> HqPlaneUnavailable:
+    return HqPlaneUnavailable(f"{method}: no hq-service route on an hq.route api host")
+
+
+def _route(host_config) -> str:
+    """The host's ``hq.route`` (:func:`beadhive.hq_port.configured_route`), as a
+    control-plane refusal when invalid."""
+    try:
+        return configured_route(host_config)
+    except HqRouteError as exc:
+        raise ControlPlaneError(str(exc)) from None
+
+
+def host_route() -> str:
+    """This host's ``hq.route`` (``BH_HQ_ROUTE`` > ``hq.route`` > ``hq.mode: api`` > ``sql``)."""
+    return _route(config.load_host())
+
+
+def _api_port(host_config):
+    """The hq-service adapter :func:`beadhive.hq_service_adapter.select_hq_port` builds for
+    ``route: api``, with whatever response verifier it wires. Lazy, so a ``route: sql`` host
+    never imports the HTTP adapter. Resolved by name, not imported: the adapter reaches the SQL
+    adapter (its ``sql`` route), and a static edge would add an import cycle to the reviewed
+    snapshot (``scripts/check_import_boundaries.py``)."""
+    import importlib
+
+    adapter = importlib.import_module(f"{__package__}.hq_service_adapter")
+    try:
+        return adapter.select_hq_port(host_config, route="api")
+    except HqRouteError as exc:
+        raise ControlPlaneError(str(exc)) from None
+
+
+def api_control_plane(host_config):
+    """The control plane of a ``route: api`` host: every read goes through the HQ port."""
+    return ApiControlPlane(_api_port(host_config))
+
+
+class ApiConfigStore:
+    """Committed fleet config over the port's ``read_config`` (the SQL store's read shape).
+
+    Publication and recovery have no hq-service route yet (gap G8): every other public store
+    method raises :class:`HqPlaneUnavailable` naming itself."""
+
+    def __init__(self, plane):
+        self._plane = plane
+
+    def load_snapshot(self, *, revision=None, deadline=None):
+        return self._plane._snapshot(
+            self._plane._port_call("read_config", revision=revision, deadline=deadline)
+        )
+
+    def load_snapshot_or_cached(self, *, warn=None):
+        return self._plane._snapshot(self._plane._port_call("read_config", cached_ok=True))
+
+    def authority_binding(self, crossref, policies, *, expires_at, deadline=None):
+        """``(bound, latest_head, bound_snapshot)``: bound only on an exact cross-reference to
+        the current committed head. A tolerated descendant head needs the config history,
+        which the port does not serve here, so it reports not bound (reporting only)."""
+        snapshot = self.load_snapshot(deadline=deadline)
+        head = snapshot.commit_revision
+        bound = (snapshot.backend_identity, snapshot.generation, head) == tuple(crossref)
+        return bound, head, snapshot if bound else None
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def unrouted(*_args, **_kwargs):
+            raise _no_api_route(f"config_store.{name}")
+
+        return unrouted
+
+
+class ApiControlPlane:
+    """The HQ control plane of an ``hq.route: api`` host (bh-e437a).
+
+    Every call is one HQ port call on the hq-service adapter; it opens no SQL connection and
+    never falls back to SQL. Port results are the verified shapes the SQL adapter returns
+    (``read_authority``: ``(head, state, crossref, policies)``; ``read_config``: a
+    :class:`~beadhive.modules.config.domain.ports.FleetConfigSnapshot`; ``read_eligibility``:
+    ``(head, desired, observation)``). A method in :data:`API_UNROUTED` raises
+    :class:`HqPlaneUnavailable` naming the method.
+    """
+
+    config_backend = "api"
+
+    @staticmethod
+    def verified_manifest_absence(error: BaseException) -> bool:
+        return isinstance(error, CommittedManifestAbsent)
+
+    def __init__(self, port, *, clock=time.time, deadline_s=API_DEADLINE_S):
+        self.port, self.clock = port, clock
+        self._deadline_s = deadline_s
+
+    def _port_call(self, method, *args, deadline=None, **kwargs):
+        """``port.<method>(...)`` under one bounded deadline. An unavailable service is an
+        :class:`HqPlaneUnavailable` naming the method; nothing else is retried or rerouted."""
+        if deadline is None:
+            deadline = time.monotonic() + self._deadline_s
+        try:
+            return getattr(self.port, method)(*args, deadline=deadline, **kwargs)
+        except HqPlaneUnavailable:
+            raise
+        except HqUnavailable as exc:
+            raise HqPlaneUnavailable(f"{method}: {exc}") from exc
+
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None):
+        return ApiConfigStore(self)
+
+    def load_host_manifest(self, host_id: str):
+        return _committed_host_manifest(self.config_store().load_snapshot(), host_id)
+
+    def _snapshot(self, result):
+        """The verified ``read_config`` result as a ``FleetConfigSnapshot``.
+
+        PROVISIONAL (bh-21vpt): the hq-service ``GET /config`` body is not served yet. Its
+        verified form is read as ``{backend_identity, commit_revision, generation, documents:
+        [{path, content}], valid_for_s?}`` beside the ``authority`` envelope the verifier
+        checked; anything else is unavailable, never guessed at."""
+        from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+
+        if isinstance(result, FleetConfigSnapshot):
+            return result
+        try:
+            fetched = float(self.clock())
+            documents = tuple(
+                FleetConfigDocument(str(item["path"]), str(item["content"]))
+                for item in result["documents"]
+            )
+            return FleetConfigSnapshot(
+                result["backend_identity"],
+                result["commit_revision"],
+                result["generation"],
+                fetched,
+                fetched + float(result.get("valid_for_s", API_CONFIG_VALID_FOR_S)),
+                documents,
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise HqPlaneUnavailable(
+                "read_config: the verified result is not a committed config snapshot"
+            ) from None
+
+    def authority_state(self, *, allow_expired=False):
+        """``(head, state, crossref, policies)``: the verified operator authority.
+
+        The verified ``GET /authority`` body is the signed envelope ``{head, record,
+        signature}``; ``record`` is the signed authority (``state``, ``hive_policies`` and the
+        ``config_backend`` / ``config_generation`` / ``config_head`` cross-reference), the same
+        record the SQL operator writes. A 4-tuple (the SQL adapter's shape) passes through."""
+        result = self._port_call("read_authority", allow_expired=allow_expired)
+        if isinstance(result, tuple) and len(result) == 4:
+            return result
+        try:
+            record = result["record"]
+            crossref = (
+                record["config_backend"],
+                record["config_generation"],
+                record["config_head"],
+            )
+            state = record["state"]
+            float(state["expires_at"])
+            return str(result["head"]), state, crossref, dict(record.get("hive_policies") or {})
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise HqPlaneUnavailable(
+                "read_authority: the verified result is not an authority"
+            ) from None
+
+    def authority_status(self):
+        enforce = authority_enforced()
+        revision, state, *_ = self.authority_state(allow_expired=not enforce)
+        ready = enforce or self.clock() < state["expires_at"]
+        return {"revision": revision, "state": state, "authority_ready": ready}
+
+    def read_eligibility(self, manifest, *, now=None, prefix=None):
+        """``(head, desired, observation)``.
+
+        PROVISIONAL (bh-21vpt, bh-h9dn1): the verified ``GET /eligibility/{frame}`` body is read
+        as ``{authority: {head, ...}, desired, observation}`` with ``observation`` the fields of
+        a :class:`~beadhive.host_heartbeat_core.VerifiedObservation`. A 3-tuple (the SQL
+        adapter's shape) passes through; anything else is unavailable."""
+        from .host_heartbeat_core import VerifiedObservation
+
+        result = self._port_call("read_eligibility", manifest.frame_id, session_prefix=prefix)
+        if isinstance(result, tuple) and len(result) == 3:
+            return result
+        try:
+            observation = result["observation"]
+            if not isinstance(observation, VerifiedObservation):
+                observation = VerifiedObservation(
+                    **{
+                        key: observation[key]
+                        for key in (
+                            "status",
+                            "verified",
+                            "fresh",
+                            "age_seconds",
+                            "reason",
+                            "candidate",
+                            "age_basis",
+                        )
+                        if key in observation
+                    }
+                )
+            return str(result["authority"]["head"]), dict(result.get("desired") or {}), observation
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise HqPlaneUnavailable(
+                "read_eligibility: the verified result is not eligibility"
+            ) from None
+
+    def observe(self, manifest, *, now=None, observer_dir=None):
+        if observer_dir is not None:
+            raise ControlPlaneError("api observer storage is protected server-local custody")
+        return self.read_eligibility(manifest, now=now)[2]
+
+    def __getattr__(self, name):
+        if name in API_UNROUTED:
+
+            def unrouted(*_args, **_kwargs):
+                raise _no_api_route(name)
+
+            return unrouted
+        raise AttributeError(name)

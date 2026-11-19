@@ -147,6 +147,10 @@ def _config_bound(plane, crossref, policies, state) -> bool:
 
 def read_state(plane):
     """(revision, state, config_bound) for any backend, reading even an expired authority."""
+    if getattr(plane, "config_backend", None) == "api":
+        # route=api (bh-e437a): the verified authority through the HQ port, never SQL.
+        head, state, crossref, policies = plane.authority_state(allow_expired=True)
+        return head, state, _config_bound(plane, crossref, policies, state)
     if hasattr(plane, "_read") and not hasattr(plane, "_runtime_authority"):
         sha, state, _policy = plane._read(allow_expired=True)
         return sha, state, True

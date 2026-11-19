@@ -338,6 +338,9 @@ def load_fleet_raw_for_repair():
 
 
 def fleet_sql_selected() -> bool:
+    """Whether this HOST selects the central (non-Git) HQ: ``hq.sql.enabled`` on a
+    ``route: sql`` host, or ``hq.route: api`` (bh-e437a). Keyed on the route, so an api host
+    with no ``hq.sql`` block takes every central-HQ branch, reached through the HQ port."""
     return _config_store.sql_selected(_facade())
 
 

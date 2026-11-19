@@ -287,15 +287,18 @@ def sql_adapter_factory() -> Callable[[], HqPort] | None:
 
 
 def configured_route(host_config: Mapping[str, Any]) -> str:
-    """``BH_HQ_ROUTE`` > host ``hq.route`` > ``sql``. An invalid value raises
-    :class:`HqRouteError`; it never degrades to a default. *host_config* is the loaded host
-    config (``config.load_host()``)."""
+    """``BH_HQ_ROUTE`` > host ``hq.route`` > ``api`` when host ``hq.mode`` is ``api`` > ``sql``.
+    An invalid value raises :class:`HqRouteError`; it never degrades to a default.
+    *host_config* is the loaded host config (``config.load_host()``)."""
     value: Any = os.environ.get(ROUTE_ENV) or None
     source = ROUTE_ENV
+    hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
     if value is None:
-        hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
         value = hq.get("route") if isinstance(hq, Mapping) else None
         source = "hq.route"
+    if value is None and isinstance(hq, Mapping) and hq.get("mode") == "api":
+        # ``hq.mode: api`` names the same host binding as ``hq.route: api`` (bh-e437a).
+        return "api"
     if value is None:
         return DEFAULT_ROUTE
     if value not in ROUTES:
