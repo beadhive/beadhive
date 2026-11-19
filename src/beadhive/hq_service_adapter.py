@@ -14,9 +14,11 @@ Session renew (bh-nqr4b) and session evidence (bh-xtznm) are the exceptions: bot
 the hq-service conformance corpus ``conformance/session/v1`` (commit 205fd5b,
 ``tests/test_hq_service_renew_contract.py``, ``tests/test_hq_service_evidence_contract.py``).
 
-Verification of signed authority and the restore floor is a separate step (bh-j99c8). It plugs
-in through ``verifier``: authority-bearing reads (authority, eligibility, config) hand the
-response to it and return what it returns. With no verifier those reads fail closed, because the
+Verification of signed authority and the restore floor (bh-2r7qd, absorbing bh-j99c8) plugs in
+through ``verifier``: authority-bearing reads (authority, eligibility, config) hand the response
+to it and return what it returns. ``select_hq_port`` builds the default
+:class:`~beadhive.hq_service_verifier.ServiceResponseVerifier` from the ``hq.api`` trust pins;
+with no verifier those reads fail closed, because the
 port promises verified results only.
 """
 
@@ -735,6 +737,17 @@ def adapter_from_config(
     hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
     api = hq.get("api") if isinstance(hq, Mapping) else None
     api = api if isinstance(api, Mapping) else {}
+    default_verifier = None
+    if verifier is None and api.get("floor_path"):
+        from .hq_service_verifier import ServiceResponseVerifier
+
+        verifier = default_verifier = ServiceResponseVerifier(
+            floor_path=str(api["floor_path"]),
+            initial_revision=str(api.get("initial_revision") or ""),
+            operator_public_key=str(api.get("operator_public_key") or ""),
+            backend_identity=str(api.get("backend_identity") or ""),
+            generation=str(api.get("generation") or ""),
+        )
     socket = str(api.get("unix_socket") or "")
     url = str(api.get("url") or "")
     if not socket and not url:
@@ -754,7 +767,7 @@ def adapter_from_config(
         kwargs["verify"] = ca or True
         if cert:
             kwargs["cert"] = (cert, key)
-    return HqServiceAdapter(
+    adapter = HqServiceAdapter(
         httpx.Client(**kwargs),
         verifier=verifier,
         beat_source=beat_source if beat_source is not None else _frame_beat_source,
@@ -762,6 +775,9 @@ def adapter_from_config(
         seq_store=_renew_seq_store,
         clock=clock,
     )
+    if default_verifier is not None:
+        default_verifier.bind_history(adapter._read_history)
+    return adapter
 
 
 def _sent_beat(body: bytes) -> Any:

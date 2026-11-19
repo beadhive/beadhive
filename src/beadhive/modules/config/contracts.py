@@ -1791,10 +1791,32 @@ class HqApiConfig(_Section):
     ca_cert: str = Field(
         "", description="Absolute path of the CA bundle that verifies the Gateway (PEM)."
     )
+    operator_public_key: str = Field(
+        "",
+        description=(
+            "OpenSSH Ed25519 public key of the HQ operator. Authority, config and eligibility "
+            "responses are verified against it (`signed` authority mode); unset, they are "
+            "refused in that mode."
+        ),
+    )
+    floor_path: str = Field(
+        "",
+        description=(
+            "Absolute path of this host's durable restore floor for api reads. Unset, "
+            "authority-bearing reads are refused (nothing is verified without a floor)."
+        ),
+    )
+    initial_revision: str = Field(
+        "", description="Head the restore floor starts at when no floor file exists yet."
+    )
+    backend_identity: str = Field("", description="Pinned HQ backend identity (optional).")
+    generation: str = Field("", description="Pinned HQ authority generation (optional).")
 
     @model_validator(mode="after")
     def _absolute_paths(self):
-        for name in ("unix_socket", "client_cert", "client_key", "ca_cert"):
+        if self.operator_public_key and not self.operator_public_key.startswith("ssh-ed25519 "):
+            raise ValueError("hq.api operator_public_key must be an Ed25519 public key")
+        for name in ("unix_socket", "client_cert", "client_key", "ca_cert", "floor_path"):
             value = getattr(self, name)
             if value and not Path(value).is_absolute():
                 raise ValueError(f"hq.api {name} must be an absolute path")
