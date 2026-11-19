@@ -2817,9 +2817,11 @@
         },
         "mode": {
           "default": "git",
+          "description": "HQ backend: `git` (default), `dolt-server` (the HQ SQL server) or `api` (a HOST bootstrap that reaches HQ only through the hq-service, the same as `hq.route: api`; it needs `hq.api` and carries no `hq.sql`).",
           "enum": [
             "git",
-            "dolt-server"
+            "dolt-server",
+            "api"
           ],
           "title": "Mode",
           "type": "string"
