@@ -529,9 +529,14 @@ def sql_plane():
 
 
 def _sql_plane():
-    from .hq_control_plane import SqlControlPlane, control_plane
+    from .hq_control_plane import SqlControlPlane, control_plane, host_route, sql_frame_plane
 
-    plane = control_plane(config.hq_dir())
+    if host_route() == "api":
+        # control_plane() is the port there. The beat still reads this host's SQL frame
+        # runtime, by its hq.sql binding alone, until bh-65s71 (design gap G1).
+        plane = sql_frame_plane(config.hq_dir())
+    else:
+        plane = control_plane(config.hq_dir())
     if not isinstance(plane, SqlControlPlane) or plane.settings.get("runtime") is None:
         return None
     return plane
