@@ -157,9 +157,18 @@ def test_managed_bootstrap_selects_private_data_and_never_reads_origin(
     assert public_remotes == {"widget-pub": public_url}
 
     monkeypatch.setattr(onboard, "_origin_has_dolt_data", original_probe)
-    # Ordinary (unmanaged) host, same origin: today's auto-bootstrap sees the public corpus only
-    # (after the managed clone above started the isolated shared server it reuses).
+    # Ordinary (unmanaged) host, same origin: today's auto-bootstrap sees the public corpus only.
+    # A different host runs its OWN shared server. Since bh-pjhwe the origin bootstrap names its
+    # database from the prefix (`widget`), the same name the managed clone above already holds;
+    # one server per prefix holds one database, so reusing the managed host's server would hand
+    # this clone the private corpus instead of bootstrapping the public one from origin.
+    public_server = tmp_path / "public-host-server"
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(public_server))
+    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
     public_host = tmp_path / "public-host"
     git("clone", "-q", str(origin), str(public_host))
-    onboard._act_bd_init(_ctx(public_host))
-    assert _titles(public_host) == {"public issue"}
+    try:
+        onboard._act_bd_init(_ctx(public_host))
+        assert _titles(public_host) == {"public issue"}
+    finally:
+        reap_dolt_server(public_server)
