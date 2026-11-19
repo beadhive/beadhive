@@ -13,6 +13,50 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.39.0 (2026-11-19)
+
+### Feat
+
+- **hq-service**: order renew before evidence and add a default-off session dual-write flag (bh-a3369)
+- **hq-service**: route session renew and conformance evidence through the HQ port behind hq.session_via_port (bh-osom7)
+- **hq-service**: wire the frame beat source and signing key into the api adapter (bh-1bsvh)
+- **hq-service**: post session evidence in the shape hq-service accepts (bh-xtznm)
+- **hq-config**: publish canonical fleet.json beside fleet.yaml in the SQL config store (bh-vrqne)
+- **hq-service**: send a frame-signed canonical FrameLease on session renew (bh-nqr4b)
+- **hq**: send the provisional D3 admission intent from the hq-service adapter (bh-exm7k)
+- **wire**: publish wire 2.33.0 for local-only hives and allow their parameters in the compat gate (bh-sj2bf)
+- **doctor**: report registered hives that are unpublished and not local-only (bh-sj2bf)
+- **host**: bh host retire refuses while the host owns local-only hives (bh-sj2bf)
+- **hive**: local-only onboard, bh hive replicate and bh hive repair --local-only (bh-sj2bf)
+- **hive**: MIN_LOCAL_ONLY_READER rollout floor for local_only writers (bh-sj2bf)
+- **lease**: only a local-only hive's owner may lease or claim it (bh-sj2bf)
+- **heartbeat**: hives-ready skips local-only hives owned by another host (bh-sj2bf)
+- **config**: managed_repos[].local_only marker and registry helpers (bh-sj2bf)
+- **hq-port**: register_incarnation takes a per-call login_secret callable (bh-l3ne7)
+- **onboard**: tri-state push-access probe; refuse when access cannot be confirmed (bh-9eua2)
+- **hq**: private history read, stateless read_result, deadlines on config publication (bh-ygm4s)
+- **hq**: SQL adapter behind the HQ lifecycle port, registered as the default route (bh-v3dyp)
+- **onboard**: bootstrap a replica on a busy executor without stopping other bd servers (bh-pjhwe)
+- **hq**: add the hq-service adapter over the Gateway hq plane and hq.route selection
+
+### Fix
+
+- **hq-service**: own a monotonic renew seq locally and resend unanswered beats byte for byte (bh-1bsvh)
+- **worktrees**: keep macOS default root out of purged $TMPDIR and repair gutted worktrees (bh-uwlsw)
+- **heartbeat**: remeasure a failed hive before publishing hives-ready and log failures locally (bh-7akxs)
+- **hive-ready**: resolve .beads and claude settings against the probed repo root (bh-9grrq)
+- **hive**: local-only review fixes - retire decorator, tri-state origin probe, replicate rollback and recovery, fail-closed legacy guards (bh-sj2bf)
+- **onboard**: bootstrap furnished hives with tracked dolt.shared-server on a busy executor (bh-jktzj)
+- **hq**: map receiver, placement, probe, schema, signature and enforcement errors in the SQL adapter (bh-kmnww)
+- **hq**: report 5xx on non-idempotent hq-service writes as outcome-unknown (bh-y5qnx)
+- **hq**: refuse a signer-returned unsigned marker on an enforced host (bh-v3dyp)
+- **hq**: refuse with a version-mismatch reason when the binding predates the authority state
+- **hq**: refusals surface the underlying validation error
+
+### Refactor
+
+- **hq**: grant rules as a pure function and a typed AdmissionRequest on the HQ port (bh-exm7k)
+
 ## v0.38.0 (2026-11-14)
 
 ### Feat
