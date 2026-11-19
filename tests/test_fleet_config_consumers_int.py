@@ -12,6 +12,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from beadhive import config, frame_eligibility, gitworkspace, hq_control_plane, metadata, registry
+from beadhive.hq_document_validation import FLEET_JSON_PATH, canonical_fleet_json
 from beadhive.hq_sql_config import SqlConfigError, SqlFleetConfigRevisionStore, _digest
 from beadhive.hq_sql_transport import SqlTransportError
 from beadhive.modules.config.domain.ports import FleetConfigDocument
@@ -175,6 +176,16 @@ def test_normal_consumers_use_committed_revision_cas_and_never_fall_back(tmp_pat
                 (*first.documents, *workspace), expected_revision=first.commit_revision
             )
 
+            def assert_fleet_then_workspace(snapshot):
+                # Every SQL publish commits fleet.json, the canonical projection of fleet.yaml,
+                # right after it (bh-vrqne); the workspace documents follow untouched.
+                fleet, projection, *rest = snapshot.documents
+                assert fleet.path == "fleet.yaml"
+                assert projection == FleetConfigDocument(
+                    FLEET_JSON_PATH, canonical_fleet_json(fleet.content)
+                )
+                assert tuple(rest) == workspace
+
             host_home = tmp_path / "host"
             host_home.mkdir()
             host_data = {
@@ -210,14 +221,14 @@ def test_normal_consumers_use_committed_revision_cas_and_never_fall_back(tmp_pat
             assert config.set_value("delimiter", "/", scope=config.SCOPE_FLEET)["ok"]
             after = config.fleet_snapshot()
             assert after.commit_revision != before.commit_revision
-            assert after.documents[1:] == workspace
+            assert_fleet_then_workspace(after)
             assert config.load()["delimiter"] == "/"
 
             registry.register("github", "fixture", "repo", "fx", "prototype")
             registered = config.fleet_snapshot()
             assert registered.commit_revision != after.commit_revision
             assert config.load()["managed_repos"][0]["prefix"] == "fx"
-            assert registered.documents[1:] == workspace
+            assert_fleet_then_workspace(registered)
             assert not (host_home / "hq").exists()
 
             with config._write_transaction(config.SCOPE_FLEET):
