@@ -2692,6 +2692,12 @@
       "additionalProperties": false,
       "description": "Where this host reaches the HQ service (``hq.api``, bh-g76hp). Used only when\n``hq.route`` is ``api``. HOST-local. The caller's identity is the credential the Gateway\n``hq`` plane authenticates (a client certificate on its TLS listener, or the auth proxy\nin front of its socket), never a value carried in a request.",
       "properties": {
+        "backend_identity": {
+          "default": "",
+          "description": "Pinned HQ backend identity (optional).",
+          "title": "Backend Identity",
+          "type": "string"
+        },
         "ca_cert": {
           "default": "",
           "description": "Absolute path of the CA bundle that verifies the Gateway (PEM).",
@@ -2708,6 +2714,30 @@
           "default": "",
           "description": "Absolute path of the private key for `client_cert` (PEM).",
           "title": "Client Key",
+          "type": "string"
+        },
+        "floor_path": {
+          "default": "",
+          "description": "Absolute path of this host's durable restore floor for api reads. Unset, authority-bearing reads are refused (nothing is verified without a floor).",
+          "title": "Floor Path",
+          "type": "string"
+        },
+        "generation": {
+          "default": "",
+          "description": "Pinned HQ authority generation (optional).",
+          "title": "Generation",
+          "type": "string"
+        },
+        "initial_revision": {
+          "default": "",
+          "description": "Head the restore floor starts at when no floor file exists yet.",
+          "title": "Initial Revision",
+          "type": "string"
+        },
+        "operator_public_key": {
+          "default": "",
+          "description": "OpenSSH Ed25519 public key of the HQ operator. Authority, config and eligibility responses are verified against it (`signed` authority mode); unset, they are refused in that mode.",
+          "title": "Operator Public Key",
           "type": "string"
         },
         "unix_socket": {
