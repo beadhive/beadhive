@@ -118,6 +118,9 @@ def _authority(service: FakeHqService) -> dict:
     return {
         "head": service.head,
         "record": {
+            # The signed record names its own revision, which its state repeats (the api reads
+            # bind to that, bh-h9dn1).
+            "revision": service.authority_state["revision"],
             "config_backend": "svc:hq",
             "config_generation": "g1",
             "config_head": service.config_head,

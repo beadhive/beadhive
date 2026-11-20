@@ -517,7 +517,7 @@ def decision_for(host_id, hive=None, *, hq_dir=None, cfg=None, at=None):
             plane = control_plane(root)
         frame = hosts.load(root, host_id) if plane is None else plane.load_host_manifest(host_id)
     except FileNotFoundError as exc:
-        if plane is not None and getattr(plane, "config_backend", None) == "sql":
+        if plane is not None and getattr(plane, "config_backend", None) in ("sql", "api"):
             if not plane.verified_manifest_absence(exc):
                 return EligibilityDecision((("authority_available", False),))
         elif plane is None and not missing_host_config:
@@ -756,7 +756,7 @@ def incumbent_primary(hive="", *, cfg=None, hive_dir=None):
         raise EligibilityError("frame ineligible: hive_catalog_available")
     identity = host.host_id()
     plane = control_plane(config.hq_dir())
-    if getattr(plane, "config_backend", None) != "sql":
+    if getattr(plane, "config_backend", None) not in ("sql", "api"):
         raise EligibilityError("frame ineligible: AUTHORITY_NOT_READY")
     try:
         _revision, lease = plane.read_hive_lease_record(

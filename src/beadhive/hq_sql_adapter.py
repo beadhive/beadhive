@@ -479,6 +479,12 @@ class SqlHqAdapter:
             return store.load_snapshot_or_cached()
         return store.load_snapshot(revision=revision, deadline=deadline)
 
+    @_mapped
+    def read_hive_lease(self, prefix: str, *, deadline: float) -> Any:
+        """``(revision, lease)``: the unqualified protected hive-lease record (``("", None)``
+        when never adopted), as :meth:`SqlControlPlane.read_hive_lease_record` reads it."""
+        return self._plane.read_hive_lease_record(prefix)
+
     # ---- HqOperator ----------------------------------------------------------------------
 
     def _publish(self, state, signer, expected_revision, deadline, **extra) -> str:
