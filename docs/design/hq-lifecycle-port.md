@@ -391,9 +391,9 @@ for <method>")`, and never falls back to SQL.
 
 | Gap | Port method | Callers blocked on `api` | Suggested owner and shape (status at hq-service v0.1.0) |
 |---|---|---|---|
-| G1 | `HqReads.read_frame_anchor` | heartbeat, hive-lease and registration submits; session renew/evidence path parameters | `bh-hq-9lh`: return the caller's route (principal, epoch, carrier, signer fingerprint) in `GET /eligibility/{frame}` **Route live**: `GET /eligibility/{frame}` returns `principal`, `epoch` and `route` (carrier, signer fingerprint); `read_frame_anchor` is not wired to it yet (`bh-65s71`). |
+| G1 | `HqReads.read_frame_anchor` | heartbeat, hive-lease and registration submits; session renew/evidence path parameters | `bh-hq-9lh`: return the caller's route (principal, epoch, carrier, signer fingerprint) in `GET /eligibility/{frame}` **Live and wired** (`bh-65s71`): `HqServiceAdapter.read_frame_anchor` reads `GET /eligibility/{frame}` for the host's `host.frame_id`, takes the grant from the verified authority record and checks the served `principal`, `epoch` and `route` against it (`beadhive.hq_frame_grant`); session renew, evidence and the beat need no SQL frame runtime on `api`. Hive-lease and registration submits have no `api` caller yet. |
 | G2 | `HqReads.read_eligibility(prefix=..., hive_lease_epoch=...)` hive-lease row and evidence | `read_hive_lease_record`, `host_lease`, `localloop`, `bh host packup/rm`, `incumbent_primary` | `bh-hq-9lh`: `?prefix=` on `GET /eligibility/{frame}`, or `GET /hive-leases/{prefix}` **Route live**: `GET /hive-leases?prefix=` (`HqServiceAdapter.read_hive_lease`); the composite `read_eligibility(prefix=...)` stays unrouted, the port method is `bh-h9dn1`. |
-| G3 | `HqReads.read_release_catalog_row` | eligibility release admission, measured beat | `bh-hq-9lh`: include the matched catalog row in the eligibility payload **Live and wired**: `GET /release-catalog/{catalog}?release_id=&release_digest=` is `HqServiceAdapter.read_release_catalog_row`; the eligibility body carries the same verdict under `release`. |
+| G3 | `HqReads.read_release_catalog_row` | eligibility release admission, measured beat | `bh-hq-9lh`: include the matched catalog row in the eligibility payload **Live and wired**: `GET /release-catalog/{catalog}?release_id=&release_digest=` is `HqServiceAdapter.read_release_catalog_row`; the eligibility body carries the same verdict under `release`. The measured beat on `api` reads it through the port (`bh-65s71`). |
 | G4 | `HqAdmission.describe_incarnation`, `HqAdmission.preflight` | `bh host release-upgrade` | `bh-hq-3sa`: a plan response from `POST /incarnations` |
 | G5 | `HqAdmission.withdraw_manifest` | `bh host rm`, `bh host retire` | `bh-hq-3sa`: `DELETE /manifests/{host_id}` **Route live**: `DELETE /manifests/{host_id}` is `HqServiceAdapter.withdraw_manifest`. |
 | G6 | `HqOperator.publish_authority` | `bh hq authority observe`, `bind-beadyard`, `bh host admit/cordon/drain/park/resume/quarantine/frame-retire/emergency-*`, `release-upgrade` | `bh-hq-mz3`: one generic signed-authority CAS (`{record, signature, expected_revision}`) covers all of these, since the client already builds and signs the state; rebind and release-policy become special cases |
@@ -402,8 +402,8 @@ for <method>")`, and never falls back to SQL.
 | G9 | Placement (`SqlPlacementDirector`) | `bh hq placement`, director failover, doctor | not yet planned; the director runs on the HQ host today, so it can stay SQL |
 | G10 | Release catalog (`ReleaseCatalogStore`) | `bh hq release-catalog import/revoke/verify` | not yet planned; operator-host tool **Routes live**: catalog read, verify (`GET`), and operator `import`/`revoke` plan/apply under `/release-catalog/{catalog}`; the read and verify are wired, import and revoke have no port method yet (`bh-lejfy`). |
 
-G1 matters most. Without it, a frame on the hq-service adapter cannot fill the
-`/sessions/{principal}/{epoch}` path, so `bh-u0osy` depends on it as much as on `bh-hq-e9z`.
+G1 mattered most: without it a frame on the hq-service adapter could not fill the
+`/sessions/{principal}/{epoch}` path. It is closed by `bh-65s71`.
 
 ## 5. Notes for the consumers
 
@@ -419,8 +419,8 @@ G1 matters most. Without it, a frame on the hq-service adapter cannot fill the
   `read_history(since=floor)` feeding the same append-only check `_check_floor` runs today
   (superseded by section 7 D1: this is the adapter's private `_read_history`, not a port method).
 - **`bh-u0osy`.** `heartbeat_sender` keeps its loop and error reporting. It gets
-  `renew_session` and `publish_evidence` from the port, plus `read_frame_anchor` once G1 is
-  closed.
+  `renew_session` and `publish_evidence` from the port, plus `read_frame_anchor` (G1, closed by
+  `bh-65s71`).
 
 ## 6. Landed: the SQL adapter (`bh-v3dyp`)
 

@@ -1899,21 +1899,21 @@ class HqConfig(_Section):
     session_via_port: bool = Field(
         False,
         description=(
-            "HOST-only. Route this frame's session renew and conformance-evidence post through "
-            "the HQ port, on the adapter `hq.route` selects, instead of the direct SQL session "
-            "calls. Off (default) keeps the direct SQL path unchanged. `BH_HQ_SESSION_VIA_PORT` "
-            "(`1`/`true`) overrides it for one process. A port renew that cannot be sent is a "
-            "failed renewal, never a silent SQL fallback."
+            "HOST-only, `hq.route: sql` hosts only. Route this frame's session renew and "
+            "conformance-evidence post through the HQ port (the SQL adapter) instead of the "
+            "direct SQL session calls. Off (default) keeps the direct SQL path unchanged. An "
+            "`hq.route: api` host ignores it: it always renews and posts evidence through "
+            "hq-service. `BH_HQ_SESSION_VIA_PORT` (`1`/`true`) overrides it for one process. A "
+            "port renew that cannot be sent is a failed renewal, never a silent SQL fallback."
         ),
     )
     session_dual_write: bool = Field(
         False,
         description=(
-            "HOST-only. With `hq.session_via_port` on and `hq.route: api`, also run the direct "
-            "SQL session-row and evidence-row writes after the HQ service accepted its write. "
-            "Off (default) leaves the port as the only writer. Do not enable until the SQL and "
-            "service liveness floors are known not to be shared (bh-ubpoc). "
-            "`BH_HQ_SESSION_DUAL_WRITE` (`1`/`true`) overrides it for one process."
+            "HOST-only. Retired (bh-65s71): accepted and ignored. An `hq.route: api` host "
+            "reads and writes no SQL frame runtime, so hq-service is the only writer of its "
+            "session and evidence; a SQL dual write waits on bh-ubpoc. "
+            "`BH_HQ_SESSION_DUAL_WRITE` is ignored too."
         ),
     )
     api: HqApiConfig = Field(default_factory=HqApiConfig)

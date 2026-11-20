@@ -9,12 +9,15 @@ Replaces the out-of-tree ``~/.beadhive/factory-local-heartbeat.py`` (and its
 * ``beat`` — sign and publish one ``HeartbeatLease`` carrying the newest cached conformance.
   Never measures, so a slow or stalled conformance run cannot lapse the frame. Runs every
   :data:`~beadhive.heartbeat_conformance.INTERVAL_SECONDS` with the in-tree TTL. A
-  session-only incarnation has no signed inbox: the beat is then skipped (exit 0).
+  session-only incarnation has no signed inbox: the beat is then skipped (exit 0). So is every
+  beat on an ``hq.route: api`` host, whose signed beat is the session renew (bh-65s71).
 * ``renew`` — on a data-switched ``dolt-server`` frame (its ``_session``/``_evidence`` tables
   exist; bh-owqdg, ADR §5), renew the server-stamped session row: **one UPDATE per tick**, on its
   own timer (:data:`~beadhive.heartbeat_conformance.RENEW_INTERVAL_SECONDS`), never waiting on
   the conformance job. Elsewhere it is a no-op (exit 0). ``renew --loop`` keeps ticking in one
-  process instead of a timer.
+  process instead of a timer. On an ``hq.route: api`` host every tick is one signed beat posted
+  to hq-service's session renew route, with the frame's grant read from hq-service: no SQL frame
+  runtime is needed or read.
 
 On a switched frame the ``conformance`` job also writes its evidence row after each run, and
 during Φ3 the ``beat`` keeps dual-writing signed inbox beats so 0.22.x readers and the receiver
@@ -385,7 +388,8 @@ def _beat(free_sessions: int) -> str:
 
 
 def _select_port():
-    """The HQ port ``hq.route`` selects (only asked for when ``hq.session_via_port`` is on)."""
+    """The HQ port ``hq.route`` selects (only asked for on the port path: an ``hq.route: api``
+    host, or ``hq.session_via_port`` on)."""
     from .heartbeat_report import host_config
     from .hq_service_adapter import select_hq_port
 
@@ -393,11 +397,12 @@ def _select_port():
 
 
 def _port_kwargs() -> dict:
-    """The port selector for the session calls, only when ``hq.session_via_port`` is on; flag
-    off, the calls are made exactly as before."""
-    from .heartbeat_report import session_via_port
+    """The port selector for the session calls on the port path (:func:`~beadhive.
+    heartbeat_report.port_session`: always on an ``hq.route: api`` host); on the direct SQL
+    path the calls are made exactly as before."""
+    from .heartbeat_report import port_session
 
-    return {"select_port": _select_port} if session_via_port() else {}
+    return {"select_port": _select_port} if port_session() else {}
 
 
 def _renew(*, loop: bool, interval: float) -> int:
@@ -512,9 +517,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
     if args.verb == "beat":
+        from .heartbeat_report import api_route
         from .hq_sql_runtime import SessionOnlyIncarnation
 
         try:
+            if api_route():
+                # hq-service takes the signed beat on the session renew (it mirrors it into a
+                # signed inbox itself): a second writer would race the same seq floor.
+                print("beat skipped: hq.route api beats through session renew", file=sys.stderr)
+                return 0
             print(json.dumps({"digest": _beat(args.free_sessions)}))
         except SessionOnlyIncarnation:
             print("beat skipped: session-only incarnation (no signed inbox)", file=sys.stderr)
