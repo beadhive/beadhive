@@ -467,6 +467,9 @@ class ReleaseCatalogStore:
         clock: Callable[[], float] = time.time,
         connect: Callable[..., Any] | None = None,
     ):
+        from .hq_sql_guard import guard_sql_open
+
+        guard_sql_open("ReleaseCatalogStore")
         self._binding = dict(binding)
         self._broker = broker
         self._clock = clock

@@ -214,6 +214,9 @@ def authority_cmd(
                 raise hq_control_plane.ControlPlaneError("prune-inbox requires --frame")
             if not hasattr(plane, "prune_inbox"):
                 raise hq_control_plane.ControlPlaneError("prune-inbox requires a SQL HQ")
+            from .hq_sql_guard import guard_sql_open
+
+            guard_sql_open("prune-inbox", host_only=True, refuse_only=True)
             try:
                 retention = hq_sql_inbox_retention.resolve_retention(
                     settings=getattr(plane, "inbox_retention_s", None)
