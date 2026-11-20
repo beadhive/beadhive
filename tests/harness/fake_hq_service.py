@@ -45,6 +45,13 @@ The write routes serve the bodies of hq-service v0.1.0 (``api/writes.go``, ``sto
 * ``GET /hive-leases?prefix=`` serves ``hive_leases[prefix]`` (``unknown_prefix`` otherwise) and
   ``GET /release-catalog/{catalog}`` lists ``catalog_rows`` or, with ``release_id`` and
   ``release_digest`` together, folds them into the verdict ``{id, digest, verified, row}``.
+* With ``authority_state`` set (bh-obhfx), an open admission is the service's
+  (``store/admission.go`` ``open``): it reads the manifest PUT committed, derives the authority
+  (audience and profile from the first record, the epoch from the frame's floor, the config head)
+  and its principal, refuses an incarnation POST /incarnations did not register
+  (``incarnation_unprovisioned``), writes the ACTIVE grant into ``authority_state`` and provisions
+  the principal, so the session routes then renew it. A ``reads`` value may be a zero-argument
+  callable, evaluated per request (a read that follows the writes).
 * With ``caller`` set (``{kind, frame_id, host_id}``) the write routes are caller-bound as at
   v0.1.0: a caller not bound to the path's frame or host, or to the body's host, is a 403
   ``caller_not_bound``.
@@ -81,6 +88,7 @@ from beadhive.hq_sql_signatures import (
     SqlSignatureError,
     canonical,
     fingerprint,
+    sql_principal,
     verify_authority,
     verify_heartbeat,
 )
@@ -108,6 +116,7 @@ CODES: dict[str, tuple[int, str]] = {
         "the report's canonical digest is not the report_digest of the principal's current beat",
     ),
     "evidence_invalid": (409, "the report is not a valid heartbeat measurement report"),
+    "incarnation_unprovisioned": (409, "the incarnation is not registered with this service"),
 }
 
 #: Codes the registry marks retryable (``conformance/http/v1/codes.json``).
@@ -146,12 +155,27 @@ V0_CODES: dict[str, tuple[int, str]] = {
     "invalid_prefix": (400, "prefix is not a hive prefix"),
     "unknown_prefix": (404, "no hive lease names that prefix"),
     "query_not_allowed": (400, "a query string where none is defined"),
+    "manifest_frame_mismatch": (409, "the host's committed manifest names another frame"),
+    "manifest_incomplete": (
+        409,
+        "admission needs a committed manifest with frame_id, instance_ref, release and "
+        "capabilities",
+    ),
+    "admission_conflict": (409, "the frame already has an active or pending incarnation"),
+}
+
+
+#: Codes the service answers that no copied corpus registry lists with a status: admission's
+#: missing committed manifest (``store/admission.go`` ``committedManifest``; the registration
+#: registry names it without one).
+UNLISTED_CODES: dict[str, tuple[int, str]] = {
+    "host_manifest_unavailable": (409, "committed canonical host manifest unavailable"),
 }
 
 
 def error_response(code: str) -> httpx.Response:
     """The service's error envelope for *code* (ADR bh-hq-pio.5), as a response."""
-    status, message = {**CODES, **V0_CODES}[code]
+    status, message = {**CODES, **V0_CODES, **UNLISTED_CODES}[code]
     body = {
         "error": {
             "code": code,
@@ -219,6 +243,11 @@ class FakeHqService:
         #: The attested caller the Gateway minted: ``{kind, frame_id, host_id}``; ``None`` skips
         #: the caller-binding rules (an unbound test).
         self.caller: dict[str, str] | None = None
+        #: The committed manifest bodies PUT published, by host id (bh-obhfx).
+        self.manifest_bodies: dict[str, dict[str, Any]] = {}
+        #: The operator authority state (``{revision, frames}``) an open admission writes into,
+        #: as the service does (bh-obhfx). ``None`` keeps the canned admission answer.
+        self.authority_state: dict[str, Any] | None = None
 
     def provision(self, principal: str, **kwargs: Any) -> Principal:
         record = Principal(**kwargs)
@@ -244,7 +273,8 @@ class FakeHqService:
                 return routed
         if request.method == "GET" and path.removeprefix(PREFIX) in self.reads:
             self.seen.append(("read", path.removeprefix(PREFIX)))
-            return httpx.Response(200, json=self.reads[path.removeprefix(PREFIX)])
+            served = self.reads[path.removeprefix(PREFIX)]
+            return httpx.Response(200, json=served() if callable(served) else served)
         parts = path.removeprefix(PREFIX).split("/")
         if (
             request.method != "POST"
@@ -446,6 +476,7 @@ class FakeHqService:
         if host_id not in self.manifests:
             return None, {"outcome": "replayed", "revision": self.config_head, **facts}
         self.manifests.discard(host_id)
+        self.manifest_bodies.pop(host_id, None)
         self.config_head = hashlib.sha256((self.config_head + "-" + host_id).encode()).hexdigest()[
             :32
         ]
@@ -460,6 +491,7 @@ class FakeHqService:
             return "host_id_mismatch", None
         document = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
         self.manifests.add(host_id)
+        self.manifest_bodies[host_id] = body
         self.config_head = hashlib.sha256(self.config_head.encode() + document).hexdigest()[:32]
         return None, {
             "outcome": "accepted",
@@ -487,6 +519,8 @@ class FakeHqService:
             return "admission_invalid", None
         if body["expected_revision"] != self.head:
             return "stale_revision", None
+        if self.authority_state is not None and kind == "open":
+            return self._open_admission(frame, host_id, str(body["public_key"]).strip())
         principal = "frame_" + hashlib.sha256(f"{frame}/{host_id}".encode()).hexdigest()[:20]
         revision = self._new_head("admission", frame, kind)
         return None, {
@@ -497,6 +531,102 @@ class FakeHqService:
             "kind": kind,
             "principal": principal,
             "epoch": 0,
+        }
+
+    def _open_admission(self, frame: str, host_id: str, key: str):
+        """``store/admission.go`` ``open``: the ACTIVE grant hq-service builds and records."""
+        from beadhive.hq_framelease_contracts import ObservationAuthority
+
+        state = self.authority_state
+        assert state is not None
+        frames = state.setdefault("frames", {})
+        records = [
+            record
+            for entry in frames.values()
+            for record in (entry.get("active"), entry.get("candidate"))
+            if record
+        ]
+        entry = frames.get(frame)
+        if entry is not None:
+            active = entry.get("active")
+            if (
+                active
+                and active["authority"]["holder_identity"] == host_id
+                and active["public_key"] == key
+                and active["state"] != "retired"
+            ):
+                return None, {
+                    "outcome": "replayed",
+                    "revision": self.head,
+                    "frame_id": frame,
+                    "host_id": host_id,
+                    "kind": "open",
+                }
+            if entry.get("active") or entry.get("candidate"):
+                return "admission_conflict", None
+        manifest = self.manifest_bodies.get(host_id)
+        if manifest is None:
+            return "host_manifest_unavailable", None
+        if manifest.get("frame_id") != frame:
+            return "manifest_frame_mismatch", None
+        if not all(manifest.get(k) for k in ("instance_ref", "release", "capabilities")):
+            return "manifest_incomplete", None
+        audience, profile = manifest.get("beadyard_id") or "beadhive", "open-admission"
+        if records:
+            audience = records[0]["authority"]["audience"]
+            profile = records[0]["desired"]["profile"]
+        epoch = 0 if entry is None else int(entry["epoch_floor"]) + 1
+        authority = ObservationAuthority(
+            frame_id=frame,
+            holder_identity=host_id,
+            instance_ref=manifest["instance_ref"],
+            key_fingerprint=fingerprint(key),
+            epoch=epoch,
+            audience=audience,
+            config_revision=self.config_head,
+            beadyard_id=manifest.get("beadyard_id"),
+        )
+        principal = sql_principal(authority)
+        if (principal, epoch) not in self.incarnations:
+            return "incarnation_unprovisioned", None
+        frames[frame] = {
+            "active": {
+                "authority": {
+                    k: v
+                    for k, v in vars(authority).items()
+                    if v is not None or k == "candidate_expires_at"
+                },
+                "public_key": key,
+                "state": "active",
+                "desired": {
+                    "declared": True,
+                    "release": manifest["release"],
+                    "caps": manifest["capabilities"],
+                    "profile": profile,
+                },
+                "cordoned": False,
+            },
+            "candidate": None,
+            "retired": [],
+            "epoch_floor": epoch,
+        }
+        state["revision"] = int(state.get("revision", 0)) + 1
+        self.provision(
+            principal,
+            frame_id=frame,
+            holder=host_id,
+            instance=manifest["instance_ref"],
+            epoch=epoch,
+            public_key=key,
+        )
+        return None, {
+            "outcome": "accepted",
+            "revision": self._new_head("admission", frame, "open"),
+            "frame_id": frame,
+            "host_id": host_id,
+            "kind": "open",
+            "principal": principal,
+            "epoch": epoch,
         }
 
     def _operate(self, kind: str, body: dict, phase: str):
