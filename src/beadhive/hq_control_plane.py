@@ -3386,9 +3386,7 @@ API_UNROUTED = frozenset(
         "publish_registration",
         "publish_registration_evidence",
         "read_placement",
-        "release_policy",
         "release_upgrade",
-        "renew",
         "require_frame_placeable",
         "require_hive_policy",
         "watch_state",
@@ -3446,6 +3444,11 @@ def api_control_plane(host_config):
     api = hq.get("api") if isinstance(hq, Mapping) else None
     floor = str(api.get("floor_path") or "") if isinstance(api, Mapping) else ""
     return ApiControlPlane(_api_port(host_config), floor_path=floor or None)
+
+
+def host_api_plane():
+    """The api control plane of this host's own config (the operator CLI verbs')."""
+    return api_control_plane(config.load_host())
 
 
 class ApiConfigStore:
@@ -4119,6 +4122,31 @@ class ApiControlPlane:
         if observer_dir is not None:
             raise ControlPlaneError("api observer storage is protected server-local custody")
         return self.read_eligibility(manifest, now=now)[2]
+
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None, frame=None):
+        """Rebind through ``POST /authority/rebind/{plan,apply}`` (bh-lejfy)."""
+        from . import hq_api_operator
+
+        try:
+            return hq_api_operator.rebind(
+                self,
+                expected=expected,
+                operator_key=operator_key,
+                duration=duration,
+                ceiling=ceiling,
+                frame=frame,
+            )
+        except hq_api_operator.ApiOperatorError as exc:
+            raise ControlPlaneError(str(exc)) from None
+
+    def release_policy(self, frame, action="plan", **kwargs):
+        """Release-policy plan/apply through ``POST /authority/release-policy/{frame}/...``."""
+        from . import hq_api_operator
+
+        try:
+            return hq_api_operator.release_policy(self, frame, action, **kwargs)
+        except hq_api_operator.ApiOperatorError as exc:
+            raise ControlPlaneError(str(exc)) from None
 
     def __getattr__(self, name):
         if name in API_UNROUTED:

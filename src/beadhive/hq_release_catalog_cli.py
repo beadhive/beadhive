@@ -28,6 +28,25 @@ __all__ = ["release_catalog_cmd"]
 
 ACTIONS = ("import", "verify", "revoke", "provision")
 
+#: Absolute path of the operator's Ed25519 key, which signs an import on an ``hq.route: api``
+#: host (hq-service verifies the signature; a parameter would change the published operation).
+OPERATOR_KEY_ENV = "BH_HQ_OPERATOR_KEY"
+
+
+def _api_route() -> bool:
+    """True on an ``hq.route: api`` host: the catalog is served by hq-service, never SQL."""
+    from . import hq_control_plane
+
+    return hq_control_plane.host_route() == "api"
+
+
+def _api_store(operator_key):
+    from . import hq_control_plane
+    from .hq_release_catalog_api import ApiReleaseCatalogStore
+
+    port = hq_control_plane.host_api_plane().port
+    return ApiReleaseCatalogStore(port, operator_key=operator_key)
+
 
 def _store(operator_settings):
     path = operator_settings or os.environ.get(hq_operator_settings.ENV) or None
@@ -38,6 +57,11 @@ def _operator(operator_settings):
     """The server-local administrative operator (its ``authority_writer`` binding)."""
     from .hq_sql_operator import SqlRuntimeOperator
 
+    if _api_route():
+        raise ValueError(
+            "provision is server-local: run it on the hq-service host's SQL route, not an "
+            "hq.route api host"
+        )
     path = operator_settings or os.environ.get(hq_operator_settings.ENV) or None
     if not path:
         raise ValueError(f"provision needs --operator-settings or {hq_operator_settings.ENV}")
@@ -95,6 +119,9 @@ def release_catalog_cmd(
 
     revoke VERSION --reason TEXT: append a revocation tombstone (a PyPI yank never revokes).
 
+    On an ``hq.route: api`` host, import and verify go through hq-service (import is signed with
+    the key named by $BH_HQ_OPERATOR_KEY); revoke and provision are not routed there.
+
     provision: one-time, idempotent creation of the empty catalog table, run with the SERVER-LOCAL
     administrative operator settings (authority_writer with CREATE; not the catalog writer)."""
     try:
@@ -116,6 +143,10 @@ def release_catalog_cmd(
             raise ValueError("revoke needs --reason")
         if action == "verify" and bool(version) == all_:
             raise ValueError("verify takes a VERSION or --all")
+        api = _api_route()
+        operator_key = os.environ.get(OPERATOR_KEY_ENV) or None
+        if api and action == "import" and not operator_key:
+            raise ValueError(f"import on an hq.route api host needs {OPERATOR_KEY_ENV}")
         if action == "import":
             verifier = _verifier()
             source = hq_release_catalog.ComposedSource(_remote, bundle, wheel)
@@ -123,16 +154,16 @@ def release_catalog_cmd(
                 version,
                 source=source,
                 verifier=verifier,
-                store=_store(operator_settings),
+                store=_api_store(operator_key) if api else _store(operator_settings),
                 trusted_root=trusted_root,
             )
         elif action == "revoke":
             result = hq_release_catalog.revoke_release(
-                version, reason, store=_store(operator_settings)
+                version, reason, store=_api_store(None) if api else _store(operator_settings)
             )
         else:
             result = hq_release_catalog.verify_rows(
-                store=_store(operator_settings),
+                store=_api_store(None) if api else _store(operator_settings),
                 verifier=_verifier(),
                 version=version or None,
                 trusted_root=trusted_root,

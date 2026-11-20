@@ -92,6 +92,7 @@ from beadhive.hq_framelease_contracts import HeartbeatLease
 from beadhive.hq_service_adapter import PREFIX
 from beadhive.hq_sql_signatures import (
     AUTHORITY_DOMAIN,
+    CATALOG_DOMAIN,
     SqlSignatureError,
     canonical,
     fingerprint,
@@ -150,6 +151,9 @@ V0_CODES: dict[str, tuple[int, str]] = {
     "admission_invalid": (400, "the admission request is invalid"),
     "rebind_invalid": (400, "the rebind request is not a frame and a duration"),
     "release_policy_invalid": (400, "the release policy request or its spec is invalid"),
+    "catalog_invalid": (400, "the release catalog request is invalid"),
+    "catalog_row_exists": (409, "the catalog already holds this release active"),
+    "catalog_version_taken": (409, "the version already has another active digest"),
     "operator_signature_required": (409, "a signed fleet's publication needs the signature"),
     "plan_mismatch": (409, "the apply is not what the plan request yields"),
     "missing_floor": (400, "exactly one since parameter is required"),
@@ -336,6 +340,15 @@ class FakeHqService:
             return self._write(request, body, lambda b: self._manifest(parts[1], b))
         if method == "POST" and len(parts) == 2 and parts[0] == "admissions":
             return self._write(request, body, lambda b: self._admission(parts[1], b))
+        if (
+            method == "POST"
+            and len(parts) == 4
+            and parts[0] == "release-catalog"
+            and parts[2] == "import"
+            and parts[3] in ("plan", "apply")
+            and _FRAME.match(parts[1])
+        ):
+            return self._write(request, body, lambda b: self._catalog_import(parts[1], b, parts[3]))
         if method == "POST" and parts[:2] == ["authority", "rebind"] and len(parts) == 3:
             if parts[2] in ("plan", "apply"):
                 return self._write(request, body, lambda b: self._operate("rebind", b, parts[2]))
@@ -695,6 +708,71 @@ class FakeHqService:
             "kind": "open",
             "principal": principal,
             "epoch": epoch,
+        }
+
+    def _catalog_import(self, catalog: str, body: dict, phase: str):
+        """``POST /release-catalog/{catalog}/import/{plan,apply}`` (``store/catalog.go``): a
+        plan answers the active row and the record to sign under the catalog domain; an apply
+        carries ``{expected_revision, issued_at, signature}`` only."""
+        fields = {"version", "measured_digest", "wheel_sha256", "commit", "bundle"}
+        apply_fields = {"expected_revision", "issued_at", "signature"}
+        if set(body) - fields - (apply_fields if phase == "apply" else set()):
+            return "catalog_invalid", None
+        if not all(isinstance(body.get(key), str) and body[key] for key in fields - {"bundle"}):
+            return "catalog_invalid", None
+        scoped = [r for r in self.catalog_rows if r["catalog"] == catalog]
+        mine = [r for r in scoped if r["version"] == body["version"]]
+        revoked = {r["measured_digest"] for r in mine if r["status"] == "revoked"}
+        if phase == "apply" and body.get("expected_revision") != self.head:
+            return "stale_revision", None
+        if any(r["measured_digest"] == body["measured_digest"] for r in mine):
+            return "catalog_row_exists", None
+        if any(r["status"] == "active" and r["measured_digest"] not in revoked for r in mine):
+            return "catalog_version_taken", None
+        issued = body["issued_at"] if phase == "apply" else 1793000000.0
+        row = {
+            "catalog": catalog,
+            "version": body["version"],
+            "measured_digest": body["measured_digest"],
+            "status": "active",
+            "algorithm": "beadhive-tree-sha256-v1",
+            "wheel_sha256": body["wheel_sha256"],
+            "commit": body["commit"],
+            "bundle": body.get("bundle", ""),
+            "reason": "",
+            "recorded_at": issued,
+        }
+        record = {"domain": "beadhive/hq-catalog/v1", "op": "import", "head": self.head, "row": row}
+        signing_input = CATALOG_DOMAIN + canonical(record)
+        if phase == "plan":
+            return None, {
+                "outcome": "planned",
+                "revision": self.head,
+                "record": record,
+                "signing_input": base64.b64encode(signing_input).decode(),
+                "signing_sha256": hashlib.sha256(signing_input).hexdigest(),
+                "issued_at": issued,
+                "plan_expires_at": issued + 900,
+                "signature_needed": True,
+                "row": row,
+            }
+        signature = body.get("signature")
+        if not signature:
+            return "operator_signature_required", None
+        if self.operator_key is not None:
+            try:
+                verify_authority(
+                    record, signature, granted_public_key=self.operator_key, domain=CATALOG_DOMAIN
+                )
+            except SqlSignatureError:
+                return "operator_signature_invalid", None
+        self.catalog_rows.append(row)
+        return None, {
+            "outcome": "accepted",
+            "revision": self._new_head("catalog-import", row["version"]),
+            "op": "import",
+            "catalog": catalog,
+            "row": row,
         }
 
     def _operate(self, kind: str, body: dict, phase: str):

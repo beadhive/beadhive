@@ -12,8 +12,8 @@ submissions, config, history, eligibility, the hive-lease read, the release-cata
 incarnations, manifests (PUT and DELETE), admissions, the rebind and release-policy plan/apply
 pairs, and session renew and evidence. The write routes are caller-bound at v0.1.0 (the Gateway
 mints the principal kind, frame and host, and a mismatch is ``caller_not_bound``); the adapter
-sends nothing extra for that. The release-catalog import and revoke plan/apply routes are served
-but have no port method yet (bh-lejfy). The
+sends nothing extra for that. The release-catalog import plan/apply pair is routed (bh-lejfy);
+revoke is served but stays unrouted until 0.41.0. The
 fixtures are in ``tests/test_hq_service_contract.py``, ``tests/test_hq_service_renew_contract.py``
 and ``tests/test_hq_service_evidence_contract.py``. A shape the service does not serve yet would
 be marked ``PROVISIONAL`` with the upstream gap; none remains. Methods with no route raise
@@ -60,7 +60,7 @@ from .hq_port import (
     configured_route,
     sql_adapter_factory,
 )
-from .hq_sql_signatures import AUTHORITY_DOMAIN, SqlSignatureError, canonical
+from .hq_sql_signatures import AUTHORITY_DOMAIN, CATALOG_DOMAIN, SqlSignatureError, canonical
 
 PREFIX = "/hq/lifecycle/v0"
 DEADLINE_HEADER = "X-Beadhive-Deadline-Ms"
@@ -801,6 +801,46 @@ class HqServiceAdapter:
 
     # ---- operator -----------------------------------------------------------------------
 
+    def _plan(
+        self,
+        route: str,
+        request: dict,
+        *,
+        domain: bytes,
+        deadline: float,
+        expected_revision: str | None,
+    ) -> dict:
+        """``POST {route}/plan``: the service's plan, checked before anything is signed.
+
+        It carries a ``record`` and the ``signing_input`` of ``domain`` over that record's
+        canonical bytes. With ``expected_revision`` the plan must have been made at that head."""
+        _, plan = self._call(
+            "POST",
+            route + "/plan",
+            request,
+            deadline=deadline,
+            expected_revision=expected_revision,
+            envelope_errors=True,
+        )
+        record = plan.get("record") if isinstance(plan, dict) else None
+        if not isinstance(record, dict) or plan.get("outcome") != "planned":
+            raise HqUnavailable("hq-service plan carries no record to sign")
+        if expected_revision is not None and plan.get("revision") != expected_revision:
+            raise HqRefused(
+                "stale_revision",
+                f"the plan was made at {plan.get('revision')}, "
+                f"not the expected {expected_revision}",
+            )
+        try:
+            expected_input = base64.b64encode(
+                domain + canonical(record, limit=4 * 1024 * 1024)
+            ).decode()
+        except SqlSignatureError:
+            raise HqUnavailable("hq-service plan record is not canonical") from None
+        if plan.get("signing_input") != expected_input:
+            raise HqUnavailable("hq-service plan signing_input is not its record's signing input")
+        return plan
+
     def _plan_apply(
         self,
         route: str,
@@ -821,31 +861,14 @@ class HqServiceAdapter:
         re-sends the request with ``{expected_revision, config_head, issued_at, expires_at,
         signature, record}``; the service rebuilds the record itself and verifies the signature
         over its own bytes."""
-        _, plan = self._call(
-            "POST",
-            route + "/plan",
+        plan = self._plan(
+            route,
             request,
+            domain=AUTHORITY_DOMAIN,
             deadline=deadline,
             expected_revision=expected_revision,
-            envelope_errors=True,
         )
-        record = plan.get("record") if isinstance(plan, dict) else None
-        if not isinstance(record, dict) or plan.get("outcome") != "planned":
-            raise HqUnavailable("hq-service plan carries no record to sign")
-        if plan.get("revision") != expected_revision:
-            raise HqRefused(
-                "stale_revision",
-                f"the plan was made at {plan.get('revision')}, "
-                f"not the expected {expected_revision}",
-            )
-        try:
-            expected_input = base64.b64encode(
-                AUTHORITY_DOMAIN + canonical(record, limit=4 * 1024 * 1024)
-            ).decode()
-        except SqlSignatureError:
-            raise HqUnavailable("hq-service plan record is not canonical") from None
-        if plan.get("signing_input") != expected_input:
-            raise HqUnavailable("hq-service plan signing_input is not its record's signing input")
+        record = plan["record"]
         apply_body: dict[str, Any] = {
             **request,
             "expected_revision": expected_revision,
@@ -894,6 +917,65 @@ class HqServiceAdapter:
             expected_revision=expected_revision,
             deadline=deadline,
         )
+
+    def plan_release_policy(self, frame: str, request: dict, *, deadline: float) -> dict:
+        """Plan only (``/authority/release-policy/{frame}/plan``): writes nothing. Returns the
+        service's plan (``revision``, ``record``, ``signing_sha256``, ``signature_needed``,
+        ``summary``), its ``signing_input`` already checked against its record."""
+        return self._plan(
+            f"/authority/release-policy/{_seg(frame)}",
+            dict(request),
+            domain=AUTHORITY_DOMAIN,
+            deadline=deadline,
+            expected_revision=None,
+        )
+
+    def read_release_catalog(self, catalog: str, *, deadline: float) -> list[dict]:
+        """Every row of ``catalog`` whole (``GET /release-catalog/{catalog}``)."""
+        rows = self._read_catalog(catalog, deadline=deadline).get("rows")
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            raise HqUnavailable("hq-service catalog carries no row list")
+        return rows
+
+    def import_release_catalog(
+        self, catalog: str, request: dict, *, signer: Signer, deadline: float
+    ) -> str:
+        """Import one release row (``/release-catalog/{catalog}/import/{plan,apply}``).
+
+        ``request`` is ``{version, measured_digest, wheel_sha256, commit, bundle?}``. The plan's
+        row must be exactly what was asked for before it is signed (``signer`` signs the plan's
+        record under the catalog domain). Unlike the authority routes the apply carries
+        ``{expected_revision, issued_at, signature}`` only (no record, config head or expiry),
+        and the head it is made at is the plan's."""
+        route = f"/release-catalog/{_seg(catalog)}/import"
+        plan = self._plan(
+            route, dict(request), domain=CATALOG_DOMAIN, deadline=deadline, expected_revision=None
+        )
+        row = plan.get("row")
+        if (
+            not isinstance(row, dict)
+            or row.get("catalog") != catalog
+            or any(row.get(key) != value for key, value in request.items())
+        ):
+            raise HqUnavailable("hq-service catalog plan row is not the requested import")
+        head = plan.get("revision")
+        if not isinstance(head, str) or not head:
+            raise HqUnavailable("hq-service catalog plan names no head")
+        _, payload = self._call(
+            "POST",
+            route + "/apply",
+            {
+                **request,
+                "expected_revision": head,
+                "issued_at": plan.get("issued_at"),
+                "signature": signer(plan["record"]),
+            },
+            deadline=deadline,
+            expected_revision=head,
+            commit_write=True,
+            envelope_errors=True,
+        )
+        return self._revision(payload)
 
     def publish_authority(
         self,
