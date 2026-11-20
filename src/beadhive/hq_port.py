@@ -248,6 +248,11 @@ class HqReads(Protocol):
         the SQL adapter answers the plane's ``(revision, lease)``."""
         ...
 
+    def read_release_catalog(self, catalog: str, *, deadline: float) -> list[dict]:
+        """Every row of ``catalog`` whole (api route only; the SQL route reads through the
+        release-catalog store binding)."""
+        ...
+
 
 class HqOperator(Protocol):
     def rebind(
@@ -256,6 +261,17 @@ class HqOperator(Protocol):
     def release_policy(
         self, frame: str, state: dict, *, signer: Signer, expected_revision: str, deadline: float
     ) -> str: ...
+    def plan_release_policy(self, frame: str, request: dict, *, deadline: float) -> dict:
+        """Plan only (api route): the service's plan, ``record`` unsigned, nothing written."""
+        ...
+
+    def import_release_catalog(
+        self, catalog: str, request: dict, *, signer: Signer, deadline: float
+    ) -> str:
+        """Import one release row (api route): plan, sign under the catalog domain, apply.
+        Returns the new head."""
+        ...
+
     def publish_authority(
         self,
         state: dict,

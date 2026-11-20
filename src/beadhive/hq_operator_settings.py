@@ -185,10 +185,15 @@ def configured() -> bool:
 
 def select_plane(operator_settings=None):
     """The file's plane when a settings file is named (argument or $BH_HQ_OPERATOR_SETTINGS),
-    else the host's own."""
+    else the host's own. On an ``hq.route: api`` host the plane is always hq-service's: the
+    file's SQL binding is never opened (bh-lejfy); the file still sets ``hq.authority_mode``."""
     operator_settings = operator_settings or os.environ.get(ENV) or None
     if operator_settings is None:
         from .hq_control_plane import control_plane
 
+        return control_plane()
+    from .hq_control_plane import control_plane, host_route
+
+    if host_route() == "api":
         return control_plane()
     return operator_plane(operator_settings)

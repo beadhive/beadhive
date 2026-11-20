@@ -470,6 +470,17 @@ class SqlHqAdapter:
     ) -> dict | None:
         return self._runtime().read_release_catalog_row(head, catalog, measured, deadline=deadline)
 
+    def read_release_catalog(self, catalog: str, *, deadline: float) -> list[dict]:
+        raise HqUnavailable("read_release_catalog is the api route's; SQL reads the catalog store")
+
+    def plan_release_policy(self, frame: str, request: dict, *, deadline: float) -> dict:
+        raise HqUnavailable("plan_release_policy is the api route's; SQL plans in the plane")
+
+    def import_release_catalog(
+        self, catalog: str, request: dict, *, signer, deadline: float
+    ) -> str:
+        raise HqUnavailable("import_release_catalog is the api route's; SQL imports via the store")
+
     @_mapped
     def read_config(
         self, *, revision: str | None = None, cached_ok: bool = False, deadline: float
