@@ -3441,9 +3441,11 @@ def api_control_plane(host_config):
     """The control plane of a ``route: api`` host: every read goes through the HQ port. The
     host's restore floor (``hq.api.floor_path``) also custodies the bounded-age cached config
     snapshot (:meth:`ApiConfigStore.load_snapshot_or_cached`)."""
-    hq = host_config.get("hq") if isinstance(host_config, dict) else None
-    api = hq.get("api") if isinstance(hq, dict) else None
-    floor = str(api.get("floor_path") or "") if isinstance(api, dict) else ""
+    from collections.abc import Mapping
+
+    hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
+    api = hq.get("api") if isinstance(hq, Mapping) else None
+    floor = str(api.get("floor_path") or "") if isinstance(api, Mapping) else ""
     return ApiControlPlane(_api_port(host_config), floor_path=floor or None)
 
 

@@ -1,0 +1,522 @@
+"""Eligibility, config and hive-lease reads on ``hq.route: api`` (bh-h9dn1), end to end.
+
+A frame host with ``hq.route: api`` and no ``hq.sql`` block answers ``bh host eligible``, the
+intake gate (``require_eligible`` / ``require_intake``), the hive-lease reads behind
+claim/renew/release/packup and every ``bh config`` read through the HQ port, against the
+in-process fake hq-service. Every SQL opener, the SQL plane and the SQL port adapter are
+tripwires: none is constructed. The hive-lease WRITE (``publish_hive_lease``) has no route here
+(bh-65s71's), so the write paths fail naming it, never reaching SQL.
+
+The response verifier is the recording pass-through stand-in of
+``tests/test_hq_api_route_plane.py``; what is under test is the plane's binding of each api
+read to the signed authority record (operator decision 2026-11-19) and its folding of the
+eligibility fields into the frame predicates.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+
+import pytest
+from tests.harness.fake_hq_service import FakeHqService
+from typer.testing import CliRunner
+
+from beadhive import (
+    config,
+    frame_eligibility,
+    host_lease,
+    hosts,
+    hq_control_plane,
+    hq_sql_adapter,
+    hq_sql_transport,
+)
+from beadhive.hq_port import HqRefused, HqUnavailable
+from beadhive.hq_service_adapter import adapter_from_config
+from beadhive.modules.config.domain.ports import FleetConfigDocument, ordered_documents_digest
+
+URL = "https://hq.test"
+HEAD = "a" * 32
+CONFIG_HEAD = "c" * 32
+KEY = "SHA256:frame-key"
+EXPIRES_AT = 4_000_000_000.0
+RELEASE = {"id": "rel-1", "digest": "sha256:" + "1" * 64}
+CAPS = {
+    "isolation": "container",
+    "trust_zone": "self-hosted",
+    "arch": "x86_64",
+    "harnesses": ["claude"],
+    "max_sessions": 2,
+}
+FLEET_YAML = (
+    "schema_version: 1\n"
+    "delimiter: '/'\n"
+    "providers: [github]\n"
+    "managed_repos:\n"
+    "  - {provider: github, org: acme, repo: bh, prefix: bh}\n"
+    "hq:\n"
+    "  mode: dolt-server\n"
+)
+
+
+def host_yaml(floor: str = "") -> str:
+    floor_line = f"    floor_path: {floor}\n" if floor else ""
+    return f"host:\n  frame_id: frame-1\nhq:\n  route: api\n  api:\n    url: {URL}\n{floor_line}"
+
+
+def manifest(**changes) -> hosts.HostManifest:
+    return hosts.HostManifest(
+        **{
+            "host_id": "host-1",
+            "frame_id": "frame-1",
+            "label": "frame",
+            "instance_ref": "vm-1",
+            "os": "linux",
+            "arch": "x86_64",
+            "role": "executor",
+            "state": "active",
+            "release": RELEASE,
+            "capabilities": CAPS,
+            "identity": {"kind": "none"},
+            **changes,
+        }
+    )
+
+
+def grant() -> dict:
+    """hq-service v0.1.0 ``EligibilityRead.active``: the frame's signed active grant."""
+    return {
+        "authority": {
+            "frame_id": "frame-1",
+            "holder_identity": "host-1",
+            "instance_ref": "vm-1",
+            "epoch": 3,
+            "key_fingerprint": KEY,
+            "audience": "hq",
+            "config_revision": "cfg-1",
+            "candidate_expires_at": None,
+        },
+        "state": "active",
+        "cordoned": False,
+        "public_key": "ssh-ed25519 AAAA",
+        "desired": {"release": RELEASE, "caps": CAPS, "profile": "reviewed", "declared": True},
+    }
+
+
+def authority(active: dict | None) -> dict:
+    """hq-service v0.1.0 ``GET /authority``: the signed record naming ``active``."""
+    frames = {"frame-1": {"active": active}} if active is not None else {}
+    return {
+        "head": HEAD,
+        "record": {
+            "backend_identity": "svc:hq",
+            "generation": "g1",
+            "revision": 7,
+            "config_backend": "sql:cfg",
+            "config_generation": "cfg-gen",
+            "config_head": CONFIG_HEAD,
+            "state": {"revision": 7, "issued_at": 1.0, "expires_at": EXPIRES_AT, "frames": frames},
+            "hive_policies": {"bh": {"config_revision": "cfg-1", "valid_until": EXPIRES_AT}},
+        },
+        "signature": "sig",
+    }
+
+
+def config_body(signed: dict, documents: list[tuple[str, str]]) -> dict:
+    return {
+        "authority": signed,
+        "publication": "pub-1",
+        "sequence": 1,
+        "documents_sha256": ordered_documents_digest(
+            [FleetConfigDocument(path, content) for path, content in documents]
+        ),
+        "documents": [
+            {
+                "path": path,
+                "kind": "fleet" if path == "fleet.yaml" else "host",
+                "ordinal": ordinal,
+                "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                "content": content,
+            }
+            for ordinal, (path, content) in enumerate(documents)
+        ],
+    }
+
+
+def eligibility_body(active, *, session="fresh", evidence="fresh", admits=True) -> dict:
+    """hq-service v0.1.0 ``GET /eligibility/{frame}?release_id=&release_digest=``."""
+    return {
+        "head": HEAD,
+        "config_head": CONFIG_HEAD,
+        "frame_id": "frame-1",
+        "active": active,
+        "principal": "frame_0123456789abcdef0123" if active else None,
+        "epoch": 3 if active else None,
+        "route": {"carrier": "service", "signer_fingerprint": KEY} if active else None,
+        "liveness": {
+            "session": {"verdict": session, "renewed_at": 100.0, "age_s": 4.0, "ttl_s": 300},
+            "evidence": {
+                "verdict": evidence,
+                "status": "conformant",
+                "measured_at": 90.0,
+                "age_s": 14.0,
+                "ttl_s": 900,
+                "digest": "sha256:" + "e" * 64,
+            },
+        }
+        if active
+        else None,
+        "release": {**RELEASE, "admits": admits, "basis": "pin", "row": None} if active else None,
+    }
+
+
+def lease_body(holder: str = "host-1") -> dict:
+    return {
+        "head": HEAD,
+        "prefix": "bh",
+        "revision": "r" * 64,
+        "lease": {
+            "host_id": holder,
+            "label": holder,
+            "epoch": 2,
+            "adopted_at": "2026-11-01T00:00:00Z",
+            "expires_at": "2026-11-01T01:00:00Z",
+        },
+        "held": True,
+    }
+
+
+def serve(service: FakeHqService, active=None, **eligibility) -> dict:
+    """Serve one consistent HQ: authority, config (with this host's manifest), eligibility."""
+    active = grant() if active is None else active
+    signed = authority(active or None)
+    written = manifest().model_dump(mode="json", exclude_none=True)
+    service.reads["/authority"] = signed
+    service.reads["/config"] = config_body(
+        signed, [("fleet.yaml", FLEET_YAML), ("hosts/host-1.yaml", json.dumps(written))]
+    )
+    service.reads["/eligibility/frame-1"] = eligibility_body(active or None, **eligibility)
+    service.hive_leases["bh"] = lease_body()
+    return signed
+
+
+@pytest.fixture
+def service():
+    fake = FakeHqService(clock=lambda: 0.0)
+    serve(fake)
+    return fake
+
+
+@pytest.fixture
+def no_sql(monkeypatch):
+    """Every SQL opener, the SQL plane and the SQL port adapter raise: none is constructed."""
+    opened = []
+
+    def tripwire(*_args, **_kwargs):
+        opened.append(True)
+        raise AssertionError("route=api opened SQL")
+
+    monkeypatch.setattr(hq_sql_transport, "connect", tripwire)
+    monkeypatch.setattr(hq_sql_transport, "_strict_driver", tripwire)
+    for name in ("hq_sql_config", "hq_sql_runtime", "hq_sql_operator", "hq_sql_receiver"):
+        module = __import__(f"beadhive.{name}", fromlist=["connect"])
+        monkeypatch.setattr(module, "connect", tripwire)
+    monkeypatch.setattr(hq_control_plane.SqlControlPlane, "__init__", tripwire)
+    monkeypatch.setattr(hq_sql_adapter.SqlHqAdapter, "__init__", tripwire)
+    return opened
+
+
+@pytest.fixture
+def api_frame(tmp_path, monkeypatch, service, no_sql):
+    """A frame host (``host-1`` / ``frame-1``) on ``hq.route: api`` with no ``hq.sql``."""
+    home = tmp_path / "bh-home"
+    (home / "hq").mkdir(parents=True)
+    (home / "config.yaml").write_text(host_yaml())
+    (home / "host.yaml").write_text("host_id: host-1\nlabel: frame\n")
+    monkeypatch.setenv("BH_HOME", str(home))
+    for name in ("BH_CONFIG", "WS_CONFIG", "BH_HQ", "WS_HQ", "BH_HQ_ROUTE", "BH_FRAME_HEARTBEAT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "signed")
+    monkeypatch.delenv("BH_HQ_AUTHORITY_ENFORCE", raising=False)
+
+    def port(host_config):
+        return adapter_from_config(
+            host_config, verifier=lambda _m, p: p, transport=service.transport()
+        )
+
+    monkeypatch.setattr(hq_control_plane, "_api_port", port)
+    return home
+
+
+def _plane() -> hq_control_plane.ApiControlPlane:
+    plane = hq_control_plane.control_plane()
+    assert isinstance(plane, hq_control_plane.ApiControlPlane)
+    return plane
+
+
+def _paths(service) -> list[str]:
+    return [path + (f"?{query}" if query else "") for _m, path, query, _b in service.requests]
+
+
+# ---- bh host eligible ----------------------------------------------------------------------
+
+
+def test_host_eligible_for_a_hive_is_decided_through_the_port(api_frame, service, no_sql):
+    from beadhive.cli import app
+
+    result = CliRunner().invoke(app, ["host", "eligible", "--hive", "bh", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = next(
+        json.loads(line)
+        for line in result.output.splitlines()
+        if line.startswith("{") and '"eligible"' in line
+    )
+    assert payload["eligible"] is True, payload
+    predicates = payload["predicates"]
+    for name in (
+        "current_frame_incarnation",
+        "authenticated_fresh_heartbeat",
+        "conformance_pass",
+        "release_matches",
+        "current_hive_lease_holder",
+        "hive_policy_bound",
+    ):
+        assert predicates[name] is True, name
+    # The manifest's release is the measured release the service judged.
+    assert "/eligibility/frame-1?release_id=rel-1&release_digest=sha256%3A" + "1" * 64 in _paths(
+        service
+    )
+    assert "/hive-leases?prefix=bh" in _paths(service)
+    assert no_sql == []
+
+
+@pytest.mark.parametrize(
+    ("eligibility", "predicate"),
+    [
+        ({"session": "stale"}, "authenticated_fresh_heartbeat"),
+        ({"evidence": "stale"}, "conformance_pass"),
+        ({"admits": False}, "release_matches"),
+    ],
+)
+def test_a_failing_server_verdict_makes_the_frame_ineligible(
+    api_frame, service, no_sql, eligibility, predicate
+):
+    serve(service, **eligibility)
+    decision = frame_eligibility.decision_for("host-1", {"prefix": "bh"})
+    assert decision is not None and not decision.allowed
+    assert predicate in decision.reason
+    assert no_sql == []
+
+
+def test_another_hosts_lease_is_not_held(api_frame, service):
+    service.hive_leases["bh"] = lease_body("host-2")
+    decision = frame_eligibility.decision_for("host-1", {"prefix": "bh"})
+    assert decision.allowed  # candidate eligibility is independent of holding the lease
+    observation = _plane().read_eligibility(manifest(), prefix="bh")[2]
+    assert observation.current_hive_lease_holder is False
+    assert _plane().read_hive_lease("bh", holder_identity="host-1") is None
+
+
+# ---- intake: require_eligible and the authoritative primary --------------------------------
+
+
+def test_intake_require_eligible_and_the_primary_read_go_through_the_port(
+    api_frame, service, no_sql
+):
+    decision = frame_eligibility.require_eligible("host-1", {"prefix": "bh"})
+    assert decision is not None and decision.allowed
+    stamps = dict(decision.admission)
+    assert stamps["carrier"] == "session"
+    assert stamps["predicates"]["current_hive_lease_holder"] is True
+    lease = _plane().read_hive_lease("bh", holder_identity="host-1")
+    assert lease is not None and lease.held_by("host-1")
+    assert lease.advisory_expiry is True  # a failover hint on the session carrier
+    assert no_sql == []
+
+
+def test_require_eligible_refuses_a_cordoned_frame(api_frame, service):
+    serve(service, active={**grant(), "cordoned": True})
+    with pytest.raises(frame_eligibility.EligibilityError, match="not_cordoned"):
+        frame_eligibility.require_eligible("host-1", {"prefix": "bh"})
+
+
+def test_incumbent_read_needs_a_current_grant(api_frame, service):
+    plane = _plane()
+    assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1] is not None
+    serve(service, active={})  # the frame holds no grant
+    assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1] is None
+
+
+# ---- hive lease: claim/renew/release/packup reads; the write names its missing route --------
+
+
+def test_the_hive_lease_record_is_read_through_the_port(api_frame, service, no_sql):
+    revision, lease = host_lease.read_record("origin", "bh", cwd=config.hq_dir())
+    assert revision == "r" * 64 and lease.host_id == "host-1" and lease.epoch == 2
+    assert host_lease.read_record("origin", "zz", cwd=config.hq_dir()) == ("", None)
+    assert no_sql == []
+
+
+def test_release_reaches_the_unrouted_write_naming_it_and_never_sql(api_frame, service, no_sql):
+    with pytest.raises(HqUnavailable, match="publish_hive_lease"):
+        host_lease.release("origin", "bh", host_id="host-1", cwd=config.hq_dir())
+    assert no_sql == []
+
+
+def test_packup_scans_through_the_port_and_names_the_unrouted_write(api_frame, service, no_sql):
+    from beadhive.cli import app
+
+    result = CliRunner().invoke(app, ["host", "packup"])
+    # The scan found the held lease through the port; the release write has no route yet.
+    assert isinstance(result.exception, HqUnavailable), result.output
+    assert "publish_hive_lease" in str(result.exception)
+    assert "/hive-leases?prefix=bh" in _paths(service)
+    assert no_sql == []
+
+
+# ---- config: bound to the signed record, pinned revision, cached fallback ------------------
+
+
+def test_config_reads_are_bound_to_the_signed_record(api_frame, service, no_sql):
+    from beadhive.cli import app
+
+    result = CliRunner().invoke(app, ["config", "get", "delimiter"])
+    assert result.exit_code == 0, result.output
+    assert result.output.strip().splitlines()[-1] == "/"
+    paths = _paths(service)
+    assert "/config" in paths and "/authority" in paths
+    assert no_sql == []
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        pytest.param(lambda env: env.update(head="b" * 32), id="another-head"),
+        pytest.param(lambda env: env["record"].update(config_head="d" * 32), id="config-head"),
+        pytest.param(lambda env: env["record"].update(revision=6), id="revision"),
+    ],
+)
+def test_a_config_not_bound_to_the_signed_record_is_refused(api_frame, service, tamper):
+    from beadhive.cli import app
+
+    envelope = json.loads(json.dumps(service.reads["/config"]["authority"]))
+    tamper(envelope)
+    service.reads["/config"] = {**service.reads["/config"], "authority": envelope}
+    with pytest.raises(HqRefused, match="authority_unbound") as refused:
+        _plane().config_store().load_snapshot()
+    assert isinstance(refused.value, hq_control_plane.ControlPlaneError)
+    result = CliRunner().invoke(app, ["config", "get", "delimiter"])
+    assert result.exit_code != 0
+
+
+def test_a_signed_record_whose_state_names_another_revision_is_refused(api_frame, service):
+    signed = service.reads["/authority"]
+    signed["record"]["state"]["revision"] = 6  # served the same in both reads
+    with pytest.raises(HqRefused, match="authority_unbound"):
+        _plane().config_store().load_snapshot()
+
+
+def test_eligibility_whose_grant_is_not_the_signed_one_is_refused(api_frame, service):
+    body = service.reads["/eligibility/frame-1"]
+    body["active"] = {**body["active"], "cordoned": True}  # unsigned body, signed grant differs
+    with pytest.raises(HqRefused, match="authority_unbound"):
+        _plane().read_eligibility(manifest())
+    decision = frame_eligibility.decision_for("host-1", {"prefix": "bh"})
+    assert not decision.allowed and "authority_available" in decision.reason
+
+
+def test_a_manifest_of_another_incarnation_differs_from_the_grant(api_frame, service):
+    with pytest.raises(hq_control_plane.ControlPlaneError, match="differs from current grant"):
+        _plane().read_eligibility(manifest(instance_ref="vm-2"))
+
+
+def test_a_pinned_revision_must_still_be_current(api_frame, service):
+    store = _plane().config_store()
+    assert store.load_snapshot(revision=CONFIG_HEAD).commit_revision == CONFIG_HEAD
+    with pytest.raises(hq_control_plane.ControlPlaneError, match="no longer current"):
+        store.load_snapshot(revision="e" * 32)
+
+
+@pytest.fixture
+def floored(api_frame, tmp_path):
+    """A restore floor naming the served authority head, as the real verifier writes it."""
+    floor = tmp_path / "floor" / "hq-api.floor"
+    floor.parent.mkdir(mode=0o700)
+    floor.write_text(json.dumps({"backend": "", "generation": "", "sequence": 7, "head": HEAD}))
+    os.chmod(floor, 0o600)
+    (api_frame / "config.yaml").write_text(host_yaml(str(floor)))
+    hq_control_plane._API_DEGRADED_WARNED.clear()
+    return floor
+
+
+def test_a_trusted_hive_local_read_degrades_to_the_cached_snapshot(floored, service, monkeypatch):
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "trusted")
+    clock = [1000.0]
+    plane = _plane()
+    plane.clock = lambda: clock[0]
+    fresh = plane.config_store().load_snapshot()
+    del service.reads["/config"]  # the service stops answering
+    warned = []
+    clock[0] += 5
+    cached = plane.config_store().load_snapshot_or_cached(warn=warned.append)
+    assert cached.commit_revision == fresh.commit_revision == CONFIG_HEAD
+    assert cached.documents == fresh.documents
+    assert len(warned) == 1 and "cached verified HQ config" in warned[0]
+    clock[0] += 60  # older than the validity window
+    with pytest.raises(HqUnavailable, match="no cached fallback"):
+        plane.config_store().load_snapshot_or_cached(warn=warned.append)
+
+
+def test_a_cached_snapshot_is_refused_once_the_floor_moves(floored, service, monkeypatch):
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "trusted")
+    plane = _plane()
+    plane.config_store().load_snapshot()
+    floored.write_text(json.dumps({"sequence": 8, "head": "b" * 32}))
+    del service.reads["/config"]
+    with pytest.raises(HqUnavailable, match="restore floor moved"):
+        plane.config_store().load_snapshot_or_cached()
+
+
+def test_signed_mode_never_degrades_to_a_cached_snapshot(floored, service):
+    plane = _plane()
+    plane.config_store().load_snapshot()
+    del service.reads["/config"]
+    with pytest.raises(HqUnavailable, match="signed authority mode"):
+        plane.config_store().load_snapshot_or_cached()
+
+
+def test_a_refusal_never_degrades_to_a_cached_snapshot(floored, service, monkeypatch):
+    monkeypatch.setenv("BH_HQ_AUTHORITY_MODE", "trusted")
+    plane = _plane()
+    plane.config_store().load_snapshot()
+    service.reads["/config"]["authority"] = {**service.reads["/config"]["authority"], "head": "b"}
+    with pytest.raises(HqRefused, match="authority_unbound"):
+        plane.config_store().load_snapshot_or_cached()
+
+
+# ---- the authority-expiry advisory and the port surface ------------------------------------
+
+
+def test_the_expiry_advisory_reads_the_api_authority(api_frame, service, no_sql):
+    from beadhive import hq_authority_expiry
+
+    plane = hq_authority_expiry._frame_plane()
+    assert isinstance(plane, hq_control_plane.ApiControlPlane)
+    status = hq_authority_expiry.authority_status(plane)
+    assert status["revision"] == HEAD and status["config_bound"] is True
+    assert no_sql == []
+
+
+def test_both_adapters_serve_the_hive_lease_read():
+    from beadhive import hq_port
+
+    assert "read_hive_lease" in vars(hq_port.HqReads)
+
+    class Plane:
+        def read_hive_lease_record(self, prefix):
+            return ("rev", f"lease-of-{prefix}")
+
+    adapter = object.__new__(hq_sql_adapter.SqlHqAdapter)
+    adapter._plane = Plane()
+    assert adapter.read_hive_lease("bh", deadline=0.0) == ("rev", "lease-of-bh")
