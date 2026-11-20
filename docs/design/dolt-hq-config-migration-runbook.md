@@ -128,8 +128,9 @@ marked `integration` / `dolt_server` and run in no hosted CI today. Until a gate
 release preflight is known to execute runs them, run them by hand on a Dolt-capable host before a
 live republish.
 
-The session flags (`hq.session_via_port`, `hq.session_dual_write`) are HOST-only, never touch
-`fleet.yaml` or `fleet.json`, and roll back independently of this republish; see the
+The session settings (`hq.route`, `hq.session_via_port`, the retired `hq.session_dual_write`)
+are HOST-only, never touch `fleet.yaml` or `fleet.json`, and roll back independently of this
+republish; see the
 [session renew and evidence cutover runbook](hq-service-session-cutover-runbook.md).
 
 ## Readiness and deprecation assessment

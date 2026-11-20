@@ -115,8 +115,9 @@ real sender, report module, hq-service adapter and client-owned renew seq) and a
 ordering from the bh-a3369 review: evidence accepted straight after the process's own renew; a cold
 incarnation posts nothing before its renew is accepted; a forced `no_current_beat` is exactly one
 renew-and-retry; the renew timer and the conformance job interleaved produce no
-`evidence_digest_unmatched` / `seq_not_advanced`; G1 (an `api` host with no SQL frame runtime
-refuses both with nothing posted).
+`evidence_digest_unmatched` / `seq_not_advanced`; an `api` host with no SQL frame runtime renews
+and posts evidence (bh-65s71: the grant reads are stubbed here and driven against the fake in
+`tests/test_hq_api_route_liveness.py`).
 
 One test body, two backends behind the `make_stack` fixture (`tests/harness/hq_session_stack.py`):
 
