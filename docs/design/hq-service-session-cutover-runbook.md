@@ -340,7 +340,7 @@ On each frame, across at least two conformance intervals (so at least 10 minutes
    `StandardErrorPath` per verb in `heartbeat_sender.py`) over the same window.
 3. hq-service shows the frame fresh through the whole window. The read is the service's
    eligibility route, `GET /hq/lifecycle/v0/eligibility/{frame}` (`hq.lifecycle.v0`; the adapter
-   in `hq_service_adapter.py` `read_eligibility`, marked PROVISIONAL, calls `/eligibility/{frame}`
+   in `hq_service_adapter.py` `read_eligibility`, pinned to hq-service 205fd5b, calls `/eligibility/{frame}`
    relative to its configured base, not this public path, and whether the Gateway exposes the
    route to operators is still unverified), which returns
    `liveness.session` and `liveness.evidence` with `verdict`, `age_s` and `ttl_s`. This is also

@@ -3515,26 +3515,36 @@ class ApiControlPlane:
     def _snapshot(self, result):
         """The verified ``read_config`` result as a ``FleetConfigSnapshot``.
 
-        PROVISIONAL (bh-21vpt): the hq-service ``GET /config`` body is not served yet. Its
-        verified form is read as ``{backend_identity, commit_revision, generation, documents:
-        [{path, content}], valid_for_s?}`` beside the ``authority`` envelope the verifier
-        checked; anything else is unavailable, never guessed at."""
-        from .modules.config.domain.ports import FleetConfigDocument, FleetConfigSnapshot
+        hq-service ``GET /config`` (v0.1.0, ``store/reads.go`` ``ConfigRead``) is ``{authority:
+        {head, record, signature}, publication, sequence, documents_sha256, documents: [{path,
+        kind, ordinal, sha256, content}]}``. The signed ``record`` carries the config
+        cross-reference (``config_backend``, ``config_generation``, ``config_head``), which is the
+        snapshot's backend identity, generation and commit revision; the documents must digest to
+        ``documents_sha256``. The service states no validity window, so the snapshot's is the
+        plane's own ``API_CONFIG_VALID_FOR_S``."""
+        from .modules.config.domain.ports import (
+            FleetConfigDocument,
+            FleetConfigSnapshot,
+            ordered_documents_digest,
+        )
 
         if isinstance(result, FleetConfigSnapshot):
             return result
         try:
-            fetched = float(self.clock())
+            record = result["authority"]["record"]
             documents = tuple(
                 FleetConfigDocument(str(item["path"]), str(item["content"]))
                 for item in result["documents"]
             )
+            if ordered_documents_digest(documents) != result["documents_sha256"]:
+                raise ValueError("config documents do not match their digest")
+            fetched = float(self.clock())
             return FleetConfigSnapshot(
-                result["backend_identity"],
-                result["commit_revision"],
-                result["generation"],
+                record["config_backend"],
+                record["config_head"],
+                record["config_generation"],
                 fetched,
-                fetched + float(result.get("valid_for_s", API_CONFIG_VALID_FOR_S)),
+                fetched + API_CONFIG_VALID_FOR_S,
                 documents,
             )
         except (KeyError, TypeError, ValueError, AttributeError):
@@ -3576,9 +3586,18 @@ class ApiControlPlane:
     def read_eligibility(self, manifest, *, now=None, prefix=None):
         """``(head, desired, observation)``.
 
-        PROVISIONAL (bh-21vpt, bh-h9dn1): the verified ``GET /eligibility/{frame}`` body is read
-        as ``{authority: {head, ...}, desired, observation}`` with ``observation`` the fields of
-        a :class:`~beadhive.host_heartbeat_core.VerifiedObservation`. A 3-tuple (the SQL
+        hq-service ``GET /eligibility/{frame}`` (v0.1.0, ``store/reads.go`` ``EligibilityRead``)
+        is ``{head, config_head, frame_id, active, principal, epoch, route, liveness, release}``,
+        which the adapter returns beside the verified ``authority`` envelope. ``active`` is the
+        frame's active grant (``None`` without one, and then principal, epoch, route, liveness
+        and release are null too); ``desired`` is built from it as the SQL plane builds it.
+        ``liveness`` is
+        ``{session, evidence}`` raw verdicts against the server clock; the observation is the
+        session verdict (``fresh`` / ``stale`` / ``missing``, with the server's ``age_s``). The
+        service computes no composite predicates (conformance, hive-lease holder), so none is
+        claimed. The release verdict and catalog row (``release``, asked for with the adapter's
+        ``measured``) and the route are served but not folded into the observation here: that is
+        bh-h9dn1's. A 3-tuple (the SQL
         adapter's shape) passes through; anything else is unavailable."""
         from .host_heartbeat_core import VerifiedObservation
 
@@ -3586,24 +3605,34 @@ class ApiControlPlane:
         if isinstance(result, tuple) and len(result) == 3:
             return result
         try:
-            observation = result["observation"]
-            if not isinstance(observation, VerifiedObservation):
-                observation = VerifiedObservation(
-                    **{
-                        key: observation[key]
-                        for key in (
-                            "status",
-                            "verified",
-                            "fresh",
-                            "age_seconds",
-                            "reason",
-                            "candidate",
-                            "age_basis",
-                        )
-                        if key in observation
-                    }
+            active = result["active"]
+            desired: dict = {}
+            status, age, fresh = "missing", None, False
+            if active is not None:
+                desired = {
+                    **active["desired"],
+                    **({"emergency": active["emergency"]} if "emergency" in active else {}),
+                    "state": active["state"],
+                    "cordoned": active["cordoned"],
+                    "authority": active["authority"],
+                }
+            liveness = result["liveness"]
+            if liveness is not None:
+                session = liveness["session"]
+                verdict = session["verdict"]
+                fresh = verdict == "fresh"
+                status = (
+                    "fresh" if fresh else ("missing" if verdict == "never-renewed" else "stale")
                 )
-            return str(result["authority"]["head"]), dict(result.get("desired") or {}), observation
+                age = None if session["age_s"] is None else float(session["age_s"])
+            observation = VerifiedObservation(
+                status=status,
+                verified=True,
+                fresh=fresh,
+                age_seconds=age,
+                age_basis="hq-server-session-row",
+            )
+            return str(result["authority"]["head"]), desired, observation
         except (KeyError, TypeError, ValueError, AttributeError):
             raise HqPlaneUnavailable(
                 "read_eligibility: the verified result is not eligibility"

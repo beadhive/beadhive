@@ -1,0 +1,80 @@
+{
+  "name": "admission-refused-caller-not-bound",
+  "source": "normative: ADR 0005, docs/DESIGN.md Admission, docs/design/conformance-corpus.md; no Python reference; rules from beadhive hq_sql_session_provision, hq_sql_runtime restore floor, hq_sql_operator.publish, hq_control_plane lifecycle admit, hq_open_admission",
+  "kind": "admission",
+  "note": "the attestation carries no bound identity: nothing is assumed",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame-n",
+    "scope": "lifecycle:admission",
+    "bound": {}
+  },
+  "given": {
+    "mode": "trusted",
+    "authority": "",
+    "frames": {},
+    "config": {
+      "documents": [
+        {
+          "path": "fleet.yaml",
+          "content": "hq:\n  default_authority_mode: trusted\nmanaged_repos: []\n"
+        },
+        {
+          "path": "beadyard.json",
+          "content": "{\"beadyard_id\": \"6f1e3c2a-9b4d-4e8f-a1c2-3d4e5f607182\"}"
+        },
+        {
+          "path": "hosts/host-n.yaml",
+          "content": "{\"state\": \"pending\", \"identity\": {\"kind\": \"none\", \"value\": \"\"}, \"capacity\": {}, \"harnesses\": {}, \"remote_only_hives\": [], \"host_id\": \"host-n\", \"label\": \"host-n\", \"os\": \"linux\", \"arch\": \"x86_64\", \"role\": \"executor\", \"frame_id\": \"frame-n\", \"instance_ref\": \"inst-host-n\", \"release\": {\"id\": \"rel-1\", \"digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}, \"capabilities\": {\"isolation\": \"container\", \"trust_zone\": \"self-hosted\", \"arch\": \"x86_64\", \"harnesses\": [\"claude\"], \"max_sessions\": 2}, \"beadyard_id\": \"6f1e3c2a-9b4d-4e8f-a1c2-3d4e5f607182\"}"
+        }
+      ]
+    },
+    "registry": [],
+    "liveness": true,
+    "derive": [
+      {
+        "tag": "n",
+        "identity": {
+          "frame_id": "frame-n",
+          "holder_identity": "host-n",
+          "instance_ref": "inst-host-n",
+          "epoch": 0,
+          "key_fingerprint": "SHA256:/UktrqKhHNCWAta5N9e843qx0VCkCZnt8kwWYdUqZtA",
+          "audience": "6f1e3c2a-9b4d-4e8f-a1c2-3d4e5f607182",
+          "config_revision": "$CONFIG_HEAD",
+          "candidate_expires_at": null
+        }
+      }
+    ],
+    "provisioned": [],
+    "pairs": [],
+    "incarnations": [
+      {
+        "principal": "$P:n",
+        "epoch": 0
+      }
+    ],
+    "inboxes": [],
+    "history": [],
+    "working": [],
+    "floors": [],
+    "receipts": [],
+    "registrations": [],
+    "observations": []
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/admissions/frame-n",
+    "content_type": "application/json",
+    "body": "{\"kind\":\"open\",\"expected_revision\":\"$HEAD\",\"host_id\":\"host-n\",\"public_key\":\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZ0cDmy8itv5dKOBpsyhsH8/aja2Onzio2+bYIbhsE2\"}"
+  },
+  "expect": {
+    "status": 403,
+    "code": "caller_not_bound",
+    "retryable": false,
+    "reason": "not bound",
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

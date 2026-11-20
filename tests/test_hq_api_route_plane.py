@@ -13,6 +13,7 @@ tests pin the plane seam and its reading of the verified bodies, not verificatio
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -22,6 +23,7 @@ from typer.testing import CliRunner
 from beadhive import config, hosts, hq_control_plane, hq_sql_transport
 from beadhive.hq_port import HqUnavailable
 from beadhive.hq_service_adapter import adapter_from_config
+from beadhive.modules.config.domain.ports import FleetConfigDocument, ordered_documents_digest
 
 URL = "https://hq.test"
 HOST_YAML = f"hq:\n  route: api\n  api:\n    url: {URL}\n"
@@ -40,6 +42,62 @@ CROSSREF = ["svc:hq", "g1", "head-1"]
 
 VERIFIED: list[str] = []
 
+#: hq-service v0.1.0 ``GET /authority`` (``store/authority.go``): the signed record carries the
+#: config cross-reference the config read is bound to.
+AUTHORITY = {
+    "head": "auth-9",
+    "record": {
+        "revision": 7,
+        "config_backend": CROSSREF[0],
+        "config_generation": CROSSREF[1],
+        "config_head": CROSSREF[2],
+        "state": STATE,
+        "hive_policies": {},
+    },
+    "signature": "sig",
+}
+
+
+def config_body(documents: list[tuple[str, str]]) -> dict:
+    """hq-service v0.1.0 ``GET /config`` (``store/reads.go`` ``ConfigRead``)."""
+    return {
+        "authority": AUTHORITY,
+        "publication": "pub-1",
+        "sequence": 1,
+        "documents_sha256": ordered_documents_digest(
+            [FleetConfigDocument(path, content) for path, content in documents]
+        ),
+        "documents": [
+            {
+                "path": path,
+                "kind": "fleet" if path == "fleet.yaml" else "host",
+                "ordinal": ordinal,
+                "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                "content": content,
+            }
+            for ordinal, (path, content) in enumerate(documents)
+        ],
+    }
+
+
+def eligibility_body(frame: str, verdict: str = "fresh", age: float | None = 3.0) -> dict:
+    """hq-service v0.1.0 ``GET /eligibility/{frame}`` (``EligibilityRead``)."""
+    return {
+        "head": "auth-9",
+        "config_head": CROSSREF[2],
+        "frame_id": frame,
+        "active": {
+            "authority": {"frame_id": frame, "holder_identity": "host-1", "epoch": 0},
+            "state": "active",
+            "cordoned": False,
+            "desired": {"profile": "reviewed", "declared": True},
+        },
+        "liveness": {
+            "session": {"verdict": verdict, "renewed_at": 1.0, "age_s": age, "ttl_s": 60},
+            "evidence": {"verdict": "fresh", "status": "conformant", "ttl_s": 600},
+        },
+    }
+
 
 def _verify(method, payload):
     """Stand-in verifier: records the method and returns the body, as the real one does once
@@ -51,26 +109,8 @@ def _verify(method, payload):
 @pytest.fixture
 def service():
     fake = FakeHqService(clock=lambda: 0.0)
-    envelope = {"head": "auth-9", "record": {"revision": 7}, "signature": "sig"}
-    fake.reads["/config"] = {
-        "authority": envelope,
-        "backend_identity": "svc:hq",
-        "commit_revision": "head-1",
-        "generation": "g1",
-        "documents": [{"path": "fleet.yaml", "content": FLEET_YAML}],
-    }
-    fake.reads["/authority"] = {
-        "head": "auth-9",
-        "record": {
-            "revision": 7,
-            "config_backend": CROSSREF[0],
-            "config_generation": CROSSREF[1],
-            "config_head": CROSSREF[2],
-            "state": STATE,
-            "hive_policies": {},
-        },
-        "signature": "sig",
-    }
+    fake.reads["/config"] = config_body([("fleet.yaml", FLEET_YAML)])
+    fake.reads["/authority"] = AUTHORITY
     return fake
 
 
@@ -175,14 +215,10 @@ def test_host_list_observes_frames_through_the_port(api_host, service, no_sql, t
             identity={"kind": "none"},
         ),
     )
-    service.reads["/config"]["documents"].append(
-        {"path": "hosts/host-1.yaml", "content": written.read_text()}
+    service.reads["/config"] = config_body(
+        [("fleet.yaml", FLEET_YAML), ("hosts/host-1.yaml", written.read_text())]
     )
-    service.reads["/eligibility/frame-1"] = {
-        "authority": {"head": "auth-9", "record": {"revision": 7}, "signature": "sig"},
-        "desired": {},
-        "observation": {"status": "fresh", "verified": True, "fresh": True, "age_seconds": 3.0},
-    }
+    service.reads["/eligibility/frame-1"] = eligibility_body("frame-1")
     result = CliRunner().invoke(app, ["host", "list", "--json"])
     assert result.exit_code == 0, result.output
     (row,) = json.loads(result.output[result.output.index("[") :])
@@ -278,3 +314,49 @@ def test_a_verified_body_of_the_wrong_shape_is_unavailable(api_host, service, pa
             plane.authority_state()
         else:
             plane.config_store().load_snapshot()
+
+
+def test_a_config_whose_documents_do_not_match_their_digest_is_unavailable(api_host, service):
+    from beadhive.hq_control_plane import HqPlaneUnavailable
+
+    service.reads["/config"] = {
+        **config_body([("fleet.yaml", FLEET_YAML)]),
+        "documents_sha256": "0",
+    }
+    with pytest.raises(HqPlaneUnavailable, match="not a committed config snapshot"):
+        hq_control_plane.attach_fleet_config(bootstrap={"route": "api", "api": {"url": URL}})
+
+
+@pytest.mark.parametrize(
+    ("verdict", "age", "status", "fresh"),
+    [
+        ("fresh", 3.0, "fresh", True),
+        ("stale", 90.0, "stale", False),
+        ("never-renewed", None, "missing", False),
+    ],
+)
+def test_eligibility_observation_is_the_servers_session_verdict(
+    api_host, service, verdict, age, status, fresh
+):
+    from types import SimpleNamespace
+
+    service.reads["/eligibility/frame-1"] = eligibility_body("frame-1", verdict, age)
+    head, desired, observation = hq_control_plane.control_plane().read_eligibility(
+        SimpleNamespace(frame_id="frame-1")
+    )
+    assert head == "auth-9"
+    assert (observation.status, observation.fresh, observation.age_seconds) == (status, fresh, age)
+    assert observation.verified is True
+    assert desired["state"] == "active" and desired["profile"] == "reviewed"
+    assert desired["authority"]["holder_identity"] == "host-1"
+
+
+def test_a_frame_with_no_active_grant_has_a_missing_observation_and_no_desired(api_host, service):
+    from types import SimpleNamespace
+
+    body = {**eligibility_body("frame-1"), "active": None, "liveness": None}
+    service.reads["/eligibility/frame-1"] = body
+    _head, desired, observation = hq_control_plane.control_plane().read_eligibility(
+        SimpleNamespace(frame_id="frame-1")
+    )
+    assert desired == {} and observation.status == "missing" and not observation.fresh

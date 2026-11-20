@@ -1,8 +1,9 @@
 """Verify hq-service authority-bearing responses: the signature and the restore floor (bh-2r7qd).
 
 The service is not a new root of trust. ``GET /authority`` (and the ``authority`` envelope that
-config and eligibility reads carry) is checked here exactly as the SQL reader checks a committed
-authority row:
+the config read carries) is checked here exactly as the SQL reader checks a committed
+authority row. ``GET /eligibility/{frame}`` carries no envelope (hq-service v0.1.0): the adapter
+binds it to a verified ``GET /authority`` read instead (:meth:`HqServiceAdapter.read_eligibility`).
 
 * the operator signature, with :func:`beadhive.hq_sql_signatures.verify_authority` under the
   host-pinned operator key (``signed`` mode; ``trusted`` mode, bh-mk97e, accepts the unsigned
@@ -11,15 +12,27 @@ authority row:
   :meth:`beadhive.hq_sql_runtime.SqlRuntimeAuthority._check_floor`: the sequence never moves
   below the floor, and a head that differs from the floor head must descend from it. Descent and
   same-sequence amendments are judged from the adapter's private history read
-  (``GET /history``, :meth:`HqServiceAdapter._read_history`).
+  (``GET /history?since=``, :meth:`HqServiceAdapter._read_history`).
 
 Every failure is fail-closed: a definite verdict is :class:`HqRefused` (``authority_signature``,
 ``restore_floor``), a missing pin or an unusable response is :class:`HqUnavailable`.
 
-PROVISIONAL (bh-thurg): the history shape is the adapter's guess until hq-service serves it.
-``commits`` is newest first, each ``{"commit", "parent"}`` (first parent); ``diff_summary`` rows
-are ``{"from_table", "to_table", "diff_type"}``. A response that does not fit is refused, never
-trusted.
+The history shape is hq-service's (v0.1.0, ``store/reads.go``): ``{head, floor, revisions}``,
+each revision ``{id, message, at, parents, changes[{table, data, schema}]}``, ordered by commit
+time. The service issues no ancestry verdict; the check here is the one its design names: walk
+``parents`` from the presented head through ``revisions``; the floor is an ancestor iff it is a
+parent of a revision so reached. A response that does not fit is refused, never trusted.
+
+Interim catalog check (operator decision, bh-21vpt): a change names a table and whether its data
+or schema changed, not whether rows were added, edited or deleted. A same-sequence descendant that
+changes ``hq_release_catalog`` is accepted only when every row of the catalog, read through the
+v0.1.0 catalog route (``GET /release-catalog/{catalog}``, :meth:`HqServiceAdapter._read_catalog`),
+verifies against the service's own verdict for that row. Any other same-sequence change outside
+session provisioning is refused.
+
+Open gap (upstream bh-hq-34d, a row-level change kind in ``/history``): the check cannot see a
+DELETED row, nor an edit that leaves the surviving rows consistent, because a row that is gone is
+not listed. It narrows the SQL reader's row-by-row ``added`` rule; it does not equal it.
 """
 
 from __future__ import annotations
@@ -39,9 +52,15 @@ from .hq_sql_signatures import SqlSignatureError, verify_authority
 #: Most commits walked between the floor and a presented head (the SQL reader's bound).
 MAX_HISTORY = 64
 #: Tables a same-sequence descendant may touch: reviewed session provisioning only.
-_PROVISIONING_TABLES = frozenset({"dolt_ignore", "hq_liveness_policy", "hq_release_catalog"})
+#: ``hq_release_catalog`` is judged separately (:meth:`_check_catalog`), not listed here.
+_PROVISIONING_TABLES = frozenset({"dolt_ignore", "hq_liveness_policy"})
+_CATALOG_TABLE = "hq_release_catalog"
 
 HistoryReader = Callable[..., HistorySinceFloor]
+CatalogReader = Callable[..., Mapping[str, Any]]
+#: The release catalog a policy names (``desired.release_policy.catalog``; hq-service accepts
+#: only this one). Configurable per verifier.
+DEFAULT_CATALOG = "beadhive"
 
 
 def _refuse(code: str, reason: str) -> HqRefused:
@@ -60,7 +79,10 @@ class ServiceResponseVerifier:
         backend_identity: str = "",
         generation: str = "",
         history_timeout: float = 30.0,
+        catalog: str = DEFAULT_CATALOG,
     ) -> None:
+        self._catalog_name = catalog
+        self._catalog: CatalogReader | None = None
         self._floor_path = floor_path
         self._initial = initial_revision
         self._key = operator_public_key
@@ -72,6 +94,10 @@ class ServiceResponseVerifier:
     def bind_history(self, reader: HistoryReader) -> None:
         """Feed the append-only check from the adapter's private ``_read_history``."""
         self._history = reader
+
+    def bind_catalog(self, reader: CatalogReader) -> None:
+        """Feed the same-sequence catalog check from the adapter's private ``_read_catalog``."""
+        self._catalog = reader
 
     def __call__(self, method: str, payload: Any) -> Any:
         envelope = payload
@@ -192,38 +218,105 @@ class ServiceResponseVerifier:
     def _check_descent(self, floor_head: str, head: str, *, same_sequence: bool) -> None:
         if self._history is None:
             raise HqUnavailable("no history reader is bound; refusing an unchecked head")
-        history = self._history(since=floor_head, deadline=time.monotonic() + self._timeout)
-        wanted, count = head, 0
-        for commit in history.commits:
-            if not isinstance(commit, Mapping) or commit.get("commit") != wanted:
-                raise _refuse("restore_floor", f"history fork: head {head[:12]} is not a chain")
-            wanted, count = commit.get("parent"), count + 1
-            if wanted == floor_head:
+        try:
+            history = self._history(since=floor_head, deadline=time.monotonic() + self._timeout)
+        except HqRefused as exc:  # unknown_floor, history_too_long: the reader's "not append-only"
+            raise _refuse(
+                "restore_floor", f"hq-service refused the history since the floor: {exc.code}"
+            ) from None
+        by_id: dict[str, Mapping[str, Any]] = {}
+        for revision in history.revisions:
+            identifier = revision.get("id") if isinstance(revision, Mapping) else None
+            parents = revision.get("parents") if isinstance(revision, Mapping) else None
+            if (
+                not isinstance(identifier, str)
+                or not isinstance(parents, list)
+                or not all(isinstance(parent, str) for parent in parents)
+            ):
+                raise _refuse("restore_floor", "hq-service history carries a malformed revision")
+            by_id[identifier] = revision
+        reached: list[Mapping[str, Any]] = []
+        pending, seen, found = [head], set(), False
+        while pending:
+            current = pending.pop()
+            if current in seen or current not in by_id:
+                continue
+            seen.add(current)
+            reached.append(by_id[current])
+            if len(reached) > MAX_HISTORY:
                 break
-            if count >= MAX_HISTORY:
-                break
-        if wanted != floor_head:
+            for parent in by_id[current]["parents"]:
+                found = found or parent == floor_head
+                pending.append(parent)
+        if not found:
             raise _refuse(
                 "restore_floor",
                 f"HQ history fork detected: head {head[:12]} does not descend from restore "
                 f"floor {floor_head[:12]}",
             )
         if same_sequence:
-            self._check_provisioning(history, floor_head, head)
+            self._check_provisioning(reached, floor_head, head)
 
-    @staticmethod
-    def _check_provisioning(history: HistorySinceFloor, floor_head: str, head: str) -> None:
-        for row in history.diff_summary:
-            table = ""
-            if isinstance(row, Mapping):
-                table = str(row.get("to_table") or row.get("from_table") or "")
-            ok = table in _PROVISIONING_TABLES or table.startswith("frame_")
-            if ok and table == "hq_release_catalog":
-                ok = row.get("diff_type") == "added"
-            if not ok:
-                raise _refuse(
-                    "restore_floor",
-                    f"head {head[:12]} keeps the authority sequence of restore floor "
-                    f"{floor_head[:12]} but changes {table or 'an unknown table'}; only reviewed "
-                    "session provisioning may share an authority sequence",
+    def _check_provisioning(
+        self, reached: list[Mapping[str, Any]], floor_head: str, head: str
+    ) -> None:
+        catalog_changed = False
+        for revision in reached:
+            changes = revision.get("changes")
+            if not isinstance(changes, list):
+                raise _refuse("restore_floor", "hq-service history carries a malformed change list")
+            for change in changes:
+                table = str(change.get("table") or "") if isinstance(change, Mapping) else ""
+                if table == _CATALOG_TABLE:
+                    catalog_changed = True
+                elif not (table in _PROVISIONING_TABLES or table.startswith("frame_")):
+                    raise _refuse(
+                        "restore_floor",
+                        f"head {head[:12]} keeps the authority sequence of restore floor "
+                        f"{floor_head[:12]} but changes {table or 'an unknown table'}; only "
+                        "reviewed session provisioning may share an authority sequence",
+                    )
+        if catalog_changed:
+            self._check_catalog(floor_head, head)
+
+    def _check_catalog(self, floor_head: str, head: str) -> None:
+        """Every catalog row must verify through the catalog route (see the module docstring)."""
+        if self._catalog is None:
+            raise HqUnavailable("no catalog reader is bound; refusing an unchecked catalog change")
+        name = self._catalog_name
+        try:
+            listing = self._catalog(name, deadline=time.monotonic() + self._timeout)
+            rows = listing.get("rows")
+            if not isinstance(rows, list) or not all(isinstance(r, Mapping) for r in rows):
+                raise _refuse("restore_floor", "hq-service catalog listing carries no rows")
+            revoked = {(r.get("version"), r.get("measured_digest")) for r in rows
+                       if r.get("status") == "revoked"}  # fmt: skip
+            for row in rows:
+                key = (row.get("version"), row.get("measured_digest"))
+                if row.get("catalog") != name or not all(isinstance(k, str) and k for k in key):
+                    raise _refuse("restore_floor", "hq-service catalog row is malformed")
+                verdict = self._catalog(
+                    name,
+                    measured={"id": key[0], "digest": key[1]},
+                    deadline=time.monotonic() + self._timeout,
+                ).get("release")
+                folded = verdict.get("row") if isinstance(verdict, Mapping) else None
+                expected = "revoked" if key in revoked else "active"
+                ok = (
+                    isinstance(folded, Mapping)
+                    and (folded.get("version"), folded.get("measured_digest")) == key
+                    and folded.get("status") == expected
+                    and (expected == "revoked" or verdict.get("verified") is True)
                 )
+                if row.get("status") not in ("active", "revoked") or not ok:
+                    raise _refuse(
+                        "restore_floor",
+                        f"head {head[:12]} keeps the authority sequence of restore floor "
+                        f"{floor_head[:12]} but its release catalog row {key[0]} does not verify",
+                    )
+        except HqRefused as exc:
+            if exc.code == "restore_floor":
+                raise
+            raise _refuse(
+                "restore_floor", f"hq-service refused the catalog read: {exc.code}"
+            ) from None
