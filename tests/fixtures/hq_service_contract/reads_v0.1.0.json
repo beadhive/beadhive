@@ -1,0 +1,238 @@
+{
+ "_source": "Hand-built from hq-service store/reads.go (ConfigRead, HistoryRead, EligibilityRead, Liveness; json tags) and docs/DESIGN.md 'Reads' (EligibilityRead gained principal, epoch, route, release; HiveLeaseRead), at v0.1.0 (4e0fc6b); the active grant is conformance/admission/v1 frame-a. hq-service has no read corpus yet; re-derive when it does.",
+ "authority_200": {
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "record": {
+   "backend_identity": "svc:hq",
+   "generation": "g1",
+   "revision": 7,
+   "config_backend": "sql:cfg-backend",
+   "config_generation": "cfg-gen",
+   "config_head": "cccccccccccccccccccccccccccccccc",
+   "state": {
+    "domain": "beadhive/git-authority/v1",
+    "generation": "gen-1",
+    "revision": 7,
+    "issued_at": 1793000000,
+    "expires_at": 4102444800,
+    "frames": {}
+   },
+   "hive_policies": {}
+  },
+  "signature": "unsigned:trusted"
+ },
+ "config_200": {
+  "authority": {
+   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "record": {
+    "backend_identity": "svc:hq",
+    "generation": "g1",
+    "revision": 7,
+    "config_backend": "sql:cfg-backend",
+    "config_generation": "cfg-gen",
+    "config_head": "cccccccccccccccccccccccccccccccc",
+    "state": {
+     "domain": "beadhive/git-authority/v1",
+     "generation": "gen-1",
+     "revision": 7,
+     "issued_at": 1793000000,
+     "expires_at": 4102444800,
+     "frames": {}
+    },
+    "hive_policies": {}
+   },
+   "signature": "unsigned:trusted"
+  },
+  "publication": "pub-1",
+  "sequence": 4,
+  "documents_sha256": "83f62302ef57edf043793a7a84b79c034bb882eeae2faef0965dc4dc0b177947",
+  "documents": [
+   {
+    "path": "fleet.yaml",
+    "kind": "fleet",
+    "ordinal": 0,
+    "sha256": "ee58f4c4e4129a001477ab26309e4a04e7489aa721bfcf9c44544142b86f3e70",
+    "content": "schema_version: 1\ndelimiter: '/'\nproviders: [github]\nmanaged_repos: []\nhq:\n  mode: dolt-server\n"
+   },
+   {
+    "path": "beadyard.json",
+    "kind": "beadyard",
+    "ordinal": 1,
+    "sha256": "253392fbf9dc9d1a629ba7a2eac5e840f6b94d4d52cc6b57398ba356d51c60c8",
+    "content": "{\"beadyard_id\": \"6f1e3c2a-9b4d-4e8f-a1c2-3d4e5f607182\"}"
+   }
+  ]
+ },
+ "history_200": {
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "floor": "ffffffffffffffffffffffffffffffff",
+  "revisions": [
+   {
+    "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "message": "provision frame_x",
+    "at": 1793000000.0,
+    "parents": [
+     "ffffffffffffffffffffffffffffffff"
+    ],
+    "changes": [
+     {
+      "table": "dolt_ignore",
+      "data": true,
+      "schema": false
+     }
+    ]
+   },
+   {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "message": "admit frame-a",
+    "at": 1793000001.0,
+    "parents": [
+     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "changes": [
+     {
+      "table": "frame_x_inbox",
+      "data": false,
+      "schema": true
+     }
+    ]
+   }
+  ]
+ },
+ "eligibility_200": {
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "config_head": "cccccccccccccccccccccccccccccccc",
+  "frame_id": "frame-a",
+  "active": {
+   "authority": {
+    "frame_id": "frame-a",
+    "holder_identity": "host-a",
+    "instance_ref": "inst-host-a",
+    "epoch": 3,
+    "key_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+    "audience": "hq",
+    "config_revision": "cfg-1",
+    "candidate_expires_at": null
+   },
+   "state": "active",
+   "cordoned": false,
+   "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+   "desired": {
+    "release": {
+     "id": "rel-1",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "caps": {
+     "isolation": "container",
+     "trust_zone": "self-hosted",
+     "arch": "x86_64",
+     "harnesses": [
+      "claude"
+     ],
+     "max_sessions": 2
+    },
+    "profile": "reviewed",
+    "declared": true
+   },
+   "receipt": {
+    "sequence": 0,
+    "sha": "",
+    "first_seen": null,
+    "consecutive": 0,
+    "lease": null,
+    "registration": null
+   },
+   "drain_deadline": null
+  },
+  "principal": "frame_09dfb858e523b921bc5c",
+  "epoch": 3,
+  "route": {
+   "carrier": "service",
+   "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw"
+  },
+  "release": null,
+  "liveness": {
+   "session": {
+    "verdict": "fresh",
+    "renewed_at": 1793000000.0,
+    "age_s": 3.5,
+    "ttl_s": 60
+   },
+   "evidence": {
+    "verdict": "fresh",
+    "status": "conformant",
+    "measured_at": 1793000000.0,
+    "age_s": 3.5,
+    "ttl_s": 600,
+    "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+   }
+  }
+ },
+ "eligibility_200_release": {
+  "release": {
+   "id": "rel-1",
+   "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "admits": true,
+   "basis": "catalog",
+   "row": {
+    "catalog": "beadhive",
+    "version": "rel-1",
+    "measured_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "status": "active",
+    "algorithm": "beadhive-tree-sha256-v1",
+    "active_digests": 1
+   }
+  }
+ },
+ "eligibility_200_no_grant": {
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "config_head": "cccccccccccccccccccccccccccccccc",
+  "frame_id": "frame-a",
+  "active": null,
+  "principal": null,
+  "epoch": null,
+  "route": null,
+  "liveness": null,
+  "release": null
+ },
+ "hive_lease_200": {
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "prefix": "bh",
+  "revision": "r111111111111111111111111111111111111111111111111111111111111111",
+  "lease": {
+   "host_id": "host-a",
+   "label": "host-a",
+   "epoch": 2,
+   "adopted_at": "2026-11-01T00:00:00Z",
+   "expires_at": "2026-11-01T01:00:00Z"
+  },
+  "held": true
+ },
+ "error_unknown_prefix_404": {
+  "error": {
+   "code": "unknown_prefix",
+   "message": "no hive lease names that prefix",
+   "retryable": false,
+   "requestId": "r1",
+   "details": null
+  }
+ },
+ "error_unknown_floor_409": {
+  "error": {
+   "code": "unknown_floor",
+   "message": "since names no known revision",
+   "retryable": false,
+   "requestId": "r1",
+   "details": null
+  }
+ },
+ "error_unknown_frame_404": {
+  "error": {
+   "code": "unknown_frame",
+   "message": "the authority has no such frame",
+   "retryable": false,
+   "requestId": "r1",
+   "details": null
+  }
+ }
+}

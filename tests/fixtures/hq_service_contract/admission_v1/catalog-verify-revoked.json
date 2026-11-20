@@ -1,0 +1,163 @@
+{
+  "name": "catalog-verify-revoked",
+  "source": "normative: ADR 0005, docs/DESIGN.md Admission, docs/design/conformance-corpus.md; no Python reference; rules from beadhive hq_sql_session_provision, hq_sql_runtime restore floor, hq_sql_operator.publish, hq_control_plane lifecycle admit, hq_open_admission",
+  "kind": "catalog-read",
+  "note": "a tombstoned digest is not verified: the folded row is revoked with no active digest (the active row stays, the tombstone shadows it)",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame-a",
+    "scope": "lifecycle:read"
+  },
+  "given": {
+    "mode": "trusted",
+    "authority": "",
+    "frames": {
+      "frame-a": {
+        "active": {
+          "authority": {
+            "frame_id": "frame-a",
+            "holder_identity": "host-a",
+            "instance_ref": "inst-host-a",
+            "epoch": 3,
+            "key_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+            "audience": "hq",
+            "config_revision": "cfg-1",
+            "candidate_expires_at": null
+          },
+          "state": "active",
+          "cordoned": false,
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+          "desired": {
+            "release": {
+              "id": "rel-1",
+              "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "caps": {
+              "isolation": "container",
+              "trust_zone": "self-hosted",
+              "arch": "x86_64",
+              "harnesses": [
+                "claude"
+              ],
+              "max_sessions": 2
+            },
+            "profile": "reviewed",
+            "declared": true
+          },
+          "receipt": {
+            "sequence": 0,
+            "sha": "",
+            "first_seen": null,
+            "consecutive": 0,
+            "lease": null,
+            "registration": null
+          },
+          "drain_deadline": null
+        },
+        "candidate": null,
+        "retired": [],
+        "epoch_floor": 3
+      }
+    },
+    "config": {
+      "documents": [
+        {
+          "path": "fleet.yaml",
+          "content": "hq:\n  default_authority_mode: trusted\nmanaged_repos: []\n"
+        }
+      ]
+    },
+    "registry": [
+      {
+        "principal": "frame_09dfb858e523b921bc5c",
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "inbox_table": "hq_live_inbox_frame_09dfb858e523b921bc5c_3",
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw"
+      }
+    ],
+    "liveness": true,
+    "derive": [],
+    "provisioned": [],
+    "pairs": [],
+    "incarnations": [],
+    "inboxes": [
+      "hq_live_inbox_frame_09dfb858e523b921bc5c_3"
+    ],
+    "history": [],
+    "working": [],
+    "floors": [],
+    "receipts": [],
+    "registrations": [],
+    "observations": [],
+    "catalog": [
+      {
+        "catalog": "beadhive",
+        "version": "0.28.2",
+        "measured_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "status": "active",
+        "algorithm": "beadhive-tree-sha256-v1",
+        "wheel_sha256": "5d4cc820b37f3d1fd0c6e04ed50a56ead8d497ecfd3c25c749855ed9d852837d",
+        "commit": "0000000000000000000000000000000000000000",
+        "bundle": "{}",
+        "reason": "",
+        "recorded_at": 1792996400
+      },
+      {
+        "catalog": "beadhive",
+        "version": "0.28.3",
+        "measured_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "status": "active",
+        "algorithm": "beadhive-tree-sha256-v1",
+        "wheel_sha256": "8298e88dce61b333d6c06d20df1b566301d66df06501e26e74683cb580503242",
+        "commit": "0000000000000000000000000000000000000000",
+        "bundle": "{}",
+        "reason": "",
+        "recorded_at": 1792996400
+      },
+      {
+        "catalog": "beadhive",
+        "version": "0.28.3",
+        "measured_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "status": "revoked",
+        "algorithm": "beadhive-tree-sha256-v1",
+        "wheel_sha256": "8298e88dce61b333d6c06d20df1b566301d66df06501e26e74683cb580503242",
+        "commit": "0000000000000000000000000000000000000000",
+        "bundle": "{}",
+        "reason": "conformance",
+        "recorded_at": 1792996400
+      }
+    ]
+  },
+  "request": {
+    "method": "GET",
+    "path": "/hq/lifecycle/v0/release-catalog/beadhive?release_id=0.28.3&release_digest=sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "content_type": "application/json",
+    "body": ""
+  },
+  "expect": {
+    "status": 200,
+    "body": {
+      "catalog": "beadhive",
+      "rows": null,
+      "release": {
+        "id": "0.28.3",
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "verified": false,
+        "row": {
+          "catalog": "beadhive",
+          "version": "0.28.3",
+          "measured_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "status": "revoked",
+          "algorithm": "beadhive-tree-sha256-v1",
+          "active_digests": 0
+        }
+      }
+    },
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

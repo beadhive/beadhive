@@ -1,0 +1,281 @@
+{
+  "name": "admission-candidate-accepted",
+  "source": "normative: ADR 0005, docs/DESIGN.md Admission, docs/design/conformance-corpus.md; no Python reference; rules from beadhive hq_sql_session_provision, hq_sql_runtime restore floor, hq_sql_operator.publish, hq_control_plane lifecycle admit, hq_open_admission",
+  "kind": "admission",
+  "note": "three contiguous verified beats, the newest fresh; its SIGNED conformance is conformant for the grant's profile with passing checks; free_sessions within the registered capacity; the registration matches the grant: the candidate becomes active and its candidate window closes (an expiry is not part of an active authority)",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "frame-b",
+    "scope": "lifecycle:admission",
+    "bound": {
+      "principal_kind": "frame",
+      "frame_id": "frame-b",
+      "host_id": ""
+    }
+  },
+  "given": {
+    "mode": "trusted",
+    "authority": "",
+    "frames": {
+      "frame-a": {
+        "active": {
+          "authority": {
+            "frame_id": "frame-a",
+            "holder_identity": "host-a",
+            "instance_ref": "inst-host-a",
+            "epoch": 3,
+            "key_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+            "audience": "hq",
+            "config_revision": "cfg-1",
+            "candidate_expires_at": null
+          },
+          "state": "active",
+          "cordoned": false,
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+          "desired": {
+            "release": {
+              "id": "rel-1",
+              "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "caps": {
+              "isolation": "container",
+              "trust_zone": "self-hosted",
+              "arch": "x86_64",
+              "harnesses": [
+                "claude"
+              ],
+              "max_sessions": 2
+            },
+            "profile": "reviewed",
+            "declared": true
+          },
+          "receipt": {
+            "sequence": 0,
+            "sha": "",
+            "first_seen": null,
+            "consecutive": 0,
+            "lease": null,
+            "registration": null
+          },
+          "drain_deadline": null
+        },
+        "candidate": null,
+        "retired": [],
+        "epoch_floor": 3
+      },
+      "frame-b": {
+        "active": null,
+        "candidate": {
+          "authority": {
+            "frame_id": "frame-b",
+            "holder_identity": "host-b",
+            "instance_ref": "inst-host-b",
+            "epoch": 3,
+            "key_fingerprint": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0",
+            "audience": "hq",
+            "config_revision": "cfg-1",
+            "candidate_expires_at": 1793000600
+          },
+          "state": "pending",
+          "cordoned": false,
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDmo8uxlVGFRQsbRLPpKqvWtuP6RnGtDQqTy/R5iL3um",
+          "desired": {
+            "release": {
+              "id": "rel-1",
+              "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "caps": {
+              "isolation": "container",
+              "trust_zone": "self-hosted",
+              "arch": "x86_64",
+              "harnesses": [
+                "claude"
+              ],
+              "max_sessions": 2
+            },
+            "profile": "reviewed",
+            "declared": true
+          },
+          "receipt": {
+            "sequence": 0,
+            "sha": "",
+            "first_seen": null,
+            "consecutive": 0,
+            "lease": null,
+            "registration": null
+          },
+          "drain_deadline": null
+        },
+        "retired": [],
+        "epoch_floor": 3
+      }
+    },
+    "config": {
+      "documents": [
+        {
+          "path": "fleet.yaml",
+          "content": "hq:\n  default_authority_mode: trusted\nmanaged_repos: []\n"
+        }
+      ]
+    },
+    "registry": [
+      {
+        "principal": "frame_09dfb858e523b921bc5c",
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "inbox_table": "hq_live_inbox_frame_09dfb858e523b921bc5c_3",
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw"
+      },
+      {
+        "principal": "frame_99d6ba989da389ee0894",
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "instance_ref": "inst-host-b",
+        "epoch": 3,
+        "inbox_table": "frame_frame_99d6ba989da389ee0894_3_session",
+        "signer_fingerprint": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      }
+    ],
+    "liveness": true,
+    "derive": [],
+    "provisioned": [],
+    "pairs": [],
+    "incarnations": [
+      {
+        "principal": "frame_99d6ba989da389ee0894",
+        "epoch": 3,
+        "renewed_at": 1792999990
+      }
+    ],
+    "inboxes": [
+      "hq_live_inbox_frame_09dfb858e523b921bc5c_3"
+    ],
+    "history": [],
+    "working": [],
+    "floors": [
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "epoch": 3,
+        "sequence": 3,
+        "digest": "sha256:650b65400a9d471e89ceeabc4a28207737b9904f2266edcef0e5174054d6901f",
+        "first_seen": 1792999990
+      }
+    ],
+    "receipts": [
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "epoch": 3,
+        "sequence": 1,
+        "digest": "sha256:80fa8855720e1874f82251ec9a80bbf635bb08103a23fe7ecde1362f2ede4776",
+        "first_seen": 1792999880,
+        "lease": "{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:31:20Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":1,\"state_seen\":\"active\"}",
+        "envelope": "{\"apiVersion\":\"frame.beadhive.ai/v1alpha1\",\"kind\":\"FrameLease\",\"metadata\":{\"name\":\"frame-b\"},\"spec\":{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:31:20Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":1,\"signature\":{\"algorithm\":\"ed25519\",\"keyId\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"scope\":\"payload\",\"value\":\"ClO4OmRPWmEgIu3ScRAi5ztUb6/IEkW+lJyt5PhjGDMKPuTecJ4szk4GsX/m+8ceMc5Uhl0tNlJGR+CUP0HcBw==\"},\"state_seen\":\"active\"}}",
+        "signer": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      },
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "epoch": 3,
+        "sequence": 2,
+        "digest": "sha256:45b3b632066144e0f5ad12c7916118f6508856775aff157ec4646eeadefdfa68",
+        "first_seen": 1792999940,
+        "lease": "{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:32:20Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":2,\"state_seen\":\"active\"}",
+        "envelope": "{\"apiVersion\":\"frame.beadhive.ai/v1alpha1\",\"kind\":\"FrameLease\",\"metadata\":{\"name\":\"frame-b\"},\"spec\":{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:32:20Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":2,\"signature\":{\"algorithm\":\"ed25519\",\"keyId\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"scope\":\"payload\",\"value\":\"iWBdyJSkkJyMBc7bkGds5m4KSYnziwOd86WdVK1wQDxk/9ntXNgKNG/eSWZxUeb79YWwrtEn+Uw2dxD/Qg++CQ==\"},\"state_seen\":\"active\"}}",
+        "signer": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      },
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "epoch": 3,
+        "sequence": 3,
+        "digest": "sha256:650b65400a9d471e89ceeabc4a28207737b9904f2266edcef0e5174054d6901f",
+        "first_seen": 1792999990,
+        "lease": "{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:33:10Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":3,\"state_seen\":\"active\"}",
+        "envelope": "{\"apiVersion\":\"frame.beadhive.ai/v1alpha1\",\"kind\":\"FrameLease\",\"metadata\":{\"name\":\"frame-b\"},\"spec\":{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:33:10Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":3,\"signature\":{\"algorithm\":\"ed25519\",\"keyId\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"scope\":\"payload\",\"value\":\"SVdCEug4bs+N60TMrRWf3EcteouK6WaovZ2VYWRjJbYDYLJwG5IdN73bbJNfnofecX875R084AxtItJb+xIrAg==\"},\"state_seen\":\"active\"}}",
+        "signer": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      }
+    ],
+    "registrations": [
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "instance_ref": "inst-host-b",
+        "epoch": 3,
+        "manifest": "{\"arch\":\"x86_64\",\"capabilities\":{\"arch\":\"x86_64\",\"harnesses\":[\"claude\"],\"isolation\":\"container\",\"max_sessions\":2,\"trust_zone\":\"self-hosted\"},\"capacity\":{},\"frame_id\":\"frame-b\",\"harnesses\":{},\"host_id\":\"host-b\",\"identity\":{\"kind\":\"none\",\"value\":\"\"},\"instance_ref\":\"inst-host-b\",\"label\":\"host-b\",\"os\":\"linux\",\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"remote_only_hives\":[],\"role\":\"executor\",\"state\":\"pending\"}",
+        "signer": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      }
+    ],
+    "observations": [
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "epoch": 3,
+        "sequence": 3,
+        "digest": "sha256:650b65400a9d471e89ceeabc4a28207737b9904f2266edcef0e5174054d6901f",
+        "accepted_until": 1793000290,
+        "lease": "{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:33:10Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":3,\"state_seen\":\"active\"}",
+        "envelope": "{\"apiVersion\":\"frame.beadhive.ai/v1alpha1\",\"kind\":\"FrameLease\",\"metadata\":{\"name\":\"frame-b\"},\"spec\":{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"rel-1\"},\"renewTime\":\"2026-10-26T07:33:10Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":3,\"signature\":{\"algorithm\":\"ed25519\",\"keyId\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"scope\":\"payload\",\"value\":\"SVdCEug4bs+N60TMrRWf3EcteouK6WaovZ2VYWRjJbYDYLJwG5IdN73bbJNfnofecX875R084AxtItJb+xIrAg==\"},\"state_seen\":\"active\"}}",
+        "signer": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      }
+    ]
+  },
+  "request": {
+    "method": "POST",
+    "path": "/hq/lifecycle/v0/admissions/frame-b",
+    "content_type": "application/json",
+    "body": "{\"kind\":\"candidate\",\"expected_revision\":\"$HEAD\"}"
+  },
+  "expect": {
+    "status": 200,
+    "outcome": "accepted",
+    "revision": "$NEW_HEAD",
+    "effects": {
+      "authority": {
+        "revision": 2,
+        "frame": "frame-b",
+        "signature": "unsigned:trusted",
+        "active": {
+          "state": "active",
+          "cordoned": false,
+          "holder_identity": "host-b",
+          "epoch": 3,
+          "candidate_expires_at": null,
+          "candidate": null,
+          "epoch_floor": 3,
+          "release": {
+            "id": "rel-1",
+            "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "audience": "hq",
+          "profile": "reviewed",
+          "beadyard_id": null
+        }
+      },
+      "registry": [
+        {
+          "principal": "frame_09dfb858e523b921bc5c",
+          "frame_id": "frame-a",
+          "holder_identity": "host-a",
+          "instance_ref": "inst-host-a",
+          "epoch": 3,
+          "inbox_table": "hq_live_inbox_frame_09dfb858e523b921bc5c_3",
+          "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw"
+        },
+        {
+          "principal": "frame_99d6ba989da389ee0894",
+          "frame_id": "frame-b",
+          "holder_identity": "host-b",
+          "instance_ref": "inst-host-b",
+          "epoch": 3,
+          "inbox_table": "frame_frame_99d6ba989da389ee0894_3_session",
+          "signer_fingerprint": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+        }
+      ],
+      "readable": true
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "name": "manifest-withdraw-refused-caller-bound-to-another-host",
+  "source": "normative: ADR 0005, docs/DESIGN.md Admission, docs/design/conformance-corpus.md; no Python reference; rules from beadhive hq_sql_session_provision, hq_sql_runtime restore floor, hq_sql_operator.publish, hq_control_plane lifecycle admit, hq_open_admission",
+  "kind": "manifest",
+  "note": "a host withdraws only its own manifest: the caller is bound to host-m, the path is host-n",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "host-n",
+    "scope": "lifecycle:fleet",
+    "bound": {
+      "principal_kind": "host",
+      "host_id": "host-m"
+    }
+  },
+  "given": {
+    "mode": "trusted",
+    "authority": "",
+    "frames": {},
+    "config": {
+      "documents": [
+        {
+          "path": "fleet.yaml",
+          "content": "hq:\n  default_authority_mode: trusted\nmanaged_repos: []\n"
+        },
+        {
+          "path": "beadyard.json",
+          "content": "{\"beadyard_id\": \"6f1e3c2a-9b4d-4e8f-a1c2-3d4e5f607182\"}"
+        },
+        {
+          "path": "hosts/host-n.yaml",
+          "content": "{\"state\": \"pending\", \"identity\": {\"kind\": \"none\", \"value\": \"\"}, \"capacity\": {}, \"harnesses\": {}, \"remote_only_hives\": [], \"host_id\": \"host-n\", \"label\": \"host-n\", \"os\": \"linux\", \"arch\": \"x86_64\", \"role\": \"executor\", \"frame_id\": \"frame-n\", \"instance_ref\": \"inst-host-n\", \"release\": {\"id\": \"rel-1\", \"digest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}, \"capabilities\": {\"isolation\": \"container\", \"trust_zone\": \"self-hosted\", \"arch\": \"x86_64\", \"harnesses\": [\"claude\"], \"max_sessions\": 2}, \"beadyard_id\": \"6f1e3c2a-9b4d-4e8f-a1c2-3d4e5f607182\"}"
+        },
+        {
+          "path": "hosts/host-z.yaml",
+          "content": "{\"host_id\": \"host-z\", \"label\": \"host-z\", \"os\": \"linux\", \"arch\": \"x86_64\", \"role\": \"executor\", \"identity\": {\"kind\": \"none\", \"value\": \"\"}}"
+        }
+      ]
+    },
+    "registry": [],
+    "liveness": true,
+    "derive": [],
+    "provisioned": [],
+    "pairs": [],
+    "incarnations": [],
+    "inboxes": [],
+    "history": [],
+    "working": [],
+    "floors": [],
+    "receipts": [],
+    "registrations": [],
+    "observations": []
+  },
+  "request": {
+    "method": "DELETE",
+    "path": "/hq/lifecycle/v0/manifests/host-n",
+    "content_type": "",
+    "body": ""
+  },
+  "expect": {
+    "status": 403,
+    "code": "caller_not_bound",
+    "retryable": false,
+    "reason": "another host",
+    "effects": {
+      "writes": "none"
+    }
+  }
+}

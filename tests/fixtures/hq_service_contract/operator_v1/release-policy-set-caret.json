@@ -1,0 +1,213 @@
+{
+  "name": "release-policy-set-caret",
+  "source": "normative HTTP; records from beadhive hq_control_plane.renew/_rebind_frame_grant, frame_release_policy.prepare, hq_sql_operator.publish, hq_hive_policy.project_hive_policies; docs/DESIGN.md Operator publication",
+  "kind": "operator",
+  "note": "^0.29 normalises to the canonical PEP 440 set; one frame's grant gains desired.release_policy, epoch and binding untouched; the expiry keeps the signed life (max(old, now + 1 h)); the identical apply is a replay",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "operator",
+    "scope": "lifecycle:operator"
+  },
+  "given": {
+    "mode": "signed",
+    "authority": "",
+    "frames": {
+      "frame-b": {
+        "active": {
+          "authority": {
+            "frame_id": "frame-b",
+            "holder_identity": "host-b",
+            "instance_ref": "inst-host-b",
+            "epoch": 3,
+            "key_fingerprint": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0",
+            "audience": "hq",
+            "config_revision": "cfg-1",
+            "candidate_expires_at": 1793000600
+          },
+          "state": "active",
+          "cordoned": false,
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDmo8uxlVGFRQsbRLPpKqvWtuP6RnGtDQqTy/R5iL3um",
+          "desired": {
+            "release": {
+              "id": "0.29.0",
+              "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+            },
+            "caps": {
+              "isolation": "container",
+              "trust_zone": "self-hosted",
+              "arch": "x86_64",
+              "harnesses": [
+                "claude"
+              ],
+              "max_sessions": 2
+            },
+            "profile": "reviewed",
+            "declared": true
+          },
+          "receipt": {
+            "sequence": 0,
+            "sha": "",
+            "first_seen": null,
+            "consecutive": 0,
+            "lease": null,
+            "registration": null
+          },
+          "drain_deadline": null
+        },
+        "candidate": null,
+        "retired": [],
+        "epoch_floor": 3
+      }
+    },
+    "config": {
+      "documents": [
+        {
+          "path": "fleet.yaml",
+          "content": "{\"managed_repos\": []}"
+        }
+      ]
+    },
+    "registry": [
+      {
+        "principal": "frame_99d6ba989da389ee0894",
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "instance_ref": "inst-host-b",
+        "epoch": 3,
+        "inbox_table": "hq_live_inbox_frame_99d6ba989da389ee0894_3",
+        "signer_fingerprint": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      }
+    ],
+    "liveness": false,
+    "derive": [],
+    "provisioned": [],
+    "pairs": [],
+    "incarnations": [],
+    "inboxes": [],
+    "history": [],
+    "working": [],
+    "floors": [
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "epoch": 3,
+        "sequence": 1,
+        "digest": "sha256:8f72217375a29530859112028ed63ea985cd7c54002711992836c883e7b4fd48",
+        "first_seen": 1792999990
+      }
+    ],
+    "receipts": [
+      {
+        "frame_id": "frame-b",
+        "holder_identity": "host-b",
+        "epoch": 3,
+        "sequence": 1,
+        "digest": "sha256:8f72217375a29530859112028ed63ea985cd7c54002711992836c883e7b4fd48",
+        "first_seen": 1792999990,
+        "lease": "{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"id\":\"0.29.0\"},\"renewTime\":\"2026-10-26T07:33:10Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":1,\"state_seen\":\"active\"}",
+        "envelope": "{\"apiVersion\":\"frame.beadhive.ai/v1alpha1\",\"kind\":\"FrameLease\",\"metadata\":{\"name\":\"frame-b\"},\"spec\":{\"audience\":\"hq\",\"config_revision\":\"cfg-1\",\"conformance\":{\"checks\":[{\"id\":\"installed-release\",\"status\":\"pass\"}],\"profile\":\"reviewed\",\"status\":\"conformant\"},\"domain\":\"beadhive/frame-heartbeat/v1\",\"epoch\":3,\"frame_id\":\"frame-b\",\"free_sessions\":0,\"generation\":0,\"holderIdentity\":\"host-b\",\"instance_ref\":\"inst-host-b\",\"intervalSeconds\":60,\"key_id\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"leaseDurationSeconds\":300,\"release\":{\"digest\":\"sha256:6666666666666666666666666666666666666666666666666666666666666666\",\"id\":\"0.29.0\"},\"renewTime\":\"2026-10-26T07:33:10Z\",\"report_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"seq\":1,\"signature\":{\"algorithm\":\"ed25519\",\"keyId\":\"SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0\",\"scope\":\"payload\",\"value\":\"SiCFZ3CPZqGLyaVfI5bzYEa19Jp9xmI8hvkoSvTqPihBAwbBrdxpSuSGkUS8qODbKsgav0MiGD+ygHEZXkMmAA==\"},\"state_seen\":\"active\"}}",
+        "signer": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0"
+      }
+    ],
+    "registrations": [],
+    "observations": []
+  },
+  "op": "release-policy",
+  "frame": "frame-b",
+  "plan": {
+    "body": "{\"spec\":\"^0.29\"}",
+    "expect": {
+      "status": 200,
+      "outcome": "planned",
+      "record": {
+        "backend_identity": "$BACKEND",
+        "generation": "$GENERATION",
+        "revision": 2,
+        "config_backend": "sql:cfg-backend",
+        "config_generation": "cfg-gen",
+        "config_head": "$CONFIG_HEAD",
+        "state": {
+          "domain": "beadhive/git-authority/v1",
+          "generation": "gen-1",
+          "revision": 2,
+          "issued_at": 1793000000,
+          "expires_at": 1793086400,
+          "frames": {
+            "frame-b": {
+              "active": {
+                "authority": {
+                  "frame_id": "frame-b",
+                  "holder_identity": "host-b",
+                  "instance_ref": "inst-host-b",
+                  "epoch": 3,
+                  "key_fingerprint": "SHA256:jLkrtSnCsq+XtO80Duyo//iyLN1Uw8JGzQkO+CJ3Bl0",
+                  "audience": "hq",
+                  "config_revision": "cfg-1",
+                  "candidate_expires_at": 1793000600
+                },
+                "state": "active",
+                "cordoned": false,
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDmo8uxlVGFRQsbRLPpKqvWtuP6RnGtDQqTy/R5iL3um",
+                "desired": {
+                  "release": {
+                    "id": "0.29.0",
+                    "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+                  },
+                  "caps": {
+                    "isolation": "container",
+                    "trust_zone": "self-hosted",
+                    "arch": "x86_64",
+                    "harnesses": [
+                      "claude"
+                    ],
+                    "max_sessions": 2
+                  },
+                  "profile": "reviewed",
+                  "declared": true,
+                  "release_policy": {
+                    "format": 1,
+                    "spec": ">=0.29,==0.29.*",
+                    "catalog": "beadhive"
+                  }
+                },
+                "receipt": {
+                  "sequence": 0,
+                  "sha": "",
+                  "first_seen": null,
+                  "consecutive": 0,
+                  "lease": null,
+                  "registration": null
+                },
+                "drain_deadline": null
+              },
+              "candidate": null,
+              "retired": [],
+              "epoch_floor": 3
+            }
+          }
+        },
+        "hive_policies": {}
+      },
+      "body": {
+        "summary": {
+          "downgrade": false,
+          "attested_release": "0.29.0",
+          "epoch_advanced": false
+        }
+      }
+    }
+  },
+  "apply": {
+    "sign": "operator",
+    "twice": true,
+    "expect": {
+      "status": 200,
+      "outcome": "accepted",
+      "effects": {
+        "revision": 2,
+        "signature": "signed",
+        "readable": true
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 
@@ -9,7 +10,9 @@ import httpx
 import pytest
 
 from beadhive import hq_port
+from beadhive.hq_framelease_contracts import ObservationAuthority
 from beadhive.hq_port import (
+    AdmissionRequest,
     EvidenceReport,
     FrameAnchor,
     HqDeadline,
@@ -24,8 +27,19 @@ from beadhive.hq_service_adapter import (
     adapter_from_config,
     select_hq_port,
 )
+from beadhive.hq_sql_signatures import AUTHORITY_DOMAIN, canonical
 
 ANCHOR = FrameAnchor(principal="frame_a", frame="frame-a", epoch=7)
+ROUTE = ("frame_" + "a" * 20, "frame-a", "host-a", "inst-a", 1, "key")
+ADMISSION = AdmissionRequest(
+    "f", ObservationAuthority("f", "host-a", "inst-a", "SHA256:k", 0, "hq", "cfg"), "key", {}
+)
+#: What hq-service answers each write with (v0.1.0); revisions are what the adapter returns.
+ECHOES = {
+    "register_incarnation": {"principal": ROUTE[0], "epoch": 1},
+    "publish_manifest": {"host_id": "h"},
+    "admit": {"frame_id": "f"},
+}
 
 
 def _later() -> float:
@@ -75,17 +89,17 @@ def test_path_segments_cannot_escape():
 
 
 def test_non_submission_refusal_raises_with_code():
-    adapter, _ = _adapter(_json({"outcome": "refused", "refusal": "stale_revision"}, 409))
+    adapter, _ = _adapter(_json({"outcome": "refused", "refusal": "host_id_mismatch"}, 409))
     with pytest.raises(HqRefused) as info:
         adapter.publish_manifest({"host_id": "h"}, expected_revision="r0", deadline=_later())
-    assert info.value.code == "stale_revision"
+    assert info.value.code == "host_id_mismatch"
 
 
 @pytest.mark.parametrize("status", [401, 403, 404])
 def test_gateway_refusals_before_the_service_are_unavailable(status):
     adapter, _ = _adapter(_json({"error": "no"}, status))
     with pytest.raises(HqUnavailable):
-        adapter.admit("f", {"a": 1}, signer=lambda r: "", expected_revision="r", deadline=_later())
+        adapter.admit("f", ADMISSION, signer=lambda r: "", expected_revision="r", deadline=_later())
 
 
 def _writes(adapter):
@@ -93,13 +107,13 @@ def _writes(adapter):
     signer = lambda record: "sig"  # noqa: E731
     return {
         "register_incarnation": lambda: adapter.register_incarnation(
-            ("p", 1), expected_revision="r7", frame_address="f", deadline=_later()
+            ROUTE, expected_revision="r7", frame_address="f", deadline=_later()
         ),
         "publish_manifest": lambda: adapter.publish_manifest(
             {"host_id": "h"}, expected_revision="r7", deadline=_later()
         ),
         "admit": lambda: adapter.admit(
-            "f", {"a": 1}, signer=signer, expected_revision="r7", deadline=_later()
+            "f", ADMISSION, signer=signer, expected_revision="r7", deadline=_later()
         ),
         "rebind": lambda: adapter.rebind(
             {}, signer=signer, expected_revision="r7", deadline=_later()
@@ -116,9 +130,19 @@ def _writes(adapter):
 )
 def test_5xx_on_a_non_idempotent_write_is_outcome_unknown(name, status):
     def handler(request):
-        body = json.loads(request.content)
-        if body.get("phase") == "plan":  # the plan phase writes nothing; the apply phase fails
-            return httpx.Response(200, json={"plan": {"head": "h"}})
+        if request.url.path.endswith("/plan"):  # the plan writes nothing; the apply fails
+            record = {"revision": 2}
+            signing_input = base64.b64encode(AUTHORITY_DOMAIN + canonical(record)).decode()
+            return httpx.Response(
+                200,
+                json={
+                    "outcome": "planned",
+                    "revision": "r7",
+                    "record": record,
+                    "signing_input": signing_input,
+                    "config_head": "c",
+                },
+            )
         return httpx.Response(status, json={"error": "boom"})
 
     adapter, _ = _adapter(handler)
@@ -153,7 +177,7 @@ def test_malformed_calls_are_bad_request_refusals(status):
     adapter, _ = _adapter(_json({"error": "no"}, status))
     with pytest.raises(HqRefused) as info:
         adapter.register_incarnation(
-            ("a",), expected_revision="r", frame_address="x", deadline=_later()
+            ROUTE, expected_revision="r", frame_address="x", deadline=_later()
         )
     assert info.value.code == "bad_request"
 
@@ -172,7 +196,7 @@ def test_connect_failure_is_unavailable_but_lost_write_is_unknown():
     adapter, _ = _adapter(refuse)
     with pytest.raises(HqUnavailable):
         adapter.register_incarnation(
-            ("a",), expected_revision="r", frame_address="", deadline=_later()
+            ROUTE, expected_revision="r", frame_address="", deadline=_later()
         )
 
     def lost(request):
@@ -181,7 +205,7 @@ def test_connect_failure_is_unavailable_but_lost_write_is_unknown():
     adapter, _ = _adapter(lost)
     with pytest.raises(HqOutcomeUnknown) as info:
         adapter.register_incarnation(
-            ("a",), expected_revision="r7", frame_address="", deadline=_later()
+            ROUTE, expected_revision="r7", frame_address="", deadline=_later()
         )
     assert info.value.expected_revision == "r7"
 
@@ -195,11 +219,18 @@ def test_read_timeout_on_a_read_is_deadline():
         adapter._read_history(since="abc", deadline=_later())
 
 
-def test_history_floor_is_a_path_segment():
-    adapter, calls = _adapter(_json({"commits": [{"h": 1}], "diff_summary": []}))
+def test_history_floor_is_the_one_query_parameter():
+    body = {"head": "h", "floor": "deadbeef", "revisions": [{"id": "h", "parents": ["deadbeef"]}]}
+    adapter, calls = _adapter(_json(body))
     history = adapter._read_history(since="deadbeef", deadline=_later())
-    assert calls[0].url.path == f"{PREFIX}/history/deadbeef" and not calls[0].url.query
-    assert history.commits == ({"h": 1},)
+    assert calls[0].url.path == f"{PREFIX}/history" and calls[0].url.query == b"since=deadbeef"
+    assert history.revisions == ({"id": "h", "parents": ["deadbeef"]},)
+
+
+def test_history_without_a_revision_list_is_unavailable():
+    adapter, _ = _adapter(_json({"commits": []}))
+    with pytest.raises(HqUnavailable, match="revision list"):
+        adapter._read_history(since="deadbeef", deadline=_later())
 
 
 def test_authority_reads_fail_closed_without_a_verifier():
@@ -219,13 +250,8 @@ def test_authority_reads_return_what_the_verifier_returns():
         _json({"state": {}}), verifier=lambda m, p: seen.append(m) or ("verified", m)
     )
     assert adapter.read_authority(deadline=_later()) == ("verified", "read_authority")
-    adapter.read_eligibility("frame-a", deadline=_later())
     adapter.read_config(deadline=_later())
-    assert [c.url.path for c in calls] == [
-        f"{PREFIX}/authority",
-        f"{PREFIX}/eligibility/frame-a",
-        f"{PREFIX}/config",
-    ]
+    assert [c.url.path for c in calls] == [f"{PREFIX}/authority", f"{PREFIX}/config"]
 
 
 def test_gap_methods_raise_unavailable_without_any_request():
@@ -234,10 +260,8 @@ def test_gap_methods_raise_unavailable_without_any_request():
     gaps = [
         lambda: adapter.describe_incarnation("p", 1, "f", target_route=None, deadline=d),
         lambda: adapter.preflight(route="r", deadline=d),
-        lambda: adapter.withdraw_manifest("h", expected_revision="r", deadline=d),
         lambda: adapter.read_frame_anchor(expected_head=None, deadline=d),
         lambda: adapter.read_eligibility("f", prefix="bh", deadline=d),
-        lambda: adapter.read_release_catalog_row("h", "c", {}, deadline=d),
         lambda: adapter.publish_authority({}, signer=str, expected_revision="r", deadline=d),
         lambda: adapter.read_evidence("f", "h", expected_revision="r", deadline=d),
         lambda: adapter.publish_config((), expected_revision="r", deadline=d),
@@ -249,34 +273,66 @@ def test_gap_methods_raise_unavailable_without_any_request():
     assert not calls
 
 
+def _plan(record, **extra):
+    signing_input = base64.b64encode(AUTHORITY_DOMAIN + canonical(record)).decode()
+    return {
+        "outcome": "planned",
+        "revision": "r4",
+        "config_head": "c",
+        "record": record,
+        "signing_input": signing_input,
+        "issued_at": 1.0,
+        "expires_at": 2.0,
+        **extra,
+    }
+
+
 def test_rebind_signs_between_plan_and_apply_without_exposing_a_key():
-    phases = []
+    paths, bodies = [], []
+    record = {"revision": 5, "config_head": "c"}
 
     def handler(request):
-        body = json.loads(request.content)
-        phases.append(body["phase"])
-        if body["phase"] == "plan":
-            return httpx.Response(200, json={"plan": {"head": "h", "config_head": "c"}})
-        assert body["signature"] == "sig:h" and body["record"]["config_head"] == "c"
-        return httpx.Response(200, json={"revision": "r5"})
+        paths.append(request.url.path)
+        bodies.append(json.loads(request.content))
+        if request.url.path.endswith("/plan"):
+            return httpx.Response(200, json=_plan(record))
+        return httpx.Response(200, json={"outcome": "accepted", "revision": "r5"})
 
-    adapter, calls = _adapter(handler)
+    adapter, _ = _adapter(handler)
     head = adapter.rebind(
-        {"s": 1},
-        signer=lambda rec: "sig:" + rec["head"],
+        {"duration_s": 60},
+        signer=lambda rec: "sig:" + str(rec["revision"]),
         expected_revision="r4",
         deadline=_later(),
     )
-    assert head == "r5" and phases == ["plan", "apply"]
-    assert {c.url.path for c in calls} == {f"{PREFIX}/authority/rebind"}
+    assert head == "r5"
+    assert paths == [f"{PREFIX}/authority/rebind/plan", f"{PREFIX}/authority/rebind/apply"]
+    assert bodies[0] == {"duration_s": 60}  # a plan takes only its own fields
+    assert bodies[1] == {
+        "duration_s": 60,
+        "expected_revision": "r4",
+        "config_head": "c",
+        "issued_at": 1.0,
+        "expires_at": 2.0,
+        "record": record,
+        "signature": "sig:5",
+    }
 
 
 def test_release_policy_route():
     adapter, calls = _adapter(
-        lambda r: httpx.Response(200, json={"plan": {"x": 1}, "revision": "r"})
+        lambda r: httpx.Response(
+            200,
+            json=_plan({"x": 1}) if r.url.path.endswith("/plan") else {"revision": "r"},
+        )
     )
-    adapter.release_policy("f", {}, signer=lambda r: "s", expected_revision="r0", deadline=_later())
-    assert calls[0].url.path == f"{PREFIX}/release-policy"
+    adapter.release_policy(
+        "f", {"spec": "^0.29"}, signer=lambda r: "s", expected_revision="r4", deadline=_later()
+    )
+    assert [c.url.path for c in calls] == [
+        f"{PREFIX}/authority/release-policy/f/plan",
+        f"{PREFIX}/authority/release-policy/f/apply",
+    ]
 
 
 # ---- selection ----------------------------------------------------------------------------
@@ -336,13 +392,13 @@ def test_hq_route_config_is_host_only_and_validated():
 
 
 def test_register_incarnation_never_calls_login_secret():
-    adapter, calls = _adapter(_json({"revision": "r8"}))
+    adapter, calls = _adapter(_json({"revision": "r8", **ECHOES["register_incarnation"]}))
 
     def secret():
         pytest.fail("the service adapter must not call login_secret")
 
     adapter.register_incarnation(
-        ("p", 1),
+        ROUTE,
         expected_revision="r7",
         frame_address="f",
         login_secret=secret,

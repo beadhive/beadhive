@@ -1,0 +1,168 @@
+{
+  "_comment": "Served-message registry for the codes only the HTTP layer emits: the pre-rule and read-endpoint refusals, the transient (503) and CAS (409 retryable) codes, and the other codes no conformance corpus case exercises (api tests cover them). Under the error envelope of ADR bh-hq-pio.5 (docs/adr/0001-error-envelope.md). Each entry: the HTTP status, retryable, and the message clients see in error.message; an optional note is authoring commentary and is never served. A code a session case exercises lives in session/v1/refusal-codes.json instead, never here (conformance.Registry rejects a code in both). These entries take precedence over the heartbeat, hive-lease, registration and authority registries, which only supply a message for the codes neither names. Owned by hq-service, embedded by conformance/registry.go.",
+  "deadline_exceeded": {
+    "status": 503,
+    "retryable": true,
+    "message": "trusted receiver deadline exceeded"
+  },
+  "request_unavailable": {
+    "status": 503,
+    "retryable": true,
+    "message": "the request is unavailable",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "acceptance_unavailable": {
+    "status": 503,
+    "retryable": true,
+    "message": "trusted acceptance unavailable",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "floor_cas_conflict": {
+    "status": 409,
+    "retryable": true,
+    "message": "protected observer floor CAS conflict"
+  },
+  "observation_cas_conflict": {
+    "status": 409,
+    "retryable": true,
+    "message": "public observation CAS differs from protected floor"
+  },
+  "registration_cas_conflict": {
+    "status": 409,
+    "retryable": true,
+    "message": "protected registration CAS conflict",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "method_not_allowed": {
+    "status": 405,
+    "retryable": false,
+    "message": "the method is not allowed on this route",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "query_not_allowed": {
+    "status": 400,
+    "retryable": false,
+    "message": "this endpoint takes no query parameters",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "request_target_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "origin-form request target required",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "forwarding_headers_rejected": {
+    "status": 400,
+    "retryable": false,
+    "message": "forwarding headers are rejected",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "storage_unavailable": {
+    "status": 503,
+    "retryable": true,
+    "message": "hq storage unavailable",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "cutover_incomplete": {
+    "status": 503,
+    "retryable": true,
+    "message": "registry incarnations have no liveness row; run hq-service cutover",
+    "note": "normative (no Python reference); GET /readyz only, bh-hq-pio.10"
+  },
+  "missing_floor": {
+    "status": 400,
+    "retryable": false,
+    "message": "exactly one since parameter is required",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "invalid_floor": {
+    "status": 400,
+    "retryable": false,
+    "message": "since is not a revision id",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "invalid_frame": {
+    "status": 400,
+    "retryable": false,
+    "message": "the frame path segment is not a frame id",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "invalid_release": {
+    "status": 400,
+    "retryable": false,
+    "message": "release_id and release_digest are given together, once each, as release tokens",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "missing_prefix": {
+    "status": 400,
+    "retryable": false,
+    "message": "exactly one prefix parameter is required",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "invalid_prefix": {
+    "status": 400,
+    "retryable": false,
+    "message": "prefix is not a hive prefix",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "unknown_prefix": {
+    "status": 404,
+    "retryable": false,
+    "message": "no hive lease names that prefix",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "unknown_floor": {
+    "status": 409,
+    "retryable": false,
+    "message": "since names no known revision",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "history_too_long": {
+    "status": 409,
+    "retryable": false,
+    "message": "more revisions after since than one response carries",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "unknown_frame": {
+    "status": 404,
+    "retryable": false,
+    "message": "the authority has no such frame",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "internal_error": {
+    "status": 500,
+    "retryable": false,
+    "message": "internal error",
+    "note": "normative (no Python reference); hq-service pre-rule or read code; emitted only when a code is missing from this registry, which a test forbids"
+  },
+  "route_not_found": {
+    "status": 404,
+    "retryable": false,
+    "message": "no such route",
+    "note": "normative (no Python reference); hq-service pre-rule or read code"
+  },
+  "stale_revision": {
+    "status": 409,
+    "retryable": true,
+    "message": "the head moved from the expected revision",
+    "note": "normative (no Python reference); store.Publish's CAS failure, not yet served over HTTP"
+  },
+  "observer_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "trusted observer mismatch",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "request_digest_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "request digest mismatch",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  },
+  "cas_conflict_at_write": {
+    "status": 409,
+    "retryable": true,
+    "message": "protected hive lease CAS conflict",
+    "note": "normative (no Python reference); endpoint-neutral wording for a code several endpoints share, served in error.message; the per-endpoint registries keep Python's wording for their corpora"
+  }
+}

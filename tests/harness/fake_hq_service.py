@@ -1,8 +1,9 @@
-"""In-process fake of hq-service's session routes (renew and evidence), bh-zephr, plus canned
-read routes (``reads``, bh-e437a).
+"""In-process fake of hq-service's session routes (renew and evidence), bh-zephr, canned read
+routes (``reads``, bh-e437a) and the admission and operator write routes (bh-21vpt).
 
 A transport-level stand-in for a staged hq-service, built from the hq-service conformance corpus
-(``conformance/session/v1`` and ``conformance/http/v1`` at commit 205fd5b) and the rules in its
+(``conformance/session/v1``, identical at v0.1.0 and 205fd5b, and ``conformance/http/v1``) and
+the rules in its
 ``store/session.go`` ``renew()`` / ``evidence()``. It exists so the staged end-to-end test body
 (``tests/test_hq_session_staged_e2e.py``) can be proven correct with no network: the test drives
 the real adapter and sender code at an ``httpx`` transport, and this class answers.
@@ -26,6 +27,32 @@ Rules it ENFORCES, in the service's order:
   stored report is ``replayed``; evidence for a lapsed beat is still stored (staleness is the
   reader's call, as in the service).
 
+The write routes serve the bodies of hq-service v0.1.0 (``api/writes.go``, ``store/``):
+
+* ``POST /incarnations`` takes exactly ``{principal, epoch, expected_revision}`` and answers
+  ``{outcome, revision, principal, epoch}`` (``revision`` is the unchanged head).
+* ``PUT /manifests/{host_id}`` takes the host manifest and answers ``{outcome, revision (the
+  CONFIG head), host_id, path, sha256}``; ``DELETE`` withdraws it (``{outcome, revision, host_id,
+  path}``, a ``replayed`` at the unchanged head when there is none).
+* ``POST /admissions/{frame}`` takes ``{kind, expected_revision, host_id?, public_key?}`` and
+  answers ``{outcome, revision, frame_id, host_id, kind, principal, epoch}``.
+* ``POST /authority/rebind/{plan,apply}`` and ``/authority/release-policy/{frame}/{plan,apply}``:
+  a plan takes only its own fields and answers ``{outcome: planned, revision, config_head, record,
+  signing_input, ...}`` for ``operator_record``; an apply takes the plan fields plus
+  ``{expected_revision, config_head, issued_at, expires_at, signature?, record?}``, refuses a
+  stale head, a mismatched echoed record, and a missing signature when ``signature_needed``.
+
+* ``GET /hive-leases?prefix=`` serves ``hive_leases[prefix]`` (``unknown_prefix`` otherwise) and
+  ``GET /release-catalog/{catalog}`` lists ``catalog_rows`` or, with ``release_id`` and
+  ``release_digest`` together, folds them into the verdict ``{id, digest, verified, row}``.
+* With ``caller`` set (``{kind, frame_id, host_id}``) the write routes are caller-bound as at
+  v0.1.0: a caller not bound to the path's frame or host, or to the body's host, is a 403
+  ``caller_not_bound``.
+
+Every write CASes ``expected_revision`` on ``head`` (``stale_revision``, retryable). The history
+read takes exactly one ``since`` (``missing_floor`` / ``invalid_floor``). ``requests`` records
+every ``(method, path, query, body)`` the service saw, so a test can pin the wire shape.
+
 Rules it does NOT enforce (the staged stack does): the gateway attestation and its scope, operator
 authority verification (``authority_failed``), candidate-grant expiry, lease-duration range
 codes beyond what the schema model rejects, request-size limits, the cross-principal checks, the
@@ -37,8 +64,10 @@ The fake owns no I/O: ``transport()`` is an ``httpx.MockTransport``.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,7 +76,14 @@ import httpx
 
 from beadhive.hq_framelease_contracts import HeartbeatLease
 from beadhive.hq_service_adapter import PREFIX
-from beadhive.hq_sql_signatures import SqlSignatureError, canonical, fingerprint, verify_heartbeat
+from beadhive.hq_sql_signatures import (
+    AUTHORITY_DOMAIN,
+    SqlSignatureError,
+    canonical,
+    fingerprint,
+    verify_authority,
+    verify_heartbeat,
+)
 
 #: ``(status, message)`` per refusal code the two session routes can answer.
 CODES: dict[str, tuple[int, str]] = {
@@ -74,15 +110,53 @@ CODES: dict[str, tuple[int, str]] = {
     "evidence_invalid": (409, "the report is not a valid heartbeat measurement report"),
 }
 
+#: Codes the registry marks retryable (``conformance/http/v1/codes.json``).
+RETRYABLE = frozenset({"stale_revision"})
+
+_REVISION = re.compile(r"^[0-9a-v]{32}$")
+_PRINCIPAL = re.compile(r"^frame_[0-9a-f]{20}$")
+_FRAME = re.compile(r"^[a-z][a-z0-9-]{0,127}$")
+
+
+#: ``(status, message)`` per code the admission, operator and read routes answer
+#: (``conformance/admission/v1``, ``operator/v1`` and ``http/v1`` refusal registries, v0.1.0).
+V0_CODES: dict[str, tuple[int, str]] = {
+    "stale_revision": (409, "the head moved from the expected revision"),
+    "operator_signature_invalid": (409, "the signature does not verify against the operator key"),
+    "incarnation_invalid": (
+        400,
+        "the incarnation body is not principal, epoch and expected_revision",
+    ),
+    "incarnation_registered": (409, "the principal registry already routes this incarnation"),
+    "manifest_invalid": (400, "the body is not a valid host manifest"),
+    "host_id_mismatch": (409, "the manifest names another host than the path"),
+    "admission_invalid": (400, "the admission request is invalid"),
+    "rebind_invalid": (400, "the rebind request is not a frame and a duration"),
+    "release_policy_invalid": (400, "the release policy request or its spec is invalid"),
+    "operator_signature_required": (409, "a signed fleet's publication needs the signature"),
+    "plan_mismatch": (409, "the apply is not what the plan request yields"),
+    "missing_floor": (400, "exactly one since parameter is required"),
+    "invalid_floor": (400, "since is not a revision id"),
+    "unknown_floor": (409, "since names no known revision"),
+    "invalid_frame": (400, "the frame path segment is not a frame id"),
+    "unknown_frame": (404, "the authority has no such frame"),
+    "caller_not_bound": (403, "the caller is not bound to the frame or host this request names"),
+    "invalid_release": (400, "release_id and release_digest are given together, once each"),
+    "missing_prefix": (400, "exactly one prefix parameter is required"),
+    "invalid_prefix": (400, "prefix is not a hive prefix"),
+    "unknown_prefix": (404, "no hive lease names that prefix"),
+    "query_not_allowed": (400, "a query string where none is defined"),
+}
+
 
 def error_response(code: str) -> httpx.Response:
     """The service's error envelope for *code* (ADR bh-hq-pio.5), as a response."""
-    status, message = CODES[code]
+    status, message = {**CODES, **V0_CODES}[code]
     body = {
         "error": {
             "code": code,
             "message": message,
-            "retryable": False,
+            "retryable": code in RETRYABLE,
             "requestId": "req-fake",
             "details": None,
         }
@@ -122,6 +196,29 @@ class FakeHqService:
         #: ``/config``, ``/eligibility/<frame>``) -> the JSON body served. Bodies are opaque
         #: here; the client's response verifier gives them meaning. Unset paths are 404.
         self.reads: dict[str, Any] = {}
+        #: The runtime head and the config head the write routes CAS on and answer with.
+        self.head = "a" * 32
+        self.config_head = "c" * 32
+        #: ``(method, path under the plane prefix, query string, decoded JSON body or None)`` of
+        #: every request seen, in order.
+        self.requests: list[tuple[str, str, str, Any]] = []
+        #: Incarnations ``POST /incarnations`` registered: ``(principal, epoch)``.
+        self.incarnations: set[tuple[str, int]] = set()
+        #: The record a rebind or release-policy plan hands out for signing.
+        self.operator_record: dict[str, Any] = {"revision": 2, "state": {}, "hive_policies": {}}
+        #: Operator public key an apply's signature must verify under; ``None`` accepts any
+        #: signature text. ``trusted`` lets an apply publish with no signature.
+        self.operator_key: str | None = None
+        self.trusted = False
+        #: Manifests (host ids) in the committed config; PUT adds, DELETE removes.
+        self.manifests: set[str] = set()
+        #: ``hq_release_catalog`` rows, whole (``CatalogEntry``), served by the catalog route.
+        self.catalog_rows: list[dict[str, Any]] = []
+        #: ``GET /hive-leases`` bodies by prefix.
+        self.hive_leases: dict[str, dict[str, Any]] = {}
+        #: The attested caller the Gateway minted: ``{kind, frame_id, host_id}``; ``None`` skips
+        #: the caller-binding rules (an unbound test).
+        self.caller: dict[str, str] | None = None
 
     def provision(self, principal: str, **kwargs: Any) -> Principal:
         record = Principal(**kwargs)
@@ -135,6 +232,16 @@ class FakeHqService:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        plane = path.removeprefix(PREFIX)
+        try:
+            body = json.loads(request.content) if request.content else None
+        except ValueError:
+            body = None
+        self.requests.append((request.method, plane, request.url.query.decode(), body))
+        if path.startswith(PREFIX):
+            routed = self._route_v0(request, plane, body)
+            if routed is not None:
+                return routed
         if request.method == "GET" and path.removeprefix(PREFIX) in self.reads:
             self.seen.append(("read", path.removeprefix(PREFIX)))
             return httpx.Response(200, json=self.reads[path.removeprefix(PREFIX)])
@@ -150,6 +257,294 @@ class FakeHqService:
         code, response = self._decide(request, parts[2], parts[3], kind)
         self.seen.append((kind, code or str(json.loads(response.content).get("outcome"))))
         return response
+
+    # ---- reads and writes of hq-service v0.1.0 (api/reads.go, api/writes.go) ---------------
+
+    def _route_v0(self, request: httpx.Request, plane: str, body: Any) -> httpx.Response | None:
+        """The history read and the write routes; ``None`` leaves the path to the older routes."""
+        method = request.method
+        if method == "GET" and plane == "/history" and plane in self.reads:
+            return self._history(request)
+        if method == "GET" and plane.startswith("/eligibility/") and plane in self.reads:
+            if not _FRAME.match(plane.removeprefix("/eligibility/")):
+                return self._refuse("invalid_frame")
+            if self._measured(request) is False:
+                return self._refuse("invalid_release")
+            return None
+        if method == "GET" and plane == "/hive-leases":
+            return self._hive_lease(request)
+        parts = plane.split("/")[1:]
+        if method == "GET" and len(parts) == 2 and parts[0] == "release-catalog":
+            return self._catalog(request, parts[1])
+        if method == "DELETE" and len(parts) == 2 and parts[0] == "manifests":
+            return self._write(request, None, lambda b: self._withdraw(parts[1]))
+        if method == "POST" and parts == ["incarnations"]:
+            return self._write(request, body, self._incarnation)
+        if method == "PUT" and len(parts) == 2 and parts[0] == "manifests":
+            return self._write(request, body, lambda b: self._manifest(parts[1], b))
+        if method == "POST" and len(parts) == 2 and parts[0] == "admissions":
+            return self._write(request, body, lambda b: self._admission(parts[1], b))
+        if method == "POST" and parts[:2] == ["authority", "rebind"] and len(parts) == 3:
+            if parts[2] in ("plan", "apply"):
+                return self._write(request, body, lambda b: self._operate("rebind", b, parts[2]))
+        if method == "POST" and parts[:2] == ["authority", "release-policy"] and len(parts) == 4:
+            if parts[3] in ("plan", "apply") and _FRAME.match(parts[2]):
+                return self._write(
+                    request, body, lambda b: self._operate("release-policy", b, parts[3])
+                )
+        return None
+
+    @staticmethod
+    def _measured(request: httpx.Request) -> dict[str, str] | None | bool:
+        """The measured release from the query: ``None`` without one, ``False`` when invalid."""
+        items = request.url.params.multi_items()
+        if not items:
+            return None
+        params = dict(items)
+        if len(items) != 2 or set(params) != {"release_id", "release_digest"}:
+            return False
+        return {"id": params["release_id"], "digest": params["release_digest"]}
+
+    def _hive_lease(self, request: httpx.Request) -> httpx.Response:
+        keys = [key for key, _ in request.url.params.multi_items()]
+        if keys != ["prefix"]:
+            return self._refuse("missing_prefix")
+        prefix = request.url.params["prefix"]
+        if prefix not in self.hive_leases:
+            return self._refuse("unknown_prefix")
+        self.seen.append(("read", "/hive-leases"))
+        return httpx.Response(200, json=self.hive_leases[prefix])
+
+    def _catalog(self, request: httpx.Request, catalog: str) -> httpx.Response:
+        if not _FRAME.match(catalog):
+            return self._refuse("path_invalid")
+        measured = self._measured(request)
+        if measured is False:
+            return self._refuse("invalid_release")
+        rows = [r for r in self.catalog_rows if r["catalog"] == catalog]
+        body: dict[str, Any] = {
+            "head": self.head,
+            "catalog": catalog,
+            "rows": rows,
+            "release": None,
+        }
+        if measured:
+            body["rows"] = None
+            body["release"] = self._verdict(rows, catalog, measured)
+        self.seen.append(("read", "/release-catalog"))
+        return httpx.Response(200, json=body)
+
+    @staticmethod
+    def _verdict(rows: list[dict], catalog: str, measured: dict[str, str]) -> dict[str, Any]:
+        """``release.Fold`` as ``store/catalog.go`` judges it: a digest is active with an
+        ``active`` row and no ``revoked`` tombstone, and verified when also the version's only
+        active digest, measured by the catalog's algorithm, and named by the measured id."""
+        digest, version = measured["digest"], measured["id"]
+        versions = sorted({r["version"] for r in rows if r["measured_digest"] == digest})
+        verdict = {"id": version, "digest": digest, "verified": False, "row": None}
+        if not versions:
+            return verdict
+        chosen = version if version in versions else versions[0]
+        scoped = [r for r in rows if r["version"] == chosen]
+        tombstoned = {r["measured_digest"] for r in scoped if r["status"] == "revoked"}
+        active = {r["measured_digest"] for r in scoped if r["status"] == "active"} - tombstoned
+        algorithm = next((r["algorithm"] for r in scoped if r["measured_digest"] == digest), "")
+        row = {
+            "catalog": catalog,
+            "version": chosen,
+            "measured_digest": digest,
+            "status": "active" if digest in active else "revoked",
+            "algorithm": algorithm,
+            "active_digests": len(active),
+        }
+        verdict["row"] = row
+        verdict["verified"] = (
+            row["status"] == "active"
+            and algorithm == "beadhive-tree-sha256-v1"
+            and len(active) == 1
+            and chosen == version
+        )
+        return verdict
+
+    def _bound(self, kind: str, frame: str | None, host_id: str | None) -> str | None:
+        """The ``bind*`` rules of ``api/writes.go``: a reason when the caller is not bound."""
+        caller = self.caller
+        if caller is None:
+            return None
+        if caller.get("kind") != kind:
+            return f"the caller is not bound as {kind}"
+        if frame is not None and caller.get("frame_id") != frame:
+            return "the caller is bound to another frame than the path"
+        if host_id is not None and caller.get("host_id") != host_id:
+            return "the caller is bound to another host"
+        return None
+
+    @staticmethod
+    def _refuse(code: str) -> httpx.Response:
+        return error_response(code)
+
+    def _history(self, request: httpx.Request) -> httpx.Response:
+        keys = [key for key, _ in request.url.params.multi_items()]
+        if keys != ["since"]:
+            return self._refuse("missing_floor")
+        if not _REVISION.match(request.url.params["since"]):
+            return self._refuse("invalid_floor")
+        self.seen.append(("read", "/history"))
+        return httpx.Response(200, json=self.reads["/history"])
+
+    def _write(self, request: httpx.Request, body: Any, handler) -> httpx.Response:
+        if request.url.query:
+            return self._refuse("query_not_allowed")
+        json_body = request.headers.get("content-type", "").split(";")[0].strip()
+        if request.method != "DELETE" and json_body != "application/json":
+            return self._refuse("content_type_invalid")
+        if request.method != "DELETE" and not isinstance(body, dict):
+            return self._refuse("request_malformed")
+        refusal, facts = handler(body)
+        if refusal:
+            self.seen.append(("write", refusal))
+            return self._refuse(refusal)
+        self.seen.append(("write", str(facts["outcome"])))
+        return httpx.Response(200, json=facts)
+
+    def _new_head(self, *parts: Any) -> str:
+        self.head = hashlib.sha256(
+            json.dumps([self.head, *parts], default=str).encode()
+        ).hexdigest()[:32]
+        return self.head
+
+    def _incarnation(self, body: dict):
+        if self._bound("operator", None, None):
+            return "caller_not_bound", None
+        epoch = body.get("epoch")
+        if (
+            set(body) != {"principal", "epoch", "expected_revision"}
+            or not isinstance(body["principal"], str)
+            or not _PRINCIPAL.match(body["principal"])
+            or type(epoch) is not int
+            or not 0 <= epoch <= 9_999_999_999
+            or not isinstance(body["expected_revision"], str)
+            or not _REVISION.match(body["expected_revision"])
+        ):
+            return "incarnation_invalid", None
+        if body["expected_revision"] != self.head:
+            return "stale_revision", None
+        key = (body["principal"], epoch)
+        outcome = "replayed" if key in self.incarnations else "accepted"
+        self.incarnations.add(key)
+        return None, {
+            "outcome": outcome,
+            "revision": self.head,
+            "principal": body["principal"],
+            "epoch": epoch,
+        }
+
+    def _withdraw(self, host_id: str):
+        if self._bound("host", None, host_id):
+            return "caller_not_bound", None
+        facts = {"host_id": host_id, "path": f"hosts/{host_id}.yaml"}
+        if host_id not in self.manifests:
+            return None, {"outcome": "replayed", "revision": self.config_head, **facts}
+        self.manifests.discard(host_id)
+        self.config_head = hashlib.sha256((self.config_head + "-" + host_id).encode()).hexdigest()[
+            :32
+        ]
+        return None, {"outcome": "accepted", "revision": self.config_head, **facts}
+
+    def _manifest(self, host_id: str, body: dict):
+        if self._bound("host", None, host_id):
+            return "caller_not_bound", None
+        if not body.get("host_id") or not isinstance(body["host_id"], str):
+            return "manifest_invalid", None
+        if body["host_id"] != host_id:
+            return "host_id_mismatch", None
+        document = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        self.manifests.add(host_id)
+        self.config_head = hashlib.sha256(self.config_head.encode() + document).hexdigest()[:32]
+        return None, {
+            "outcome": "accepted",
+            "revision": self.config_head,
+            "host_id": host_id,
+            "path": f"hosts/{host_id}.yaml",
+            "sha256": hashlib.sha256(document).hexdigest(),
+        }
+
+    def _admission(self, frame: str, body: dict):
+        if not _FRAME.match(frame):
+            return "path_invalid", None
+        if self._bound("frame", frame, body.get("host_id")):
+            return "caller_not_bound", None
+        kind, host_id = body.get("kind"), body.get("host_id", "")
+        if (
+            set(body) - {"kind", "expected_revision", "host_id", "public_key"}
+            or kind not in ("open", "candidate")
+            or not isinstance(body.get("expected_revision"), str)
+            or not _REVISION.match(body["expected_revision"])
+            or not isinstance(host_id, str)
+            or (kind == "open" and (not host_id or not body.get("public_key")))
+            or (kind == "candidate" and "public_key" in body)
+        ):
+            return "admission_invalid", None
+        if body["expected_revision"] != self.head:
+            return "stale_revision", None
+        principal = "frame_" + hashlib.sha256(f"{frame}/{host_id}".encode()).hexdigest()[:20]
+        revision = self._new_head("admission", frame, kind)
+        return None, {
+            "outcome": "accepted",
+            "revision": revision,
+            "frame_id": frame,
+            "host_id": host_id,
+            "kind": kind,
+            "principal": principal,
+            "epoch": 0,
+        }
+
+    def _operate(self, kind: str, body: dict, phase: str):
+        invalid = "rebind_invalid" if kind == "rebind" else "release_policy_invalid"
+        plan_fields = (
+            {"frame", "duration_s"}
+            if kind == "rebind"
+            else {"spec", "allow_downgrade", "allow_unknown_readers"}
+        )
+        apply_fields = {
+            "expected_revision", "config_head", "issued_at", "expires_at", "signature", "record",
+        }  # fmt: skip
+        if set(body) - plan_fields - (apply_fields if phase == "apply" else set()):
+            return invalid, None
+        if kind == "release-policy" and not str(body.get("spec") or "").strip():
+            return invalid, None
+        signing_input = AUTHORITY_DOMAIN + canonical(self.operator_record)
+        if phase == "plan":
+            return None, {
+                "outcome": "planned",
+                "revision": self.head,
+                "config_head": self.config_head,
+                "record": self.operator_record,
+                "signing_input": base64.b64encode(signing_input).decode(),
+                "signing_sha256": hashlib.sha256(signing_input).hexdigest(),
+                "issued_at": 1793000000.0,
+                "expires_at": 4102444800.0,
+                "plan_expires_at": 1793000900.0,
+                "signature_needed": not self.trusted,
+                "summary": {},
+            }
+        if body.get("expected_revision") != self.head:
+            return "stale_revision", None
+        if body.get("config_head") != self.config_head:
+            return "stale_revision", None
+        if "record" in body and body["record"] != self.operator_record:
+            return "plan_mismatch", None
+        signature = body.get("signature")
+        if signature is None and not self.trusted:
+            return "operator_signature_required", None
+        if signature is not None and self.operator_key is not None:
+            try:
+                verify_authority(
+                    self.operator_record, signature, granted_public_key=self.operator_key
+                )
+            except SqlSignatureError:
+                return "operator_signature_invalid", None
+        return None, {"outcome": "accepted", "revision": self._new_head(kind, signature)}
 
     def _decide(
         self, request: httpx.Request, principal: str, epoch_text: str, kind: str
