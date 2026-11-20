@@ -17,7 +17,14 @@ from . import config, gitref, hq_authority_ceiling, hq_git_broker, hq_manifest_g
 from . import hq_authority_enforce as authority_mode
 from . import hq_authority_guard as guard
 from .hq_authority_enforce import enforced as authority_enforced
-from .hq_port import HqRouteError, HqUnavailable, configured_route
+from .hq_port import (
+    HqDeadline,
+    HqOutcomeUnknown,
+    HqRefused,
+    HqRouteError,
+    HqUnavailable,
+    configured_route,
+)
 from .run import run
 
 if TYPE_CHECKING:
@@ -3346,13 +3353,24 @@ class HqPlaneUnavailable(HqUnavailable, ControlPlaneError):
     (every ``except ValueError`` CLI path) reports this one the same way."""
 
 
+class HqPlaneRefused(HqRefused, ControlPlaneError):
+    """hq-service definitely refused an api-plane write (the stable ``code`` is kept). Nothing
+    was written. Both an :class:`~beadhive.hq_port.HqRefused` and a
+    :class:`ControlPlaneError`, like :class:`HqPlaneUnavailable`."""
+
+
+def _service_signs(_record):
+    """The ``signer`` an api-plane admission passes: hq-service builds and signs the grant
+    itself, so a call here is a defect, never a local signature."""
+    raise ControlPlaneError("route=api: hq-service signs the grant; no local signer is used")
+
+
 #: The control-plane methods a ``route: api`` host has no hq-service route for yet. Each raises
 #: :class:`HqPlaneUnavailable` naming itself; none falls back to SQL. Later beads of bh-6se58
 #: move names out of this set as the service gains the route.
 API_UNROUTED = frozenset(
     {
         "accept_observation",
-        "admit_open",
         "bind_beadyard",
         "eligibility_authority_status",
         "fetch_config",
@@ -3494,8 +3512,97 @@ class ApiControlPlane:
         except HqUnavailable as exc:
             raise HqPlaneUnavailable(f"{method}: {exc}") from exc
 
+    def _port_write(self, method, *args, **kwargs):
+        """``port.<method>(...)`` for a write, under one bounded deadline. A definite refusal is
+        :class:`HqPlaneRefused` (code kept), an unreachable service :class:`HqPlaneUnavailable`;
+        a write whose outcome is unknown says so. Nothing is retried or rerouted."""
+        deadline = time.monotonic() + self._deadline_s
+        try:
+            return getattr(self.port, method)(*args, deadline=deadline, **kwargs)
+        except HqRefused as exc:
+            raise HqPlaneRefused(exc.code, f"{method}: {exc.reason}") from exc
+        except HqOutcomeUnknown as exc:
+            raise ControlPlaneError(
+                f"{method}: the write may have committed; re-read before retrying ({exc})"
+            ) from exc
+        except (HqUnavailable, HqDeadline) as exc:
+            raise HqPlaneUnavailable(f"{method}: {exc}") from exc
+
     def config_store(self, *, operator_key=None, duration=None, ceiling=None):
         return ApiConfigStore(self)
+
+    # ---- join and provisioning (bh-obhfx): the port's admission writes ------------------
+    # No SQL login, no grant, no secret: hq-service holds the only database account, so
+    # ``register_incarnation`` passes no ``login_secret`` and ``admit`` no local signer.
+
+    def publish_manifest(self, manifest, *, expected_revision):
+        """``PUT /manifests/{host_id}``: publish this host's manifest; returns the config head.
+        The service CASes its own config head (``expected_revision`` is the head this caller
+        read, kept for an unknown outcome)."""
+        from . import config_publish_signal
+
+        if hasattr(manifest, "model_dump"):
+            manifest = manifest.model_dump(mode="json", exclude_none=True)
+        try:
+            return self._port_write(
+                "publish_manifest", dict(manifest), expected_revision=expected_revision
+            )
+        finally:
+            config_publish_signal.published()
+
+    def withdraw_manifest(self, host_id, *, expected_revision):
+        """``DELETE /manifests/{host_id}``: withdraw a host's manifest; returns the config head
+        (unchanged, ``replayed``, when there was none)."""
+        from . import config_publish_signal
+
+        try:
+            return self._port_write(
+                "withdraw_manifest", host_id, expected_revision=expected_revision
+            )
+        finally:
+            config_publish_signal.published()
+
+    def register_incarnation(self, authority, *, expected):
+        """``POST /incarnations``: register *authority*'s incarnation (its liveness row) with
+        hq-service. The principal is derived, never chosen: ``frame_`` + 20 hex of the
+        canonical authority identity. Operator-bound at the Gateway. Returns the (unchanged)
+        authority head."""
+        from .hq_sql_signatures import sql_principal
+
+        route = (
+            sql_principal(authority),
+            authority.frame_id,
+            authority.holder_identity,
+            authority.instance_ref,
+            authority.epoch,
+            authority.key_fingerprint,
+        )
+        return self._port_write(
+            "register_incarnation", route, expected_revision=expected, frame_address=""
+        )
+
+    def admit_open(self, authority, public_key, desired, *, expected, operator_key=""):
+        """``POST /admissions/{frame}`` (``kind: open``): open admission in a trusted fleet
+        (:func:`open_admission_guard`). hq-service builds and signs the ACTIVE grant from the
+        committed manifest; the incarnation must already be registered. Frame-bound at the
+        Gateway. Returns the new authority head."""
+        from .hq_port import AdmissionRequest
+
+        desired = open_admission_guard(desired)
+        request = AdmissionRequest(
+            frame=authority.frame_id,
+            authority=authority,
+            public_key=public_key,
+            desired=desired,
+            admitted=True,
+        )
+        return self._port_write(
+            "admit",
+            authority.frame_id,
+            request,
+            signer=_service_signs,
+            expected_revision=expected,
+        )
 
     def load_host_manifest(self, host_id: str):
         return _committed_host_manifest(self.config_store().load_snapshot(), host_id)

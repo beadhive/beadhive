@@ -15,6 +15,7 @@ frames learn it). Frames whose ``hq.authority_mode`` is ``inherit`` (the default
 
 from __future__ import annotations
 
+import os
 import time
 from io import StringIO
 from pathlib import Path
@@ -194,7 +195,28 @@ def join_cmd(frame, public_key, *, operator_settings=None, operator_key=None, co
     else:
         frame = host.host_id()
         key_text = Path(public_key).read_text() if public_key is not None else _local_public_key()
-    plane = hq_operator_settings.select_plane(operator_settings)
+    plane = _join_plane(operator_settings)
     return hq_open_admission.join(
         plane, frame, key_text, operator_key=str(operator_key) if operator_key else ""
     )
+
+
+def _join_plane(operator_settings):
+    """The plane a join writes through. On ``hq.route: api`` (bh-obhfx) that is the HQ port
+    alone: the Gateway credential is the caller, so an SQL operator binding is refused rather
+    than used."""
+    from .hq_control_plane import control_plane, host_route
+
+    try:
+        api = host_route() == "api"
+    except FileNotFoundError:
+        api = False
+    if not api:
+        return hq_operator_settings.select_plane(operator_settings)
+    if operator_settings or os.environ.get(hq_operator_settings.ENV):
+        raise ControlPlaneError(
+            "hq.route is api: join goes through hq-service with this host's hq.api credential; "
+            f"an SQL operator binding (--operator-settings / {hq_operator_settings.ENV}) is "
+            "not used"
+        )
+    return control_plane()
