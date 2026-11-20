@@ -3383,7 +3383,6 @@ API_UNROUTED = frozenset(
         "load_config_authority_snapshot",
         "propose_hive_lease",
         "prune_inbox",
-        "publish_hive_lease",
         "publish_registration",
         "publish_registration_evidence",
         "read_placement",
@@ -3975,6 +3974,107 @@ class ApiControlPlane:
 
     def read_hive_lease(self, prefix, *, holder_identity=None):
         return self.read_hive_lease_record(prefix, holder_identity=holder_identity)[1]
+
+    def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
+        """Submit this frame's signed hive-lease request through the port (bh-h9dn1).
+
+        hq-service v0.1.0 ``POST /hive-leases/{prefix}`` takes the same signed request envelope
+        the SQL frame writes to its inbox (``beadhive/sql-hive-lease/v1``/``v2``,
+        :func:`~beadhive.hq_sql_signatures.sign_hive_request`) and decides it at once
+        (``lease.Decide``); the answer's revision is the new lease revision, the next CAS. The
+        request is built from this frame's verified grant and route
+        (:func:`beadhive.hq_frame_grant.frame_grant`; ``authority_revision`` is the verified
+        head) with the SQL plane's own client-side checks. A refusal is :class:`HqPlaneRefused`
+        carrying the service's code; a write whose outcome is unknown is
+        :class:`HqLeaseUnknown`. Never SQL."""
+        import importlib
+        import uuid
+
+        from . import host
+        from .host_lease_contracts import HostLease, lease_ref
+        from .hq_port import HqOutcomeUnknown
+        from .hq_sql_signatures import SqlSignatureError, sign_hive_request
+
+        lease_ref(prefix)
+        if (
+            force
+            or operation not in {"adopt", "renew", "release"}
+            or not isinstance(lease, HostLease)
+            or not isinstance(expected, str)
+        ):
+            raise ControlPlaneError("frame hive lease proposal requires bound unforced operation")
+        frame = host.enrolled_frame_id()
+        if not frame:
+            raise ControlPlaneError("AUTHORITY_NOT_READY: this host has no host.frame_id")
+        result = self._port_call("read_eligibility", frame)
+        # Resolved by name: hq_frame_grant reads this module's ApiControlPlane, and a static
+        # edge would add an import cycle to the reviewed snapshot (as ``_api_port``).
+        frame_grant = importlib.import_module(f"{__package__}.hq_frame_grant").frame_grant
+        try:
+            grant = frame_grant(result, frame)
+        except HqRefused as exc:
+            raise HqPlaneRefused(exc.code, f"publish_hive_lease: {exc.reason}") from None
+        except HqUnavailable as exc:
+            raise HqPlaneUnavailable(f"publish_hive_lease: {exc}") from None
+        record, route = grant.record, grant.route
+        moving = operation in {"adopt", "renew"}
+        if (
+            moving
+            and (record["state"] != "active" or record["cordoned"])
+            or operation != "release"
+            and lease.host_id != route.holder_identity
+            or operation == "release"
+            and lease.host_id != ""
+        ):
+            raise ControlPlaneError("hive lease proposal requires exact active incarnation")
+        if operation != "release":
+            from .frame_emergency import cap_lease
+
+            lease = cap_lease(record, prefix, lease, self.clock())
+        authority = record["authority"]
+        request_id = str(uuid.uuid4())
+        request = {
+            "domain": (
+                "beadhive/sql-hive-lease/v2"
+                if authority.get("beadyard_id") is not None
+                else "beadhive/sql-hive-lease/v1"
+            ),
+            "request_id": request_id,
+            "principal": route.principal,
+            "frame_id": route.frame_id,
+            "holder_identity": route.holder_identity,
+            "instance_ref": route.instance_ref,
+            "epoch": route.epoch,
+            "key_fingerprint": route.signer_fingerprint,
+            "audience": authority["audience"],
+            "config_revision": authority["config_revision"],
+            "authority_revision": grant.head,
+            "prefix": prefix,
+            "expected_revision": expected,
+            "operation": operation,
+            "force": False,
+            "lease": lease.to_record(),
+        }
+        if authority.get("beadyard_id") is not None:
+            request["beadyard_id"] = authority["beadyard_id"]
+        try:
+            envelope = sign_hive_request(request, signing_key=host.signing_key())
+        except SqlSignatureError as exc:
+            raise ControlPlaneError(f"hive lease request signing failed: {exc}") from None
+        try:
+            submission = self._port_call("submit_hive_lease", grant.anchor, prefix, envelope)
+        except HqOutcomeUnknown:
+            raise HqLeaseUnknown(request_id, "", expected, "unknown") from None
+        if submission.outcome == "refused":
+            raise HqPlaneRefused(
+                submission.refusal or "refused",
+                f"hq-service refused the hive lease {operation} for {prefix} (request "
+                f"{request_id}): {submission.refusal}. A definite refusal, NOT an HQ outage; the "
+                f"CAS revision {expected or '(absent)'} was not consumed",
+            )
+        if not submission.revision:
+            raise HqLeaseUnknown(request_id, submission.digest, expected, "unknown")
+        return submission.revision
 
     def hive_policy_binding(self, prefix, *, holder_identity=None):
         """Read-only: is ``holder_identity``'s grant bound to ``prefix``'s signed frame policy

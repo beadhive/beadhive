@@ -330,7 +330,9 @@ class HqServiceAdapter:
         rid = request_id or (request.get("request_id") if isinstance(request, dict) else None)
         rid = str(rid or digest)
         try:
-            _, payload = self._call(method, path, envelope, deadline=deadline)
+            # v0.1.0 answers a refusal as its error envelope (409 + code, bh-h9dn1); the older
+            # ``{outcome: refused}`` body still maps through ``_decode``.
+            _, payload = self._call(method, path, envelope, deadline=deadline, envelope_errors=True)
         except HqRefused as exc:
             if exc.code == "bad_request":
                 raise

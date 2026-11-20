@@ -1,11 +1,10 @@
-"""Eligibility, config and hive-lease reads on ``hq.route: api`` (bh-h9dn1), end to end.
+"""Eligibility, config and hive-lease reads and writes on ``hq.route: api`` (bh-h9dn1), end to end.
 
 A frame host with ``hq.route: api`` and no ``hq.sql`` block answers ``bh host eligible``, the
-intake gate (``require_eligible`` / ``require_intake``), the hive-lease reads behind
-claim/renew/release/packup and every ``bh config`` read through the HQ port, against the
-in-process fake hq-service. Every SQL opener, the SQL plane and the SQL port adapter are
-tripwires: none is constructed. The hive-lease WRITE (``publish_hive_lease``) has no route here
-(bh-65s71's), so the write paths fail naming it, never reaching SQL.
+intake gate (``require_eligible`` / ``require_intake``), hive-lease claim/renew/release/packup
+(the reads, and the signed ``POST /hive-leases/{prefix}`` write) and every ``bh config`` read
+through the HQ port, against the in-process fake hq-service. Every SQL opener, the SQL plane and
+the SQL port adapter are tripwires: none is constructed.
 
 The response verifier is the recording pass-through stand-in of
 ``tests/test_hq_api_route_plane.py``; what is under test is the plane's binding of each api
@@ -20,6 +19,8 @@ import json
 import os
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from tests.harness.fake_hq_service import FakeHqService
 from typer.testing import CliRunner
 
@@ -32,14 +33,28 @@ from beadhive import (
     hq_sql_adapter,
     hq_sql_transport,
 )
+from beadhive.hq_framelease_contracts import ObservationAuthority
 from beadhive.hq_port import HqRefused, HqUnavailable
 from beadhive.hq_service_adapter import adapter_from_config
+from beadhive.hq_sql_signatures import fingerprint, sql_principal
 from beadhive.modules.config.domain.ports import FleetConfigDocument, ordered_documents_digest
 
 URL = "https://hq.test"
 HEAD = "a" * 32
 CONFIG_HEAD = "c" * 32
-KEY = "SHA256:frame-key"
+#: This frame's signing key: it signs the hive-lease requests the fake verifies.
+_PRIVATE = Ed25519PrivateKey.generate()
+PRIVATE_KEY = _PRIVATE.private_bytes(
+    serialization.Encoding.PEM,
+    serialization.PrivateFormat.OpenSSH,
+    serialization.NoEncryption(),
+)
+PUBLIC_KEY = (
+    _PRIVATE.public_key()
+    .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+    .decode()
+)
+KEY = fingerprint(PUBLIC_KEY)
 EXPIRES_AT = 4_000_000_000.0
 RELEASE = {"id": "rel-1", "digest": "sha256:" + "1" * 64}
 CAPS = {
@@ -99,9 +114,14 @@ def grant() -> dict:
         },
         "state": "active",
         "cordoned": False,
-        "public_key": "ssh-ed25519 AAAA",
+        "public_key": PUBLIC_KEY,
         "desired": {"release": RELEASE, "caps": CAPS, "profile": "reviewed", "declared": True},
     }
+
+
+def principal() -> str:
+    """The SQL principal the grant derives (``hq_frame_grant.frame_grant`` checks it)."""
+    return sql_principal(ObservationAuthority(**grant()["authority"]))
 
 
 def authority(active: dict | None) -> dict:
@@ -151,7 +171,7 @@ def eligibility_body(active, *, session="fresh", evidence="fresh", admits=True) 
         "config_head": CONFIG_HEAD,
         "frame_id": "frame-1",
         "active": active,
-        "principal": "frame_0123456789abcdef0123" if active else None,
+        "principal": principal() if active else None,
         "epoch": 3 if active else None,
         "route": {"carrier": "service", "signer_fingerprint": KEY} if active else None,
         "liveness": {
@@ -233,7 +253,18 @@ def api_frame(tmp_path, monkeypatch, service, no_sql):
     home = tmp_path / "bh-home"
     (home / "hq").mkdir(parents=True)
     (home / "config.yaml").write_text(host_yaml())
-    (home / "host.yaml").write_text("host_id: host-1\nlabel: frame\n")
+    key = tmp_path / "frame-key"
+    key.write_bytes(PRIVATE_KEY)
+    key.chmod(0o600)
+    (home / "host.yaml").write_text(f"host_id: host-1\nlabel: frame\nsigning_key: {key}\n")
+    service.provision(
+        principal(),
+        frame_id="frame-1",
+        holder="host-1",
+        instance="vm-1",
+        epoch=3,
+        public_key=PUBLIC_KEY,
+    )
     monkeypatch.setenv("BH_HOME", str(home))
     for name in ("BH_CONFIG", "WS_CONFIG", "BH_HQ", "WS_HQ", "BH_HQ_ROUTE", "BH_FRAME_HEARTBEAT"):
         monkeypatch.delenv(name, raising=False)
@@ -348,7 +379,7 @@ def test_incumbent_read_needs_a_current_grant(api_frame, service):
     assert plane.read_hive_lease_record("bh", incumbent_identity="host-1")[1] is None
 
 
-# ---- hive lease: claim/renew/release/packup reads; the write names its missing route --------
+# ---- hive lease: claim/renew/release/packup through the port --------------------------------
 
 
 def test_the_hive_lease_record_is_read_through_the_port(api_frame, service, no_sql):
@@ -358,20 +389,86 @@ def test_the_hive_lease_record_is_read_through_the_port(api_frame, service, no_s
     assert no_sql == []
 
 
-def test_release_reaches_the_unrouted_write_naming_it_and_never_sql(api_frame, service, no_sql):
-    with pytest.raises(HqUnavailable, match="publish_hive_lease"):
-        host_lease.release("origin", "bh", host_id="host-1", cwd=config.hq_dir())
+def _submitted(service) -> list[dict]:
+    return [
+        body
+        for method, path, _q, body in service.requests
+        if method == "POST" and path == "/hive-leases/bh"
+    ]
+
+
+def test_claim_renew_and_release_go_through_the_port(api_frame, service, no_sql):
+    """Adopt from absent, renew, release: each a signed request the service decides, each CAS
+    on the revision the previous write answered."""
+    hq = config.hq_dir()
+    del service.hive_leases["bh"]  # never adopted: unknown_prefix reads as absent
+    adopted = host_lease.adopt("origin", "bh", host_id="host-1", label="frame", cwd=hq)
+    assert adopted.lease.epoch == 1 and adopted.previous is None
+    assert service.hive_leases["bh"]["revision"] == adopted.sha
+    assert host_lease.read_record("origin", "bh", cwd=hq)[1].host_id == "host-1"
+
+    renewed = host_lease.renew("origin", "bh", host_id="host-1", cwd=hq)
+    assert renewed.lease.epoch == 1 and renewed.sha != adopted.sha
+
+    released = host_lease.release("origin", "bh", host_id="host-1", cwd=hq)
+    assert released.lease.is_tombstone and released.lease.epoch == 1
+    assert host_lease.read_record("origin", "bh", cwd=hq)[1].is_tombstone
+
+    requests = [body["request"] for body in _submitted(service)]
+    assert [r["operation"] for r in requests] == ["adopt", "renew", "release"]
+    assert [r["expected_revision"] for r in requests] == ["", adopted.sha, renewed.sha]
+    first = requests[0]
+    assert (first["principal"], first["frame_id"], first["holder_identity"], first["epoch"]) == (
+        principal(),
+        "frame-1",
+        "host-1",
+        3,
+    )
+    assert first["key_fingerprint"] == KEY and first["authority_revision"] == HEAD
+    assert first["domain"] == "beadhive/sql-hive-lease/v1" and first["force"] is False
     assert no_sql == []
 
 
-def test_packup_scans_through_the_port_and_names_the_unrouted_write(api_frame, service, no_sql):
+def test_a_refused_write_is_a_definite_refusal_with_the_service_code(
+    api_frame, service, no_sql, monkeypatch
+):
+    """The row moved after the caller read it: the service refuses the stale CAS (409
+    ``cas_conflict`` in its error envelope) and nothing is written."""
+    real_read = host_lease._read
+
+    def stale(remote, prefix, *, cwd):
+        _sha, lease = real_read(remote, prefix, cwd=cwd)
+        return "r" * 64, lease
+
+    service.hive_leases["bh"]["revision"] = "s" * 64
+    monkeypatch.setattr(host_lease, "_read", stale)
+    with pytest.raises(HqRefused, match="cas_conflict") as refused:
+        host_lease.renew("origin", "bh", host_id="host-1", cwd=config.hq_dir())
+    assert isinstance(refused.value, hq_control_plane.ControlPlaneError)
+    assert refused.value.code == "cas_conflict"
+    assert service.hive_leases["bh"]["revision"] == "s" * 64  # nothing written
+    assert no_sql == []
+
+
+def test_a_cordoned_frame_publishes_nothing(api_frame, service, no_sql):
+    from beadhive.host_lease_contracts import HostLease
+
+    plane = _plane()
+    serve(service, active={**grant(), "cordoned": True})
+    lease = HostLease("host-1", "frame", 3, "2026-11-01T00:00:00Z", "2026-11-01T01:00:00Z")
+    with pytest.raises(hq_control_plane.ControlPlaneError, match="exact active incarnation"):
+        plane.publish_hive_lease("bh", lease, expected="r" * 64, operation="renew")
+    assert _submitted(service) == []
+
+
+def test_packup_releases_through_the_port(api_frame, service, no_sql):
     from beadhive.cli import app
 
     result = CliRunner().invoke(app, ["host", "packup"])
-    # The scan found the held lease through the port; the release write has no route yet.
-    assert isinstance(result.exception, HqUnavailable), result.output
-    assert "publish_hive_lease" in str(result.exception)
-    assert "/hive-leases?prefix=bh" in _paths(service)
+    assert result.exit_code == 0, result.output
+    assert "released 1 hive(s): bh" in result.output
+    assert service.hive_leases["bh"]["lease"]["host_id"] == ""
+    assert [b["request"]["operation"] for b in _submitted(service)] == ["release"]
     assert no_sql == []
 
 
