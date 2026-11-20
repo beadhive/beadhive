@@ -6,13 +6,18 @@ credential the Gateway authenticates (mTLS client certificate, or the auth proxy
 its socket), so no method carries a principal as an argument. Failures map onto the port's
 taxonomy; a method with no route raises :class:`HqUnavailable` and never reaches SQL.
 
-Wire-shape status (bh-bmb4t): hq-service at f69779c serves only GET /authority and the three
-signed submissions (hive-leases, heartbeats, registrations); those shapes are verified against
-hq-service-derived fixtures (``tests/test_hq_service_contract.py``). Every other route's body or
-response is a PROVISIONAL guess, marked ``PROVISIONAL`` below, until hq-service serves it.
-Session renew (bh-nqr4b) and session evidence (bh-xtznm) are the exceptions: both are pinned to
-the hq-service conformance corpus ``conformance/session/v1`` (commit 205fd5b,
-``tests/test_hq_service_renew_contract.py``, ``tests/test_hq_service_evidence_contract.py``).
+Wire-shape status (bh-21vpt): every route this adapter calls is pinned to hq-service v0.1.0
+(commit 4e0fc6b; ``api/``, ``store/``, ``docs/DESIGN.md``): authority, the three signed
+submissions, config, history, eligibility, the hive-lease read, the release-catalog read,
+incarnations, manifests (PUT and DELETE), admissions, the rebind and release-policy plan/apply
+pairs, and session renew and evidence. The write routes are caller-bound at v0.1.0 (the Gateway
+mints the principal kind, frame and host, and a mismatch is ``caller_not_bound``); the adapter
+sends nothing extra for that. The release-catalog import and revoke plan/apply routes are served
+but have no port method yet (bh-lejfy). The
+fixtures are in ``tests/test_hq_service_contract.py``, ``tests/test_hq_service_renew_contract.py``
+and ``tests/test_hq_service_evidence_contract.py``. A shape the service does not serve yet would
+be marked ``PROVISIONAL`` with the upstream gap; none remains. Methods with no route raise
+:class:`HqUnavailable` (``_no_route``).
 
 Verification of signed authority and the restore floor (bh-2r7qd, absorbing bh-j99c8) plugs in
 through ``verifier``: authority-bearing reads (authority, eligibility, config) hand the response
@@ -24,6 +29,7 @@ port promises verified results only.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -53,6 +59,7 @@ from .hq_port import (
     configured_route,
     sql_adapter_factory,
 )
+from .hq_sql_signatures import AUTHORITY_DOMAIN, SqlSignatureError, canonical
 
 PREFIX = "/hq/lifecycle/v0"
 DEADLINE_HEADER = "X-Beadhive-Deadline-Ms"
@@ -124,6 +131,14 @@ EVIDENCE_REFUSALS = frozenset(
 )
 
 
+#: Refusal codes hq-service v0.1.0 documents on a status other than 400/409/413/415
+#: (``conformance/{admission,operator,http}/v1`` registries): definite verdicts on the request,
+#: not a Gateway or version-skew status, so :class:`HqRefused` (bh-1bsvh's rule, revisited).
+_DEFINITE_OTHER_4XX = frozenset(
+    {"caller_not_bound", "operator_apply_disabled", "unknown_frame", "unknown_prefix"}
+)
+
+
 def _seg(value: object) -> str:
     """One path segment, percent-encoded so it can never add or alter a segment."""
     return quote(str(value), safe="")
@@ -132,6 +147,13 @@ def _seg(value: object) -> str:
 def _digest(envelope: Mapping[str, Any]) -> str:
     body = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+
+
+def _release_query(measured: Mapping[str, str] | None) -> str:
+    """``?release_id=&release_digest=`` for a measured release, both once, percent-encoded."""
+    if measured is None:
+        return ""
+    return f"?release_id={_seg(measured['id'])}&release_digest={_seg(measured['digest'])}"
 
 
 def _no_route(method: str) -> HqUnavailable:
@@ -210,13 +232,13 @@ class HqServiceAdapter:
                 raise HqOutcomeUnknown(expected_revision, f"connection lost: {exc}") from exc
             raise HqUnavailable(f"hq-service read failed: {exc}") from exc
         if envelope_errors and not 200 <= response.status_code < 300:
-            self._raise_envelope(response)
+            self._raise_envelope(response, commit_write=commit_write)
         return response.status_code, self._decode(
             response, commit_write=commit_write, expected_revision=expected_revision
         )
 
     @staticmethod
-    def _raise_envelope(response: httpx.Response) -> None:
+    def _raise_envelope(response: httpx.Response, *, commit_write: bool = False) -> None:
         """Map an ADR bh-hq-pio.5 error envelope onto the port taxonomy; return when the body
         is not one (the caller's ordinary status mapping then applies).
 
@@ -225,7 +247,12 @@ class HqServiceAdapter:
           committed, or the write is idempotent and the same bytes replay.
         - 401 -> :class:`HqUnavailable`: the credential/attestation, not the request, failed.
         - 405 -> :class:`HqUnavailable`: a route defect this client never causes.
-        - any other 400/409/413/415 code -> :class:`HqRefused` carrying the code.
+        - any other 400/409/413/415 code -> :class:`HqRefused` carrying the code, and so are the
+          documented refusals on other 4xx statuses (``_DEFINITE_OTHER_4XX``, hq-service v0.1.0:
+          403 ``caller_not_bound`` / ``operator_apply_disabled``, 404 ``unknown_frame`` /
+          ``unknown_prefix``).
+        - a 5xx on a ``commit_write`` is left to the ordinary mapping, which reports it as
+          :class:`HqOutcomeUnknown`: the commit may have landed before the failure.
 
         Decision (bh-1bsvh): an unknown non-retryable code on any other 4xx (403, 404, 422 ...)
         stays :class:`HqUnavailable`, not :class:`HqRefused`. The conformance corpus has no such
@@ -245,11 +272,13 @@ class HqServiceAdapter:
             return
         message = str(error.get("message") or code)
         status = response.status_code
+        if commit_write and status >= 500:
+            return
         if code == "deadline_exceeded":
             raise HqDeadline(message)
         if error.get("retryable") is True or status in (401, 405) or status >= 500:
             raise HqUnavailable(f"hq-service answered {status} {code}: {message}")
-        if status in (400, 409, 413, 415):
+        if status in (400, 409, 413, 415) or code in _DEFINITE_OTHER_4XX:
             raise HqRefused(code, message)
 
     @staticmethod
@@ -500,12 +529,13 @@ class HqServiceAdapter:
         login_secret: Callable[[], str] | None = None,
         deadline: float,
     ) -> str:
-        # frame_address and login_secret are SQL-adapter-only inputs: identity here is the
-        # attested caller, so login_secret is never called. How the api route issues a
-        # credential is open on hq-service bh-hq-3sa.
-        # PROVISIONAL (bh-hq-3sa not served yet): `{route, expected_revision}` body and
-        # `{revision}` response.
-        body = {"route": list(route), "expected_revision": expected_revision}
+        # frame_address and login_secret are SQL-adapter-only inputs: hq-service holds the only
+        # database account, so no login is created and login_secret is never called. The body is
+        # exactly {principal, epoch, expected_revision} (``store/incarnation.go``); the principal
+        # is the route's own (``frame_`` + 20 hex of the authority identity) and the answer
+        # echoes it with the unchanged head: nothing is committed.
+        principal, _frame, _holder, _instance, epoch, _signer = route
+        body = {"principal": principal, "epoch": epoch, "expected_revision": expected_revision}
         _, payload = self._call(
             "POST",
             "/incarnations",
@@ -513,7 +543,14 @@ class HqServiceAdapter:
             deadline=deadline,
             expected_revision=expected_revision,
             commit_write=True,
+            envelope_errors=True,
         )
+        if (
+            not isinstance(payload, dict)
+            or payload.get("principal") != principal
+            or payload.get("epoch") != epoch
+        ):
+            raise HqUnavailable("hq-service registered a different incarnation than the one sent")
         return self._revision(payload)
 
     def publish_manifest(self, manifest: Any, *, expected_revision: str, deadline: float) -> str:
@@ -521,20 +558,39 @@ class HqServiceAdapter:
         host_id = document.get("host_id")
         if not host_id:
             raise HqRefused("bad_request", "manifest carries no host_id")
-        # PROVISIONAL (bh-hq-3sa not served yet): `{manifest, expected_revision}` and `{revision}`.
-        body = {"manifest": document, "expected_revision": expected_revision}
+        # The body is the host manifest itself; the service reads the config head and CASes on
+        # it (the host does not know it), so ``expected_revision`` is not sent. The 200 body is
+        # {outcome, revision (the CONFIG head), host_id, path, sha256}.
         _, payload = self._call(
             "PUT",
             f"/manifests/{_seg(host_id)}",
-            body,
+            document,
             deadline=deadline,
             expected_revision=expected_revision,
             commit_write=True,
+            envelope_errors=True,
         )
+        if not isinstance(payload, dict) or payload.get("host_id") != host_id:
+            raise HqUnavailable("hq-service published a different host manifest than the one sent")
         return self._revision(payload)
 
     def withdraw_manifest(self, host_id: str, *, expected_revision: str, deadline: float) -> str:
-        raise _no_route("withdraw_manifest")
+        # DELETE /manifests/{host_id}: no body, bound to the caller's own host like the PUT. The
+        # service CASes the config head itself; withdrawing a host with no manifest is a replay
+        # at the unchanged head. The 200 body is {outcome, revision (the CONFIG head), host_id,
+        # path}.
+        _, payload = self._call(
+            "DELETE",
+            f"/manifests/{_seg(host_id)}",
+            None,
+            deadline=deadline,
+            expected_revision=expected_revision,
+            commit_write=True,
+            envelope_errors=True,
+        )
+        if not isinstance(payload, dict) or payload.get("host_id") != host_id:
+            raise HqUnavailable("hq-service withdrew a different host manifest than the one named")
+        return self._revision(payload)
 
     def submit_registration(
         self, anchor: FrameAnchor, envelope: dict, *, deadline: float
@@ -548,31 +604,23 @@ class HqServiceAdapter:
     ) -> str:
         # The service derives the principal from committed authority, and builds, stamps and
         # signs the grant itself under the service's own authority (design section 7 D3);
-        # `signer` is not used on this route.
-        # PROVISIONAL (bh-hq-3sa not served yet): the D3 intent body `{request,
-        # expected_revision}` and the `{revision}` response are not fixed against a served
-        # contract; hq-service bh-hq-3sa (POST /admissions/{frame}) has not reached hq-service
-        # main. Re-check when it lands (bh-thurg).
+        # `signer` is not used on this route. The body is exactly
+        # {kind, expected_revision, host_id, public_key} (``store/admission.go``): an open
+        # admission (``request.admitted``) names the candidate's host and runtime key; a
+        # candidate admission names neither (the committed candidate is promoted). The rest of
+        # the request (desired policy, release, caps) is read by the service from the committed
+        # host manifest.
         from .hq_port import AdmissionRequest
 
-        if isinstance(request, AdmissionRequest):
-            from .hq_authority_payload import authority_payload
-
-            document = {
-                "frame": request.frame,
-                "candidate": {
-                    "authority": authority_payload(request.authority),
-                    "public_key": request.public_key,
-                },
-                "desired": dict(request.desired),
-                "admitted": request.admitted,
-                "provisioned_route": (
-                    None if request.provisioned_route is None else list(request.provisioned_route)
-                ),
-            }
-        else:
-            document = dict(request) if isinstance(request, Mapping) else dict(vars(request))
-        body = {"request": document, "expected_revision": expected_revision}
+        if not isinstance(request, AdmissionRequest):
+            raise HqRefused("bad_request", "admit takes an AdmissionRequest")
+        body: dict[str, Any] = {
+            "kind": "open" if request.admitted else "candidate",
+            "expected_revision": expected_revision,
+        }
+        if request.admitted:
+            body["host_id"] = str(getattr(request.authority, "holder_identity", "") or "")
+            body["public_key"] = request.public_key
         _, payload = self._call(
             "POST",
             f"/admissions/{_seg(frame)}",
@@ -580,15 +628,18 @@ class HqServiceAdapter:
             deadline=deadline,
             expected_revision=expected_revision,
             commit_write=True,
+            envelope_errors=True,
         )
+        if not isinstance(payload, dict) or payload.get("frame_id") != frame:
+            raise HqUnavailable("hq-service admitted a different frame than the one sent")
         return self._revision(payload)
 
     # ---- reads --------------------------------------------------------------------------
 
-    # PROVISIONAL (bh-hq-9lh not served yet): GET /config and GET /eligibility/{frame}
-    # responses are unverified. GET /authority is verified (hq-service api/api.go).
+    # GET /authority, /config, /history and /eligibility/{frame} are served at hq-service v0.1.0
+    # (``api/api.go``, ``api/reads.go``; ``store/reads.go`` for the bodies).
     def read_authority(self, *, allow_expired: bool = False, deadline: float) -> Any:
-        _, payload = self._call("GET", "/authority", None, deadline=deadline)
+        _, payload = self._call("GET", "/authority", None, deadline=deadline, envelope_errors=True)
         return self._verified("read_authority", payload)
 
     def read_frame_anchor(self, *, expected_head: str | None, deadline: float) -> FrameAnchor:
@@ -601,79 +652,210 @@ class HqServiceAdapter:
         prefix: str | None = None,
         session_prefix: str | None = None,
         hive_lease_epoch: int | None = None,
+        measured: Mapping[str, str] | None = None,
         deadline: float,
     ) -> Any:
+        """``GET /eligibility/{frame}[?release_id=&release_digest=]``. ``measured`` (``{id,
+        digest}``, adapter-only) asks for the release verdict against the active grant.
+
+        The body (v0.1.0, ``store/reads.go`` ``EligibilityRead``) is ``{head, config_head,
+        frame_id, active, principal, epoch, route, liveness, release}``: the last four are null
+        without an active grant, and ``release`` without ``measured``. The service signs nothing
+        on this route (still no ``authority`` envelope at v0.1.0), so the signature and the
+        restore floor come from a verified GET /authority read, and the eligibility body is
+        accepted only when it names that same authority (head and config head); a head that
+        moved between the two reads is retryable. The result is the body plus that verified
+        envelope under ``authority``. A hive-lease row is a separate read
+        (:meth:`read_hive_lease`)."""
         if prefix is not None or session_prefix is not None or hive_lease_epoch is not None:
-            raise _no_route("read_eligibility with a hive-lease row")  # gap G2
-        _, payload = self._call("GET", f"/eligibility/{_seg(frame)}", None, deadline=deadline)
-        return self._verified("read_eligibility", payload)
+            raise _no_route("read_eligibility with a hive-lease row")  # read_hive_lease instead
+        authority = self.read_authority(deadline=deadline)
+        _, payload = self._call(
+            "GET",
+            f"/eligibility/{_seg(frame)}" + _release_query(measured),
+            None,
+            deadline=deadline,
+            envelope_errors=True,
+        )
+        record = authority.get("record") if isinstance(authority, Mapping) else None
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(record, Mapping)
+            or payload.get("frame_id") != frame
+        ):
+            raise HqUnavailable("hq-service eligibility is not the requested frame's")
+        if payload.get("head") != authority.get("head") or payload.get("config_head") != record.get(
+            "config_head"
+        ):
+            raise HqUnavailable("authority moved between the authority and eligibility reads")
+        return {**payload, "authority": authority}
+
+    def read_hive_lease(self, prefix: str, *, deadline: float) -> dict:
+        """``GET /hive-leases?prefix=``: ``{head, prefix, revision, lease{host_id, label, epoch,
+        adopted_at, expires_at}, held}`` (``HiveLeaseRead``). ``held`` is the server's verdict at
+        its own clock. The row needs no authority and is returned as served; an unknown prefix
+        is a 404 ``unknown_prefix`` (:class:`HqRefused`). Adapter-only until the port grows it
+        (bh-h9dn1)."""
+        _, payload = self._call(
+            "GET",
+            f"/hive-leases?prefix={_seg(prefix)}",
+            None,
+            deadline=deadline,
+            envelope_errors=True,
+        )
+        if (
+            not isinstance(payload, dict)
+            or payload.get("prefix") != prefix
+            or not isinstance(payload.get("lease"), dict)
+            or not isinstance(payload.get("revision"), str)
+        ):
+            raise HqUnavailable("hq-service hive lease is not the requested prefix's")
+        return payload
 
     def read_release_catalog_row(
         self, head: str, catalog: str, measured: dict, *, deadline: float
     ) -> dict | None:
-        raise _no_route("read_release_catalog_row")  # gap G3
+        """The folded catalog row for ``measured`` (``{id, digest}``) or ``None`` when no row
+        holds the digest: ``GET /release-catalog/{catalog}?release_id=&release_digest=``, whose
+        ``release.row`` is ``{catalog, version, measured_digest, status, algorithm,
+        active_digests}``, the SQL reader's own row. The service reads it AS OF its verified head;
+        a head other than the caller's verified ``head`` is retryable."""
+        payload = self._read_catalog(catalog, measured=measured, deadline=deadline)
+        if payload.get("head") != head:
+            raise HqUnavailable(
+                "the release catalog was read at another head than the verified one"
+            )
+        release = payload.get("release")
+        if not isinstance(release, dict) or "row" not in release:
+            raise HqUnavailable("hq-service catalog verdict carries no row")
+        row = release["row"]
+        if row is not None and not isinstance(row, dict):
+            raise HqUnavailable("hq-service catalog verdict row is malformed")
+        return row
+
+    def _read_catalog(
+        self, catalog: str, *, measured: Mapping[str, str] | None = None, deadline: float
+    ) -> dict:
+        """``GET /release-catalog/{catalog}``: ``{head, catalog, rows[], release}``. Without
+        ``measured``, ``rows`` lists every ``hq_release_catalog`` row whole; with it, only
+        ``release`` ``{id, digest, verified, row}`` is set. The restore-floor verifier's catalog
+        check reads through this."""
+        _, payload = self._call(
+            "GET",
+            f"/release-catalog/{_seg(catalog)}" + _release_query(measured),
+            None,
+            deadline=deadline,
+            envelope_errors=True,
+        )
+        if not isinstance(payload, dict) or payload.get("catalog") != catalog:
+            raise HqUnavailable("hq-service catalog is not the requested catalog's")
+        return payload
 
     def read_config(
         self, *, revision: str | None = None, cached_ok: bool = False, deadline: float
     ) -> Any:
         if revision is not None:
             raise _no_route("read_config at a pinned revision")
-        _, payload = self._call("GET", "/config", None, deadline=deadline)
+        _, payload = self._call("GET", "/config", None, deadline=deadline, envelope_errors=True)
         return self._verified("read_config", payload)
 
     def _read_history(self, *, since: str, deadline: float) -> HistorySinceFloor:
-        # PROVISIONAL (bh-hq-9lh not served yet): the `{commits, diff_summary}` response is a
-        # guess. The path segment is also provisional: the decided shape is
-        # `GET /history?since={floor}` (percent-encoded, no other keys until bh-hq-5vu), cut over
-        # ONLY after Gateway bh-gw-itkt lands (the Gateway refuses query strings until then).
-        _, payload = self._call("GET", f"/history/{_seg(since)}", None, deadline=deadline)
-        if not isinstance(payload, dict):
-            raise HqUnavailable("hq-service history is not an object")
+        """``GET /history?since={floor}``: ``{head, floor, revisions[]}`` (``store/reads.go``).
+
+        ``revisions`` are those reachable from head but not from the floor, each ``{id, message,
+        at, parents, changes[{table, data, schema}]}``, oldest first by commit time (rely on
+        ``parents``). The service issues no ancestry verdict; the reader's check is the
+        verifier's. An unknown floor is a 409 ``unknown_floor`` and more than 1000 revisions a
+        409 ``history_too_long``, both :class:`HqRefused`."""
+        _, payload = self._call(
+            "GET", f"/history?since={_seg(since)}", None, deadline=deadline, envelope_errors=True
+        )
+        revisions = payload.get("revisions") if isinstance(payload, dict) else None
+        if not isinstance(revisions, list) or not all(isinstance(r, dict) for r in revisions):
+            raise HqUnavailable("hq-service history carries no revision list")
         return HistorySinceFloor(
-            commits=tuple(payload.get("commits") or ()),
-            diff_summary=tuple(payload.get("diff_summary") or ()),
+            head=str(payload.get("head") or ""),
+            floor=str(payload.get("floor") or ""),
+            revisions=tuple(revisions),
             raw=payload,
         )
 
     # ---- operator -----------------------------------------------------------------------
 
     def _plan_apply(
-        self, path: str, request: dict, *, signer: Signer, expected_revision: str, deadline: float
+        self,
+        route: str,
+        request: dict,
+        *,
+        signer: Signer,
+        expected_revision: str,
+        deadline: float,
     ) -> str:
-        """Plan/apply (bh-hq-mz3): the signed body includes the config head and the hive-policy
-        projection only the service reads, so fetch the body to sign, sign it here, then apply.
-        The ``phase`` envelope is provisional with the route."""
-        plan_body = {**request, "phase": "plan", "expected_revision": expected_revision}
+        """Plan, sign, apply (``store/operator.go``, ``docs/DESIGN.md`` "Operator publication").
+
+        ``POST {route}/plan`` takes only the request and writes nothing; it answers the exact
+        ``record`` to sign, the ``signing_input`` (``base64(domain || canonical(record))``), the
+        head it was made at (``revision``), the ``config_head`` it binds and the ``issued_at`` /
+        ``expires_at`` it carries. This side checks ``signing_input`` against ``record`` and the
+        head against ``expected_revision``, signs ``record`` with ``signer`` (skipped when the
+        plan says ``signature_needed`` is false: a trusted fleet), then ``POST {route}/apply``
+        re-sends the request with ``{expected_revision, config_head, issued_at, expires_at,
+        signature, record}``; the service rebuilds the record itself and verifies the signature
+        over its own bytes."""
         _, plan = self._call(
-            "POST", path, plan_body, deadline=deadline, expected_revision=expected_revision
+            "POST",
+            route + "/plan",
+            request,
+            deadline=deadline,
+            expected_revision=expected_revision,
+            envelope_errors=True,
         )
-        record = plan.get("plan") if isinstance(plan, dict) else None
-        if not isinstance(record, dict):
+        record = plan.get("record") if isinstance(plan, dict) else None
+        if not isinstance(record, dict) or plan.get("outcome") != "planned":
             raise HqUnavailable("hq-service plan carries no record to sign")
-        signature = signer(record)
-        apply_body = {
+        if plan.get("revision") != expected_revision:
+            raise HqRefused(
+                "stale_revision",
+                f"the plan was made at {plan.get('revision')}, "
+                f"not the expected {expected_revision}",
+            )
+        try:
+            expected_input = base64.b64encode(
+                AUTHORITY_DOMAIN + canonical(record, limit=4 * 1024 * 1024)
+            ).decode()
+        except SqlSignatureError:
+            raise HqUnavailable("hq-service plan record is not canonical") from None
+        if plan.get("signing_input") != expected_input:
+            raise HqUnavailable("hq-service plan signing_input is not its record's signing input")
+        apply_body: dict[str, Any] = {
             **request,
-            "phase": "apply",
             "expected_revision": expected_revision,
+            "config_head": plan.get("config_head"),
+            "issued_at": plan.get("issued_at"),
+            "expires_at": plan.get("expires_at"),
             "record": record,
-            "signature": signature,
         }
+        if plan.get("signature_needed") is not False:
+            apply_body["signature"] = signer(record)
         _, payload = self._call(
             "POST",
-            path,
+            route + "/apply",
             apply_body,
             deadline=deadline,
             expected_revision=expected_revision,
             commit_write=True,
+            envelope_errors=True,
         )
         return self._revision(payload)
 
     def rebind(
         self, state: dict, *, signer: Signer, expected_revision: str, deadline: float
     ) -> str:
+        """Rebind the authority (``/authority/rebind/{plan,apply}``). On this route ``state`` is
+        the plan request, not a next state: ``{frame?, duration_s?}``."""
         return self._plan_apply(
             "/authority/rebind",
-            {"state": state},
+            dict(state),
             signer=signer,
             expected_revision=expected_revision,
             deadline=deadline,
@@ -682,9 +864,13 @@ class HqServiceAdapter:
     def release_policy(
         self, frame: str, state: dict, *, signer: Signer, expected_revision: str, deadline: float
     ) -> str:
+        """Set or drop a frame's release policy
+        (``/authority/release-policy/{frame}/{plan,apply}``). On this route ``state`` is
+        the plan request: ``{spec, allow_downgrade?, allow_unknown_readers?}``; the frame is the
+        path's."""
         return self._plan_apply(
-            "/release-policy",
-            {"frame": frame, "state": state},
+            f"/authority/release-policy/{_seg(frame)}",
+            dict(state),
             signer=signer,
             expected_revision=expected_revision,
             deadline=deadline,
@@ -777,6 +963,7 @@ def adapter_from_config(
     )
     if default_verifier is not None:
         default_verifier.bind_history(adapter._read_history)
+        default_verifier.bind_catalog(adapter._read_catalog)
     return adapter
 
 
@@ -827,7 +1014,7 @@ def _frame_beat_source(anchor: FrameAnchor) -> Any:
     the beat, is :class:`HqUnavailable` carrying only a fixed category (the underlying text can
     hold credential references). The SQL plane is needed because the beat's grant-bound fields
     (``audience``, ``config_revision``, ``beadyard_id``, ``state_seen``, the grant ``profile``)
-    come only from the frame's verified authority record, and hq-service (205fd5b) has no route
+    come only from the frame's verified authority record, and hq-service (v0.1.0) has no route
     that serves a frame's grant: GET /authority is the operator authority, not the per-frame
     grant (design gap G1, ``read_frame_anchor``). Only ``key_id`` (the signing key fingerprint),
     the installed release and the cached conformance report are local, so a beat cannot be built

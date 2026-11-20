@@ -131,10 +131,15 @@ class Submission:
 
 @dataclass(frozen=True)
 class HistorySinceFloor:
-    """Commits and a diff summary since the caller's floor."""
+    """The revisions after the caller's floor (hq-service ``GET /history?since=``).
 
-    commits: tuple[Mapping[str, Any], ...] = ()
-    diff_summary: tuple[Mapping[str, Any], ...] = ()
+    ``revisions`` are those reachable from ``head`` but not from ``floor``, each ``{id, message,
+    at, parents, changes[{table, data, schema}]}``; the order is by commit time, so a reader
+    walks ``parents``."""
+
+    head: str = ""
+    floor: str = ""
+    revisions: tuple[Mapping[str, Any], ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
