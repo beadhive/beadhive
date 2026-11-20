@@ -1685,8 +1685,10 @@ class SqlControlPlane:
         return isinstance(error, CommittedManifestAbsent)
 
     def __init__(self, settings, *, broker=None, clock=time.time, fence_reader=None):
+        from .hq_sql_guard import guard_sql_open
         from .hq_sql_runtime import hive_lease_mode, liveness_mode
 
+        guard_sql_open("SqlControlPlane")
         self.settings = _validated_sql_binding(settings).model_dump()
         self.broker, self.clock = broker, clock
         #: ``prefix -> EpochFence | None``: the hive's current remote ``refs/bh/epoch``.

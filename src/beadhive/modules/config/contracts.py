@@ -1916,6 +1916,28 @@ class HqConfig(_Section):
             "`BH_HQ_SESSION_DUAL_WRITE` is ignored too."
         ),
     )
+    service_host: bool = Field(
+        False,
+        description=(
+            "HOST-only. Marks this host as the hq-service host (bh-d9anb), the only host that "
+            "may open HQ SQL directly (the SQL openers, placement, `hq migrate`, `bh hq "
+            "authority prune-inbox`). Off (default): every SQL opener on this host is guarded "
+            "per `hq.sql_guard`. Nothing infers it. `BH_HQ_SERVICE_HOST` (`1`/`true`) overrides "
+            "it for one process."
+        ),
+    )
+    sql_guard: Literal["warn", "refuse", "off"] | None = Field(
+        None,
+        description=(
+            "HOST-only. What a host not marked `hq.service_host` gets when something opens HQ "
+            "SQL: `warn` writes one stderr line per process and call site, naming the opener "
+            "and caller, and changes no exit code or output; `refuse` raises before "
+            "connecting; `off` is silent. Unset (default, 0.40.0): an `hq.route: api` host "
+            "warns and an `hq.route: sql` host is untouched and silent; 0.41.0 makes `warn` "
+            "plus refuse the default. The guard never selects a route and never falls back. "
+            "`BH_HQ_SQL_GUARD` overrides it for one process."
+        ),
+    )
     api: HqApiConfig = Field(default_factory=HqApiConfig)
     sql: HqSqlConfig = Field(default_factory=HqSqlConfig)
     release_catalog: HqReleaseCatalogConfig = Field(default_factory=HqReleaseCatalogConfig)

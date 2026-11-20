@@ -519,6 +519,9 @@ class SqlFleetConfigRevisionStore:
     """One-connection AS OF read and original-parent Dolt publication CAS."""
 
     def __init__(self, settings, *, broker=None, clock=time.time, history=None, sleep=time.sleep):
+        from .hq_sql_guard import guard_sql_open
+
+        guard_sql_open("SqlFleetConfigRevisionStore")
         self.settings = settings
         self.broker = broker or FnoxBroker()
         self.clock = clock

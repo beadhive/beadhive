@@ -216,7 +216,14 @@ def migrate_cmd(
     expected_git_revision: str,
 ) -> None:
     """Report a safe plan or run one explicitly reviewed authority transition."""
+    from .hq_sql_guard import SqlPlaneRetired, guard_sql_open
+
     dry_run = dry_run or not confirm
+    try:
+        guard_sql_open("hq_migrate_cli", host_only=True, refuse_only=True)
+    except SqlPlaneRetired as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
     try:
         if to == "dolt-server":
             result = _to_sql(dry_run=dry_run, confirm=confirm, intent=intent)

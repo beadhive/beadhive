@@ -1614,6 +1614,24 @@ def _render_authority_expiry(d: dict) -> None:
         typer.echo(f"    authority mode: {d['mode']}")
 
 
+def _data_hq_route() -> dict:
+    """This host's HQ route, hq-service-host mark and ``hq.sql`` status (bh-d9anb)."""
+    from .hq_sql_guard import doctor_data
+
+    return doctor_data()
+
+
+def _render_hq_route(d: dict) -> None:
+    typer.echo("\n# HQ route")
+    glyph = "✓" if d["level"] == "ok" else "⚠ WARN"
+    typer.echo(f"  {glyph} hq.route: {d['route']}")
+    typer.echo(f"    hq.service_host: {'true' if d['service_host'] else 'false'}")
+    typer.echo(f"    hq.sql: {'present' if d['sql_block'] else 'absent'}")
+    typer.echo(f"    hq.sql_guard: {d['mode'] if d['explicit'] else 'unset'}")
+    if d["level"] != "ok":
+        typer.echo(f"    {d['detail']}")
+
+
 def _section_group_auth(cfg):
     """Render the per-group auth section."""
     _render_group_auth(_data_group_auth(cfg))
@@ -3625,6 +3643,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "host_daemon": _timed(timings, "host_daemon", _data_host_daemon, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "authority_expiry": _timed(timings, "authority_expiry", _data_authority_expiry),
+        "hq_route": _timed(timings, "hq_route", _data_hq_route),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
@@ -3874,6 +3893,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_host_daemon(data["host_daemon"])
     _render_group_auth(data["group_auth"])
     _render_authority_expiry(data["authority_expiry"])
+    _render_hq_route(data["hq_route"])
     _render_mcp(data["mcp"])
     _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])
