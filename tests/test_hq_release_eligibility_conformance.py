@@ -1,78 +1,67 @@
-"""Run the language-neutral release-eligibility corpus against the real range-aware predicate.
+"""Replay of hq-service ``conformance/release-eligibility/v1`` against Python's reference.
 
-The corpus lives in beadhive/hq-service (conformance/release-eligibility/v1). Each case is
-the signed-beat carrier's release judgement for one frame (bh-vfrem.6): the real signed
-authority read (SqlRuntimeAuthority.load_state, as in test_hq_authority_conformance.py),
-then, only when the frame's grant carries a ``release_policy``, the real catalog read
-(read_release_catalog_row, the case's ``hq_release_catalog`` rows ``AS OF`` the same HEAD),
-then release_policy.admits on the case's measured release. Raw rows in SQLite; only the
-connection is stubbed. Without an ``hq_release_catalog`` table the catalog is absent.
+Python is the reference here: the corpus's own ``source`` is ``beadhive
+src/beadhive/release_policy.py admits``. Each case is the HQ's tables (the signed authority
+state and the ``hq_release_catalog`` rows) plus the release a frame measured; the verdict is
+whether the grant's release (an exact pin or a release policy over a catalog) admits it. The
+runner reads the grant's ``desired`` out of the authority state, folds the catalog rows exactly as
+the SQL reader does (:func:`beadhive.release_policy.catalog_row_for`) and decides with
+:func:`beadhive.release_policy.admits`, the function the api route's verdict is bound to.
+
+Set ``BH_HQ_SERVICE_CONFORMANCE`` to an hq-service export root to read the corpus in place; with
+it unset the copy pinned in ``tests/fixtures/hq_service_contract/release_eligibility_v1`` (see
+its PROVENANCE) is replayed.
 """
+
+from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from beadhive.hq_sql_runtime import SqlRuntimeAuthority
-from beadhive.release_policy import admits
-from test_hq_lease_conformance import Cursor, _database
+from beadhive.release_policy import admits, catalog_row_for
+
+ENV = "BH_HQ_SERVICE_CONFORMANCE"
+PINNED = Path(__file__).parent / "fixtures/hq_service_contract/release_eligibility_v1"
 
 
-def _corpus() -> Path | None:
-    if env := os.environ.get("HQ_RELEASE_ELIGIBILITY_CORPUS"):
-        return Path(env)
-    if ws := os.environ.get("GIT_WORKSPACE"):
-        path = Path(ws) / "github/beadhive/hq-service/conformance/release-eligibility/v1"
-        if path.is_dir():
-            return path
-    return None
+def _corpus() -> Path:
+    root = os.environ.get(ENV)
+    full = Path(root) / "conformance/release-eligibility/v1/cases" if root else None
+    return full if full and full.is_dir() else PINNED
 
 
-CORPUS = _corpus()
-CASES = sorted((CORPUS / "cases").glob("*.json")) if CORPUS is not None else []
-pytestmark = pytest.mark.skipif(
-    not CASES,
-    reason="release-eligibility corpus not found "
-    "(set HQ_RELEASE_ELIGIBILITY_CORPUS or GIT_WORKSPACE)",
-)
+def _names() -> list[str]:
+    return sorted(p.stem for p in _corpus().glob("*.json"))
 
 
-class CatalogCursor(Cursor):
-    """The base cursor drops one ``AS OF`` parameter; the catalog read pins two."""
-
-    def execute(self, sql, params=()):
-        if sql.count(" AS OF %s") > 1:
-            parts = sql.split("%s")
-            params = tuple(p for i, p in enumerate(params) if not parts[i].endswith(" AS OF "))
-            sql = sql.replace(" AS OF %s", "")
-        super().execute(sql, params)
-
-
-@pytest.mark.parametrize("path", CASES, ids=[p.stem for p in CASES])
-def test_release_eligibility_conformance(path, tmp_path):
-    case = json.loads(path.read_text())
-    cursor = CatalogCursor(_database(case["rows"]))
-    connection = SimpleNamespace(cursor=lambda: cursor, close=lambda: None, rollback=lambda: None)
-    reader = SqlRuntimeAuthority(
-        {
-            "runtime": {"user": "observer", "database": "authority", "operation_timeout": 15},
-            "runtime_backend_identity": "dolt:hq",
-            "runtime_generation": "gen-1",
-            "runtime_operator_public_key": case["trust"]["operator_public_key"],
-            "runtime_floor_path": str(tmp_path / "floor.json"),
-            "runtime_initial_revision": "head-1",
-        },
-        clock=lambda: case["now"],
-    )
-    reader._open = lambda deadline=None: (connection, float("inf"))
-    head, state, _crossref, _policies = reader.load_state()
+def decide(case: dict) -> bool:
+    """The Python reference's verdict for one case's tables."""
+    (authority,) = case["rows"]["hq_authority"]
+    state = json.loads(authority["state_json"])
     desired = state["frames"][case["frame_id"]]["active"]["desired"]
-    measured = case["measured"]
+    policy = desired.get("release_policy")
     row = None
-    if (policy := desired.get("release_policy")) is not None:
-        # hq_control_plane's signed-beat carrier: the catalog is read only under a policy.
-        row = reader.read_release_catalog_row(head, policy["catalog"], measured)
-    assert admits(measured, desired, row) is case["expect"]["admits"], row
+    if policy is not None:
+        rows = [
+            (r["catalog"], r["version"], r["measured_digest"], r["status"], r["algorithm"])
+            for r in case["rows"].get("hq_release_catalog", [])  # an absent table has no row
+        ]
+        row = catalog_row_for(rows, policy["catalog"], case["measured"])
+    return admits(case["measured"], desired, row)
+
+
+@pytest.mark.parametrize("name", _names())
+def test_release_eligibility_case_passes_under_python(name):
+    case = json.loads((_corpus() / f"{name}.json").read_text())
+    assert case["kind"] == "release-eligibility"
+    assert decide(case) is case["expect"]["admits"]
+
+
+def test_the_corpus_has_both_verdicts():
+    verdicts = {
+        json.loads((_corpus() / f"{n}.json").read_text())["expect"]["admits"] for n in _names()
+    }
+    assert verdicts == {True, False}  # a runner that admits (or refuses) everything is caught
