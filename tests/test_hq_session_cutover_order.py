@@ -1,9 +1,9 @@
 """Cutover ordering of renew and evidence on the port path (bh-a3369).
 
 Evidence is never posted before an accepted renew; on ``no_current_beat`` the sender renews and
-posts once more; the post matches the beat the service accepted; the direct SQL writes are a
-separate default-off dual-write flag. Fake ports and a mocked clock: nothing sleeps or retries
-beyond the one bounded retry under test.
+posts once more; the post matches the beat the service accepted; an api host never runs the
+direct SQL writes (``hq.session_dual_write`` is retired, bh-65s71). Fake ports and a mocked clock:
+nothing sleeps or retries beyond the one bounded retry under test.
 """
 
 from __future__ import annotations
@@ -76,6 +76,17 @@ class Port:
         self.calls = []
         self._beats, self._evidence = list(beats), list(evidence)
 
+    def read_frame_anchor(self, *, expected_head, deadline):
+        """The api route's anchor (bh-65s71): the same route as :data:`BINDING`."""
+        return FrameAnchor(
+            principal=BINDING.principal,
+            frame=BINDING.frame_id,
+            epoch=BINDING.epoch,
+            holder=BINDING.holder_identity,
+            instance=BINDING.instance_ref,
+            carrier=BINDING.inbox_table,
+        )
+
     def renew_session(self, anchor, *, deadline):
         self.calls.append("renew")
         step = self._beats.pop(0) if self._beats else None
@@ -95,7 +106,7 @@ class Port:
 def isolated(monkeypatch):
     monkeypatch.setattr(report.time, "monotonic", lambda: 100.0)  # mocked clock: no sleeping
     monkeypatch.delenv(report.SESSION_VIA_PORT_ENV, raising=False)
-    monkeypatch.delenv(report.SESSION_DUAL_WRITE_ENV, raising=False)
+    monkeypatch.delenv("BH_HQ_SESSION_DUAL_WRITE", raising=False)
     report._ACCEPTED.clear()
     yield
     report._ACCEPTED.clear()
@@ -168,13 +179,13 @@ def test_a_failed_renew_posts_no_evidence_and_is_reported(monkeypatch, capsys, f
     assert _names(port2) == ["renew", "evidence"]
 
 
-def test_api_host_without_a_frame_runtime_sends_nothing(monkeypatch):
+def test_api_host_without_a_frame_runtime_renews_then_posts(monkeypatch):
+    """bh-65s71: the anchor is the port's, so no SQL frame runtime is needed."""
     _host(monkeypatch)
     port = Port()
     _wire(monkeypatch, port, plane=None)
-    with pytest.raises(HqUnavailable):
-        _publish()
-    assert port.calls == []
+    _publish()
+    assert _names(port) == ["renew", "evidence"]
 
 
 # ---- no_current_beat: renew once, post once more ---------------------------------------------
@@ -327,52 +338,25 @@ def _direct(monkeypatch):
     return calls
 
 
-def test_dual_write_defaults_off_and_follows_host_config_and_env(monkeypatch):
-    monkeypatch.setattr(report.config, "load_host", lambda: {"hq": {}})
-    assert report.session_dual_write() is False
+@pytest.mark.parametrize("env", [None, "1"])
+def test_dual_write_is_retired_an_api_host_never_writes_sql(monkeypatch, env):
+    """``hq.session_dual_write`` / ``BH_HQ_SESSION_DUAL_WRITE`` set: still no direct SQL write,
+    and no SQL plane is read (bh-65s71; a dual write waits on bh-ubpoc)."""
     _host(monkeypatch, dual=True)
-    assert report.session_dual_write() is True
-    monkeypatch.setenv(report.SESSION_DUAL_WRITE_ENV, "0")
-    assert report.session_dual_write() is False
-
-    def boom():
-        raise OSError("no host config")
-
-    monkeypatch.delenv(report.SESSION_DUAL_WRITE_ENV)
-    monkeypatch.setattr(report.config, "load_host", boom)
-    assert report.session_dual_write() is False
-
-
-def test_dual_write_off_never_touches_the_direct_sql_writes(monkeypatch):
-    _host(monkeypatch)
+    if env:
+        monkeypatch.setenv("BH_HQ_SESSION_DUAL_WRITE", env)
     port = Port()
     _wire(monkeypatch, port)
+
+    def no_sql_plane():
+        raise AssertionError("route=api read the SQL plane")
+
+    monkeypatch.setattr(report, "_sql_plane", no_sql_plane)
     sql = _direct(monkeypatch)
     report.session_renewer(heartbeat_sender._select_port).tick()
     _publish()
     assert sql == []
-
-
-def test_dual_write_on_writes_direct_after_the_port_accepted(monkeypatch):
-    _host(monkeypatch, dual=True)
-    port = Port()
-    _wire(monkeypatch, port)
-    sql = _direct(monkeypatch)
-    report.session_renewer(heartbeat_sender._select_port).tick()
-    _publish()
-    assert sql == ["sql-renew", "sql-evidence"]
-
-
-def test_dual_write_never_runs_when_the_port_write_failed(monkeypatch):
-    _host(monkeypatch, dual=True)
-    port = Port(beats=[HqUnavailable("down"), HqUnavailable("down")])
-    _wire(monkeypatch, port)
-    sql = _direct(monkeypatch)
-    with pytest.raises(HqUnavailable):
-        report.session_renewer(heartbeat_sender._select_port).tick()
-    with pytest.raises(HqUnavailable):
-        _publish()
-    assert sql == []
+    assert _names(port) == ["renew", "evidence"]
 
 
 def test_dual_write_is_skipped_on_the_sql_route_where_the_port_is_the_write(monkeypatch):

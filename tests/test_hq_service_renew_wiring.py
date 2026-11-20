@@ -1,7 +1,8 @@
 """Config wiring of session renew: beat source and frame key (bh-1bsvh).
 
 ``adapter_from_config`` / ``select_hq_port`` give the adapter the sender's own beat builder
-(``heartbeat_report.generate(plane, cached=True)``) and the recorded per-host signing key. Missing
+(``heartbeat_report.generate(plane, cached=True)``, the plane being this frame's grant read through
+the same adapter, bh-65s71) and the recorded per-host signing key. Missing
 or unusable pieces leave renew raising ``HqUnavailable`` with nothing sent, and neither key paths
 nor beat-builder text reach an exception. Time is a fixed value; nothing sleeps or retries.
 """
@@ -18,6 +19,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from beadhive import heartbeat_report, hq_service_adapter, hq_sql_signatures
+from beadhive.hq_frame_grant import ApiFrameAuthority
 from beadhive.hq_framelease_contracts import HeartbeatLease
 from beadhive.hq_port import FrameAnchor, HqRefused, HqUnavailable
 from beadhive.hq_service_adapter import HqServiceAdapter, adapter_from_config, select_hq_port
@@ -83,13 +85,11 @@ def _record(calls):
 
 
 def _generate_returns(monkeypatch, lease, seen=None):
-    """Stand in for the SQL plane and the generator it feeds, recording how it was called."""
-    plane = object()
-    monkeypatch.setattr(heartbeat_report, "_sql_plane", lambda: plane)
+    """Stand in for the generator, recording the plane and arguments it was called with."""
 
     def generate(got_plane, **kwargs):
         if seen is not None:
-            seen.append((got_plane is plane, kwargs))
+            seen.append((got_plane, kwargs))
         return lease
 
     monkeypatch.setattr(heartbeat_report, "generate", generate)
@@ -119,8 +119,12 @@ def test_configured_adapter_signs_and_sends_a_real_beat(key, monkeypatch):
     verified, _ = verify_heartbeat(json.loads(request.content), granted_public_key=public)
     assert verified.key_id == fingerprint(public)
     assert route.outcome == "accepted"
-    # The beat is the sender's own: the cached-conformance projection of the same plane.
-    assert seen == [(True, {"cached": True})]
+    # The beat is the sender's own cached-conformance projection, of this frame's grant read
+    # through this same adapter (no SQL plane).
+    ((plane, kwargs),) = seen
+    assert kwargs == {"cached": True}
+    assert isinstance(plane, ApiFrameAuthority)
+    assert (plane.port, plane.frame) == (adapter, ANCHOR.frame)
 
 
 def test_select_hq_port_wires_the_same_beat_source_and_key(key, monkeypatch):
@@ -129,7 +133,8 @@ def test_select_hq_port_wires_the_same_beat_source_and_key(key, monkeypatch):
     port = select_hq_port(CFG)
     assert isinstance(port, HqServiceAdapter)
     assert port._signing_key == path
-    assert port._beat_source is hq_service_adapter._frame_beat_source
+    assert port._beat_source.func is hq_service_adapter._frame_beat_source
+    assert port._beat_source.keywords == {"port": port}
 
 
 @pytest.mark.parametrize("recorded", ["", None, "relative/id_ed25519", FileNotFoundError(SECRET)])
@@ -144,14 +149,14 @@ def test_no_usable_recorded_key_is_unavailable_and_sends_nothing(recorded, key, 
     assert SECRET not in str(raised.value) and "relative" not in str(raised.value)
 
 
-def test_no_sql_frame_authority_is_unavailable_and_sends_nothing(key, monkeypatch):
-    monkeypatch.setattr(heartbeat_report, "_sql_plane", lambda: None)
+def test_an_unverifiable_grant_is_unavailable_and_renews_nothing(key, monkeypatch):
+    """No response verifier: the grant read fails closed, so no beat is built or posted."""
     _host_key(monkeypatch, key[0])
     calls: list = []
     adapter = adapter_from_config(CFG, transport=_record(calls))
     with pytest.raises(HqUnavailable):
         adapter.renew_session(ANCHOR, deadline=NOW + 30)
-    assert calls == []
+    assert not [c for c in calls if c.method == "POST"]
 
 
 def test_beat_builder_failure_text_never_reaches_the_exception(key, monkeypatch):

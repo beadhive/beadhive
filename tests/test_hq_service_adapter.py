@@ -260,7 +260,6 @@ def test_gap_methods_raise_unavailable_without_any_request():
     gaps = [
         lambda: adapter.describe_incarnation("p", 1, "f", target_route=None, deadline=d),
         lambda: adapter.preflight(route="r", deadline=d),
-        lambda: adapter.read_frame_anchor(expected_head=None, deadline=d),
         lambda: adapter.read_eligibility("f", prefix="bh", deadline=d),
         lambda: adapter.publish_authority({}, signer=str, expected_revision="r", deadline=d),
         lambda: adapter.read_evidence("f", "h", expected_revision="r", deadline=d),

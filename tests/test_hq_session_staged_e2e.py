@@ -13,14 +13,15 @@ ONE test body runs against two backends behind one fixture (``tests/harness/hq_s
 
 Everything below the HTTP transport is production code: ``heartbeat_sender`` (timer tick and
 conformance job), ``heartbeat_report`` (renew-first ordering, the retry), the hq-service adapter
-and the client-owned renew seq. Only the SQL frame authority is stubbed (a staged hq-service serves
-no per-frame grant, design gap G1).
+and the client-owned renew seq. Only this frame's grant reads (the anchor and the beat generator)
+are stubbed; the host is ``hq.route: api`` and has no SQL frame runtime (bh-65s71).
 
 The assertions are the bh-a3369 review notes: (1) evidence is accepted straight after the
 conformance process's own renew; (2) a cold incarnation posts nothing before its renew is accepted;
 (3) a forced ``no_current_beat`` takes exactly one renew-and-retry; (4) the renew timer and the
 conformance job interleaved do not produce ``evidence_digest_unmatched`` or ``seq_not_advanced``;
-(5) G1: an api host with no SQL frame runtime refuses both with nothing posted.
+(5) an api host with no SQL frame runtime renews and posts evidence (bh-65s71, formerly the G1
+refusal).
 
 Interleaving (4): two actors, advanced step by step on a mocked clock. Each step is a whole timer
 tick or a whole conformance run; the timer is one long-lived process and every conformance run is a
@@ -180,16 +181,15 @@ def test_timer_and_conformance_interleaved_never_collide_in_steady_state(make_st
         assert stack.kinds().count("evidence") == order.count("C"), order
 
 
-# ---- (5) G1: an api host with no SQL frame runtime refuses and posts nothing ---------------
+# ---- (5) an api host with no SQL frame runtime renews and posts evidence (bh-65s71) ---------
 
 
-def test_g1_api_host_without_a_frame_runtime_refuses_renew_and_evidence(stack):
-    stack.no_frame_runtime = True
-    with pytest.raises(HqUnavailable):
-        stack.timer_tick(stack.new_process())
-    with pytest.raises(HqUnavailable):
-        stack.conformance_run(tag="c1")
-    assert stack.log == []  # nothing was posted to the service
+def test_an_api_host_without_a_frame_runtime_renews_and_posts_evidence(stack):
+    """The stack's SQL plane raises if read: G1 no longer gates an api host."""
+    stack.timer_tick(stack.new_process())
+    stack.conformance_run(tag="c1")
+    assert stack.kinds() == ["renew", "renew", "evidence"]
+    assert all(entry["outcome"] in OK for entry in stack.log)
 
 
 # ---- fake only: faults a staged stack cannot be made to give, and the unlocked overlap -------

@@ -30,6 +30,7 @@ port promises verified results only.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import logging
@@ -172,8 +173,11 @@ class HqServiceAdapter:
         signing_key: str | None = None,
         seq_store: Callable[[], Any] | None = None,
         clock: Callable[[], float] | None = None,
+        frame: str | None = None,
     ) -> None:
         self._client = client
+        #: This host's ``host.frame_id``: the frame :meth:`read_frame_anchor` reads.
+        self._frame = frame or ""
         self._verifier = verifier
         self._beat_source = beat_source
         self._signing_key = signing_key
@@ -643,7 +647,20 @@ class HqServiceAdapter:
         return self._verified("read_authority", payload)
 
     def read_frame_anchor(self, *, expected_head: str | None, deadline: float) -> FrameAnchor:
-        raise _no_route("read_frame_anchor")  # gap G1
+        """This host's frame route from ``GET /eligibility/{frame}`` (gap G1, bh-65s71).
+
+        The frame is the host's own ``host.frame_id``. The grant is the verified authority's
+        and the principal and epoch are the ones it derives
+        (:func:`beadhive.hq_frame_grant.frame_grant`); a head other than *expected_head* is
+        retryable. A host with no ``host.frame_id`` has no anchor (:class:`HqUnavailable`)."""
+        from .hq_frame_grant import frame_grant
+
+        if not self._frame:
+            raise HqUnavailable("read_frame_anchor: this host has no host.frame_id")
+        grant = frame_grant(self.read_eligibility(self._frame, deadline=deadline), self._frame)
+        if expected_head is not None and grant.head != expected_head:
+            raise HqUnavailable("read_frame_anchor: authority moved from the expected head")
+        return grant.anchor
 
     def read_eligibility(
         self,
@@ -915,10 +932,11 @@ def adapter_from_config(
     not a reason to try another adapter.
 
     Renewal signs a beat with the frame key. Unless injected (tests), the beat source is the
-    sender's own builder (:func:`_frame_beat_source`) and the key is the recorded per-host
-    signing key (``host.yaml`` ``signing_key``, the one ``heartbeat_sender beat`` signs with);
-    no new configuration is read. Either one missing leaves renew raising
-    :class:`HqUnavailable` before anything is sent.
+    sender's own builder (:func:`_frame_beat_source`) reading this frame's grant through this
+    same adapter, and the key is the recorded per-host signing key (``host.yaml``
+    ``signing_key``, the one ``heartbeat_sender beat`` signs with). The frame is the host's
+    ``host.frame_id`` (:meth:`HqServiceAdapter.read_frame_anchor`). A missing key leaves renew
+    raising :class:`HqUnavailable` before anything is sent.
     """
     hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
     api = hq.get("api") if isinstance(hq, Mapping) else None
@@ -953,14 +971,19 @@ def adapter_from_config(
         kwargs["verify"] = ca or True
         if cert:
             kwargs["cert"] = (cert, key)
+    host = host_config.get("host") if isinstance(host_config, Mapping) else None
+    frame = str(host.get("frame_id") or "") if isinstance(host, Mapping) else ""
     adapter = HqServiceAdapter(
         httpx.Client(**kwargs),
         verifier=verifier,
-        beat_source=beat_source if beat_source is not None else _frame_beat_source,
+        beat_source=beat_source,
         signing_key=signing_key if signing_key is not None else _host_signing_key(),
         seq_store=_renew_seq_store,
         clock=clock,
+        frame=frame,
     )
+    if beat_source is None:
+        adapter._beat_source = functools.partial(_frame_beat_source, port=adapter)
     if default_verifier is not None:
         default_verifier.bind_history(adapter._read_history)
         default_verifier.bind_catalog(adapter._read_catalog)
@@ -1005,30 +1028,29 @@ def _host_signing_key() -> str | None:
     return key if key and Path(key).is_absolute() else None
 
 
-def _frame_beat_source(anchor: FrameAnchor) -> Any:
+def _frame_beat_source(anchor: FrameAnchor, port: HqPort | None = None) -> Any:
     """The unsigned beat for *anchor*, built by the same generator ``heartbeat_sender beat``
     uses (``heartbeat_report.generate(..., cached=True)``): next ``seq``, ``renewTime`` now,
     ``key_id`` from the frame route and the ``report_digest`` of the cached conformance report.
 
-    It reads this host's SQL frame authority, so a host without one, or any failure measuring
-    the beat, is :class:`HqUnavailable` carrying only a fixed category (the underlying text can
-    hold credential references). The SQL plane is needed because the beat's grant-bound fields
-    (``audience``, ``config_revision``, ``beadyard_id``, ``state_seen``, the grant ``profile``)
-    come only from the frame's verified authority record, and hq-service (v0.1.0) has no route
-    that serves a frame's grant: GET /authority is the operator authority, not the per-frame
-    grant (design gap G1, ``read_frame_anchor``). Only ``key_id`` (the signing key fingerprint),
-    the installed release and the cached conformance report are local, so a beat cannot be built
-    from the conformance cache alone. ``seq`` is NOT taken from here: the SQL row is only a
-    lower bound, see :mod:`beadhive.hq_renew_seq`. Retry caching of a built beat
-    (:meth:`HqServiceAdapter.renew_session`) needs no SQL read.
+    The grant-bound fields (``audience``, ``config_revision``, ``beadyard_id``, ``state_seen``,
+    the grant ``profile`` and release) come from this frame's verified grant, read through
+    *port* (``GET /eligibility/{frame}`` at a verified authority head, the committed host
+    manifest from ``GET /config``, and under a release policy the catalog row from ``GET
+    /release-catalog/{catalog}``: design gaps G1 and G3, bh-65s71); see
+    :class:`beadhive.hq_frame_grant.ApiFrameAuthority`. No SQL frame runtime is read. With no
+    port, or any failure building the beat, this is :class:`HqUnavailable` carrying only a fixed
+    category (the underlying text can hold credential references). ``seq`` is NOT taken from
+    here: it is only a lower bound, see :mod:`beadhive.hq_renew_seq`. Retry caching of a built
+    beat (:meth:`HqServiceAdapter.renew_session`) needs no read at all.
     """
     from . import heartbeat_report
+    from .hq_frame_grant import ApiFrameAuthority
 
+    if port is None:
+        raise HqUnavailable("renew_session: no beat available (no HQ port to read the grant)")
     try:
-        plane = heartbeat_report.sql_plane()
-        if plane is None:
-            raise heartbeat_report.HeartbeatError("measured heartbeat requires SQL frame authority")
-        return heartbeat_report.generate(plane, cached=True)
+        return heartbeat_report.generate(ApiFrameAuthority(port, anchor.frame), cached=True)
     except Exception as exc:  # noqa: BLE001
         raise HqUnavailable(
             f"renew_session: no beat available ({heartbeat_report.refusal_category(exc)})"

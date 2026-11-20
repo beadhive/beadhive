@@ -3304,18 +3304,6 @@ def control_plane(hq_dir=None):
     return GitControlPlane(hq_dir or config.hq_dir(), authority_anchor=cfg.get("authority_anchor"))
 
 
-def sql_frame_plane(hq_dir=None):
-    """The SQL plane when ``hq.sql`` is enabled, whatever ``hq.route`` selects; else ``None``.
-    Only for the transitional api-host beat, which
-    still reads this host's SQL frame runtime (design gap G1, bh-65s71); every other caller
-    uses :func:`control_plane`."""
-    cfg = config.load_host().get("hq", {})
-    sql = _validated_sql_binding(cfg.get("sql", {}))
-    if sql.enabled:
-        return SqlControlPlane(sql.model_dump())
-    return None
-
-
 def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_local=False):
     """Read back central config using only host-injected connection/trust inputs.
 

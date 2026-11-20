@@ -8,9 +8,11 @@ HTTPS transport to a staged hq-service, configured only from environment variabl
 ``STAGED_ENV``; values, key paths included, are never printed) on the wall clock. The test body
 cannot tell them apart; everything below the transport is production code.
 
-Only the SQL frame authority is replaced (a stub plane and a beat generator that builds the
-frame's beat from the identity under test), because a staged hq-service serves no per-frame grant
-(design gap G1): the same stubs apply in both modes.
+Only this frame's grant reads are replaced: the anchor (``read_frame_anchor``, which a staged run
+could only verify with trust pins its environment does not carry) and a beat generator that builds
+the frame's beat from the identity under test. The same stubs apply in both modes, and no SQL
+frame runtime exists in either: the host is ``hq.route: api`` (bh-65s71). The real grant reads
+are driven end to end against the fake in ``tests/test_hq_api_route_liveness.py``.
 
 The recording transport logs every request the CLIENT made (kind, status, code or outcome), and can
 answer a request with a scripted response before it reaches the service (``fault``): a refusal
@@ -28,7 +30,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -38,6 +39,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from beadhive import heartbeat_report as report
 from beadhive import heartbeat_sender, hq_service_adapter
 from beadhive.hq_framelease_contracts import HeartbeatLease
+from beadhive.hq_port import FrameAnchor
 from beadhive.hq_service_adapter import PREFIX, adapter_from_config
 from beadhive.hq_sql_signatures import fingerprint
 
@@ -159,7 +161,6 @@ class SessionStack:
         self.log: list[dict] = []
         self.faults: list = []
         self.tag = "conformance-1"  # the conformance cache's content, via the stubbed generator
-        self.no_frame_runtime = False
         self.current: Process | None = None
         self._on_generate: Callable[[], None] | None = None
         self._monkeypatch = monkeypatch
@@ -203,35 +204,30 @@ class SessionStack:
             )
             public = None
         self.public_key = public
-        binding = SimpleNamespace(
+        self.anchor = FrameAnchor(
             principal=self.identity.principal,
-            frame_id=self.identity.frame,
-            holder_identity=self.identity.holder,
-            instance_ref=self.identity.instance,
+            frame=self.identity.frame,
             epoch=self.identity.epoch,
-            inbox_table="inbox_t",
+            holder=self.identity.holder,
+            instance=self.identity.instance,
+            carrier="inbox",
         )
-        self._plane = SimpleNamespace(
-            settings={"runtime": {"operation_timeout": 5}},
-            _runtime_authority=lambda: SimpleNamespace(load_frame_binding=lambda **_: binding),
-        )
-        monkeypatch.setattr(report, "_sql_plane", self._plane_or_none)
-        monkeypatch.setattr(report, "sql_plane", self._plane_or_none)
+        monkeypatch.setattr(report, "_sql_plane", self._no_sql_plane)
         monkeypatch.setattr(report, "generate", self._generate)
         monkeypatch.setattr(
             report.config,
             "load_host",
-            lambda: {"hq": {"route": "api", "session_via_port": True, "api": {"url": self.url}}},
+            lambda: {"hq": {"route": "api", "api": {"url": self.url}}},
         )
         monkeypatch.setattr(heartbeat_sender, "_select_port", self._select_port)
         monkeypatch.delenv(report.SESSION_VIA_PORT_ENV, raising=False)
-        monkeypatch.delenv(report.SESSION_DUAL_WRITE_ENV, raising=False)
         self.process = self.new_process()
 
     # ---- the stubbed frame authority ---------------------------------------------------
 
-    def _plane_or_none(self):
-        return None if self.no_frame_runtime else self._plane
+    @staticmethod
+    def _no_sql_plane():
+        raise AssertionError("an hq.route api host read a SQL frame plane")
 
     def _generate(self, plane, **_kwargs) -> HeartbeatLease:
         """The beat generator: this frame's beat for the CURRENT conformance cache content."""
@@ -295,11 +291,15 @@ class SessionStack:
     def new_process(self) -> Process:
         """A fresh process: a cold incarnation (nothing accepted in memory), same seq state dir."""
         adapter = adapter_from_config(
-            {"hq": {"route": "api", "api": {"url": self.url}}},
+            {
+                "hq": {"route": "api", "api": {"url": self.url}},
+                "host": {"frame_id": self.identity.frame},
+            },
             transport=Recorder(self._inner, self.log, self.faults),
             signing_key=self.signing_key,
             clock=self.clock.wall,
         )
+        adapter.read_frame_anchor = lambda **_: self.anchor  # the grant read, stubbed (above)
         return Process(adapter)
 
     def _select_port(self):

@@ -1,9 +1,10 @@
-"""Session renew and conformance evidence through the HQ port, behind a default-off flag
-(bh-osom7).
+"""Session renew and conformance evidence through the HQ port (bh-osom7, bh-65s71).
 
-Flag off: the direct SQL session calls, unchanged, and the port is never selected. Flag on: one
-``HqPort`` call per renew and per evidence post, on the adapter ``hq.route`` selects. A port
-failure is a failed attempt and never falls back to the SQL path. Nothing sleeps or retries.
+Route ``sql``, flag off: the direct SQL session calls, unchanged, and the port is never selected.
+Route ``sql`` with ``hq.session_via_port`` on, and route ``api`` always: one ``HqPort`` call per
+renew and per evidence post, on the adapter ``hq.route`` selects. On ``api`` the anchor is the
+port's own (``read_frame_anchor``) and no SQL plane is read. A port failure is a failed attempt and
+never falls back to the SQL path. Nothing sleeps or retries.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from beadhive import heartbeat_sender, hq_service_adapter, hq_sql_session
 from beadhive.hq_framelease_contracts import HeartbeatError
 from beadhive.hq_port import (
     EvidenceReport,
+    FrameAnchor,
     HqDeadline,
     HqNoCurrentBeat,
     HqOutcomeUnknown,
@@ -41,10 +43,28 @@ PLANE = SimpleNamespace(
 )
 
 
+#: The anchor the api route reads from the port: the same route as :data:`BINDING`.
+ANCHOR = FrameAnchor(
+    principal="factory_p",
+    frame="factory",
+    epoch=2,
+    holder="host-a",
+    instance="instance-a",
+    carrier="inbox_t",
+)
+#: The api route's port deadline from the mocked clock (``API_FRAME_TIMEOUT_S`` = 30 s).
+API_DEADLINE = 130.0
+
+
 class FakePort:
     def __init__(self, *, renew=None, evidence=None):
         self.calls = []
+        self.anchors = 0
         self._renew, self._evidence = renew, evidence
+
+    def read_frame_anchor(self, *, expected_head, deadline):
+        self.anchors += 1
+        return ANCHOR
 
     def renew_session(self, anchor, *, deadline):
         self.calls.append(("renew", anchor, deadline))
@@ -134,7 +154,7 @@ def test_an_unreadable_host_config_leaves_the_flag_off(monkeypatch):
 
 
 def test_flag_off_renewer_is_the_sql_session_renewer_and_never_selects_a_port(monkeypatch):
-    _host(monkeypatch, flag=False, route="api")
+    _host(monkeypatch, flag=False, route="sql")
     selected = _port(monkeypatch, FakePort())
     _sql(monkeypatch)
     renewer = report.session_renewer(_SELECT[0])
@@ -150,7 +170,7 @@ def test_flag_off_without_a_frame_runtime_has_no_renewer(monkeypatch):
 
 
 def test_flag_off_evidence_is_the_direct_sql_update(monkeypatch):
-    _host(monkeypatch, flag=False, route="api")
+    _host(monkeypatch, flag=False, route="sql")
     selected = _port(monkeypatch, FakePort())
     calls = _sql(monkeypatch)
     sentinel = object()
@@ -177,7 +197,7 @@ def test_flag_off_evidence_is_the_direct_sql_update(monkeypatch):
 
 
 def test_flag_on_renew_is_one_port_call_on_this_frames_anchor(monkeypatch):
-    _host(monkeypatch, flag=True, route="api")
+    _host(monkeypatch, flag=True, route="sql")
     port = FakePort()
     selected = _port(monkeypatch, port)
     sql = _sql(monkeypatch)
@@ -194,7 +214,7 @@ def test_flag_on_renew_is_one_port_call_on_this_frames_anchor(monkeypatch):
     assert deadline == 105.0  # the runtime operation timeout from the mocked clock
     assert route.session == hq_sql_session.session_table("factory_p", 2)
     assert renewer.renewals == 1
-    assert selected == [{"hq": {"session_via_port": True, "route": "api"}}]
+    assert selected == [{"hq": {"session_via_port": True, "route": "sql"}}]
     assert sql == []  # no SQL session call
 
 
@@ -208,7 +228,7 @@ def test_flag_on_renew_is_one_port_call_on_this_frames_anchor(monkeypatch):
     ],
 )
 def test_flag_on_renew_failure_is_a_failed_tick_never_success_or_sql_fallback(monkeypatch, failure):
-    _host(monkeypatch, flag=True, route="api")
+    _host(monkeypatch, route="api")
     port = FakePort(renew=failure)
     _port(monkeypatch, port)
     sql = _sql(monkeypatch)
@@ -219,14 +239,32 @@ def test_flag_on_renew_failure_is_a_failed_tick_never_success_or_sql_fallback(mo
     # the anchor is re-resolved after a failed tick
     with pytest.raises(type(failure)):
         renewer.tick()
-    assert len(port.calls) == 2
+    assert len(port.calls) == 2 and port.anchors == 2
 
 
-def test_flag_on_api_without_a_frame_runtime_sends_nothing_and_fails(monkeypatch):
-    _host(monkeypatch, flag=True, route="api")
+@pytest.mark.parametrize("flag", [None, False, True])
+def test_api_renew_is_one_port_call_on_the_ports_anchor_with_no_sql_plane(monkeypatch, flag):
+    """bh-65s71: an api host has no SQL frame runtime; ``hq.session_via_port`` is ignored."""
+    _host(monkeypatch, flag=flag, route="api")
     port = FakePort()
+    selected = _port(monkeypatch, port)
+
+    def no_sql_plane():
+        raise AssertionError("route=api read the SQL plane")
+
+    monkeypatch.setattr(report, "_sql_plane", no_sql_plane)
+    route = report.session_renewer(_SELECT[0]).tick()
+    ((kind, anchor, deadline),) = port.calls
+    assert (kind, anchor, deadline) == ("renew", ANCHOR, API_DEADLINE)
+    assert route.session == hq_sql_session.session_table("factory_p", 2)
+    assert port.anchors == 1 and len(selected) == 1
+
+
+def test_an_unreadable_api_anchor_is_a_failed_tick_that_sends_nothing(monkeypatch):
+    _host(monkeypatch, route="api")
+    port = FakePort()
+    port.read_frame_anchor = lambda **_: (_ for _ in ()).throw(HqUnavailable("no grant"))
     _port(monkeypatch, port)
-    monkeypatch.setattr(report, "_sql_plane", lambda: None)
     renewer = report.session_renewer(_SELECT[0])
     with pytest.raises(HqUnavailable):
         renewer.tick()
@@ -281,9 +319,8 @@ def test_flag_on_a_legacy_incarnation_stays_a_skip(monkeypatch):
 
 
 def test_sender_one_shot_prints_the_renewed_session_over_the_port(monkeypatch, capsys):
-    _host(monkeypatch, flag=True, route="api")
+    _host(monkeypatch, route="api")
     _port(monkeypatch, FakePort())
-    monkeypatch.setattr(report, "_sql_plane", lambda: PLANE)
     assert heartbeat_sender.main(["renew"]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "renewed": hq_sql_session.session_table("factory_p", 2)
@@ -291,18 +328,16 @@ def test_sender_one_shot_prints_the_renewed_session_over_the_port(monkeypatch, c
 
 
 def test_sender_one_shot_reports_a_port_failure_as_refused(monkeypatch, capsys):
-    _host(monkeypatch, flag=True, route="api")
+    _host(monkeypatch, route="api")
     _port(monkeypatch, FakePort(renew=HqUnavailable("down")))
-    monkeypatch.setattr(report, "_sql_plane", lambda: PLANE)
     assert heartbeat_sender.main(["renew"]) == 1
     assert "session renewal refused" in capsys.readouterr().err
 
 
 def test_sender_loop_reports_each_failed_port_renewal_by_class(monkeypatch, capsys):
-    _host(monkeypatch, flag=True, route="api")
+    _host(monkeypatch, route="api")
     port = FakePort(renew=HqOutcomeUnknown(None))
     _port(monkeypatch, port)
-    monkeypatch.setattr(report, "_sql_plane", lambda: PLANE)
     ticks = iter([False, True])
     monkeypatch.setattr("threading.Event.wait", lambda self, timeout=None: next(ticks))
     assert heartbeat_sender._renew(loop=True, interval=60.0) == 0
@@ -345,7 +380,7 @@ def test_flag_on_api_posts_the_exact_report_the_beat_digested(monkeypatch):
     monkeypatch.setattr(report, "generate", lambda plane, **kw: lease)
     result = report.publish_session_evidence(_SELECT[0])
     ((_, anchor, posted, deadline),) = port.calls
-    assert result.outcome == "accepted" and anchor.epoch == 2 and deadline == 105.0
+    assert result.outcome == "accepted" and anchor == ANCHOR and deadline == API_DEADLINE
     assert dict(posted.payload) == REPORT
     assert report.report_digest(dict(posted.payload)) == lease.report_digest
     assert sql == []
@@ -425,9 +460,8 @@ def test_flag_on_evidence_failure_is_raised_typed_and_not_retried_or_rerouted(mo
 
 
 def test_sender_conformance_reports_a_refused_evidence_post(monkeypatch, capsys):
-    _host(monkeypatch, flag=True, route="api")
+    _host(monkeypatch, route="api")
     _port(monkeypatch, FakePort(evidence=HqNoCurrentBeat("none")))
-    monkeypatch.setattr(report, "_sql_plane", lambda: PLANE)
     monkeypatch.setattr(report, "generate", lambda plane, **kw: _lease(REPORT))
     monkeypatch.setattr(report, "refresh_conformance", lambda: object())
     monkeypatch.setattr(heartbeat_sender, "status", lambda: {})
