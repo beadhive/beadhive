@@ -81,9 +81,27 @@ def load(hq_dir: Path, host_id: str) -> HostManifest:
         raise ManifestError(_files._format_error(path, exc)) from exc
 
 
+def _api_plane():
+    """The api control plane when this host is ``hq.route: api`` (bh-obhfx), else ``None``.
+    An api host publishes and withdraws its manifest through the HQ port, never through a
+    config-document publication (which has no hq-service route, gap G8) and never SQL."""
+    from .hq_control_plane import control_plane, host_route
+
+    return control_plane() if host_route() == "api" else None
+
+
+def _read_revision() -> str:
+    """The config head this caller read (the transaction's, else a fresh read)."""
+    return config.fleet_snapshot().commit_revision
+
+
 def save(hq_dir: Path, manifest: HostManifest) -> Path:
     if not config.fleet_sql_selected():
         return _files.save(hq_dir, manifest)
+    plane = _api_plane()
+    if plane is not None:
+        plane.publish_manifest(manifest, expected_revision=_read_revision())
+        return manifest_path(hq_dir, manifest.host_id)
     stream = StringIO()
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -101,6 +119,12 @@ def save(hq_dir: Path, manifest: HostManifest) -> Path:
 def remove(hq_dir: Path, host_id: str) -> Path:
     if not config.fleet_sql_selected():
         return _files.remove(hq_dir, host_id)
+    plane = _api_plane()
+    if plane is not None:
+        if not exists(hq_dir, host_id):
+            raise FileNotFoundError(f"no host manifest for {host_id!r}")
+        plane.withdraw_manifest(host_id, expected_revision=_read_revision())
+        return manifest_path(hq_dir, host_id)
     transaction = (
         nullcontext()
         if config.fleet_transaction_active()

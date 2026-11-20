@@ -633,11 +633,39 @@ def _open_admission(host_id: str) -> None:
         )
 
 
+def _api_route() -> bool:
+    """Whether this host is ``hq.route: api``. With no host config there is no api binding but
+    ``BH_HQ_ROUTE`` still selects."""
+    from .hq_control_plane import host_route
+    from .hq_port import configured_route
+
+    try:
+        return host_route() == "api"
+    except FileNotFoundError:
+        return configured_route({}) == "api"
+
+
 def publish_host_manifest(hq_dir: Path, host_id: str, *, attempts: int = 3) -> bool:
     """Publish through the selected HQ control-plane binding; in a trusted fleet the frame is
-    open-admitted first (:func:`_open_admission`)."""
+    open-admitted first (:func:`_open_admission`).
+
+    On ``hq.route: api`` (bh-obhfx) the manifest is already committed (``bh host init``
+    publishes it through the port), so this is the join: open admission in a trusted fleet,
+    reporting whether the frame was admitted now. A signed fleet's registration evidence has
+    no hq-service route on this path, so it raises naming ``publish_registration``."""
     from .hq_control_plane import control_plane
 
+    if _api_route():
+        plane = control_plane()
+        plane.load_host_manifest(host_id)  # committed, or refused naming the host
+        from . import hq_authority_enforce
+
+        if not hq_authority_enforce.fleet_trusted():
+            return plane.publish_registration(host_id, attempts=attempts)
+        from . import hq_authority_fleet_mode, hq_open_admission
+
+        result = hq_open_admission.join(plane, host_id, hq_authority_fleet_mode._local_public_key())
+        return bool(result.get("changed"))
     _open_admission(host_id)
     return control_plane(hq_dir).publish_registration(host_id, attempts=attempts)
 
