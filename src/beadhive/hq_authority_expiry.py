@@ -241,7 +241,11 @@ def _frame_plane():
 
     hq = hq_control_plane.config.load_host().get("hq", {})
     _learn_recheck(hq)
-    if not (hq.get("authority_anchor") or (hq.get("sql") or {}).get("runtime")):
+    if not (
+        hq.get("authority_anchor")
+        or (hq.get("sql") or {}).get("runtime")
+        or hq_control_plane.host_route() == "api"  # the port's verified authority (bh-h9dn1)
+    ):
         return None
     plane = control_plane()
     if isinstance(plane, SqlControlPlane) and plane.settings.get("runtime") is None:

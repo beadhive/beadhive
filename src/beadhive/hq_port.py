@@ -242,6 +242,11 @@ class HqReads(Protocol):
     def read_config(
         self, *, revision: str | None = None, cached_ok: bool = False, deadline: float
     ) -> Any: ...
+    def read_hive_lease(self, prefix: str, *, deadline: float) -> Any:
+        """The hive's lease row, unqualified (bh-h9dn1). hq-service answers ``{head, prefix,
+        revision, lease, held}`` (an unknown prefix is :class:`HqRefused` ``unknown_prefix``);
+        the SQL adapter answers the plane's ``(revision, lease)``."""
+        ...
 
 
 class HqOperator(Protocol):

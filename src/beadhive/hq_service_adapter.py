@@ -330,7 +330,9 @@ class HqServiceAdapter:
         rid = request_id or (request.get("request_id") if isinstance(request, dict) else None)
         rid = str(rid or digest)
         try:
-            _, payload = self._call(method, path, envelope, deadline=deadline)
+            # v0.1.0 answers a refusal as its error envelope (409 + code, bh-h9dn1); the older
+            # ``{outcome: refused}`` body still maps through ``_decode``.
+            _, payload = self._call(method, path, envelope, deadline=deadline, envelope_errors=True)
         except HqRefused as exc:
             if exc.code == "bad_request":
                 raise
@@ -711,8 +713,8 @@ class HqServiceAdapter:
         """``GET /hive-leases?prefix=``: ``{head, prefix, revision, lease{host_id, label, epoch,
         adopted_at, expires_at}, held}`` (``HiveLeaseRead``). ``held`` is the server's verdict at
         its own clock. The row needs no authority and is returned as served; an unknown prefix
-        is a 404 ``unknown_prefix`` (:class:`HqRefused`). Adapter-only until the port grows it
-        (bh-h9dn1)."""
+        is a 404 ``unknown_prefix`` (:class:`HqRefused`). The port's ``read_hive_lease``
+        (bh-h9dn1); the api control plane qualifies the row."""
         _, payload = self._call(
             "GET",
             f"/hive-leases?prefix={_seg(prefix)}",

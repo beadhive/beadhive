@@ -87,7 +87,13 @@ def eligibility_body(frame: str, verdict: str = "fresh", age: float | None = 3.0
         "config_head": CROSSREF[2],
         "frame_id": frame,
         "active": {
-            "authority": {"frame_id": frame, "holder_identity": "host-1", "epoch": 0},
+            "authority": {
+                "frame_id": frame,
+                "holder_identity": "host-1",
+                "instance_ref": "vm-1",
+                "epoch": 0,
+                "config_revision": "cfg-1",
+            },
             "state": "active",
             "cordoned": False,
             "desired": {"profile": "reviewed", "declared": True},
@@ -97,6 +103,32 @@ def eligibility_body(frame: str, verdict: str = "fresh", age: float | None = 3.0
             "evidence": {"verdict": "fresh", "status": "conformant", "ttl_s": 600},
         },
     }
+
+
+def serve_eligibility(service, body: dict) -> None:
+    """Serve *body* and sign its grant: the api plane binds the eligibility ``active`` grant to
+    the signed authority record (bh-h9dn1), so the record names the same grant."""
+    record = json.loads(json.dumps(AUTHORITY["record"]))
+    if body["active"] is not None:
+        record["state"]["frames"] = {body["frame_id"]: {"active": body["active"]}}
+        record["hive_policies"] = {"bh": {"config_revision": "cfg-1", "valid_until": EXPIRES_AT}}
+    signed = {**AUTHORITY, "record": record}
+    service.reads["/authority"] = signed
+    service.reads["/config"] = {**service.reads["/config"], "authority": signed}
+    service.reads[f"/eligibility/{body['frame_id']}"] = body
+
+
+def frame_manifest(frame: str = "frame-1") -> hosts.HostManifest:
+    return hosts.HostManifest(
+        host_id="host-1",
+        frame_id=frame,
+        label="frame",
+        instance_ref="vm-1",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity={"kind": "none"},
+    )
 
 
 def _verify(method, payload):
@@ -168,7 +200,8 @@ def test_attach_fleet_config_reads_the_committed_snapshot_through_the_port(api_h
     )
     assert isinstance(store, hq_control_plane.ApiConfigStore)
     assert (snapshot.backend_identity, snapshot.commit_revision) == ("svc:hq", "head-1")
-    assert service.seen == [("read", "/config")]
+    # The config's authority envelope is bound to a separate verified authority read (bh-h9dn1).
+    assert service.seen == [("read", "/config"), ("read", "/authority")]
 
 
 def test_config_get_resolves_through_the_port(api_host, service, no_sql):
@@ -218,7 +251,7 @@ def test_host_list_observes_frames_through_the_port(api_host, service, no_sql, t
     service.reads["/config"] = config_body(
         [("fleet.yaml", FLEET_YAML), ("hosts/host-1.yaml", written.read_text())]
     )
-    service.reads["/eligibility/frame-1"] = eligibility_body("frame-1")
+    serve_eligibility(service, eligibility_body("frame-1"))
     result = CliRunner().invoke(app, ["host", "list", "--json"])
     assert result.exit_code == 0, result.output
     (row,) = json.loads(result.output[result.output.index("[") :])
@@ -338,12 +371,8 @@ def test_a_config_whose_documents_do_not_match_their_digest_is_unavailable(api_h
 def test_eligibility_observation_is_the_servers_session_verdict(
     api_host, service, verdict, age, status, fresh
 ):
-    from types import SimpleNamespace
-
-    service.reads["/eligibility/frame-1"] = eligibility_body("frame-1", verdict, age)
-    head, desired, observation = hq_control_plane.control_plane().read_eligibility(
-        SimpleNamespace(frame_id="frame-1")
-    )
+    serve_eligibility(service, eligibility_body("frame-1", verdict, age))
+    head, desired, observation = hq_control_plane.control_plane().read_eligibility(frame_manifest())
     assert head == "auth-9"
     assert (observation.status, observation.fresh, observation.age_seconds) == (status, fresh, age)
     assert observation.verified is True
@@ -352,11 +381,9 @@ def test_eligibility_observation_is_the_servers_session_verdict(
 
 
 def test_a_frame_with_no_active_grant_has_a_missing_observation_and_no_desired(api_host, service):
-    from types import SimpleNamespace
-
     body = {**eligibility_body("frame-1"), "active": None, "liveness": None}
-    service.reads["/eligibility/frame-1"] = body
+    serve_eligibility(service, body)
     _head, desired, observation = hq_control_plane.control_plane().read_eligibility(
-        SimpleNamespace(frame_id="frame-1")
+        frame_manifest()
     )
     assert desired == {} and observation.status == "missing" and not observation.fresh

@@ -52,6 +52,13 @@ The write routes serve the bodies of hq-service v0.1.0 (``api/writes.go``, ``sto
   (``incarnation_unprovisioned``), writes the ACTIVE grant into ``authority_state`` and provisions
   the principal, so the session routes then renew it. A ``reads`` value may be a zero-argument
   callable, evaluated per request (a read that follows the writes).
+* ``POST /hive-leases/{prefix}`` (bh-h9dn1) takes the frame's signed hive-lease request envelope:
+  the request's prefix must be the path's, its principal a provisioned one whose granted key
+  signed it (``authority_failed``) and whose grant it names (``request_grant_mismatch``), its
+  ``expected_revision`` the current row's (``""`` when absent; ``cas_conflict``), an adopt must
+  advance the epoch, a renew or release must come from the incumbent. Accepted, the row becomes
+  the request's lease at revision ``sha256(canonical(request))``; the same request again is
+  ``replayed``. Not modelled: hive policy, receipts and incumbent eviction (``lease.Decide``).
 * With ``caller`` set (``{kind, frame_id, host_id}``) the write routes are caller-bound as at
   v0.1.0: a caller not bound to the path's frame or host, or to the body's host, is a 403
   ``caller_not_bound``.
@@ -91,6 +98,7 @@ from beadhive.hq_sql_signatures import (
     sql_principal,
     verify_authority,
     verify_heartbeat,
+    verify_hive_request,
 )
 
 #: ``(status, message)`` per refusal code the two session routes can answer.
@@ -172,10 +180,22 @@ UNLISTED_CODES: dict[str, tuple[int, str]] = {
     "host_manifest_unavailable": (409, "committed canonical host manifest unavailable"),
 }
 
+#: ``(status, message)`` per ``conformance/hive-lease/v1`` code the hive-lease submission answers
+#: (bh-h9dn1): each a 409 rule refusal, as hq-service's registry loads a per-corpus code.
+HIVE_LEASE_CODES: dict[str, tuple[int, str]] = {
+    "authority_failed": (409, "hive request authentication or authority failed"),
+    "request_grant_mismatch": (409, "signed hive request differs from current grant"),
+    "cas_conflict": (409, "original protected hive lease CAS conflict"),
+    "epoch_not_advanced": (409, "adopt hive epoch must advance"),
+    "renew_not_current_incumbent": (409, "renew requires current exact incumbent"),
+    "release_not_exact_incumbent": (409, "release requires exact incumbent incarnation/epoch"),
+    "no_active_grant": (409, "no active operator-granted frame"),
+}
+
 
 def error_response(code: str) -> httpx.Response:
     """The service's error envelope for *code* (ADR bh-hq-pio.5), as a response."""
-    status, message = {**CODES, **V0_CODES, **UNLISTED_CODES}[code]
+    status, message = {**CODES, **V0_CODES, **UNLISTED_CODES, **HIVE_LEASE_CODES}[code]
     body = {
         "error": {
             "code": code,
@@ -304,6 +324,8 @@ class FakeHqService:
         if method == "GET" and plane == "/hive-leases":
             return self._hive_lease(request)
         parts = plane.split("/")[1:]
+        if method == "POST" and len(parts) == 2 and parts[0] == "hive-leases":
+            return self._write(request, body, lambda b: self._submit_hive_lease(parts[1], b))
         if method == "GET" and len(parts) == 2 and parts[0] == "release-catalog":
             return self._catalog(request, parts[1])
         if method == "DELETE" and len(parts) == 2 and parts[0] == "manifests":
@@ -344,6 +366,52 @@ class FakeHqService:
             return self._refuse("unknown_prefix")
         self.seen.append(("read", "/hive-leases"))
         return httpx.Response(200, json=self.hive_leases[prefix])
+
+    def _submit_hive_lease(self, prefix: str, envelope: dict):
+        request = envelope.get("request")
+        if not isinstance(request, dict) or request.get("prefix") != prefix:
+            return "request_malformed", None  # request.prefix must match the path
+        record = self.principals.get(str(request.get("principal")))
+        if record is None:
+            return "unprovisioned_principal", None
+        try:
+            verify_hive_request(envelope, granted_public_key=record.public_key)
+        except SqlSignatureError:
+            return "authority_failed", None
+        if record.grant != "active":
+            return "no_active_grant", None
+        if (
+            request.get("frame_id"),
+            request.get("holder_identity"),
+            request.get("instance_ref"),
+            request.get("epoch"),
+        ) != (record.frame_id, record.holder, record.instance, record.epoch):
+            return "request_grant_mismatch", None
+        revision = hashlib.sha256(canonical(request)).hexdigest()
+        current = self.hive_leases.get(prefix)
+        if current is not None and current["revision"] == revision:
+            return None, {"outcome": "replayed", "revision": revision}
+        if request.get("expected_revision") != (current["revision"] if current else ""):
+            return "cas_conflict", None
+        lease, operation = request.get("lease") or {}, request.get("operation")
+        prior = current["lease"] if current else None
+        holder = request.get("holder_identity")
+        if operation == "adopt" and prior is not None and lease.get("epoch", 0) <= prior["epoch"]:
+            return "epoch_not_advanced", None
+        if operation == "renew" and (prior is None or prior["host_id"] != holder):
+            return "renew_not_current_incumbent", None
+        if operation == "release" and (
+            prior is None or prior["host_id"] != holder or lease.get("epoch") != prior["epoch"]
+        ):
+            return "release_not_exact_incumbent", None
+        self.hive_leases[prefix] = {
+            "head": self.head,
+            "prefix": prefix,
+            "revision": revision,
+            "lease": dict(lease),
+            "held": bool(lease.get("host_id")),
+        }
+        return None, {"outcome": "accepted", "revision": revision}
 
     def _catalog(self, request: httpx.Request, catalog: str) -> httpx.Response:
         if not _FRAME.match(catalog):

@@ -2236,7 +2236,7 @@ def _hive_policy_predicate(payload, hq_dir, prefix, identity):
 
     try:
         plane = control_plane(hq_dir)
-        if getattr(plane, "config_backend", None) != "sql":
+        if getattr(plane, "config_backend", None) not in ("sql", "api"):
             return
         binding = plane.hive_policy_binding(prefix, holder_identity=identity)
     except (ValueError, OSError, RuntimeError, AttributeError) as exc:
