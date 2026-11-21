@@ -15,19 +15,18 @@ a host until you set `hq.route: api` there: a 0.40.0 host left on `hq.route: sql
 > **DO NOT START the cutover on any host until both of these are deployed on the HQ host:**
 >
 > 1. **hq-service `v0.1.0`** (commit `4e0fc6b`), and
-> 2. **the beadhive-gateway release that closes `bh-gw-vm2i`.**
+> 2. **beadhive-gateway `v0.1.0`** (commit `2a400f8`, which closes `bh-gw-vm2i`).
 >
 > beadhive-gateway `main` at `7e22180` cannot carry this cutover: it has no `/plan` and
 > `/apply` operator routes and no history-query routing, its bound-identity attestation is off,
 > and it mints only the caller kinds `worker` and `operator`, while hq-service `v0.1.0` requires
-> `host` for manifest writes and `frame` for admissions. The capabilities that Gateway release
+> `host` for manifest writes and `frame` for admissions. The capabilities that Gateway
 > must have are listed under "Required first". bh 0.40.0 itself is published independently of the
 > Gateway: installing it changes nothing until a host sets `hq.route: api`.
 
 This note is written to be followed literally, host by host. Values you must supply are in
-`UPPER_CASE` (for example `HQ_GATEWAY_ADDRESS`). Anything marked "confirm against that Gateway
-release's docs" depends on the Gateway release above and must be checked against its
-`docs/operations/hq-plane.md` before you use it.
+`UPPER_CASE` (for example `HQ_GATEWAY_ADDRESS`). The Gateway binding shapes below follow
+beadhive-gateway `v0.1.0`, `docs/operations/hq-plane.md` ("Principal kinds" and "Recipe").
 
 ### What changed
 
@@ -180,8 +179,7 @@ its conformance corpora; no real staged run against a deployed hq-service is rec
    `operator_apply_disabled`. Its database account holds the grants of `deploy/README.md`, Steps,
    item 2, including the **trusted-mode** grants (open admission and manifest publication commit
    unsigned; the join below needs them).
-3. **The beadhive-gateway release that closes `bh-gw-vm2i` is deployed** (the gate at the top;
-   no version number exists yet, so identify it by that bead). Required Gateway capabilities:
+3. **beadhive-gateway `v0.1.0` (`2a400f8`) is deployed** (the gate at the top). Required Gateway capabilities:
    - the `hq` plane signing with its own `hq-` key under issuer `gateway/hq` (`bh-gw-jozq`), and
      hq-service's `HQ_GATEWAY_ISSUER` set to `gateway/hq`;
    - bound-identity attestation **on** (`principal_kind`, `frame_id`, `host_id` claims), minting
@@ -288,21 +286,32 @@ install -o root -g root -m 0400 /root/hq-authn.json.new "$AUTHN"
 docker compose -f STACK_DIR/compose.yaml restart gateway-hq     # systemd: systemctl restart beadhive-gateway-hq
 ```
 
-A frame binding for an existing frame (`kind` frame; the expected shape, **confirm against that
-Gateway release's `docs/operations/hq-plane.md`**):
+Gateway `v0.1.0` binds a certificate as exactly one `kind`: `worker`, `operator`, `host` or
+`frame`. A `host` binding needs `host` and no `frame`; a `frame` binding needs both `frame` and
+`host`. The scopes are `lifecycle:fleet` for manifests (`PUT` and `DELETE /manifests/{host_id}`,
+`host` only), `lifecycle:admission` for admissions (`POST /admissions/{frame}`, `frame` only) and
+`lifecycle:provision` for incarnations (`POST /incarnations`, `operator` only).
+
+**One cert, one kind.** bh 0.40.0 has a single `hq.api.client_cert` and `hq.api.client_key`, and
+the same `(provider, identity)` cannot be bound twice. A frame host therefore has one binding at
+a time and swaps it: the `host` binding while it writes a manifest (`PUT` or `DELETE
+/manifests/{host_id}`), the `frame` binding for admission, renew, eligibility and every other
+call. Each swap is another run of G2 that replaces the entry for that certificate's identity.
+
+A frame binding (`kind` frame):
 
 ```json
 {"provider": "direct", "identity": "SHA256_FROM_G1", "principal": "FRAME_PRINCIPAL",
  "kind": "frame", "frame": "FRAME_ID", "host": "HOST_ID",
- "scopes": ["lifecycle:authority", "lifecycle:read", "lifecycle:session",
-            "lifecycle:hive-lease", "lifecycle:heartbeat"]}
+ "scopes": ["lifecycle:admission", "lifecycle:authority", "lifecycle:read",
+            "lifecycle:session", "lifecycle:hive-lease", "lifecycle:heartbeat"]}
 ```
 
-A host binding (`kind` host, used for `PUT` and `DELETE /manifests/{host_id}`; same caveat,
-**confirm against that Gateway release's `docs/operations/hq-plane.md`**):
+A host binding (`kind` host; its principal is a name you choose, matching
+`^[a-z][a-z0-9_]{0,30}$`, for example `host_01`):
 
 ```json
-{"provider": "direct", "identity": "SHA256_FROM_G1", "principal": "FRAME_PRINCIPAL",
+{"provider": "direct", "identity": "SHA256_FROM_G1", "principal": "HOST_PRINCIPAL",
  "kind": "host", "host": "HOST_ID",
  "scopes": ["lifecycle:fleet", "lifecycle:read", "lifecycle:authority"]}
 ```
@@ -326,6 +335,11 @@ A host binding (`kind` host, used for `PUT` and `DELETE /manifests/{host_id}`; s
 Run on the host being cut over, as the user that runs bh and its timers. Each step names the keys
 it touches, what to expect, and whether rollback is still possible (it is, for every step, under
 the conditions above).
+
+C1-C10 writes no manifest: an existing frame's manifest is already published, `bh host init` and
+`bh host rm` are the only steps that write one, and neither is in C1-C10. The frame therefore
+holds only its `frame` binding (C4) throughout, and C1-C10 needs no binding swap. The swap
+applies when you later write a manifest from this host (see "Known limitations").
 
 **C1. Install 0.40.0, still on `route=sql`.**
 
@@ -583,9 +597,8 @@ be trusted (`hq.default_authority_mode: trusted`): a signed fleet has no api joi
 `xeno-mac` must be on `api` with its operator binding first.
 
 Steps J4 and J9 bind the same certificate first as `kind` host (to publish the manifest) and then
-as `kind` frame (to admit and renew). Whether one certificate may hold both bindings at once is
-for that Gateway release's `docs/operations/hq-plane.md`; the steps below rebind, which works
-either way.
+as `kind` frame (to admit and renew). Gateway `v0.1.0` binds a certificate as exactly one kind, so
+J9 replaces J4's entry; it does not add a second one.
 
 **J1. Install 0.40.0 and the host identity.** C1 (without the `eligible` check), then:
 
@@ -620,8 +633,9 @@ bh config set hq.beadyard_id BEADYARD_ID_FROM_FRAME_01 --scope host
 
 **J3. Certificate.** G1 with `N=bead-frame-03`, then C3 on `bead-frame-03`.
 
-**J4. Host binding.** G2 with the `kind` host binding (G2's second JSON), `"host": "HOST_ID"` and
-a placeholder principal `frame_03_pending` (the registry principal does not exist until J8).
+**J4. Host binding.** G2 with the `kind` host binding (G2's host JSON), `"host": "HOST_ID"` and
+a host principal you choose, `host_bead_frame_03`. It stays the only binding for this certificate
+through J8, so J7's `PUT /manifests/HOST_ID` is host-bound.
 
 **J5. `hq.api`.** C5 and C6, with the four pins from hq-service's env file and `operator.pub`,
 and the floor seeded from `bead-frame-01`:
@@ -666,9 +680,10 @@ bh hq authority join --frame HOST_ID --public-key ~/bead-frame-03.pub --confirm
 Expect JSON with `"registered": true`, `"admitted": false`, and `"principal"` and `"epoch"`.
 Note the principal.
 
-**J9. Frame binding.** G2 again for `bead-frame-03`: replace J4's entry with the `kind` frame
-binding (G2's first JSON) with `"principal": "PRINCIPAL_FROM_J8"`, `"frame": "bead-frame-03"`,
-`"host": "HOST_ID"`, and add `"lifecycle:admission"` to its scopes.
+**J9. Frame binding.** G2 again for `bead-frame-03`: replace J4's entry (same
+`identity`) with the `kind` frame binding (G2's frame JSON) with `"principal": "PRINCIPAL_FROM_J8"`,
+`"frame": "bead-frame-03"` and `"host": "HOST_ID"`. From here the certificate can no longer write
+a manifest.
 
 **J10. Admit (frame, frame-bound).**
 
@@ -696,8 +711,9 @@ Expect `{"renewed": ...}` and exit 0 twice; then C9's journal check and `bh host
 **J12. Verify.** `bh doctor` shows `✓ hq.route: api` and `hq.sql: absent` from the start.
 Optionally set `hq.sql_guard: refuse` (C10) and repeat J11's `renew`.
 
-Rollback for `bead-frame-03` is withdrawal, from the frame itself with its `kind` host binding
-back in place (J4; `DELETE /manifests` is host-bound, so only the host can withdraw):
+Rollback for `bead-frame-03` is withdrawal, from the frame itself. `DELETE /manifests` is
+host-bound and the certificate is now bound as `kind` frame, so first put the host binding back:
+G2, replacing the frame entry for this identity with J4's `kind` host binding. Then:
 
 ```sh
 bh host rm HOST_ID --force --confirm
@@ -738,6 +754,13 @@ Rollback: as for `bead-frame-01`; re-enable the failover loop if you turned it o
 - **The join principal includes the config head:** re-register (J8) if the head moves before
   the frame admits.
 - **`DELETE /manifests` is host-bound:** only the host itself can withdraw its manifest.
+- **One certificate, one binding kind (bh-pm1s4).** bh 0.40.0 has a single `hq.api` client
+  certificate and Gateway `v0.1.0` binds a certificate as exactly one kind. Every later manifest
+  write from a frame host needs the swap: G2 puts the `kind` host binding back temporarily, then
+  you run the write (`bh host init --role executor --force` after a release upgrade, or `bh host
+  rm HOST_ID --force --confirm` for the rollback withdrawal), then G2 restores the `kind` frame
+  binding. Until the restore the frame cannot renew or be admitted. A separate host certificate
+  is planned for 0.41.0 (bh-pm1s4).
 - **`bh hq release-catalog revoke` and `provision` are refused on `api`;** they arrive in
   0.41.0.
 - **`describe_incarnation` and `preflight` have no api route** (`HqUnavailable` naming the
