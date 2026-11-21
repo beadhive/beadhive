@@ -147,3 +147,33 @@ def test_an_api_frame_binds_the_hq_instance_and_is_refused_without_it(monkeypatc
         {**base, "hq": {"route": "api", "api": {"url": "https://hq.test"}, "beadyard_id": yard}}
     )
     assert host_cli.frame_manifest_fields(arch="x86_64")["beadyard_id"] == yard
+
+
+@pytest.mark.parametrize("source", ["env", "host_route"])
+def test_every_api_resolution_source_requires_the_beadyard_id(monkeypatch, source):
+    """The early refusal follows ``hq_port.configured_route``, not just the raw ``hq.route`` key.
+
+    ``hq.mode: api`` alone is not a separate case: the host-document validator rejects it today
+    (the defaulted ``route`` counts as explicit), so it never reaches this function."""
+    _frame(monkeypatch)
+    base = config.load_host()
+    hq: dict = {}
+    if source == "env":
+        monkeypatch.setenv("BH_HQ_ROUTE", "api")
+    elif source == "host_route":
+        hq = {"route": "api", "api": {"url": "https://hq.test"}}
+    _write_config({**base, "hq": hq})
+    with pytest.raises(host_cli.FrameManifestError, match="hq.beadyard_id"):
+        host_cli.frame_manifest_fields(arch="x86_64")
+
+
+def test_the_sql_route_does_not_require_the_beadyard_id(monkeypatch):
+    _frame(monkeypatch)
+    monkeypatch.delenv("BH_HQ_ROUTE", raising=False)
+    base = config.load_host()
+    _write_config({**base, "hq": {"route": "sql"}})
+    assert "beadyard_id" not in host_cli.frame_manifest_fields(arch="x86_64")
+    # The env var outranks the host key: sql in the file, api from the environment.
+    monkeypatch.setenv("BH_HQ_ROUTE", "api")
+    with pytest.raises(host_cli.FrameManifestError, match="hq.beadyard_id"):
+        host_cli.frame_manifest_fields(arch="x86_64")

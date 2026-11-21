@@ -745,7 +745,8 @@ def frame_manifest_fields(*, instance_ref: str = "", arch: str) -> dict[str, obj
     ``host.frame_id``, ``instance_ref`` from the flag else ``host.instance_ref`` (never inferred),
     ``release`` from :func:`release_measurement.installed_release` (the heartbeat's source), and
     ``capabilities`` from the explicit ``host.frame.capabilities.*`` keys plus the machine's
-    `arch`, and ``beadyard_id`` from ``hq.beadyard_id`` (required on ``hq.route: api``).
+    `arch`, and ``beadyard_id`` from ``hq.beadyard_id`` (required on the api
+    route, as :func:`beadhive.hq_port.configured_route` resolves it).
     Anything missing is refused naming its key."""
     frame_id = host.enrolled_frame_id()
     if not frame_id:
@@ -781,10 +782,13 @@ def frame_manifest_fields(*, instance_ref: str = "", arch: str) -> dict[str, obj
         raise FrameManifestError(f"cannot measure the installed release: {exc}") from exc
     hq_section = settings.get("hq") or {}
     beadyard_id = str(hq_section.get("beadyard_id") or "")
-    if not beadyard_id and hq_section.get("route") == "api":
+    from .hq_port import configured_route
+
+    if not beadyard_id and configured_route(settings) == "api":
         raise FrameManifestError(
-            "this frame is on hq.route: api but hq.beadyard_id is not set: the manifest must "
-            "bind the HQ instance (set hq.beadyard_id in the HOST config)"
+            "this frame is on the api HQ route (BH_HQ_ROUTE, hq.route or hq.mode: api) but "
+            "hq.beadyard_id is not set: the manifest must bind the HQ instance (set "
+            "hq.beadyard_id in the HOST config)"
         )
     return {
         **({"beadyard_id": beadyard_id} if beadyard_id else {}),
