@@ -74,7 +74,7 @@
       "id": "urn:beadhive:wire-schema:config:1",
       "kind": "json-schema",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:ec567d62b28c89ffa2165e7e050cda9fc2c5b06a44633f59b973b0d93a7c1cc8",
+      "sha256": "sha256:64e0827ac33c04e7e47dc80553ba5d1b97b267d46007bd124f2de8d5352c80f2",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema",
       "version": 2
     },
@@ -152,7 +152,7 @@
       "id": "urn:beadhive:wire-catalog:operations:1",
       "kind": "catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:463e2b2a0142e09e24e9ba6fdcb83b8aaea17c2bc3b578c999a5309f4c27b4fb",
+      "sha256": "sha256:a1cc13cd4ac5085799a66b48a5aba7f45942665638261847b4cd5babd3f84fb6",
       "source_owner": "beadhive.kernel.operations.document",
       "version": 2
     },

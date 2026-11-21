@@ -59,8 +59,8 @@ from beadhive import (
     hq_sql_operator,
     hq_sql_placement,
     hq_sql_transport,
+    release_measurement,
 )
-from beadhive import fleet_roster as roster
 from beadhive import heartbeat_report as report
 from beadhive.hq_port import HqUnavailable
 from beadhive.hq_service_adapter import adapter_from_config
@@ -68,7 +68,9 @@ from beadhive.hq_service_adapter import adapter_from_config
 MONO = 1000.0  # the frozen monotonic clock deadlines are taken from
 HOST_CONFIG = (
     f"hq:\n  route: api\n  beadyard_id: {join.YARD}\n  api:\n    url: {URL}\n"
-    f"host:\n  frame_id: {FRAME}\n"
+    f"host:\n  frame_id: {FRAME}\n  instance_ref: vm-1\n  frame:\n    capabilities:\n"
+    "      isolation: kvm\n      trust_zone: self-hosted\n      harnesses: [claude]\n"
+    "      max_sessions: 2\n"
 )
 OPENERS = (
     (hq_control_plane.SqlControlPlane, "SqlControlPlane"),
@@ -209,7 +211,9 @@ def api_frame(tmp_path, monkeypatch, service, no_sql, frame_key):  # noqa: F811
     monkeypatch.setattr(hq_service_adapter, "time", frozen)
     monkeypatch.setattr(hq_frame_grant, "time", frozen)
     monkeypatch.setattr(report, "_port_deadline", lambda plane: MONO + 30)
-    monkeypatch.setattr(report, "installed_release", lambda: dict(_manifest().release.model_dump()))
+    release = lambda: dict(_manifest().release.model_dump())  # noqa: E731
+    monkeypatch.setattr(report, "installed_release", release)
+    monkeypatch.setattr(release_measurement, "installed_release", release)
     monkeypatch.setattr(report, "datetime", _Frozen)
     monkeypatch.setattr(heartbeat_sender, "status", lambda: {})
 
@@ -243,16 +247,20 @@ def test_a_frame_with_no_hq_sql_runs_its_whole_life_through_hq_service(
     init = _run("host", "init", "--role", "executor")
     assert init.exit_code == 0, init.output
     assert _calls(service) == [("PUT", f"/manifests/{HOST_ID}")]
-    assert service.manifest_bodies[HOST_ID]["role"] == "executor"
+    published = service.manifest_bodies[HOST_ID]
+    assert published["role"] == "executor"
+    assert (published["frame_id"], published["instance_ref"]) == (FRAME, "vm-1")
+    assert published["release"] == _manifest().release.model_dump()
+    assert published["capabilities"]["isolation"] == "kvm"
 
-    # 2. the join: the manifest again (now naming the frame), the incarnation, open admission.
-    roster.save(config.hq_dir(), _manifest())
+    # 2. the join: the manifest host init published already names the frame (frame_id,
+    # instance_ref, release, capabilities from host config), so it needs no second PUT; then the
+    # incarnation and open admission.
     joined = _join()
     assert joined.exit_code == 0, joined.output
     result = _result(joined.output)
     assert (result["registered"], result["admitted"], result["route"]) == (True, True, "api")
     assert [call for call in _calls(service)[1:]] == [
-        ("PUT", f"/manifests/{HOST_ID}"),
         ("POST", "/incarnations"),
         ("POST", f"/admissions/{FRAME}"),
     ]

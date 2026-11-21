@@ -734,6 +734,67 @@ def render_table(rows: Sequence[dict[str, object]], columns: Sequence[tuple[str,
 # ---- verbs ---------------------------------------------------------------------
 
 
+class FrameManifestError(ValueError):
+    """A frame role lacks an explicit input its manifest needs; the message names the key."""
+
+
+def frame_manifest_fields(*, instance_ref: str = "", arch: str) -> dict[str, object]:
+    """The frame-only manifest fields open admission requires (``hq_open_admission.request``).
+
+    ``{}`` when this host has no ``host.frame_id`` (not a frame). Otherwise: ``frame_id`` from
+    ``host.frame_id``, ``instance_ref`` from the flag else ``host.instance_ref`` (never inferred),
+    ``release`` from :func:`release_measurement.installed_release` (the heartbeat's source), and
+    ``capabilities`` from the explicit ``host.frame.capabilities.*`` keys plus the machine's
+    `arch`, and ``beadyard_id`` from ``hq.beadyard_id`` (required on ``hq.route: api``).
+    Anything missing is refused naming its key."""
+    frame_id = host.enrolled_frame_id()
+    if not frame_id:
+        return {}
+    try:
+        settings = config.load_host()
+    except FileNotFoundError:
+        settings = {}
+    section = settings.get("host") or {}
+    ref = (instance_ref or str(section.get("instance_ref") or "")).strip()
+    if not ref:
+        raise FrameManifestError(
+            "this host is a frame (host.frame_id is set) but has no instance identity: set "
+            "host.instance_ref in the HOST config or pass --instance-ref"
+        )
+    declared = ((section.get("frame") or {}).get("capabilities")) or {}
+    missing = [
+        f"host.frame.capabilities.{key}"
+        for key in ("isolation", "trust_zone", "harnesses", "max_sessions")
+        if declared.get(key) is None
+    ]
+    if missing:
+        raise FrameManifestError(
+            "this host is a frame (host.frame_id is set) but its capabilities are not "
+            f"declared: set {', '.join(missing)} in the HOST config"
+        )
+    from .host_manifest_contracts import FrameCapabilities, FrameRelease
+    from .release_measurement import installed_release
+
+    try:
+        measured = installed_release()
+    except Exception as exc:  # editable install / no package files: cannot attest a release
+        raise FrameManifestError(f"cannot measure the installed release: {exc}") from exc
+    hq_section = settings.get("hq") or {}
+    beadyard_id = str(hq_section.get("beadyard_id") or "")
+    if not beadyard_id and hq_section.get("route") == "api":
+        raise FrameManifestError(
+            "this frame is on hq.route: api but hq.beadyard_id is not set: the manifest must "
+            "bind the HQ instance (set hq.beadyard_id in the HOST config)"
+        )
+    return {
+        **({"beadyard_id": beadyard_id} if beadyard_id else {}),
+        "frame_id": frame_id,
+        "instance_ref": ref,
+        "release": FrameRelease(**measured),
+        "capabilities": FrameCapabilities(arch=arch, **{k: declared[k] for k in declared}),
+    }
+
+
 def ensure_manifest(
     *,
     role: str,
@@ -742,6 +803,7 @@ def ensure_manifest(
     identity_value: str = "",
     remote_only_hives: list[str] | None = None,
     force: bool = False,
+    instance_ref: str = "",
 ) -> tuple[Path, bool]:
     """Mint/write THIS host's own manifest into HQ — the core ``bh host init`` drives, extracted
     so a second caller (``bh host provision`` — bh-twc8.1) can reuse the identical no-clobber
@@ -753,6 +815,10 @@ def ensure_manifest(
     an existing manifest unless `force`. Callers own `role`/`identity_kind` validation against
     :data:`hosts.HOST_ROLES` / :data:`hosts.IDENTITY_MECHANISM_KINDS` — this assumes both are
     already-valid members.
+
+    A frame role (``host.frame_id`` set) also carries the fields open admission needs; see
+    :func:`frame_manifest_fields`. Its missing inputs are refused (:class:`FrameManifestError`)
+    before anything is written. A host with no ``host.frame_id`` is unchanged.
 
     Returns ``(path, wrote)`` — ``wrote=False`` when an existing manifest was left completely
     untouched (`path` is still the manifest's location either way)."""
@@ -772,7 +838,9 @@ def ensure_manifest(
             return target, False
 
         os_name, arch = _local_os_arch()
+        frame_fields = frame_manifest_fields(instance_ref=instance_ref, arch=arch)
         manifest = hosts.HostManifest(
+            **frame_fields,
             host_id=hid,
             label=label or host.label(),
             os=os_name,
@@ -806,6 +874,11 @@ def init_cmd(
     ),
     remote_only_hive: list[str] | None = _REMOTE_ONLY_HIVE,
     force: bool = _FORCE,
+    instance_ref: str = typer.Option(
+        "",
+        "--instance-ref",
+        help="substrate-owned instance identity for a frame (overrides host.instance_ref)",
+    ),
 ):
     """CLI wrapper over :func:`ensure_manifest`: validates ``--role``/``--identity-kind``
     against their closed sets, then mints/writes — refuses to overwrite an existing manifest
@@ -826,14 +899,19 @@ def init_cmd(
         )
         raise typer.Exit(1)
 
-    target, wrote = ensure_manifest(
-        role=role,
-        label=label,
-        identity_kind=identity_kind,
-        identity_value=identity_value,
-        remote_only_hives=remote_only_hive,
-        force=force,
-    )
+    try:
+        target, wrote = ensure_manifest(
+            role=role,
+            label=label,
+            identity_kind=identity_kind,
+            identity_value=identity_value,
+            remote_only_hives=remote_only_hive,
+            force=force,
+            instance_ref=instance_ref,
+        )
+    except FrameManifestError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
     if not wrote:
         typer.echo(f"skip {target} (exists) — use --force to overwrite")
         return
