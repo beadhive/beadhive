@@ -5,6 +5,752 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.39.0 → 0.40.0 — every host reaches HQ through hq-service (`hq.route: api`)
+
+0.40.0 lets every frame and every CLI path reach HQ only through hq-service, behind the Gateway
+`hq` plane, with no `hq.sql` block on the host. Hosts cut over one at a time. Nothing changes on
+a host until you set `hq.route: api` there: a 0.40.0 host left on `hq.route: sql` behaves as
+0.39.0 did (with one new `bh doctor` warning, below).
+
+> **DO NOT START the cutover on any host until both of these are deployed on the HQ host:**
+>
+> 1. **hq-service `v0.1.0`** (commit `4e0fc6b`), and
+> 2. **the beadhive-gateway release that closes `bh-gw-vm2i`.**
+>
+> beadhive-gateway `main` at `7e22180` cannot carry this cutover: it has no `/plan` and
+> `/apply` operator routes and no history-query routing, its bound-identity attestation is off,
+> and it mints only the caller kinds `worker` and `operator`, while hq-service `v0.1.0` requires
+> `host` for manifest writes and `frame` for admissions. The capabilities that Gateway release
+> must have are listed under "Required first". bh 0.40.0 itself is published independently of the
+> Gateway: installing it changes nothing until a host sets `hq.route: api`.
+
+This note is written to be followed literally, host by host. Values you must supply are in
+`UPPER_CASE` (for example `HQ_GATEWAY_ADDRESS`). Anything marked "confirm against that Gateway
+release's docs" depends on the Gateway release above and must be checked against its
+`docs/operations/hq-plane.md` before you use it.
+
+### What changed
+
+- **`hq.route` (HOST) selects the adapter.** `sql` (default) opens the HQ SQL server, `api`
+  goes through hq-service. There is no fallback between them. The route resolves in this order:
+  `BH_HQ_ROUTE`, then `hq.route`, then `hq.mode: api`, then `sql`.
+- **`hq.mode` stays a FLEET key.** Hosts cut over one at a time with host-scoped `hq.route: api`
+  (or `BH_HQ_ROUTE=api` for one command). Fleet `hq.mode: api` is the end state, once every
+  host is on `api`. **Do not set fleet `hq.mode: api` in 0.40.0:** fleet config publication has
+  no api route until 0.41.0, and a config that resolves to `hq.mode: api` beside an explicit
+  `hq.route: sql` is refused (`hq.mode api needs hq.route api (or no hq.route)`), which would
+  also close the per-host rollback below.
+- **Liveness on `api` (bh-65s71).** `beadhive-session-renew.timer` (launchd
+  `dev.beadhive.session-renew`) is the only liveness writer, every 60 s, through hq-service.
+  `heartbeat_sender beat` is a no-op and prints `beat skipped: hq.route api beats through
+  session renew` (exit 0). Renew applies to an ACTIVE grant only: a CANDIDATE slot is refused
+  (`no_current_grant`) and cannot promote by renewing, so a join must reach ACTIVE through open
+  admission. `hq.session_via_port` and `hq.session_dual_write` are ignored on `api`.
+- **Join on `api` (bh-obhfx).** `bh host init` publishes the manifest, `bh hq authority join`
+  registers the incarnation (operator-bound) and open-admits the frame (frame-bound). No SQL
+  login, grant or escrowed secret is created. Signed-mode fleets have no api join (it is refused
+  with `HqPlaneUnavailable` naming `publish_registration`).
+- **Operator verbs on `api` (bh-lejfy).** `bh hq authority rebind`, `bh hq authority
+  release-policy plan|apply`, `bh hq release-catalog verify` and `bh hq release-catalog import`
+  go through hq-service. `import` signs with the key named by `BH_HQ_OPERATOR_KEY` (an
+  environment variable in 0.40.0; the `--operator-key` flag for it comes in 0.41.0).
+- **The SQL plane guard (bh-d9anb).** Every HQ SQL opener off the hq-service host warns on an
+  `api` host. Placement (`bh hq placement`), `bh hq migrate` and `bh hq authority prune-inbox`
+  stay local to the hq-service host.
+- **The `beadyard_id` pin (bh-jwymz).** On `api` each frame's host config must pin
+  `hq.beadyard_id` equal to its committed manifest's `beadyard_id`. Without it a hive-lease claim
+  fails with `beadyard_binding`. It is an explicit step below.
+- **A frame's manifest comes from HOST keys (bh-6se58.3, wire 2.34.0).** On a host with
+  `host.frame_id` set, `bh host init --role executor` publishes `frame_id`, `instance_ref`, the
+  installed `release` and `capabilities` (from `host.instance_ref` or the new
+  `bh host init --instance-ref` flag, and `host.frame.capabilities.*`; `arch` comes from the
+  machine) in one `PUT /manifests`. It refuses, naming the key, when any input is missing, and on
+  `hq.route: api` it also requires `hq.beadyard_id`. `--force` refreshes an existing manifest. A
+  host with no `host.frame_id` is unchanged. The `--instance-ref` flag is new in wire 2.34.0.
+
+### New and changed configuration keys
+
+| Key | Scope | Env override | Meaning |
+|---|---|---|---|
+| `hq.route` | host | `BH_HQ_ROUTE` | `sql` (default) or `api`. |
+| `hq.api.url` | host | none | Gateway `hq` plane base URL, e.g. `https://HQ_GATEWAY_ADDRESS:8443`. |
+| `hq.api.unix_socket` | host | none | Absolute path of the Gateway `hq` plane proxy socket, instead of `url`. |
+| `hq.api.client_cert`, `hq.api.client_key` | host | none | This host's mTLS identity (absolute PEM paths), set together. |
+| `hq.api.ca_cert` | host | none | CA bundle that verifies the Gateway (absolute PEM path). |
+| `hq.api.operator_public_key` | host | none | `ssh-ed25519 ...` operator key; authority, config and eligibility are verified against it. |
+| `hq.api.floor_path` | host | none | Absolute path of this host's restore floor for api reads. **Required:** unset, every route=api authority read is refused and renew fails closed. |
+| `hq.api.initial_revision` | host | none | Head the floor starts at when no floor file exists yet. |
+| `hq.api.backend_identity` | host | none | Pinned HQ backend identity. |
+| `hq.api.generation` | host | none | Pinned HQ authority generation (a string; see step C6). |
+| `hq.beadyard_id` | host | none | Must equal the committed manifest's `beadyard_id` on `api`; `bh host init` on a `hq.route: api` frame refuses without it. |
+| `host.instance_ref` | host | none | A frame's substrate instance identity; `bh host init --instance-ref` overrides it. Never inferred. |
+| `host.frame.capabilities.isolation` | host | none | `kvm`, `microvm`, `container` or `workstation`. |
+| `host.frame.capabilities.trust_zone` | host | none | `self-hosted` or `vendor-hosted`. |
+| `host.frame.capabilities.harnesses` | host | none | List of harness names (set with `--json`). |
+| `host.frame.capabilities.max_sessions` | host | none | Integer `>= 0`. |
+| `hq.service_host` | host | `BH_HQ_SERVICE_HOST` | `true` on the hq-service host only. Default `false`. |
+| `hq.sql_guard` | host | `BH_HQ_SQL_GUARD` | `warn`, `refuse` or `off`; unset by default. |
+| `hq.mode` | fleet | none | Unchanged in 0.40.0 (see above). |
+
+The five `hq.api` trust pins (`operator_public_key`, `floor_path`, `initial_revision`,
+`backend_identity`, `generation`) are the same values hq-service is started with and the same
+values a SQL frame already holds as `hq.sql.runtime_operator_public_key`,
+`hq.sql.runtime_floor_path`, `hq.sql.runtime_initial_revision`,
+`hq.sql.runtime_backend_identity` and `hq.sql.runtime_generation`.
+
+### The SQL guard: what you will see
+
+In 0.40.0 the guard acts only on a host that is `hq.route: api`, or that sets `hq.sql_guard`
+explicitly. An unmarked `hq.route: sql` host stays silent. When something opens HQ SQL on such a
+host it writes one stderr line per process, opener and call site, and changes no exit code or
+output:
+
+```text
+warning: HQ SQL opener <Opener> is retired off the hq-service host (this host is hq.route: api; called from <module.function>). Reach HQ through hq-service (hq.route: api); bh 0.41.0 refuses this. Silence: hq.sql_guard: off.
+```
+
+For placement, `bh hq migrate` and `prune-inbox` the text says `is hq-service-host-only` instead
+of `is retired off the hq-service host`. `hq.sql_guard: refuse` raises `SqlPlaneRetired` before
+connecting; `off` is silent. Setting `hq.route` back to `sql` silences it again (nothing else to
+undo unless you set `hq.sql_guard`). You can preview 0.41.0 on a `sql` frame with
+`hq.sql_guard: warn`.
+
+`bh doctor` prints a new `# HQ route` section. The three shapes you will meet:
+
+```text
+# HQ route
+  ⚠ WARN hq.route: sql
+    hq.service_host: false
+    hq.sql: present
+    hq.sql_guard: unset
+    hq.route is sql on a host not marked hq.service_host: the HQ SQL warning defaults on in 0.41.0 alongside refuse; cut this host over to hq.route: api
+```
+
+```text
+# HQ route
+  ⚠ WARN hq.route: api
+    hq.service_host: false
+    hq.sql: present
+    hq.sql_guard: unset
+    hq.route is api but a hq.sql block lingers: remove it (hq-service is the plane)
+```
+
+```text
+# HQ route
+  ✓ hq.route: api
+    hq.service_host: false
+    hq.sql: absent
+    hq.sql_guard: unset
+```
+
+The last one is the post-cutover state of every host except the hq-service host. `bh doctor`
+runs every section and can take a long time on a busy host; the quick equivalent is
+`bh config get hq.route --scope host` (prints `api`) and `bh config get hq.sql --scope host`
+(prints `✗ hq.sql is not set`, exit 1).
+
+### Required first: hq-service and the Gateway
+
+This release was proven against **hq-service `v0.1.0`, commit `4e0fc6b`**, in-process and against
+its conformance corpora; no real staged run against a deployed hq-service is recorded (see
+[the session cutover runbook](design/hq-service-session-cutover-runbook.md#2-required-before-the-cutover-a-real-staged-run-open-operator-step)).
+
+1. **hq-service `v0.1.0` (`4e0fc6b`) is deployed and ready.** On the hq-service host, for the
+   Compose deployment:
+
+   ```sh
+   docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}} {{index .Config.Labels "org.opencontainers.image.revision"}}' "$(docker compose -f STACK_DIR/compose.yaml images -q hq-service)"
+   ```
+
+   Expect `v0.1.0 4e0fc6b...`. For a systemd deployment, confirm the binary at
+   `/usr/local/libexec/beadhive-hq-service` was built from that commit. Then read readiness on the
+   service's own socket (the Gateway does not expose it):
+
+   ```sh
+   sudo curl -sS --unix-socket /run/beadhive/hq-service/hq.sock http://hq/readyz
+   ```
+
+   Expect HTTP 200 and no `cutover_incomplete`. If an older build (before bh-hq-pio.7) serves
+   today, first follow hq-service `deploy/README.md`, sections "Schema migrations" and "Cutover"
+   (`hq-service migrate`, `hq-service cutover -dry-run`, backup, `hq-service cutover`), and flip
+   each frame within about 120 s of the restart, as
+   [the session cutover runbook, section 4](design/hq-service-session-cutover-runbook.md#4-service-step-5-switch-the-frame-within-one-ttl-of-the-restart)
+   explains.
+2. **hq-service is started with `-operator-apply`** if the operator will run rebind,
+   release-policy apply or catalog import on `api`. Without it every apply is refused
+   `operator_apply_disabled`. Its database account holds the grants of `deploy/README.md`, Steps,
+   item 2, including the **trusted-mode** grants (open admission and manifest publication commit
+   unsigned; the join below needs them).
+3. **The beadhive-gateway release that closes `bh-gw-vm2i` is deployed** (the gate at the top;
+   no version number exists yet, so identify it by that bead). Required Gateway capabilities:
+   - the `hq` plane signing with its own `hq-` key under issuer `gateway/hq` (`bh-gw-jozq`), and
+     hq-service's `HQ_GATEWAY_ISSUER` set to `gateway/hq`;
+   - bound-identity attestation **on** (`principal_kind`, `frame_id`, `host_id` claims), minting
+     the caller kinds hq-service `v0.1.0` checks (`api/writes.go`): `operator` for
+     `POST /incarnations`, `host` for `PUT` and `DELETE /manifests/{host_id}`, `frame` for
+     `POST /admissions/{frame}`;
+   - history-query routing: query strings on `GET /history?since=`,
+     `GET /eligibility/{frame}?release_id=&release_digest=` and `GET /hive-leases?prefix=`;
+   - the operator `/plan` and `/apply` routes: `POST /authority/rebind/plan|apply`,
+     `POST /authority/release-policy/{frame}/plan|apply`,
+     `POST /release-catalog/{catalog}/import/plan|apply`;
+   - every other route bh 0.40.0 calls: `GET /authority`, `/config`, `/eligibility/{frame}`,
+     `/hive-leases`, `/release-catalog/{catalog}`; `POST /sessions/{principal}/{epoch}/renew` and
+     `/evidence`; `PUT /heartbeats/{request_id}`; `POST /hive-leases/{prefix}`;
+     `POST /incarnations`; `PUT` and `DELETE /manifests/{host_id}`; `POST /admissions/{frame}`
+     (all under `/hq/lifecycle/v0`).
+4. **bh 0.40.0 is in the release catalog and admitted by each frame's release policy.** A frame
+   that installs a release its grant does not admit turns ineligible. Check before step C1 below,
+   on the host that imports releases today (with its catalog settings file, still on `sql`):
+
+   ```sh
+   bh hq release-catalog verify 0.40.0
+   ```
+
+   Expect exit 0. If 0.40.0 is not imported yet, import it the way you do today. If a frame's
+   release policy does not admit 0.40.0, widen it first with `bh hq authority release-policy
+   plan|apply`, also the way you do today on `sql`.
+
+### Order of the cutover
+
+1. The hq-service host: mark it (section "The hq-service host").
+2. `bead-frame-01`: install 0.40.0, cut over, verify, and let it hold through at least two
+   conformance intervals (10 minutes) before the next host.
+3. `bead-frame-02`: the same.
+4. `xeno-mac` (the operator workstation): its operator credential is needed for the
+   `bead-frame-03` join.
+5. `bead-frame-03`: a fresh join through hq-service.
+6. `beadhive-factory`.
+
+### When rollback to `route=sql` stops being possible
+
+- **Every step in this note is reversible** while all three hold: the host's config backup from
+  step C2 still exists (it carries the `hq.sql` block); the frame's SQL login and its
+  `frame_<p>_<e>_session` / `_evidence` tables still exist on the HQ server; and, if hq-service
+  `v0.1.0` (or any build from bh-hq-pio.7 on) started serving during this cutover, you roll that
+  service build back too. Once that build serves, it judges liveness only from its own rows, so
+  switching a frame back to `sql` alone leaves it stale there within about 300 s
+  ([runbook section 9](design/hq-service-session-cutover-runbook.md#9-rollback)).
+- **The point of no return is outside this note:** dropping a frame's SQL login
+  (`DROP USER '<principal>'@...`) or its session and evidence tables, hq-service
+  `deploy/README.md` "Retiring the Python layout". **Do not do that in 0.40.0.** After it, that
+  frame can never return to `route=sql`.
+- **`bead-frame-03` never has a `route=sql` state.** Its rollback is withdrawal (its section).
+
+### The hq-service host
+
+Only if bh is installed on the hq-service host. Nothing else in this note runs there except the
+certificate and binding steps (G1-G2).
+
+```sh
+bh config set hq.service_host true --scope host
+```
+
+- Keys: `hq.service_host` (host). Expect `✓ hq.service_host = True`.
+- Check: `bh doctor` shows `✓ hq.route: sql` and `hq.service_host: true` under `# HQ route`.
+- This host stays `hq.route: sql`. Placement, `bh hq migrate` and `bh hq authority prune-inbox`
+  run here only.
+- Rollback: `bh config unset hq.service_host --scope host`.
+
+### Gateway procedures (run on the hq-service host, as root)
+
+These are the hq-service `v0.1.0` `deploy/compose/bootstrap.sh` commands and the Gateway
+`hq-authn.json` binding shape, one client at a time. Paths are the Compose deployment's; for a
+systemd deployment the Gateway credentials are `/etc/beadhive/gateway/credentials/hq-*` and the
+unit is `beadhive-gateway-hq`.
+
+**G1. Issue a client certificate** (`N` names the client, e.g. `bead-frame-01`):
+
+```sh
+sudo -i
+umask 077
+N=bead-frame-01
+cd /var/lib/beadhive/hq-plane-ca      # where bootstrap.sh put the hq plane CA (ca.crt, ca.key)
+openssl req -quiet -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=$N" -keyout "$N.key" -out "$N.csr"
+printf 'extendedKeyUsage=clientAuth\n' > "$N.ext"
+openssl x509 -req -in "$N.csr" -CA ca.crt -CAkey ca.key -CAcreateserial -days 365 -extfile "$N.ext" -out "$N.crt"
+rm -f "$N.csr" "$N.ext"
+openssl x509 -in "$N.crt" -outform DER | sha256sum | cut -d' ' -f1
+```
+
+- Keys: none. Expect the last line to print 64 hex digits: the certificate's identity for G2.
+- Hand `$N.crt`, `$N.key` and `ca.crt` to the client (step C3). The key never goes anywhere else.
+- Rollback: delete the three files; a certificate with no binding is refused (401).
+
+**G2. Bind it in the Gateway.** Back up, edit a copy, validate, install, restart:
+
+```sh
+AUTHN=/etc/beadhive/gateway-hq/credentials/hq-authn.json
+cp -p "$AUTHN" "/root/hq-authn.json.$(date +%Y%m%d%H%M%S)"
+install -m 0600 "$AUTHN" /root/hq-authn.json.new
+"${EDITOR:-vi}" /root/hq-authn.json.new          # add the binding to "bindings" (below)
+python3 -m json.tool /root/hq-authn.json.new > /dev/null && echo valid
+install -o root -g root -m 0400 /root/hq-authn.json.new "$AUTHN"
+docker compose -f STACK_DIR/compose.yaml restart gateway-hq     # systemd: systemctl restart beadhive-gateway-hq
+```
+
+A frame binding for an existing frame (`kind` frame; the expected shape, **confirm against that
+Gateway release's `docs/operations/hq-plane.md`**):
+
+```json
+{"provider": "direct", "identity": "SHA256_FROM_G1", "principal": "FRAME_PRINCIPAL",
+ "kind": "frame", "frame": "FRAME_ID", "host": "HOST_ID",
+ "scopes": ["lifecycle:authority", "lifecycle:read", "lifecycle:session",
+            "lifecycle:hive-lease", "lifecycle:heartbeat"]}
+```
+
+A host binding (`kind` host, used for `PUT` and `DELETE /manifests/{host_id}`; same caveat,
+**confirm against that Gateway release's `docs/operations/hq-plane.md`**):
+
+```json
+{"provider": "direct", "identity": "SHA256_FROM_G1", "principal": "FRAME_PRINCIPAL",
+ "kind": "host", "host": "HOST_ID",
+ "scopes": ["lifecycle:fleet", "lifecycle:read", "lifecycle:authority"]}
+```
+
+- `FRAME_PRINCIPAL` is the frame's hq-service registry principal (`frame_` plus 20 hex digits).
+  The session routes refuse a call whose principal is not the caller's (`path_principal_mismatch`).
+  Read it from the runtime database (`docker exec -it DOLT_CONTAINER dolt --host 127.0.0.1
+  --port 3306 --no-tls --user root sql` on the Compose host):
+
+  ```sql
+  SELECT principal, frame_id, holder_identity, epoch FROM beadhive_hq_runtime.hq_principal_registry
+  WHERE frame_id = 'FRAME_ID' ORDER BY epoch DESC;
+  ```
+
+  Use the row whose `holder_identity` is the frame's `HOST_ID` and whose epoch is highest.
+- Expect `valid`, then the Gateway back up. Check from the client in step C5.
+- Rollback: install the backup over `$AUTHN` (mode 0400) and restart the Gateway the same way.
+
+### Cutover procedure for an existing host (C1-C10)
+
+Run on the host being cut over, as the user that runs bh and its timers. Each step names the keys
+it touches, what to expect, and whether rollback is still possible (it is, for every step, under
+the conditions above).
+
+**C1. Install 0.40.0, still on `route=sql`.**
+
+```sh
+uv tool install --force 'beadhive==0.40.0'      # keep your extras, e.g. 'beadhive[otel,github]==0.40.0'
+BHPY="$(head -1 "$(command -v bh)" | sed 's/^#!//')"
+"$BHPY" -c 'import beadhive.hq_frame_grant' && echo ok
+```
+
+- Keys: none. Expect `ok` (the module exists only from 0.40.0; do not trust `bh --version`).
+- If the host runs the host daemon (`bh host daemon status`), restart it the way this host
+  manages it (`bh host daemon stop`, then `bh host daemon start`). The timers pick up the new
+  release on their next tick.
+- Check: `bh host eligible` still reports the frame eligible. If `release_matches` fails, the
+  grant does not admit 0.40.0: reinstall 0.39.0 (`uv tool install --force 'beadhive==0.39.0'`).
+- `bh doctor` now shows the `⚠ WARN hq.route: sql` shape above. Expected.
+
+**C2. Back up the host config.**
+
+```sh
+CFG="$(bh config path)"
+cp -p "$CFG" "$CFG.pre-0.40.0"
+HOST_ID="$(awk '/^host_id:/ {print $2}' ~/.beadhive/host.yaml | tr -d "'\"")"
+echo "$HOST_ID"
+```
+
+- Keys: none. Expect a UUID. Keep `$CFG.pre-0.40.0` until the cutover has held: it is the
+  rollback.
+
+**C3. Install the client certificate from G1.**
+
+```sh
+install -d -m 0700 ~/.beadhive/hq-api
+scp 'root@HQ_SERVICE_HOST:/var/lib/beadhive/hq-plane-ca/{N.crt,N.key,ca.crt}' ~/.beadhive/hq-api/
+chmod 0600 ~/.beadhive/hq-api/*
+```
+
+- Replace `N` with this host's name from G1 (or copy the three files by any channel you trust).
+- Keys: none.
+
+**C4. Bind it** (G2 on the hq-service host, with this frame's `FRAME_ID`, `HOST_ID` and
+principal). `bh config get host.frame_id --scope host` prints `FRAME_ID`.
+
+**C5. Prove the binding before bh uses it.**
+
+```sh
+curl -sS --fail --cacert ~/.beadhive/hq-api/ca.crt --cert ~/.beadhive/hq-api/N.crt --key ~/.beadhive/hq-api/N.key https://HQ_GATEWAY_ADDRESS:8443/hq/lifecycle/v0/authority
+```
+
+- Keys: none. Expect `{"head": ..., "record": ..., "signature": ...}`. A 401 means the binding
+  is missing; no TLS means the certificate is not from the plane's CA.
+
+**C6. Write `hq.api` with the trust pins, and seed the api restore floor.** Read the pins this
+host already holds:
+
+```sh
+bh config get hq.sql.runtime_backend_identity --scope host
+bh config get hq.sql.runtime_generation --scope host
+bh config get hq.sql.runtime_initial_revision --scope host
+bh config get hq.sql.runtime_operator_public_key --scope host
+bh config get hq.sql.runtime_floor_path --scope host
+```
+
+They must equal `HQ_BACKEND_IDENTITY`, `HQ_GENERATION`, `HQ_INITIAL_REVISION` in hq-service's env
+file and its `operator.pub` (Compose: `/etc/beadhive/hq/`; systemd: `/etc/beadhive/hq-service/`).
+Stop if they differ. Seed the api floor from the runtime floor, so the first verified read starts
+at today's head (with no floor file it starts at `initial_revision` and must reach the current head
+within 64 commits, `MAX_HISTORY` in `src/beadhive/hq_service_verifier.py`, or it is refused
+`restore_floor`; derived from the code, not run against a real HQ):
+
+```sh
+install -m 0600 "$(bh config get hq.sql.runtime_floor_path --scope host)" ~/.beadhive/hq-api/floor.json
+```
+
+Then write the whole `hq.api` block in one command (`client_cert` and `client_key` must be set
+together, and `generation` must stay a JSON string):
+
+```sh
+cat > ~/.beadhive/hq-api/hq-api.json <<'EOF'
+{
+  "url": "https://HQ_GATEWAY_ADDRESS:8443",
+  "client_cert": "/ABSOLUTE/HOME/.beadhive/hq-api/N.crt",
+  "client_key": "/ABSOLUTE/HOME/.beadhive/hq-api/N.key",
+  "ca_cert": "/ABSOLUTE/HOME/.beadhive/hq-api/ca.crt",
+  "operator_public_key": "ssh-ed25519 OPERATOR_PUBLIC_KEY",
+  "floor_path": "/ABSOLUTE/HOME/.beadhive/hq-api/floor.json",
+  "initial_revision": "INITIAL_REVISION",
+  "backend_identity": "BACKEND_IDENTITY",
+  "generation": "GENERATION"
+}
+EOF
+"${EDITOR:-vi}" ~/.beadhive/hq-api/hq-api.json
+bh config set hq.api --json --scope host "$(cat ~/.beadhive/hq-api/hq-api.json)"
+```
+
+- Keys: `hq.api.url`, `hq.api.client_cert`, `hq.api.client_key`, `hq.api.ca_cert`,
+  `hq.api.operator_public_key`, `hq.api.floor_path`, `hq.api.initial_revision`,
+  `hq.api.backend_identity`, `hq.api.generation` (all host).
+- Expect `✓ hq.api = {...}`. Every path must be absolute (`hq.api ... must be an absolute path`
+  otherwise). `hq.route` is still `sql`, so nothing uses these yet.
+- Rollback: `bh config unset hq.api --scope host`.
+
+**C7. Check the `beadyard_id` pin.**
+
+```sh
+bh config get hq.beadyard_id --scope host
+bh host show "$HOST_ID" --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("beadyard_id"))'
+```
+
+- Keys: `hq.beadyard_id` (host). Expect the same UUID twice. If the first prints
+  `✗ hq.beadyard_id is not set` and the second a UUID, pin it:
+  `bh config set hq.beadyard_id MANIFEST_BEADYARD_ID --scope host` (expect
+  `✓ hq.beadyard_id = '...'`). If both are unset (`not set` and `None`), leave it.
+
+**C8. Trial the route for one command, then persist it.**
+
+```sh
+BH_HQ_ROUTE=api bh hq authority status
+BH_HQ_ROUTE=api bh host eligible
+bh config set hq.route api --scope host
+```
+
+- Keys: `hq.route` (host); `BH_HQ_ROUTE` only for the two trial commands.
+- Expect from `status` a JSON object with `"authority_ready": true`, from `eligible` the frame
+  eligible, then `✓ hq.route = 'api'`. Setting the route reads the fleet config through
+  hq-service; if hq-service is unreachable it fails with `HqPlaneUnavailable` and writes nothing.
+- **From here the frame's SQL session row stops moving:** renew now goes only to hq-service.
+- If any unit sets `Environment=BH_HQ_ROUTE=...`, that value wins over the config for that unit.
+- Rollback: `bh config set hq.route sql --scope host` (with `hq.sql` still present).
+
+**C9. Renew once, then verify liveness.**
+
+```sh
+"$BHPY" -m beadhive.heartbeat_sender renew
+"$BHPY" -m beadhive.heartbeat_sender conformance
+systemctl --user is-enabled beadhive-session-renew.timer beadhive-heartbeat-conformance.timer
+```
+
+- Keys: none. Expect `{"renewed": ...}` (exit 0), conformance exit 0, and `enabled` twice. On
+  macOS check `launchctl print gui/$(id -u)/dev.beadhive.session-renew` instead of `systemctl`.
+- `beadhive-heartbeat.timer` is now a no-op; leave it or
+  `systemctl --user disable --now beadhive-heartbeat.timer`.
+- After at least 10 minutes, count refusals; expect `0` (on macOS, `0` for each file):
+
+  ```sh
+  journalctl --user -u beadhive-session-renew -u beadhive-heartbeat-conformance --since -15min | grep -c 'refused'
+  grep -c refused ~/.beadhive/heartbeat/renew.err.log ~/.beadhive/heartbeat/conformance.err.log   # macOS
+  ```
+
+  One `seq_not_advanced` tick that heals on the next tick is expected
+  ([runbook section 7](design/hq-service-session-cutover-runbook.md#7-expected-noise-seq_not_advanced)).
+- Check the pin is honoured on the api path: `bh host eligible --json` does not report
+  `"beadyard_binding": false`. For a hive this frame runs: `bh host eligible --hive PREFIX`.
+- Rollback: `cp -p "$CFG.pre-0.40.0" "$CFG"`, then `"$BHPY" -m beadhive.heartbeat_sender renew`
+  (the next tick writes the SQL session row again).
+
+**C10. Remove `hq.sql`, once the cutover has held.**
+
+```sh
+bh config unset hq.sql --scope host
+bh config get hq.sql --scope host
+bh doctor
+```
+
+- Keys: `hq.sql` (host), removed.
+- Expect `✓ unset hq.sql`, then `✗ hq.sql is not set` (exit 1), then under `# HQ route`
+  `✓ hq.route: api` and `hq.sql: absent`.
+- Optional proof that no SQL path remains: `bh config set hq.sql_guard refuse --scope host`,
+  then re-run C8's `status` and `eligible` and C9's `renew`; each must succeed. Any HQ SQL opener
+  now raises `SqlPlaneRetired` instead of connecting. Undo with
+  `bh config unset hq.sql_guard --scope host`.
+- Rollback: still possible. `cp -p "$CFG.pre-0.40.0" "$CFG"` restores `hq.sql` and the old
+  route together (under the conditions in "When rollback to `route=sql` stops being possible").
+
+### bead-frame-01 and bead-frame-02: in-place upgrade, then `route=api`
+
+1. G1 on the hq-service host with `N=bead-frame-01`.
+2. C1-C3 on `bead-frame-01`.
+3. G2 with the frame binding for `bead-frame-01` (C4).
+4. C5-C9 on `bead-frame-01`. Wait 10 minutes; C9's journal check prints `0`.
+5. C10 on `bead-frame-01` when you are satisfied the cutover holds. Keep `$CFG.pre-0.40.0`.
+6. Repeat 1-5 for `bead-frame-02` (`N=bead-frame-02`).
+
+Rollback (either frame): `cp -p "$CFG.pre-0.40.0" "$CFG"`, then
+`"$BHPY" -m beadhive.heartbeat_sender renew` and expect `{"renewed": ...}`; `bh doctor` shows the
+`⚠ WARN hq.route: sql` shape again. To also return to 0.39.0:
+`uv tool install --force 'beadhive==0.39.0'`. Optionally remove its Gateway binding (G2 rollback).
+
+### xeno-mac: the operator workstation
+
+The operator signs with the operator key `K` (an absolute path to the private key); the
+workstation's Gateway binding is an operator binding.
+
+1. G1 with `N=xeno-mac`. G2 with an operator binding:
+
+   ```json
+   {"provider": "direct", "identity": "SHA256_FROM_G1", "principal": "hq_operator",
+    "kind": "operator",
+    "scopes": ["lifecycle:operator", "lifecycle:provision", "lifecycle:read", "lifecycle:authority"]}
+   ```
+
+   `lifecycle:provision` is what lets this host register a joining frame's incarnation.
+2. C1-C3, C5. C6: if this host has no `hq.sql.runtime_*` pins, take the four pins from
+   hq-service's env file and `operator.pub`, and seed the floor from `bead-frame-01` after its
+   cutover:
+
+   ```sh
+   scp bead-frame-01:.beadhive/hq-api/floor.json ~/.beadhive/hq-api/floor.json
+   chmod 0600 ~/.beadhive/hq-api/floor.json
+   ```
+
+3. C8, without `bh host eligible` if `bh config get host.frame_id --scope host` prints
+   `not set` (this host is not a frame; skip C7 and C9 then).
+4. Verify the operator verbs (expected output from bh-lejfy):
+
+   ```sh
+   bh hq authority status
+   bh hq release-catalog verify --all
+   ```
+
+   `status` prints JSON with `"authority_ready": true` and a `"revision"` (the current head).
+   `verify --all` needs the `beadhive[release-verify]` extra and exits 1 if any row fails.
+5. C10 when it holds. Keep the SQL operator settings file (`BH_HQ_OPERATOR_SETTINGS`): the verbs
+   deferred to 0.41.0 still need it (below). **Leave `hq.sql_guard` unset on this host** for
+   the same reason.
+
+Operator commands on `api` (run here, `K` = absolute path to the operator private key):
+
+```sh
+bh hq authority rebind --frame FRAME_ID --confirm --operator-key K --expected-revision HEAD
+bh hq authority release-policy plan --frame FRAME_ID --spec '^0.40'
+bh hq authority release-policy apply --frame FRAME_ID --spec '^0.40' --plan-sha256 PLAN_SHA256 --confirm --operator-key K
+BH_HQ_OPERATOR_KEY=K bh hq release-catalog import 0.40.0
+```
+
+- `rebind` prints `{"revision": "<new head>"}`; a stale `HEAD` exits 1 with `stale_revision`. In a
+  trusted fleet the key is not used (`signature_needed` false). `--duration 7d` is optional;
+  without it the authority does not expire.
+- `release-policy plan` prints JSON with `plan_sha256`. On `api` that digest is api-only and
+  differs from the SQL plan digest. Pass `--allow-downgrade` / `--allow-unknown-readers`
+  identically on plan and apply.
+- `release-catalog import` prints a result of `inserted` or `unchanged`; it is always signed.
+  Add `--bundle F --wheel F --trusted-root F` for an offline import.
+- `hq.release_catalog.auto_import`, if on here, still writes the catalog through the SQL
+  settings file (it warns on `api`). `release-catalog revoke` and `provision` are refused on
+  `api`: run them with `BH_HQ_ROUTE=sql` and the SQL settings file until 0.41.0.
+
+Rollback: `cp -p "$CFG.pre-0.40.0" "$CFG"`. Every operator verb then uses the SQL settings file
+again.
+
+### bead-frame-03: a fresh join through hq-service
+
+No SQL login, grant or escrow is created at any step, and `hq.sql` is never set. The fleet must
+be trusted (`hq.default_authority_mode: trusted`): a signed fleet has no api join.
+`xeno-mac` must be on `api` with its operator binding first.
+
+Steps J4 and J9 bind the same certificate first as `kind` host (to publish the manifest) and then
+as `kind` frame (to admit and renew). Whether one certificate may hold both bindings at once is
+for that Gateway release's `docs/operations/hq-plane.md`; the steps below rebind, which works
+either way.
+
+**J1. Install 0.40.0 and the host identity.** C1 (without the `eligible` check), then:
+
+```sh
+grep -E '^(host_id|signing_key):' ~/.beadhive/host.yaml
+```
+
+Expect a `host_id` UUID and an absolute `signing_key` path with `SIGNING_KEY.pub` beside it.
+
+**J2. Declare the frame in HOST config.** On `bead-frame-01`, read the pin:
+`bh config get hq.beadyard_id --scope host`. On `bead-frame-03` (values are examples; use this
+frame's):
+
+```sh
+bh config set host.frame_id bead-frame-03 --scope host
+bh config set host.instance_ref INSTANCE_REF --scope host
+bh config set host.frame.capabilities.isolation kvm --scope host
+bh config set host.frame.capabilities.trust_zone self-hosted --scope host
+bh config set host.frame.capabilities.harnesses --json '["claude"]' --scope host
+bh config set host.frame.capabilities.max_sessions 2 --scope host
+bh config set hq.beadyard_id BEADYARD_ID_FROM_FRAME_01 --scope host
+```
+
+- Keys (all host): `host.frame_id`, `host.instance_ref`, `host.frame.capabilities.isolation`
+  (`kvm`, `microvm`, `container` or `workstation`), `.trust_zone` (`self-hosted` or
+  `vendor-hosted`), `.harnesses` (a list), `.max_sessions` (integer `>= 0`), `hq.beadyard_id`.
+- Expect one `✓ <key> = ...` line each (`harnesses` prints `['claude']`, `max_sessions` prints
+  `2`). Check: `bh config get host.frame.capabilities --scope host` prints all four.
+- `INSTANCE_REF` is the substrate's identity for this machine (for example its VM name); bh never
+  infers it. You may pass it as `bh host init --instance-ref INSTANCE_REF` in J7 instead.
+- `hq.beadyard_id` is required on `api`: `bh host init` refuses without it.
+
+**J3. Certificate.** G1 with `N=bead-frame-03`, then C3 on `bead-frame-03`.
+
+**J4. Host binding.** G2 with the `kind` host binding (G2's second JSON), `"host": "HOST_ID"` and
+a placeholder principal `frame_03_pending` (the registry principal does not exist until J8).
+
+**J5. `hq.api`.** C5 and C6, with the four pins from hq-service's env file and `operator.pub`,
+and the floor seeded from `bead-frame-01`:
+
+```sh
+scp bead-frame-01:.beadhive/hq-api/floor.json ~/.beadhive/hq-api/floor.json
+chmod 0600 ~/.beadhive/hq-api/floor.json
+```
+
+**J6. Route, in HOST config.**
+
+```sh
+bh config set hq.route api --scope host
+```
+
+Expect `✓ hq.route = 'api'`. Set it in the HOST config, not only through `BH_HQ_ROUTE`: in
+0.40.0 `bh host init` decides whether `hq.beadyard_id` is required from the raw `hq.route` key
+(`bh-wyofx`), so a frame on `api` only through the environment is not refused early and fails
+later at renew with a beadyard mismatch.
+
+**J7. Publish the manifest (frame, host-bound).**
+
+```sh
+bh host init --role executor
+```
+
+- One `PUT /manifests/HOST_ID`. Expect `✓ wrote .../hosts/HOST_ID.yaml`. A missing input is
+  refused before anything is written, naming the key (for example `set host.instance_ref in the
+  HOST config or pass --instance-ref`, or `set host.frame.capabilities.trust_zone in the HOST
+  config`); set it and re-run. To republish after changing a key: `bh host init --role executor
+  --force`.
+- Check: `bh host show HOST_ID --json` prints `frame_id`, `instance_ref`, `release`,
+  `capabilities` and a `beadyard_id` equal to J2's pin.
+
+**J8. Register the incarnation (operator, on xeno-mac).** Copy the frame's public key
+(`SIGNING_KEY.pub` from J1) to `xeno-mac` as `~/bead-frame-03.pub`, then:
+
+```sh
+bh hq authority join --frame HOST_ID --public-key ~/bead-frame-03.pub --confirm
+```
+
+Expect JSON with `"registered": true`, `"admitted": false`, and `"principal"` and `"epoch"`.
+Note the principal.
+
+**J9. Frame binding.** G2 again for `bead-frame-03`: replace J4's entry with the `kind` frame
+binding (G2's first JSON) with `"principal": "PRINCIPAL_FROM_J8"`, `"frame": "bead-frame-03"`,
+`"host": "HOST_ID"`, and add `"lifecycle:admission"` to its scopes.
+
+**J10. Admit (frame, frame-bound).**
+
+```sh
+bh hq authority join --confirm
+```
+
+Expect `"admitted": true` (`bh host provision --push` does the same). **The principal includes
+the config head:** if the head moved between J8 and J10, this fails with
+`incarnation_unprovisioned`. Then re-run J8, update J9's binding with the new principal, and
+re-run J10.
+
+**J11. Liveness.** The grant is ACTIVE as admitted, so it renews straight away:
+
+```sh
+"$BHPY" -m beadhive.heartbeat_sender units --install
+systemctl --user daemon-reload
+systemctl --user enable --now beadhive-session-renew.timer beadhive-heartbeat-conformance.timer
+"$BHPY" -m beadhive.heartbeat_sender renew
+"$BHPY" -m beadhive.heartbeat_sender conformance
+```
+
+Expect `{"renewed": ...}` and exit 0 twice; then C9's journal check and `bh host eligible`.
+
+**J12. Verify.** `bh doctor` shows `✓ hq.route: api` and `hq.sql: absent` from the start.
+Optionally set `hq.sql_guard: refuse` (C10) and repeat J11's `renew`.
+
+Rollback for `bead-frame-03` is withdrawal, from the frame itself with its `kind` host binding
+back in place (J4; `DELETE /manifests` is host-bound, so only the host can withdraw):
+
+```sh
+bh host rm HOST_ID --force --confirm
+```
+
+Then remove its Gateway binding (G2). The admitted grant stays in authority: `frame-retire` has
+no api route until 0.41.0.
+
+### beadhive-factory
+
+The factory is cut over last, with C1-C10 like a frame, plus these checks first:
+
+```sh
+bh config get host.daemon.failover.enabled --scope host
+bh config get hq.release_catalog.auto_import --scope host
+```
+
+- If failover prints `True`: the director's failover loop is placement, which is
+  hq-service-host-only. Turn it off here before C8
+  (`bh config set host.daemon.failover.enabled false --scope host`, then restart the host
+  daemon), or keep the factory on `sql` in 0.40.0.
+- If auto-import prints `True`: it keeps writing the catalog through its SQL settings file and
+  warns on `api` (see xeno-mac).
+- Operator verbs run from the factory with a frame (worker) binding are refused at the Gateway
+  (403): run them from `xeno-mac`.
+
+Rollback: as for `bead-frame-01`; re-enable the failover loop if you turned it off.
+
+### Known limitations in 0.40.0
+
+- **Catalog trust gap** (operator-accepted, bh-21vpt). hq-service `v0.1.0` catalog rows are
+  unsigned. bh's interim restore-floor check accepts a same-sequence `hq_release_catalog`
+  change when every row verifies by hq-service's own catalog verdict, so for catalog changes the
+  service is a trust root, and a deleted row is invisible. Both close when `/history` reports
+  row-level change kinds (`bh-hq-34d`).
+- **Eligibility predicates on `api` are weaker than on SQL** for the conformance profile and
+  `release_matches`.
+- **The join principal includes the config head:** re-register (J8) if the head moves before
+  the frame admits.
+- **`DELETE /manifests` is host-bound:** only the host itself can withdraw its manifest.
+- **`bh hq release-catalog revoke` and `provision` are refused on `api`;** they arrive in
+  0.41.0.
+- **`describe_incarnation` and `preflight` have no api route** (`HqUnavailable` naming the
+  method).
+- **`hq-parity` is unsupported** for the admission, operator and release-eligibility corpora
+  ([HQ-PARITY-RUNS](HQ-PARITY-RUNS.md)).
+- **Deferred to 0.41.0:**
+  - `cordon`, `drain`, `park`, `resume`, `quarantine`, `frame-retire`, `emergency`;
+  - `observe`, `bind-beadyard`, `mode`, `release-upgrade`;
+  - fleet config publication;
+  - catalog revoke;
+  - the guard's default flip to `refuse`.
+
 ## Unreleased — upgrade every frame before the first `fleet.json` republish
 
 - **Ordering requirement (bh-vrqne, bh-se4se).** Every publish and repair of the HQ SQL config now
