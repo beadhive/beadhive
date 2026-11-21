@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import configparser
+import os
+import pwd
 import shutil
 import subprocess
 import tomllib
@@ -37,16 +39,36 @@ def test_frame_bridge_is_the_only_core_bridge_process_command() -> None:
     assert "sibling `beadhive-gateway` repository" in contract
 
 
+def _real_user_uv_env() -> dict[str, str]:
+    """Point uv at the real user's cache; the suite isolates HOME, which hides it.
+
+    `uv build --offline` resolves the build backend from the cache only, so under the
+    isolated HOME it cannot see the warm cache and fails with exit 2.
+    """
+    env = dict(os.environ)
+    if "UV_CACHE_DIR" not in env:
+        real_home = pwd.getpwuid(os.getuid()).pw_dir
+        env["UV_CACHE_DIR"] = str(Path(real_home) / ".cache" / "uv")
+    return env
+
+
 @pytest.mark.skipif(shutil.which("uv") is None, reason="wheel build needs the uv binary")
 def test_wheel_contains_only_the_frame_bridge_core_entry_point(tmp_path: Path) -> None:
     """Prove the installed artifact, not only the source manifest, carries the rename."""
     output = tmp_path / "dist"
-    subprocess.run(
+    result = subprocess.run(
         ["uv", "build", "--offline", "--wheel", "--out-dir", str(output)],
         cwd=ROOT,
-        check=True,
         capture_output=True,
+        text=True,
+        env=_real_user_uv_env(),
     )
+    if result.returncode != 0 and "was not found in the cache" in result.stderr:
+        pytest.skip(
+            "offline wheel build needs the build backend (hatchling) in the real user's "
+            "uv cache; warm it once with a networked `uv build`"
+        )
+    assert result.returncode == 0, result.stderr
     (wheel,) = output.glob("*.whl")
     with zipfile.ZipFile(wheel) as archive:
         shipped = set(archive.namelist())
