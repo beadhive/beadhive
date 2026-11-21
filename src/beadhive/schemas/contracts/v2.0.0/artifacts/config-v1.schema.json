@@ -2466,6 +2466,9 @@
           "$ref": "#/$defs/HostForwardConfig",
           "description": "Forward write path to a hive's primary (opt-in per frame; bh-g7dlo)."
         },
+        "frame": {
+          "$ref": "#/$defs/HostFrameConfig"
+        },
         "frame_bridge": {
           "$ref": "#/$defs/FrameBridgeIdentityConfig"
         },
@@ -2473,6 +2476,12 @@
           "default": "",
           "description": "Enrollment-owned Fleet identity; config storage does not enroll a host.",
           "title": "Frame Id",
+          "type": "string"
+        },
+        "instance_ref": {
+          "default": "",
+          "description": "Substrate-owned instance identity of this frame, published in its host manifest by `bh host init` (`--instance-ref` overrides). Never inferred: a frame without it cannot be admitted.",
+          "title": "Instance Ref",
           "type": "string"
         },
         "lease": {
@@ -2660,6 +2669,91 @@
         }
       },
       "title": "HostForwardServeConfig",
+      "type": "object"
+    },
+    "HostFrameCapabilitiesConfig": {
+      "additionalProperties": false,
+      "description": "Operator-declared capabilities of this frame (``host.frame.capabilities``), published in\nits host manifest by ``bh host init``. Every field is explicit: nothing is probed or inferred\n(``arch`` alone comes from the running machine).",
+      "properties": {
+        "harnesses": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Agent harnesses the frame offers (required to enroll a frame).",
+          "title": "Harnesses"
+        },
+        "isolation": {
+          "anyOf": [
+            {
+              "enum": [
+                "kvm",
+                "microvm",
+                "container",
+                "workstation"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Isolation the frame runs under (required to enroll a frame).",
+          "title": "Isolation"
+        },
+        "max_sessions": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Concurrent sessions the frame accepts (required to enroll).",
+          "title": "Max Sessions"
+        },
+        "trust_zone": {
+          "anyOf": [
+            {
+              "enum": [
+                "self-hosted",
+                "vendor-hosted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trust zone of the frame's substrate (required to enroll a frame).",
+          "title": "Trust Zone"
+        }
+      },
+      "title": "HostFrameCapabilitiesConfig",
+      "type": "object"
+    },
+    "HostFrameConfig": {
+      "additionalProperties": false,
+      "description": "Frame-declared manifest inputs (``host.frame``); HOST-only, never fleet-published.",
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/HostFrameCapabilitiesConfig"
+        }
+      },
+      "title": "HostFrameConfig",
       "type": "object"
     },
     "HostLeaseConfig": {

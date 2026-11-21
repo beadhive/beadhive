@@ -2160,6 +2160,31 @@ class FrameBridgeIdentityConfig(_Section):
     primary_hive_id: str | None = None
 
 
+class HostFrameCapabilitiesConfig(_Section):
+    """Operator-declared capabilities of this frame (``host.frame.capabilities``), published in
+    its host manifest by ``bh host init``. Every field is explicit: nothing is probed or inferred
+    (``arch`` alone comes from the running machine)."""
+
+    isolation: Literal["kvm", "microvm", "container", "workstation"] | None = Field(
+        None, description="Isolation the frame runs under (required to enroll a frame)."
+    )
+    trust_zone: Literal["self-hosted", "vendor-hosted"] | None = Field(
+        None, description="Trust zone of the frame's substrate (required to enroll a frame)."
+    )
+    harnesses: list[str] | None = Field(
+        None, description="Agent harnesses the frame offers (required to enroll a frame)."
+    )
+    max_sessions: int | None = Field(
+        None, ge=0, description="Concurrent sessions the frame accepts (required to enroll)."
+    )
+
+
+class HostFrameConfig(_Section):
+    """Frame-declared manifest inputs (``host.frame``); HOST-only, never fleet-published."""
+
+    capabilities: HostFrameCapabilitiesConfig = Field(default_factory=HostFrameCapabilitiesConfig)
+
+
 class HostConfig(_Section):
     """Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.
 
@@ -2171,6 +2196,15 @@ class HostConfig(_Section):
         "",
         description="Enrollment-owned Fleet identity; config storage does not enroll a host.",
     )
+    instance_ref: str = Field(
+        "",
+        description=(
+            "Substrate-owned instance identity of this frame, published in its host manifest "
+            "by `bh host init` (`--instance-ref` overrides). Never inferred: a frame without "
+            "it cannot be admitted."
+        ),
+    )
+    frame: HostFrameConfig = Field(default_factory=HostFrameConfig)
     frame_bridge: FrameBridgeIdentityConfig = Field(default_factory=FrameBridgeIdentityConfig)
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)
