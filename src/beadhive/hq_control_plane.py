@@ -17,6 +17,14 @@ from . import config, gitref, hq_authority_ceiling, hq_git_broker, hq_manifest_g
 from . import hq_authority_enforce as authority_mode
 from . import hq_authority_guard as guard
 from .hq_authority_enforce import enforced as authority_enforced
+from .hq_port import (
+    HqDeadline,
+    HqOutcomeUnknown,
+    HqRefused,
+    HqRouteError,
+    HqUnavailable,
+    configured_route,
+)
 from .run import run
 
 if TYPE_CHECKING:
@@ -1635,6 +1643,26 @@ def _validated_sql_binding(settings):
         raise ControlPlaneError("invalid SQL HOST binding") from None
 
 
+def _committed_host_manifest(snapshot, host_id: str):
+    """``hosts/<host_id>.yaml`` from a verified committed config snapshot, validated."""
+    from ruamel.yaml import YAML
+
+    from . import hosts
+
+    documents = [item for item in snapshot.documents if item.path == f"hosts/{host_id}.yaml"]
+    if not documents:
+        raise CommittedManifestAbsent(f"committed host manifest unavailable for {host_id}")
+    if len(documents) != 1:
+        raise ControlPlaneError("committed host manifest selection invalid")
+    try:
+        raw = YAML(typ="safe").load(documents[0].content)
+        if isinstance(raw, dict) and "state" not in raw:
+            raw = {**raw, "state": "active"}
+        return hosts.HostManifest.model_validate(raw)
+    except Exception:  # noqa: BLE001 - malformed committed input must not expose values
+        raise ControlPlaneError("committed host manifest invalid") from None
+
+
 class SqlControlPlane:
     """SQL config capability; runtime authority needs an explicit separate binding."""
 
@@ -1657,8 +1685,10 @@ class SqlControlPlane:
         return isinstance(error, CommittedManifestAbsent)
 
     def __init__(self, settings, *, broker=None, clock=time.time, fence_reader=None):
+        from .hq_sql_guard import guard_sql_open
         from .hq_sql_runtime import hive_lease_mode, liveness_mode
 
+        guard_sql_open("SqlControlPlane")
         self.settings = _validated_sql_binding(settings).model_dump()
         self.broker, self.clock = broker, clock
         #: ``prefix -> EpochFence | None``: the hive's current remote ``refs/bh/epoch``.
@@ -1673,23 +1703,7 @@ class SqlControlPlane:
             raise ControlPlaneError(str(exc)) from None
 
     def load_host_manifest(self, host_id: str):
-        from ruamel.yaml import YAML
-
-        from . import hosts
-
-        snapshot = self.config_store().load_snapshot()
-        documents = [item for item in snapshot.documents if item.path == f"hosts/{host_id}.yaml"]
-        if not documents:
-            raise CommittedManifestAbsent(f"committed host manifest unavailable for {host_id}")
-        if len(documents) != 1:
-            raise ControlPlaneError("committed host manifest selection invalid")
-        try:
-            raw = YAML(typ="safe").load(documents[0].content)
-            if isinstance(raw, dict) and "state" not in raw:
-                raw = {**raw, "state": "active"}
-            return hosts.HostManifest.model_validate(raw)
-        except Exception:  # noqa: BLE001 - malformed committed input must not expose values
-            raise ControlPlaneError("committed host manifest invalid") from None
+        return _committed_host_manifest(self.config_store().load_snapshot(), host_id)
 
     def config_store(self, *, operator_key=None, duration=None, ceiling=None):
         from .hq_sql_config import SqlFleetConfigRevisionStore
@@ -3287,7 +3301,10 @@ def host_sql_settings():
 
 def control_plane(hq_dir=None):
     # Backend connection/trust must be available before fleet/effective resolution.
-    cfg = config.load_host().get("hq", {})
+    host_config = config.load_host()
+    if _route(host_config) == "api":
+        return api_control_plane(host_config)
+    cfg = host_config.get("hq", {})
     sql = _validated_sql_binding(cfg.get("sql", {}))
     if sql.enabled:
         return SqlControlPlane(sql.model_dump())
@@ -3305,6 +3322,11 @@ def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_
     cached verified snapshot in trusted mode (``load_snapshot_or_cached``, bh-kjxe9).
     """
     settings = bootstrap if bootstrap is not None else config.load_host().get("hq", {})
+    if _route({"hq": settings}) == "api":
+        store = api_control_plane({"hq": settings}).config_store()
+        if hive_local:
+            return store, store.load_snapshot_or_cached()
+        return store, store.load_snapshot()
     mode = settings.get("mode", "git")
     sql = _validated_sql_binding(settings.get("sql", {}))
     if sql.enabled:
@@ -3319,3 +3341,820 @@ def attach_fleet_config(hq_dir=None, *, bootstrap=None, operator_key=None, hive_
     )
     store = plane.config_store(operator_key=operator_key)
     return store, store.load_snapshot()
+
+
+# ---- route=api: the control plane over the HQ port (bh-e437a) ------------------------------
+
+
+class HqPlaneUnavailable(HqUnavailable, ControlPlaneError):
+    """The api plane could not serve a call: no hq-service route for the method, or the
+    service could not be reached or read. Nothing was written, and SQL was never tried.
+
+    Both an :class:`~beadhive.hq_port.HqUnavailable` (the port taxonomy) and a
+    :class:`ControlPlaneError`, so a caller that already reports a control-plane refusal
+    (every ``except ValueError`` CLI path) reports this one the same way."""
+
+
+class HqPlaneRefused(HqRefused, ControlPlaneError):
+    """The api plane refused what hq-service served: a definite verdict on the response (it is
+    not bound to the signed authority record, ``authority_unbound``), or the service's own
+    refusal of the request, with its code. Nothing was returned, and SQL was never tried.
+
+    Both an :class:`~beadhive.hq_port.HqRefused` and a :class:`ControlPlaneError`, like
+    :class:`HqPlaneUnavailable`."""
+
+
+def _service_signs(_record):
+    """The ``signer`` an api-plane admission passes: hq-service builds and signs the grant
+    itself, so a call here is a defect, never a local signature."""
+    raise ControlPlaneError("route=api: hq-service signs the grant; no local signer is used")
+
+
+#: The control-plane methods a ``route: api`` host has no hq-service route for yet. Each raises
+#: :class:`HqPlaneUnavailable` naming itself; none falls back to SQL. Later beads of bh-6se58
+#: move names out of this set as the service gains the route.
+API_UNROUTED = frozenset(
+    {
+        "accept_observation",
+        "bind_beadyard",
+        "fetch_config",
+        "grant",
+        "heartbeat",
+        "heartbeat_reference",
+        "lifecycle",
+        "load_config_authority_snapshot",
+        "propose_hive_lease",
+        "prune_inbox",
+        "publish_registration",
+        "publish_registration_evidence",
+        "read_placement",
+        "release_upgrade",
+        "require_frame_placeable",
+        "require_hive_policy",
+        "watch_state",
+    }
+)
+
+#: Seconds a committed config snapshot read through the port stays valid when the service
+#: names no validity (the SQL store's default ``hq.sql.cache_ttl``).
+API_CONFIG_VALID_FOR_S = 30.0
+
+#: Seconds one api-plane read may take end to end (the SQL plane's default operation timeout).
+API_DEADLINE_S = 15.0
+
+
+def _no_api_route(method: str) -> HqPlaneUnavailable:
+    return HqPlaneUnavailable(f"{method}: no hq-service route on an hq.route api host")
+
+
+def _route(host_config) -> str:
+    """The host's ``hq.route`` (:func:`beadhive.hq_port.configured_route`), as a
+    control-plane refusal when invalid."""
+    try:
+        return configured_route(host_config)
+    except HqRouteError as exc:
+        raise ControlPlaneError(str(exc)) from None
+
+
+def host_route() -> str:
+    """This host's ``hq.route`` (``BH_HQ_ROUTE`` > ``hq.route`` > ``hq.mode: api`` > ``sql``)."""
+    return _route(config.load_host())
+
+
+def _api_port(host_config):
+    """The hq-service adapter :func:`beadhive.hq_service_adapter.select_hq_port` builds for
+    ``route: api``, with whatever response verifier it wires. Lazy, so a ``route: sql`` host
+    never imports the HTTP adapter. Resolved by name, not imported: the adapter reaches the SQL
+    adapter (its ``sql`` route), and a static edge would add an import cycle to the reviewed
+    snapshot (``scripts/check_import_boundaries.py``)."""
+    import importlib
+
+    adapter = importlib.import_module(f"{__package__}.hq_service_adapter")
+    try:
+        return adapter.select_hq_port(host_config, route="api")
+    except HqRouteError as exc:
+        raise ControlPlaneError(str(exc)) from None
+
+
+def api_control_plane(host_config):
+    """The control plane of a ``route: api`` host: every read goes through the HQ port. The
+    host's restore floor (``hq.api.floor_path``) also custodies the bounded-age cached config
+    snapshot (:meth:`ApiConfigStore.load_snapshot_or_cached`)."""
+    from collections.abc import Mapping
+
+    hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
+    api = hq.get("api") if isinstance(hq, Mapping) else None
+    floor = str(api.get("floor_path") or "") if isinstance(api, Mapping) else ""
+    return ApiControlPlane(_api_port(host_config), floor_path=floor or None)
+
+
+def host_api_plane():
+    """The api control plane of this host's own config (the operator CLI verbs')."""
+    return api_control_plane(config.load_host())
+
+
+class ApiConfigStore:
+    """Committed fleet config over the port's ``read_config`` (the SQL store's read shape).
+
+    Every snapshot is bound to the signed authority record (bh-h9dn1): the authority envelope
+    the config read carries must be the head and record a separate verified ``GET /authority``
+    serves, or the read is refused (:class:`HqPlaneRefused` ``authority_unbound``). A pinned
+    ``revision`` must still be the current config head, as on the SQL store. Publication and
+    recovery have no hq-service route yet (gap G8): every other public store method raises
+    :class:`HqPlaneUnavailable` naming itself."""
+
+    def __init__(self, plane):
+        self._plane = plane
+
+    def load_snapshot(self, *, revision=None, deadline=None):
+        snapshot = self._plane._bound_snapshot(deadline=deadline)
+        if revision is not None and revision != snapshot.commit_revision:
+            raise ControlPlaneError("requested configuration revision is no longer current")
+        return snapshot
+
+    def load_snapshot_or_cached(self, *, warn=None):
+        """:meth:`load_snapshot`, degrading an unavailable service to the cached verified
+        snapshot (the SQL store's ``load_snapshot_or_cached`` rules, bh-kjxe9): trusted
+        authority mode only, a snapshot bound within ``API_CONFIG_VALID_FOR_S``, and a restore
+        floor that still names the authority head it was bound to. A refusal never degrades."""
+        return self._plane._snapshot_or_cached(warn=warn)
+
+    def authority_binding(self, crossref, policies, *, expires_at, deadline=None):
+        """``(bound, latest_head, bound_snapshot)``: bound only on an exact cross-reference to
+        the current committed head. A tolerated descendant head needs the config history,
+        which the port does not serve here, so it reports not bound (reporting only)."""
+        snapshot = self.load_snapshot(deadline=deadline)
+        head = snapshot.commit_revision
+        bound = (snapshot.backend_identity, snapshot.generation, head) == tuple(crossref)
+        return bound, head, snapshot if bound else None
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def unrouted(*_args, **_kwargs):
+            raise _no_api_route(f"config_store.{name}")
+
+        return unrouted
+
+
+#: Processes that already warned about a degraded api config read (once per floor path).
+_API_DEGRADED_WARNED: set = set()
+
+
+class ApiControlPlane:
+    """The HQ control plane of an ``hq.route: api`` host (bh-e437a).
+
+    Every call is one HQ port call on the hq-service adapter; it opens no SQL connection and
+    never falls back to SQL. Port results are the verified shapes the SQL adapter returns
+    (``read_authority``: ``(head, state, crossref, policies)``; ``read_config``: a
+    :class:`~beadhive.modules.config.domain.ports.FleetConfigSnapshot`; ``read_eligibility``:
+    ``(head, desired, observation)``). A method in :data:`API_UNROUTED` raises
+    :class:`HqPlaneUnavailable` naming the method.
+    """
+
+    config_backend = "api"
+
+    @staticmethod
+    def verified_manifest_absence(error: BaseException) -> bool:
+        return isinstance(error, CommittedManifestAbsent)
+
+    #: The eligibility read takes the hive, so it also reports ``current_hive_lease_holder``
+    #: (the hive-lease row through the port), as the SQL session reader does (bh-h9dn1).
+    session_liveness_reader = True
+
+    def __init__(self, port, *, clock=time.time, deadline_s=API_DEADLINE_S, floor_path=None):
+        self.port, self.clock = port, clock
+        self._deadline_s = deadline_s
+        self._floor_path = floor_path
+
+    def _port_call(self, method, *args, deadline=None, **kwargs):
+        """``port.<method>(...)`` under one bounded deadline. An unavailable service is an
+        :class:`HqPlaneUnavailable` and a refusal an :class:`HqPlaneRefused` (its code kept),
+        each naming the method; nothing is retried or rerouted."""
+        if deadline is None:
+            deadline = time.monotonic() + self._deadline_s
+        try:
+            return getattr(self.port, method)(*args, deadline=deadline, **kwargs)
+        except (HqPlaneUnavailable, HqPlaneRefused):
+            raise
+        except HqUnavailable as exc:
+            raise HqPlaneUnavailable(f"{method}: {exc}") from exc
+        except HqRefused as exc:
+            raise HqPlaneRefused(exc.code, f"{method}: {exc.reason}") from exc
+
+    @staticmethod
+    def _api_read_error(method, exc):
+        """Map a :class:`~beadhive.hq_api_eligibility.ApiReadError` onto the plane's errors."""
+        if exc.code == "authority_unbound":
+            return HqPlaneRefused("authority_unbound", f"{method}: {exc.reason}")
+        if exc.code == "grant_mismatch":
+            return ControlPlaneError(exc.reason)
+        return HqPlaneUnavailable(f"{method}: {exc.reason}")
+
+    def _signed_authority(self, *, deadline=None):
+        """The verified ``GET /authority`` envelope the api reads are bound to."""
+        return self._port_call("read_authority", deadline=deadline)
+
+    def _bound_snapshot(self, *, deadline=None):
+        """The committed config snapshot, bound to the signed authority record (bh-h9dn1)."""
+        from . import hq_api_eligibility as api_reads
+
+        result = self._port_call("read_config", deadline=deadline)
+        if not isinstance(result, dict):  # the SQL adapter's snapshot passes through
+            return self._snapshot(result)
+        authority = self._signed_authority(deadline=deadline)
+        try:
+            head, _record = api_reads.bind_envelope(
+                result.get("authority"), authority, what="config read"
+            )
+        except api_reads.ApiReadError as exc:
+            raise self._api_read_error("read_config", exc) from None
+        snapshot = self._snapshot(result)
+        # The bound head names the operator's config: its fleet default is authorised when
+        # verified (signed), as the SQL binding learns it.
+        authority_mode.observe_fleet_default(snapshot, authorised=authority_enforced(), via="api")
+        self._remember(snapshot, head)
+        return snapshot
+
+    # ---- bounded-age cached snapshot (the SQL store's bh-kjxe9 fallback) ------------------
+
+    def _cache_path(self):
+        if not self._floor_path or not Path(self._floor_path).is_absolute():
+            return None
+        floor = Path(self._floor_path)
+        return floor.with_name(floor.name + ".config-snapshot")
+
+    def _remember(self, snapshot, head):
+        """Persist the snapshot just bound to authority ``head``, owner-only, best effort."""
+        from .modules.config.domain.ports import ordered_documents_digest as _digest
+
+        path = self._cache_path()
+        if path is None:
+            return
+        body = json.dumps(
+            {
+                "authority_head": head,
+                "backend_identity": snapshot.backend_identity,
+                "generation": snapshot.generation,
+                "head": snapshot.commit_revision,
+                "fetched_at": snapshot.fetched_at,
+                "digest": _digest(snapshot.documents),
+                "documents": [[item.path, item.content] for item in snapshot.documents],
+            },
+            sort_keys=True,
+        )
+        temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(body)
+            os.replace(temporary, path)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+
+    def _cached(self, now):
+        """``(reason, snapshot)``: the cached snapshot iff it is within the validity window
+        and the restore floor still names the authority head it was bound to."""
+        from .modules.config.domain.ports import (
+            FleetConfigDocument,
+            FleetConfigSnapshot,
+        )
+        from .modules.config.domain.ports import ordered_documents_digest as _digest
+
+        path = self._cache_path()
+        if path is None or not path.exists() or path.is_symlink():
+            return "no cached verified snapshot", None
+        floor_path = Path(self._floor_path)
+        try:
+            if path.stat().st_mode & 0o077 or floor_path.stat().st_mode & 0o077:
+                return "cached snapshot custody changed", None
+            cached = json.loads(path.read_text())
+            floor = json.loads(floor_path.read_text())
+            documents = tuple(FleetConfigDocument(p, c) for p, c in cached["documents"])
+            fetched_at = float(cached["fetched_at"])
+            authority_head = str(cached["authority_head"])
+            snapshot = FleetConfigSnapshot(
+                cached["backend_identity"],
+                cached["head"],
+                cached["generation"],
+                fetched_at,
+                fetched_at + API_CONFIG_VALID_FOR_S,
+                documents,
+            )
+            digest = cached["digest"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return "cached snapshot unreadable", None
+        if floor.get("head") != authority_head:
+            return "restore floor moved past the cached snapshot", None
+        if _digest(documents) != digest:
+            return "cached snapshot digest mismatch", None
+        if not fetched_at <= now < fetched_at + API_CONFIG_VALID_FOR_S:
+            return f"cached snapshot older than {int(API_CONFIG_VALID_FOR_S)}s", None
+        return None, snapshot
+
+    def _snapshot_or_cached(self, *, warn=None):
+        try:
+            return self._bound_snapshot()
+        except HqPlaneUnavailable as exc:
+            if not authority_mode.trusted():
+                raise HqPlaneUnavailable(
+                    f"{exc}; no cached fallback in signed authority mode"
+                ) from None
+            reason, snapshot = self._cached(self.clock())
+            if snapshot is None:
+                raise HqPlaneUnavailable(f"{exc}; no cached fallback: {reason}") from None
+            if self._floor_path not in _API_DEGRADED_WARNED:
+                _API_DEGRADED_WARNED.add(self._floor_path)
+                age = max(0, int(self.clock() - snapshot.fetched_at))
+                message = (
+                    f"⚠ {exc}; using the cached verified HQ config "
+                    f"{snapshot.commit_revision[:12]} ({age}s old) for this hive-local command"
+                )
+                if warn is not None:
+                    warn(message)
+                else:
+                    print(message, file=sys.stderr)
+            return snapshot
+
+    def _port_write(self, method, *args, **kwargs):
+        """``port.<method>(...)`` for a write, under one bounded deadline. A definite refusal is
+        :class:`HqPlaneRefused` (code kept), an unreachable service :class:`HqPlaneUnavailable`;
+        a write whose outcome is unknown says so. Nothing is retried or rerouted."""
+        deadline = time.monotonic() + self._deadline_s
+        try:
+            return getattr(self.port, method)(*args, deadline=deadline, **kwargs)
+        except HqRefused as exc:
+            raise HqPlaneRefused(exc.code, f"{method}: {exc.reason}") from exc
+        except HqOutcomeUnknown as exc:
+            raise ControlPlaneError(
+                f"{method}: the write may have committed; re-read before retrying ({exc})"
+            ) from exc
+        except (HqUnavailable, HqDeadline) as exc:
+            raise HqPlaneUnavailable(f"{method}: {exc}") from exc
+
+    def config_store(self, *, operator_key=None, duration=None, ceiling=None):
+        return ApiConfigStore(self)
+
+    # ---- join and provisioning (bh-obhfx): the port's admission writes ------------------
+    # No SQL login, no grant, no secret: hq-service holds the only database account, so
+    # ``register_incarnation`` passes no ``login_secret`` and ``admit`` no local signer.
+
+    def publish_manifest(self, manifest, *, expected_revision):
+        """``PUT /manifests/{host_id}``: publish this host's manifest; returns the config head.
+        The service CASes its own config head (``expected_revision`` is the head this caller
+        read, kept for an unknown outcome)."""
+        from . import config_publish_signal
+
+        if hasattr(manifest, "model_dump"):
+            manifest = manifest.model_dump(mode="json", exclude_none=True)
+        try:
+            return self._port_write(
+                "publish_manifest", dict(manifest), expected_revision=expected_revision
+            )
+        finally:
+            config_publish_signal.published()
+
+    def withdraw_manifest(self, host_id, *, expected_revision):
+        """``DELETE /manifests/{host_id}``: withdraw a host's manifest; returns the config head
+        (unchanged, ``replayed``, when there was none)."""
+        from . import config_publish_signal
+
+        try:
+            return self._port_write(
+                "withdraw_manifest", host_id, expected_revision=expected_revision
+            )
+        finally:
+            config_publish_signal.published()
+
+    def register_incarnation(self, authority, *, expected):
+        """``POST /incarnations``: register *authority*'s incarnation (its liveness row) with
+        hq-service. The principal is derived, never chosen: ``frame_`` + 20 hex of the
+        canonical authority identity. Operator-bound at the Gateway. Returns the (unchanged)
+        authority head."""
+        from .hq_sql_signatures import sql_principal
+
+        route = (
+            sql_principal(authority),
+            authority.frame_id,
+            authority.holder_identity,
+            authority.instance_ref,
+            authority.epoch,
+            authority.key_fingerprint,
+        )
+        return self._port_write(
+            "register_incarnation", route, expected_revision=expected, frame_address=""
+        )
+
+    def admit_open(self, authority, public_key, desired, *, expected, operator_key=""):
+        """``POST /admissions/{frame}`` (``kind: open``): open admission in a trusted fleet
+        (:func:`open_admission_guard`). hq-service builds and signs the ACTIVE grant from the
+        committed manifest; the incarnation must already be registered. Frame-bound at the
+        Gateway. Returns the new authority head."""
+        from .hq_port import AdmissionRequest
+
+        desired = open_admission_guard(desired)
+        request = AdmissionRequest(
+            frame=authority.frame_id,
+            authority=authority,
+            public_key=public_key,
+            desired=desired,
+            admitted=True,
+        )
+        return self._port_write(
+            "admit",
+            authority.frame_id,
+            request,
+            signer=_service_signs,
+            expected_revision=expected,
+        )
+
+    def load_host_manifest(self, host_id: str):
+        return _committed_host_manifest(self.config_store().load_snapshot(), host_id)
+
+    def _snapshot(self, result):
+        """The verified ``read_config`` result as a ``FleetConfigSnapshot``.
+
+        hq-service ``GET /config`` (v0.1.0, ``store/reads.go`` ``ConfigRead``) is ``{authority:
+        {head, record, signature}, publication, sequence, documents_sha256, documents: [{path,
+        kind, ordinal, sha256, content}]}``. The signed ``record`` carries the config
+        cross-reference (``config_backend``, ``config_generation``, ``config_head``), which is the
+        snapshot's backend identity, generation and commit revision; the documents must digest to
+        ``documents_sha256``. The service states no validity window, so the snapshot's is the
+        plane's own ``API_CONFIG_VALID_FOR_S``."""
+        from .modules.config.domain.ports import (
+            FleetConfigDocument,
+            FleetConfigSnapshot,
+            ordered_documents_digest,
+        )
+
+        if isinstance(result, FleetConfigSnapshot):
+            return result
+        try:
+            record = result["authority"]["record"]
+            documents = tuple(
+                FleetConfigDocument(str(item["path"]), str(item["content"]))
+                for item in result["documents"]
+            )
+            if ordered_documents_digest(documents) != result["documents_sha256"]:
+                raise ValueError("config documents do not match their digest")
+            fetched = float(self.clock())
+            return FleetConfigSnapshot(
+                record["config_backend"],
+                record["config_head"],
+                record["config_generation"],
+                fetched,
+                fetched + API_CONFIG_VALID_FOR_S,
+                documents,
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise HqPlaneUnavailable(
+                "read_config: the verified result is not a committed config snapshot"
+            ) from None
+
+    def authority_state(self, *, allow_expired=False):
+        """``(head, state, crossref, policies)``: the verified operator authority.
+
+        The verified ``GET /authority`` body is the signed envelope ``{head, record,
+        signature}``; ``record`` is the signed authority (``state``, ``hive_policies`` and the
+        ``config_backend`` / ``config_generation`` / ``config_head`` cross-reference), the same
+        record the SQL operator writes. A 4-tuple (the SQL adapter's shape) passes through."""
+        result = self._port_call("read_authority", allow_expired=allow_expired)
+        if isinstance(result, tuple) and len(result) == 4:
+            return result
+        try:
+            record = result["record"]
+            crossref = (
+                record["config_backend"],
+                record["config_generation"],
+                record["config_head"],
+            )
+            state = record["state"]
+            float(state["expires_at"])
+            return str(result["head"]), state, crossref, dict(record.get("hive_policies") or {})
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise HqPlaneUnavailable(
+                "read_authority: the verified result is not an authority"
+            ) from None
+
+    def authority_status(self):
+        enforce = authority_enforced()
+        revision, state, *_ = self.authority_state(allow_expired=not enforce)
+        ready = enforce or self.clock() < state["expires_at"]
+        return {"revision": revision, "state": state, "authority_ready": ready}
+
+    def eligibility_authority_status(self):
+        """The verified authority status (``revision``, ``state``, ``authority_ready``)."""
+        return self.authority_status()
+
+    def read_eligibility(self, manifest, *, now=None, prefix=None):
+        """``(head, desired, observation)``, bound to the signed authority record (bh-h9dn1).
+
+        hq-service ``GET /eligibility/{frame}`` (v0.1.0, ``EligibilityRead``) is ``{head,
+        config_head, frame_id, active, principal, epoch, route, liveness, release}``; the adapter
+        returns it beside the verified ``authority`` envelope it checked head and config head
+        against. The plane further requires the ``active`` grant to be the signed record's own
+        and the committed manifest to be that grant's incarnation (the SQL plane's check), asks
+        the service to judge the manifest's release, and folds principal, epoch, route,
+        liveness and the release verdict into a session-carrier observation
+        (:func:`beadhive.hq_api_eligibility.eligibility`), so the frame predicates evaluate as
+        on the SQL session carrier. ``prefix`` also reads the hive's lease row for
+        ``current_hive_lease_holder``. A 3-tuple (the SQL adapter's shape) passes through."""
+        return self._eligibility(manifest, prefix=prefix)[0]
+
+    def _eligibility(self, manifest, *, prefix=None, hive_lease=None):
+        """``((head, desired, observation), active, policies)``; ``hive_lease`` is an
+        already-read ``(revision, lease)`` for ``prefix``'s holder predicate."""
+        from . import hq_api_eligibility as api_reads
+
+        measured = api_reads.manifest_release(manifest)
+        result = self._port_call(
+            "read_eligibility",
+            manifest.frame_id,
+            **({"measured": measured} if measured is not None else {}),
+        )
+        if isinstance(result, tuple) and len(result) == 3:
+            return result, None, {}
+        if hive_lease is None and prefix is not None:
+            hive_lease = self._hive_lease_row(prefix)
+        try:
+            head, active, desired, policies, observation = api_reads.eligibility(
+                result,
+                manifest,
+                enforce=authority_enforced(),
+                measured=measured,
+                hive_lease=hive_lease[1] if hive_lease is not None else None,
+            )
+        except api_reads.ApiReadError as exc:
+            raise self._api_read_error("read_eligibility", exc) from None
+        if observation is None:  # no active grant
+            from .host_heartbeat_core import VerifiedObservation
+
+            observation = VerifiedObservation(
+                status="missing", verified=True, age_basis="hq-server-session-row"
+            )
+        return (head, desired, observation), active, policies
+
+    def _hive_lease_row(self, prefix):
+        """``(revision, lease)``: the hive's lease row, unqualified; ``("", None)`` when the
+        service knows no lease for ``prefix`` (``unknown_prefix``: never adopted)."""
+        from . import hq_api_eligibility as api_reads
+
+        try:
+            body = self._port_call("read_hive_lease", prefix)
+        except HqPlaneRefused as exc:
+            if exc.code == "unknown_prefix":
+                return "", None
+            raise
+        if isinstance(body, tuple) and len(body) == 2:  # the SQL adapter's shape
+            return body
+        try:
+            return api_reads.hive_lease(prefix, body)
+        except api_reads.ApiReadError as exc:
+            raise self._api_read_error("read_hive_lease", exc) from None
+
+    def read_hive_lease_record(self, prefix, *, holder_identity=None, incumbent_identity=None):
+        """``(revision, lease)`` over the port's hive-lease read (bh-h9dn1).
+
+        Unqualified, the row as stored. ``incumbent_identity`` returns it only when it names
+        that host and the host holds a current grant in the signed authority; ``holder_identity``
+        only when, in addition, the holder's grant is active, uncordoned and bound to the hive's
+        signed policy and its session evidence passes (the SQL session reader's conjuncts:
+        epoch, fresh session, conformance, release, current holder), or an emergency grant is
+        locally active. The api lease carries no authority envelope, so the SQL reader's
+        same-incarnation lineage check is the signed grant's holder identity here."""
+        from .frame_emergency import locally_active
+        from .hq_authority_guard import emergency_review_required
+
+        if holder_identity is not None and incumbent_identity is not None:
+            raise ControlPlaneError("hive lease identity qualifier ambiguous")
+        revision, lease = self._hive_lease_row(prefix)
+        identity = holder_identity if holder_identity is not None else incumbent_identity
+        if lease is None or identity is None:
+            return revision, lease
+        if lease.host_id != identity:
+            return revision, None
+        try:
+            manifest = self.load_host_manifest(identity)
+        except FileNotFoundError:
+            return revision, None
+        (_head, _desired, observation), active, policies = self._eligibility(
+            manifest, prefix=prefix, hive_lease=(revision, lease)
+        )
+        if active is None:
+            return revision, None
+        emergency = locally_active(active, prefix, self.clock())
+        waive = authority_mode.content_waived()
+        if not waive and emergency_review_required(active) and not emergency:
+            return revision, None
+        if incumbent_identity is not None:
+            return revision, lease
+        policy = policies.get(prefix)
+        authority_ok = waive or not (
+            active["state"] != "active"
+            or active["cordoned"]
+            or policy is None
+            or authority_enforced()
+            and (
+                self.clock() >= policy["valid_until"]
+                or policy["config_revision"] != active["authority"]["config_revision"]
+            )
+        )
+        session_ok = (
+            getattr(observation, "session_epoch_matches", False)
+            and not observation.candidate
+            and getattr(observation, "authenticated_fresh_heartbeat", False)
+            and getattr(observation, "conformance_pass", False)
+            and getattr(observation, "release_matches", False)
+            and getattr(observation, "current_hive_lease_holder", False)
+        )
+        if (
+            not authority_ok
+            or not observation.verified
+            or not session_ok
+            or (not observation.fresh and not emergency)
+        ):
+            return revision, None
+        return revision, lease
+
+    def read_hive_lease(self, prefix, *, holder_identity=None):
+        return self.read_hive_lease_record(prefix, holder_identity=holder_identity)[1]
+
+    def publish_hive_lease(self, prefix, lease, *, expected, operation, force=False):
+        """Submit this frame's signed hive-lease request through the port (bh-h9dn1).
+
+        hq-service v0.1.0 ``POST /hive-leases/{prefix}`` takes the same signed request envelope
+        the SQL frame writes to its inbox (``beadhive/sql-hive-lease/v1``/``v2``,
+        :func:`~beadhive.hq_sql_signatures.sign_hive_request`) and decides it at once
+        (``lease.Decide``); the answer's revision is the new lease revision, the next CAS. The
+        request is built from this frame's verified grant and route
+        (:func:`beadhive.hq_frame_grant.frame_grant`; ``authority_revision`` is the verified
+        head) with the SQL plane's own client-side checks. A refusal is :class:`HqPlaneRefused`
+        carrying the service's code; a write whose outcome is unknown is
+        :class:`HqLeaseUnknown`. Never SQL."""
+        import importlib
+        import uuid
+
+        from . import host
+        from .host_lease_contracts import HostLease, lease_ref
+        from .hq_port import HqOutcomeUnknown
+        from .hq_sql_signatures import SqlSignatureError, sign_hive_request
+
+        lease_ref(prefix)
+        if (
+            force
+            or operation not in {"adopt", "renew", "release"}
+            or not isinstance(lease, HostLease)
+            or not isinstance(expected, str)
+        ):
+            raise ControlPlaneError("frame hive lease proposal requires bound unforced operation")
+        frame = host.enrolled_frame_id()
+        if not frame:
+            raise ControlPlaneError("AUTHORITY_NOT_READY: this host has no host.frame_id")
+        result = self._port_call("read_eligibility", frame)
+        # Resolved by name: hq_frame_grant reads this module's ApiControlPlane, and a static
+        # edge would add an import cycle to the reviewed snapshot (as ``_api_port``).
+        frame_grant = importlib.import_module(f"{__package__}.hq_frame_grant").frame_grant
+        try:
+            grant = frame_grant(result, frame)
+        except HqRefused as exc:
+            raise HqPlaneRefused(exc.code, f"publish_hive_lease: {exc.reason}") from None
+        except HqUnavailable as exc:
+            raise HqPlaneUnavailable(f"publish_hive_lease: {exc}") from None
+        record, route = grant.record, grant.route
+        moving = operation in {"adopt", "renew"}
+        if (
+            moving
+            and (record["state"] != "active" or record["cordoned"])
+            or operation != "release"
+            and lease.host_id != route.holder_identity
+            or operation == "release"
+            and lease.host_id != ""
+        ):
+            raise ControlPlaneError("hive lease proposal requires exact active incarnation")
+        if operation != "release":
+            from .frame_emergency import cap_lease
+
+            lease = cap_lease(record, prefix, lease, self.clock())
+        authority = record["authority"]
+        request_id = str(uuid.uuid4())
+        request = {
+            "domain": (
+                "beadhive/sql-hive-lease/v2"
+                if authority.get("beadyard_id") is not None
+                else "beadhive/sql-hive-lease/v1"
+            ),
+            "request_id": request_id,
+            "principal": route.principal,
+            "frame_id": route.frame_id,
+            "holder_identity": route.holder_identity,
+            "instance_ref": route.instance_ref,
+            "epoch": route.epoch,
+            "key_fingerprint": route.signer_fingerprint,
+            "audience": authority["audience"],
+            "config_revision": authority["config_revision"],
+            "authority_revision": grant.head,
+            "prefix": prefix,
+            "expected_revision": expected,
+            "operation": operation,
+            "force": False,
+            "lease": lease.to_record(),
+        }
+        if authority.get("beadyard_id") is not None:
+            request["beadyard_id"] = authority["beadyard_id"]
+        try:
+            envelope = sign_hive_request(request, signing_key=host.signing_key())
+        except SqlSignatureError as exc:
+            raise ControlPlaneError(f"hive lease request signing failed: {exc}") from None
+        try:
+            submission = self._port_call("submit_hive_lease", grant.anchor, prefix, envelope)
+        except HqOutcomeUnknown:
+            raise HqLeaseUnknown(request_id, "", expected, "unknown") from None
+        if submission.outcome == "refused":
+            raise HqPlaneRefused(
+                submission.refusal or "refused",
+                f"hq-service refused the hive lease {operation} for {prefix} (request "
+                f"{request_id}): {submission.refusal}. A definite refusal, NOT an HQ outage; the "
+                f"CAS revision {expected or '(absent)'} was not consumed",
+            )
+        if not submission.revision:
+            raise HqLeaseUnknown(request_id, submission.digest, expected, "unknown")
+        return submission.revision
+
+    def hive_policy_binding(self, prefix, *, holder_identity=None):
+        """Read-only: is ``holder_identity``'s grant bound to ``prefix``'s signed frame policy
+        (``bh host eligible --hive``'s ``hive_policy_bound``)? The SQL plane's dict, read from
+        the verified signed authority. ``holder_identity`` defaults to this host."""
+        if holder_identity is None:
+            from . import host
+
+            holder_identity = host.host_id()
+        _head, state, _crossref, policies = self.authority_state(
+            allow_expired=not authority_enforced()
+        )
+        matches = [
+            (frame_id, name, grant)
+            for frame_id, entry in (state.get("frames") or {}).items()
+            for name in ("active", "candidate")
+            if (grant := (entry or {}).get(name)) is not None
+            and grant["authority"]["holder_identity"] == holder_identity
+        ]
+        if len(matches) != 1:
+            raise ControlPlaneError(f"no unique current grant for {holder_identity}")
+        frame_id, slot, grant = matches[0]
+        policy = policies.get(prefix)
+        grant_revision = grant["authority"]["config_revision"]
+        return {
+            "prefix": prefix,
+            "frame_id": frame_id,
+            "slot": slot,
+            "grant_config_revision": grant_revision,
+            "policy_config_revision": policy["config_revision"] if policy else None,
+            "bound": policy is not None
+            and slot == "active"
+            and policy["config_revision"] == grant_revision,
+            "repair": (
+                f"bh hq authority rebind --frame {frame_id} --expected-revision <R> "
+                "--operator-key <key> --confirm (R from `bh hq authority status`; "
+                "--operator-key may be omitted in trusted mode)"
+            ),
+        }
+
+    def observe(self, manifest, *, now=None, observer_dir=None):
+        if observer_dir is not None:
+            raise ControlPlaneError("api observer storage is protected server-local custody")
+        return self.read_eligibility(manifest, now=now)[2]
+
+    def renew(self, *, expected, operator_key, duration=None, ceiling=None, frame=None):
+        """Rebind through ``POST /authority/rebind/{plan,apply}`` (bh-lejfy)."""
+        from . import hq_api_operator
+
+        try:
+            return hq_api_operator.rebind(
+                self,
+                expected=expected,
+                operator_key=operator_key,
+                duration=duration,
+                ceiling=ceiling,
+                frame=frame,
+            )
+        except hq_api_operator.ApiOperatorError as exc:
+            raise ControlPlaneError(str(exc)) from None
+
+    def release_policy(self, frame, action="plan", **kwargs):
+        """Release-policy plan/apply through ``POST /authority/release-policy/{frame}/...``."""
+        from . import hq_api_operator
+
+        try:
+            return hq_api_operator.release_policy(self, frame, action, **kwargs)
+        except hq_api_operator.ApiOperatorError as exc:
+            raise ControlPlaneError(str(exc)) from None
+
+    def __getattr__(self, name):
+        if name in API_UNROUTED:
+
+            def unrouted(*_args, **_kwargs):
+                raise _no_api_route(name)
+
+            return unrouted
+        raise AttributeError(name)

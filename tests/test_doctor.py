@@ -1324,6 +1324,7 @@ _ENVELOPE = {"schema_version", "command"}
 # The section keys beadhive://doctor exposes; asserted here and in the MCP resource test.
 _DOCTOR_SECTIONS = {
     "config",
+    "hq_route",
     "providers",
     "orgs",
     "hives",

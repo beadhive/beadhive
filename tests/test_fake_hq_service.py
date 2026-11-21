@@ -146,3 +146,16 @@ def test_every_code_the_fake_answers_matches_the_corpus_registry():
     registry = json.loads((CORPUS / "refusal-codes.json").read_text())
     for code, (status, _) in CODES.items():
         assert registry[code]["status"] == status, code
+
+
+def test_the_admission_operator_and_read_codes_match_their_corpus_registries():
+    from harness.fake_hq_service import RETRYABLE, V0_CODES
+
+    contract = CORPUS.parent
+    registry: dict = {}
+    for name in ("admission_v1/refusal-codes.json", "operator_v1/refusal-codes.json"):
+        registry |= json.loads((contract / name).read_text())
+    registry |= json.loads((contract / "http_v1/codes.json").read_text())
+    for code, (status, _) in V0_CODES.items():
+        assert registry[code]["status"] == status, code
+        assert registry[code]["retryable"] == (code in RETRYABLE), code

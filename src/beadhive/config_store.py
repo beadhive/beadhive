@@ -236,11 +236,20 @@ def load_fleet_raw_for_repair(api):
 
 
 def _validated_selection(api, host) -> tuple[bool, str]:
-    """Validate the HOST selector and pin the selected backend plus HQ identity."""
+    """Validate the HOST selector and pin the selected backend plus HQ identity.
+
+    The central (non-Git) HQ is selected by ``hq.sql.enabled`` on a ``route: sql`` host, or by
+    ``hq.route: api`` alone (bh-e437a): an api host reads committed config through the
+    hq-service port and carries no ``hq.sql`` binding."""
     from .beadyard_identity import parse_id
-    from .modules.config.contracts import HqSqlConfig
+    from .hq_port import HqRouteError, configured_route
+    from .modules.config.contracts import HqApiConfig, HqSqlConfig
 
     error_type = getattr(api, "ConfigError", ValueError)
+    try:
+        route = configured_route(host)
+    except HqRouteError as exc:
+        raise error_type(str(exc)) from None
     try:
         hq = host.get("hq", {})
         sql = HqSqlConfig.model_validate(hq.get("sql", {}))
@@ -249,13 +258,16 @@ def _validated_selection(api, host) -> tuple[bool, str]:
         beadyard_id = hq.get("beadyard_id")
         if beadyard_id is not None:
             beadyard_id = parse_id(beadyard_id)
+        if route == "api":
+            binding = {
+                "route": route,
+                "api": HqApiConfig.model_validate(hq.get("api", {})).model_dump(mode="json"),
+            }
+        else:
+            binding = {"sql": sql.model_dump(mode="json")} if selected else {}
         fingerprint = hashlib.sha256(
             json.dumps(
-                {
-                    "mode": mode,
-                    "beadyard_id": beadyard_id,
-                    **({"sql": sql.model_dump(mode="json")} if selected else {}),
-                },
+                {"mode": mode, "beadyard_id": beadyard_id, **binding},
                 sort_keys=True,
                 separators=(",", ":"),
             ).encode()
@@ -264,13 +276,18 @@ def _validated_selection(api, host) -> tuple[bool, str]:
         # Minimal facade collaborators also call this port; never leak Pydantic's
         # rejected values, even when they do not expose the public ConfigError.
         raise error_type("invalid SQL HOST bootstrap") from None
+    if route == "api":
+        if mode not in ("git", "dolt-server", "api"):
+            raise error_type("unsupported HQ configuration mode")
+        return True, fingerprint
     if mode not in ("git", "dolt-server") or (not selected and mode != "git"):
         raise error_type("unsupported HQ configuration mode")
     return selected, fingerprint
 
 
 def sql_selected(api, host=None) -> bool:
-    """The HOST switch alone selects SQL; a mutation pins its original binding."""
+    """The HOST switch alone selects the central HQ (``hq.sql.enabled``, or ``hq.route: api``);
+    a mutation pins its original binding."""
     if host is None:
         try:
             host = api.load_host()

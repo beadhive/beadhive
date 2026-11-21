@@ -1,0 +1,183 @@
+{
+  "_comment": "Code registry for conformance/admission/v1 (POST /incarnations, PUT /manifests/{host_id}, POST /admissions/{frame}), under the error envelope of ADR bh-hq-pio.5. Each entry: the HTTP status, retryable, and the message clients see in error.message; the real reason for a refusal is in error.details.reason. A code session/v1, heartbeat/v1 or registration/v1 also lists (stale_revision, path_invalid, authority_failed, unprovisioned_principal, beadyard_mismatch, host_manifest_unavailable, beat_not_fresh, no_current_beat, candidate_expired, request_malformed, deadline_exceeded, request_unavailable) keeps its entry there. Normative, no Python reference: Python has no write endpoints. 409 for every rule refusal; 400 for a body or path that never reaches a rule; 409 retryable for a lost race; 500 only for a commit that cannot be read back. Owned by the corpus, not either implementation.",
+  "caller_not_bound": {
+    "status": 403,
+    "retryable": false,
+    "message": "the caller is not bound to the frame or host this request names"
+  },
+  "incarnation_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "the incarnation body is not principal, epoch and expected_revision in their forms"
+  },
+  "manifest_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "the body is not a valid host manifest"
+  },
+  "admission_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "the admission request or the authority it would publish is invalid"
+  },
+  "public_key_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "the runtime public key is not one OpenSSH ssh-ed25519 line"
+  },
+  "host_id_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the manifest names another host than the path"
+  },
+  "manifest_frame_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the host's committed manifest names another frame"
+  },
+  "manifest_incomplete": {
+    "status": 409,
+    "retryable": false,
+    "message": "admission needs a committed manifest with frame_id, instance_ref, release and capabilities"
+  },
+  "config_unreadable": {
+    "status": 409,
+    "retryable": false,
+    "message": "the committed config publication does not verify against the authority's config binding"
+  },
+  "incarnation_epoch_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "the epoch is neither a frame's next epoch nor 0 for a principal the authority has never named"
+  },
+  "incarnation_reserved": {
+    "status": 409,
+    "retryable": false,
+    "message": "the committed authority already names this incarnation"
+  },
+  "incarnation_registered": {
+    "status": 409,
+    "retryable": false,
+    "message": "the principal registry already routes this principal or incarnation"
+  },
+  "working_set_dirty": {
+    "status": 409,
+    "retryable": false,
+    "message": "the committed working set has uncommitted changes"
+  },
+  "publish_busy": {
+    "status": 409,
+    "retryable": true,
+    "message": "another publication holds the writer lock; retry"
+  },
+  "committed_unreadable": {
+    "status": 500,
+    "retryable": false,
+    "message": "the publication committed but the authority does not read back; see details.reason and details.revision"
+  },
+  "operator_signature_required": {
+    "status": 409,
+    "retryable": false,
+    "message": "a signed fleet's authority publication needs the operator's signature over the new record"
+  },
+  "admission_conflict": {
+    "status": 409,
+    "retryable": false,
+    "message": "the frame already has an active or pending incarnation"
+  },
+  "identity_in_use": {
+    "status": 409,
+    "retryable": false,
+    "message": "the runtime key or the holder already belongs to an incarnation in the authority"
+  },
+  "principal_moved": {
+    "status": 409,
+    "retryable": false,
+    "message": "the registry routes this incarnation under another principal than the committed authority derives"
+  },
+  "no_pending_candidate": {
+    "status": 409,
+    "retryable": false,
+    "message": "the frame has no pending candidate to admit"
+  },
+  "admission_not_declared": {
+    "status": 409,
+    "retryable": false,
+    "message": "the candidate's desired state is not declared"
+  },
+  "registration_missing": {
+    "status": 409,
+    "retryable": false,
+    "message": "the incarnation has no accepted registration"
+  },
+  "registration_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the accepted registration is not this incarnation's, or differs from the grant's release or capabilities"
+  },
+  "beat_evidence_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "an accepted beat does not verify as this incarnation's"
+  },
+  "beats_insufficient": {
+    "status": 409,
+    "retryable": false,
+    "message": "admission needs three consecutive verified beats"
+  },
+  "release_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the beat's release is not the grant's"
+  },
+  "conformance_not_conformant": {
+    "status": 409,
+    "retryable": false,
+    "message": "the beat's signed conformance status is not conformant"
+  },
+  "conformance_profile_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the beat's signed conformance profile is not the grant's"
+  },
+  "conformance_checks_missing": {
+    "status": 409,
+    "retryable": false,
+    "message": "the beat's signed conformance carries no checks"
+  },
+  "conformance_check_failed": {
+    "status": 409,
+    "retryable": false,
+    "message": "a check in the beat's signed conformance failed"
+  },
+  "free_sessions_exceed_capacity": {
+    "status": 409,
+    "retryable": false,
+    "message": "the beat's free_sessions is outside the registered capacity"
+  },
+  "active_incarnation_exists": {
+    "status": 409,
+    "retryable": false,
+    "message": "another active incarnation would have to be superseded, which admission does not do"
+  },
+  "session_never_renewed": {
+    "status": 409,
+    "retryable": false,
+    "message": "the incarnation's session was never renewed"
+  },
+  "session_stale": {
+    "status": 409,
+    "retryable": false,
+    "message": "the incarnation's session is older than the liveness policy allows"
+  },
+  "liveness_policy_unavailable": {
+    "status": 503,
+    "retryable": true,
+    "message": "the liveness policy is unavailable"
+  },
+  "liveness_policy_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "the liveness policy holds a TTL outside 1 second to 7 days"
+  }
+}

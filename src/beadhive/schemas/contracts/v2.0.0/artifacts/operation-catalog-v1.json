@@ -10120,6 +10120,14 @@
           "schema": {
             "type": "boolean"
           }
+        },
+        {
+          "name": "instance_ref",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -10147,7 +10155,8 @@
             "identity_kind",
             "identity_value",
             "remote_only_hive",
-            "force"
+            "force",
+            "instance_ref"
           ],
           "path": "host init",
           "progress": {

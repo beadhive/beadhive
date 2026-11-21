@@ -470,6 +470,17 @@ class SqlHqAdapter:
     ) -> dict | None:
         return self._runtime().read_release_catalog_row(head, catalog, measured, deadline=deadline)
 
+    def read_release_catalog(self, catalog: str, *, deadline: float) -> list[dict]:
+        raise HqUnavailable("read_release_catalog is the api route's; SQL reads the catalog store")
+
+    def plan_release_policy(self, frame: str, request: dict, *, deadline: float) -> dict:
+        raise HqUnavailable("plan_release_policy is the api route's; SQL plans in the plane")
+
+    def import_release_catalog(
+        self, catalog: str, request: dict, *, signer, deadline: float
+    ) -> str:
+        raise HqUnavailable("import_release_catalog is the api route's; SQL imports via the store")
+
     @_mapped
     def read_config(
         self, *, revision: str | None = None, cached_ok: bool = False, deadline: float
@@ -478,6 +489,12 @@ class SqlHqAdapter:
         if cached_ok and revision is None:
             return store.load_snapshot_or_cached()
         return store.load_snapshot(revision=revision, deadline=deadline)
+
+    @_mapped
+    def read_hive_lease(self, prefix: str, *, deadline: float) -> Any:
+        """``(revision, lease)``: the unqualified protected hive-lease record (``("", None)``
+        when never adopted), as :meth:`SqlControlPlane.read_hive_lease_record` reads it."""
+        return self._plane.read_hive_lease_record(prefix)
 
     # ---- HqOperator ----------------------------------------------------------------------
 

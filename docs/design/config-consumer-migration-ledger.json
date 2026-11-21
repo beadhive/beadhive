@@ -602,28 +602,28 @@
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2369,
+        "line": 2370,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.worktrees_root",
         "kind": "direct-facade",
-        "line": 2439,
+        "line": 2440,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.worktrees_root"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2617,
+        "line": 2618,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2630,
+        "line": 2631,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -3053,7 +3053,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 180,
+    "test_config_importer_count": 185,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -3151,6 +3151,7 @@
       "tests/test_hive_sync.py",
       "tests/test_host.py",
       "tests/test_host_cli.py",
+      "tests/test_host_init_frame_fields.py",
       "tests/test_host_lease.py",
       "tests/test_host_lease_cli.py",
       "tests/test_host_provision.py",
@@ -3158,6 +3159,10 @@
       "tests/test_host_retire.py",
       "tests/test_host_rm_cli.py",
       "tests/test_hq.py",
+      "tests/test_hq_api_e2e.py",
+      "tests/test_hq_api_join.py",
+      "tests/test_hq_api_reads.py",
+      "tests/test_hq_api_route_plane.py",
       "tests/test_hq_authority_backend.py",
       "tests/test_hq_authority_enforce.py",
       "tests/test_hq_bootstrap.py",

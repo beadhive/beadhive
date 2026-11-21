@@ -2466,6 +2466,9 @@
           "$ref": "#/$defs/HostForwardConfig",
           "description": "Forward write path to a hive's primary (opt-in per frame; bh-g7dlo)."
         },
+        "frame": {
+          "$ref": "#/$defs/HostFrameConfig"
+        },
         "frame_bridge": {
           "$ref": "#/$defs/FrameBridgeIdentityConfig"
         },
@@ -2473,6 +2476,12 @@
           "default": "",
           "description": "Enrollment-owned Fleet identity; config storage does not enroll a host.",
           "title": "Frame Id",
+          "type": "string"
+        },
+        "instance_ref": {
+          "default": "",
+          "description": "Substrate-owned instance identity of this frame, published in its host manifest by `bh host init` (`--instance-ref` overrides). Never inferred: a frame without it cannot be admitted.",
+          "title": "Instance Ref",
           "type": "string"
         },
         "lease": {
@@ -2662,6 +2671,91 @@
       "title": "HostForwardServeConfig",
       "type": "object"
     },
+    "HostFrameCapabilitiesConfig": {
+      "additionalProperties": false,
+      "description": "Operator-declared capabilities of this frame (``host.frame.capabilities``), published in\nits host manifest by ``bh host init``. Every field is explicit: nothing is probed or inferred\n(``arch`` alone comes from the running machine).",
+      "properties": {
+        "harnesses": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Agent harnesses the frame offers (required to enroll a frame).",
+          "title": "Harnesses"
+        },
+        "isolation": {
+          "anyOf": [
+            {
+              "enum": [
+                "kvm",
+                "microvm",
+                "container",
+                "workstation"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Isolation the frame runs under (required to enroll a frame).",
+          "title": "Isolation"
+        },
+        "max_sessions": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Concurrent sessions the frame accepts (required to enroll).",
+          "title": "Max Sessions"
+        },
+        "trust_zone": {
+          "anyOf": [
+            {
+              "enum": [
+                "self-hosted",
+                "vendor-hosted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trust zone of the frame's substrate (required to enroll a frame).",
+          "title": "Trust Zone"
+        }
+      },
+      "title": "HostFrameCapabilitiesConfig",
+      "type": "object"
+    },
+    "HostFrameConfig": {
+      "additionalProperties": false,
+      "description": "Frame-declared manifest inputs (``host.frame``); HOST-only, never fleet-published.",
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/HostFrameCapabilitiesConfig"
+        }
+      },
+      "title": "HostFrameConfig",
+      "type": "object"
+    },
     "HostLeaseConfig": {
       "additionalProperties": false,
       "description": "**Host-lease** timing (``host.lease``) — the TTL/renewal contract behind\n``refs/bh/lease/<prefix>`` in HQ (``docs/design/multi-host-model-adr.md``, Amendment 1\n§3; implemented in :mod:`beadhive.host_lease`).\n\n\"Host lease\" is host ↔ hive, deliberately distinct from ``bd``'s *worker* lease\n(worker ↔ issue: ``lease_expires_at``, ``bd heartbeat`` / ``bd reclaim``) — Amendment 1\n§5. Nothing here configures bd's.\n\nBoth keys are **fleet-scoped** (``config_partition.FLEET_PREFIXES``) on purpose: expiry is\na shared judgement. If two hosts disagreed about when a lease lapses, one would consider a\nhive free while the other still considered itself primary — the exact split-brain the\nfence exists to prevent. Per-host variation is expressed through the host's ``role``\n(``hosts/<host_id>.yaml``), which SCALES this baseline\n(:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.",
@@ -2692,6 +2786,12 @@
       "additionalProperties": false,
       "description": "Where this host reaches the HQ service (``hq.api``, bh-g76hp). Used only when\n``hq.route`` is ``api``. HOST-local. The caller's identity is the credential the Gateway\n``hq`` plane authenticates (a client certificate on its TLS listener, or the auth proxy\nin front of its socket), never a value carried in a request.",
       "properties": {
+        "backend_identity": {
+          "default": "",
+          "description": "Pinned HQ backend identity (optional).",
+          "title": "Backend Identity",
+          "type": "string"
+        },
         "ca_cert": {
           "default": "",
           "description": "Absolute path of the CA bundle that verifies the Gateway (PEM).",
@@ -2708,6 +2808,30 @@
           "default": "",
           "description": "Absolute path of the private key for `client_cert` (PEM).",
           "title": "Client Key",
+          "type": "string"
+        },
+        "floor_path": {
+          "default": "",
+          "description": "Absolute path of this host's durable restore floor for api reads. Unset, authority-bearing reads are refused (nothing is verified without a floor).",
+          "title": "Floor Path",
+          "type": "string"
+        },
+        "generation": {
+          "default": "",
+          "description": "Pinned HQ authority generation (optional).",
+          "title": "Generation",
+          "type": "string"
+        },
+        "initial_revision": {
+          "default": "",
+          "description": "Head the restore floor starts at when no floor file exists yet.",
+          "title": "Initial Revision",
+          "type": "string"
+        },
+        "operator_public_key": {
+          "default": "",
+          "description": "OpenSSH Ed25519 public key of the HQ operator. Authority, config and eligibility responses are verified against it (`signed` authority mode); unset, they are refused in that mode.",
+          "title": "Operator Public Key",
           "type": "string"
         },
         "unix_socket": {
@@ -2787,9 +2911,11 @@
         },
         "mode": {
           "default": "git",
+          "description": "HQ backend: `git` (default), `dolt-server` (the HQ SQL server) or `api` (a HOST bootstrap that reaches HQ only through the hq-service, the same as `hq.route: api`; it needs `hq.api` and carries no `hq.sql`).",
           "enum": [
             "git",
-            "dolt-server"
+            "dolt-server",
+            "api"
           ],
           "title": "Mode",
           "type": "string"
@@ -2813,20 +2939,44 @@
           "title": "Route",
           "type": "string"
         },
+        "service_host": {
+          "default": false,
+          "description": "HOST-only. Marks this host as the hq-service host (bh-d9anb), the only host that may open HQ SQL directly (the SQL openers, placement, `hq migrate`, `bh hq authority prune-inbox`). Off (default): every SQL opener on this host is guarded per `hq.sql_guard`. Nothing infers it. `BH_HQ_SERVICE_HOST` (`1`/`true`) overrides it for one process.",
+          "title": "Service Host",
+          "type": "boolean"
+        },
         "session_dual_write": {
           "default": false,
-          "description": "HOST-only. With `hq.session_via_port` on and `hq.route: api`, also run the direct SQL session-row and evidence-row writes after the HQ service accepted its write. Off (default) leaves the port as the only writer. Do not enable until the SQL and service liveness floors are known not to be shared (bh-ubpoc). `BH_HQ_SESSION_DUAL_WRITE` (`1`/`true`) overrides it for one process.",
+          "description": "HOST-only. Retired (bh-65s71): accepted and ignored. An `hq.route: api` host reads and writes no SQL frame runtime, so hq-service is the only writer of its session and evidence; a SQL dual write waits on bh-ubpoc. `BH_HQ_SESSION_DUAL_WRITE` is ignored too.",
           "title": "Session Dual Write",
           "type": "boolean"
         },
         "session_via_port": {
           "default": false,
-          "description": "HOST-only. Route this frame's session renew and conformance-evidence post through the HQ port, on the adapter `hq.route` selects, instead of the direct SQL session calls. Off (default) keeps the direct SQL path unchanged. `BH_HQ_SESSION_VIA_PORT` (`1`/`true`) overrides it for one process. A port renew that cannot be sent is a failed renewal, never a silent SQL fallback.",
+          "description": "HOST-only, `hq.route: sql` hosts only. Route this frame's session renew and conformance-evidence post through the HQ port (the SQL adapter) instead of the direct SQL session calls. Off (default) keeps the direct SQL path unchanged. An `hq.route: api` host ignores it: it always renews and posts evidence through hq-service. `BH_HQ_SESSION_VIA_PORT` (`1`/`true`) overrides it for one process. A port renew that cannot be sent is a failed renewal, never a silent SQL fallback.",
           "title": "Session Via Port",
           "type": "boolean"
         },
         "sql": {
           "$ref": "#/$defs/HqSqlConfig"
+        },
+        "sql_guard": {
+          "anyOf": [
+            {
+              "enum": [
+                "warn",
+                "refuse",
+                "off"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HOST-only. What a host not marked `hq.service_host` gets when something opens HQ SQL: `warn` writes one stderr line per process and call site, naming the opener and caller, and changes no exit code or output; `refuse` raises before connecting; `off` is silent. Unset (default, 0.40.0): an `hq.route: api` host warns and an `hq.route: sql` host is untouched and silent; 0.41.0 makes `warn` plus refuse the default. The guard never selects a route and never falls back. `BH_HQ_SQL_GUARD` overrides it for one process.",
+          "title": "Sql Guard"
         }
       },
       "title": "HqConfig",

@@ -83,7 +83,7 @@ Each row is a function that opens the HQ SQL server, through one of the openers 
 what it reads (R) or writes (W) and its entry points. The **Port method** and **Route** columns
 map it onto section 3. Route paths are under `/hq/lifecycle/v0`. Route status is one of:
 
-- **live**: served by hq-service today;
+- **live**: served by hq-service (v0.1.0, commit 4e0fc6b, since bh-21vpt);
 - **planned**: named in an open hq-service slice bead;
 - **GAP**: no route exists or is planned yet;
 - **local**: HQ-host-only work that stays on SQL and does not go behind the port.
@@ -92,8 +92,8 @@ map it onto section 3. Route paths are under `/hq/lifecycle/v0`. Route status is
 
 | Call site (`file:function`) | Reads / writes | Entry points | Port method | Route (status) |
 |---|---|---|---|---|
-| `hq_sql_session.py:SessionRenewer.tick` (O6) | R own `_session` route (`resolve_route`); W one `UPDATE` of the frame's session row, server-stamped | `heartbeat_sender._renew` (`heartbeat_sender renew [--loop]`), via `heartbeat_report.session_renewer` | `HqLiveness.renew_session` | `POST /sessions/{principal}/{epoch}/renew` (planned, `bh-hq-e9z`) |
-| `hq_sql_session.py:publish_evidence` (O6), called by `heartbeat_report.py:publish_session_evidence` | R own route (`resolve_route`, a separate connection first); W one `UPDATE` of the frame's evidence row | `heartbeat_sender._publish_evidence` (after a conformance run) | `HqLiveness.publish_evidence` | `POST /sessions/{principal}/{epoch}/evidence` (planned, `bh-hq-e9z`) |
+| `hq_sql_session.py:SessionRenewer.tick` (O6) | R own `_session` route (`resolve_route`); W one `UPDATE` of the frame's session row, server-stamped | `heartbeat_sender._renew` (`heartbeat_sender renew [--loop]`), via `heartbeat_report.session_renewer` | `HqLiveness.renew_session` | `POST /sessions/{principal}/{epoch}/renew` (live, `bh-hq-e9z`) |
+| `hq_sql_session.py:publish_evidence` (O6), called by `heartbeat_report.py:publish_session_evidence` | R own route (`resolve_route`, a separate connection first); W one `UPDATE` of the frame's evidence row | `heartbeat_sender._publish_evidence` (after a conformance run) | `HqLiveness.publish_evidence` | `POST /sessions/{principal}/{epoch}/evidence` (live, `bh-hq-e9z`) |
 | `hq_control_plane.py:SqlControlPlane.heartbeat` (O1) | R `load_state`, `load_frame_binding`; W signed FrameLease envelope into the frame's inbox (`publish_inbox("heartbeat")`) | `bh host heartbeat`, `bh host heartbeat-send`, `heartbeat_sender beat` (`heartbeat_report.send_cached_beat`) | `HqLiveness.submit_heartbeat` | `PUT /heartbeats/{request_id}` (live) |
 | `hq_control_plane.py:SqlControlPlane.propose_hive_lease` (O1) | R `load_state`, `load_frame_binding`; W signed hive-lease request into the inbox (`publish_inbox("hive_lease")`) | `SqlControlPlane.publish_hive_lease` | `HqLiveness.submit_hive_lease` | `POST /hive-leases/{prefix}` (live) |
 | `hq_control_plane.py:SqlControlPlane.publish_hive_lease` (O1, O2) | R placement (`require_frame_placeable`), then polls `read_public_result` for the receiver's verdict | `host_lease.adopt` / `renew` / `release` (`bh host adopt`, `release`, `packup`) | `HqLiveness.submit_hive_lease` + `HqLiveness.read_result` | `POST /hive-leases/{prefix}` (live; the response is the verdict, so no poll) |
@@ -104,15 +104,15 @@ map it onto section 3. Route paths are under `/hq/lifecycle/v0`. Route status is
 
 | Call site (`file:function`) | Reads / writes | Entry points | Port method | Route (status) |
 |---|---|---|---|---|
-| `hq_sql_operator.py:SqlRuntimeOperator.provision_release_route` (O3) | R authority head + verified state; W per-incarnation tables and stamp triggers (`resume_incarnation`), `CREATE USER` + password, `GRANT SELECT` on the runtime and three config tables | `frame_release_upgrade.release_upgrade` (`bh host release-upgrade ... apply`) | `HqAdmission.register_incarnation` | `POST /incarnations` (planned, `bh-hq-3sa`; no login or secret is created) |
+| `hq_sql_operator.py:SqlRuntimeOperator.provision_release_route` (O3) | R authority head + verified state; W per-incarnation tables and stamp triggers (`resume_incarnation`), `CREATE USER` + password, `GRANT SELECT` on the runtime and three config tables | `frame_release_upgrade.release_upgrade` (`bh host release-upgrade ... apply`) | `HqAdmission.register_incarnation` | `POST /incarnations` (live, `bh-hq-3sa`; body `{principal, epoch, expected_revision}`; no login or secret is created) |
 | `hq_sql_operator.py:SqlRuntimeOperator.describe_release_route` (O3) | R which of inbox/session/evidence tables exist; R latest registry route for the frame | `frame_release_upgrade.release_upgrade` (plan and apply) | `HqAdmission.describe_incarnation` | **GAP** (could fold into the `POST /incarnations` plan response) |
 | `hq_sql_operator.py:SqlRuntimeOperator.preflight` (O3) | R own grants and probe reads (`hq_sql_capabilities.report`); never writes | `frame_release_upgrade.release_upgrade` | `HqAdmission.preflight` | **GAP** (only meaningful for the SQL adapter; the service adapter can return "not applicable") |
 | `hq_control_plane.py:SqlControlPlane.publish_registration` (O1) | R `read_frame_composite` (snapshot for `hosts/<id>.yaml` when given a host id) | `hq.publish_host_manifest` (`bh host init`, `bh hq` registration, `host_provision._step_hq_publish`) | `HqAdmission.submit_registration` | `POST /registrations` (live) |
 | `hq_control_plane.py:SqlControlPlane.publish_registration_evidence` (O1) | R `read_frame_composite`; W signed registration envelope into the inbox (`publish_inbox("registration")`) | `publish_registration` | `HqAdmission.submit_registration` | `POST /registrations` (live) |
-| `fleet_roster.py:save` -> `config_store.publish_fleet_document` -> `SqlFleetConfigRevisionStore.publish_snapshot` (O4, O5) | R committed config snapshot; W one `hosts/<host_id>.yaml` document under the snapshot's revision CAS | `bh host init` (`host_cli` manifest write) | `HqAdmission.publish_manifest` | `PUT /manifests/{host_id}` (planned, `bh-hq-3sa`) |
+| `fleet_roster.py:save` -> `config_store.publish_fleet_document` -> `SqlFleetConfigRevisionStore.publish_snapshot` (O4, O5) | R committed config snapshot; W one `hosts/<host_id>.yaml` document under the snapshot's revision CAS | `bh host init` (`host_cli` manifest write) | `HqAdmission.publish_manifest` | `PUT /manifests/{host_id}` (live, `bh-hq-3sa`; body is the manifest; the service CASes the config head) |
 | `fleet_roster.py:remove` (O4, O5) | W delete of `hosts/<host_id>.yaml` under revision CAS | `bh host rm`, `bh host retire` (`host_retire`) | `HqAdmission.withdraw_manifest` | **GAP** (no `DELETE /manifests/{host_id}`) |
-| `hq_control_plane.py:SqlControlPlane.admit_open` -> `grant(admitted=True)` (O3) | R `operator.load`, committed snapshot; W signed authority CAS with a trusted (open) grant, and the registry route and floor seed when a route was provisioned | `hq_open_admission.join` (`bh hq authority join`, `hq._open_admission` during `bh host init`) | `HqAdmission.admit` (`kind="trusted"`) | `POST /admissions/{frame}` (planned, `bh-hq-3sa`) |
-| `hq_control_plane.py:SqlControlPlane.grant` (O3) | R `operator.load`; W signed authority CAS adding a candidate grant | `bh hq authority grant --record` | `HqAdmission.admit` (`kind="candidate"`) | `POST /admissions/{frame}` (planned, `bh-hq-3sa`) |
+| `hq_control_plane.py:SqlControlPlane.admit_open` -> `grant(admitted=True)` (O3) | R `operator.load`, committed snapshot; W signed authority CAS with a trusted (open) grant, and the registry route and floor seed when a route was provisioned | `hq_open_admission.join` (`bh hq authority join`, `hq._open_admission` during `bh host init`) | `HqAdmission.admit` (`kind="trusted"`) | `POST /admissions/{frame}` (live, `bh-hq-3sa`; body `{kind, expected_revision, host_id, public_key}`) |
+| `hq_control_plane.py:SqlControlPlane.grant` (O3) | R `operator.load`; W signed authority CAS adding a candidate grant | `bh hq authority grant --record` | `HqAdmission.admit` (`kind="candidate"`) | `POST /admissions/{frame}` (live, `bh-hq-3sa`; body `{kind, expected_revision, host_id, public_key}`) |
 
 ### 2.3 Reads
 
@@ -121,25 +121,25 @@ map it onto section 3. Route paths are under `/hq/lifecycle/v0`. Route status is
 | `hq_sql_runtime.py:SqlRuntimeAuthority.load_state` (O1) | R authority row at HEAD, signature, `validate_state`, expiry, restore floor (`_check_floor`) | `SqlControlPlane.authority_status` (`bh hq authority status/check`, `hq_authority_expiry.warn_if_expiring` in `bh plan`, intake and validation admission; the herdr operator view), `heartbeat`, `propose_hive_lease`, `hq_authority_expiry.read_state`, `hq_authority_fence_notice.probe_authority` | `HqReads.read_authority` | `GET /authority` (live) |
 | `hq_sql_operator.py:SqlRuntimeOperator.load` (O3) | Same verified authority read, through the writer login, expired allowed | every operator verb (rebind, grant, observe, lifecycle, release-policy, release-upgrade, join, fleet mode, bind-beadyard), `hq_authority_expiry.read_state` | `HqReads.read_authority(allow_expired=True)` | `GET /authority` (live; the operator principal reads it with scope `lifecycle:read`) |
 | `hq_sql_runtime.py:SqlRuntimeAuthority.load_frame_binding` (O1) | R this principal's registry route (frame, holder, instance, epoch, inbox table, signer) at HEAD | `heartbeat`, `propose_hive_lease`, `heartbeat_report` measured beat | `HqReads.read_frame_anchor` | **GAP** (should ride on `GET /eligibility/{frame}`; see section 4) |
-| `hq_sql_runtime.py:SqlRuntimeAuthority.read_frame_composite` (O1, O2) | R in one snapshot: authority, route, grant slot and record, committed config snapshot, signed hive policies, observation (session/evidence via `hq_sql_session.read_eligibility`, or inbox beat), optional hive-lease row and evidence; then head fences | see the next rows | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (planned, `bh-hq-9lh`) |
-| `hq_control_plane.py:SqlControlPlane.read_eligibility` / `observe` | via `read_frame_composite(session_liveness=True)` plus `read_release_catalog_row` | `frame_eligibility.load_facts` (`bh host eligible`, `require_eligible`, intake admission), `host_heartbeat` observer | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (planned) |
-| `hq_control_plane.py:SqlControlPlane.eligibility_authority_status` | via `read_frame_composite` | `frame_eligibility.evictable` | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (planned) |
-| `hq_control_plane.py:SqlControlPlane.fetch_config`, `watch_state`, `load_config_authority_snapshot`, `heartbeat_reference` | via `read_frame_composite` | `host_heartbeat.watch_state` (daemon), `bh host heartbeat`, config authority snapshot | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (planned) |
-| `hq_control_plane.py:SqlControlPlane.hive_policy_binding` / `require_hive_policy` | via `read_frame_composite(prefix=...)` | `bh host eligible --hive` (`host_cli._hive_policy_predicate`), `host_adopt._require_hive_policy` | `HqReads.read_eligibility(prefix=...)` | `GET /eligibility/{frame}` (planned; needs a `prefix` parameter, see section 4) |
+| `hq_sql_runtime.py:SqlRuntimeAuthority.read_frame_composite` (O1, O2) | R in one snapshot: authority, route, grant slot and record, committed config snapshot, signed hive policies, observation (session/evidence via `hq_sql_session.read_eligibility`, or inbox beat), optional hive-lease row and evidence; then head fences | see the next rows | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (live, `bh-hq-9lh`; carries principal, epoch, route and, with `?release_id=&release_digest=`, the release verdict) |
+| `hq_control_plane.py:SqlControlPlane.read_eligibility` / `observe` | via `read_frame_composite(session_liveness=True)` plus `read_release_catalog_row` | `frame_eligibility.load_facts` (`bh host eligible`, `require_eligible`, intake admission), `host_heartbeat` observer | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (live) |
+| `hq_control_plane.py:SqlControlPlane.eligibility_authority_status` | via `read_frame_composite` | `frame_eligibility.evictable` | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (live) |
+| `hq_control_plane.py:SqlControlPlane.fetch_config`, `watch_state`, `load_config_authority_snapshot`, `heartbeat_reference` | via `read_frame_composite` | `host_heartbeat.watch_state` (daemon), `bh host heartbeat`, config authority snapshot | `HqReads.read_eligibility` | `GET /eligibility/{frame}` (live) |
+| `hq_control_plane.py:SqlControlPlane.hive_policy_binding` / `require_hive_policy` | via `read_frame_composite(prefix=...)` | `bh host eligible --hive` (`host_cli._hive_policy_predicate`), `host_adopt._require_hive_policy` | `HqReads.read_eligibility(prefix=...)` | `GET /eligibility/{frame}` (live) plus `GET /hive-leases?prefix=` (live) for the hive-lease row, see section 4 |
 | `hq_control_plane.py:SqlControlPlane.read_hive_lease_record` / `read_hive_lease` | via `read_frame_composite(prefix=..., hive_lease_epoch=...)`: hive-lease row, signed evidence, incumbent | `frame_eligibility.incumbent_primary`, `host_lease.read_record`, `localloop` lease probe, `host_cli._scan_leases` (`packup`, `rm`), `bh host eligible --hive` | `HqReads.read_eligibility(prefix=...)` | **GAP** (no hive-lease read; `GET /eligibility/{frame}` would need the lease row) |
-| `hq_control_plane.py:SqlControlPlane.read_placement` / `require_frame_placeable` | via `read_frame_composite(session_prefix=...)`: director placement row | `publish_hive_lease`, `host_adopt` placement check | `HqReads.read_eligibility(session_prefix=...)` | `GET /eligibility/{frame}` (planned; placement holder is one of its inputs) |
+| `hq_control_plane.py:SqlControlPlane.read_placement` / `require_frame_placeable` | via `read_frame_composite(session_prefix=...)`: director placement row | `publish_hive_lease`, `host_adopt` placement check | `HqReads.read_eligibility(session_prefix=...)` | `GET /eligibility/{frame}` (live) plus `GET /hive-leases?prefix=` (live; placement holder is one of its inputs) |
 | `hq_sql_runtime.py:SqlRuntimeAuthority.read_release_catalog_row` (O1) | R the release catalog row for a measured digest `AS OF` the verified head | `SqlControlPlane.read_eligibility`, `heartbeat_report` (measured beat release admission) | `HqReads.read_release_catalog_row` | **GAP** (or part of the eligibility payload, to settle in `bh-hq-9lh`) |
-| `hq_sql_config.py:SqlFleetConfigRevisionStore.load_snapshot` / `load_snapshot_or_cached` (O4, O5) | R committed `hq_config_*` documents at HEAD (or a revision), the config restore floor, then the cached snapshot in trusted mode | `hq_control_plane.attach_fleet_config` -> `config_store.load_fleet` / `fleet_snapshot` (every fleet-scope config read), `SqlControlPlane.load_host_manifest`, `fleet_roster.load` / `exists` / `manifest_paths` (`bh host list`, `bh host show`), `hq_open_admission`, `frame_release_upgrade`, `hq_authority_fleet_mode.show` | `HqReads.read_config` | `GET /config` (planned, `bh-hq-9lh`) |
-| `hq_sql_config.py:SqlFleetConfigRevisionStore.authority_binding` (O4) | R bound config head vs latest, and whether every commit between them is a tolerated edit | `hq_authority_expiry._config_bound`, `hq_authority_fleet_mode.refresh`, `hq_authority_fence_notice.probe_authority` | `HqReads.read_history` (superseded by section 7 D1: adapter-private `_read_history`) | `GET /history?since={floor}` (planned, `bh-hq-9lh`) |
-| `hq_sql_runtime.py:SqlRuntimeAuthority._check_floor`, `_check_provisioning_descendant` (inside O1/O3 reads) | R `dolt_log` ancestry and `DOLT_DIFF_SUMMARY` since the local floor | every verified read above | adapter-internal (`bh-j99c8`) | `GET /history?since={floor}` (planned) |
+| `hq_sql_config.py:SqlFleetConfigRevisionStore.load_snapshot` / `load_snapshot_or_cached` (O4, O5) | R committed `hq_config_*` documents at HEAD (or a revision), the config restore floor, then the cached snapshot in trusted mode | `hq_control_plane.attach_fleet_config` -> `config_store.load_fleet` / `fleet_snapshot` (every fleet-scope config read), `SqlControlPlane.load_host_manifest`, `fleet_roster.load` / `exists` / `manifest_paths` (`bh host list`, `bh host show`), `hq_open_admission`, `frame_release_upgrade`, `hq_authority_fleet_mode.show` | `HqReads.read_config` | `GET /config` (live, `bh-hq-9lh`) |
+| `hq_sql_config.py:SqlFleetConfigRevisionStore.authority_binding` (O4) | R bound config head vs latest, and whether every commit between them is a tolerated edit | `hq_authority_expiry._config_bound`, `hq_authority_fleet_mode.refresh`, `hq_authority_fence_notice.probe_authority` | `HqReads.read_history` (superseded by section 7 D1: adapter-private `_read_history`) | `GET /history?since={floor}` (live, `bh-hq-9lh`) |
+| `hq_sql_runtime.py:SqlRuntimeAuthority._check_floor`, `_check_provisioning_descendant` (inside O1/O3 reads) | R `dolt_log` ancestry and `DOLT_DIFF_SUMMARY` since the local floor | every verified read above | adapter-internal (`bh-j99c8`) | `GET /history?since={floor}` (live) |
 
 ### 2.4 Operator publication
 
 | Call site (`file:function`) | Reads / writes | Entry points | Port method | Route (status) |
 |---|---|---|---|---|
-| `hq_control_plane.py:SqlControlPlane.renew` -> `SqlRuntimeOperator.publish` (O3, O2) | R `operator.load`, latest config, hive-policy projection; W signed authority CAS (`revision+1`), Dolt commit, head fences, read-back | `bh hq authority rebind` (and deprecated `renew`), `hq_authority_fleet_mode.set_fleet_mode` | `HqOperator.rebind` | rebind plan/apply (planned, `bh-hq-mz3`; path not yet named) |
-| `hq_control_plane.py:SqlControlPlane.release_policy` -> `frame_release_policy.release_policy` (O3) | R `operator.load`, `attested_releases`; W signed authority CAS | `bh hq authority release-policy plan/apply` | `HqOperator.release_policy` | release-policy plan/apply (planned, `bh-hq-mz3`; path not yet named) |
-| `hq_sql_operator.py:SqlRuntimeOperator.attested_releases` (O3) | R signed registration evidence of the frame's readers | `frame_release_policy.release_policy` | `HqOperator.release_policy` (plan step) | planned with release-policy (`bh-hq-mz3`) |
+| `hq_control_plane.py:SqlControlPlane.renew` -> `SqlRuntimeOperator.publish` (O3, O2) | R `operator.load`, latest config, hive-policy projection; W signed authority CAS (`revision+1`), Dolt commit, head fences, read-back | `bh hq authority rebind` (and deprecated `renew`), `hq_authority_fleet_mode.set_fleet_mode` | `HqOperator.rebind` | `POST /authority/rebind/{plan,apply}` (live, `bh-hq-mz3`) |
+| `hq_control_plane.py:SqlControlPlane.release_policy` -> `frame_release_policy.release_policy` (O3) | R `operator.load`, `attested_releases`; W signed authority CAS | `bh hq authority release-policy plan/apply` | `HqOperator.release_policy` | `POST /authority/release-policy/{frame}/{plan,apply}` (live, `bh-hq-mz3`) |
+| `hq_sql_operator.py:SqlRuntimeOperator.attested_releases` (O3) | R signed registration evidence of the frame's readers | `frame_release_policy.release_policy` | `HqOperator.release_policy` (plan step) | the plan step of `POST /authority/release-policy/{frame}/plan` (live, `bh-hq-mz3`) |
 | `hq_control_plane.py:SqlControlPlane.accept_observation` (O3) | R `operator.load`, `operator.evidence` (registration and consecutive accepted receipts); W signed authority CAS | `bh hq authority observe` | `HqOperator.publish_authority` | **GAP** |
 | `hq_sql_operator.py:SqlRuntimeOperator.evidence` (O3) | R protected registration and observer receipts | `accept_observation`, `lifecycle` | `HqOperator.read_evidence` | **GAP** |
 | `hq_control_plane.py:SqlControlPlane.lifecycle` (O3) | R `operator.load`, `operator.evidence`; W signed authority CAS for the verb | `bh host admit/cordon/drain/park/resume/quarantine`, `frame-retire`, `emergency-admit`, `emergency-revoke` | `HqOperator.publish_authority` | **GAP** (only the admit transition is near `POST /admissions/{frame}`) |
@@ -384,25 +384,26 @@ changes in `bh-v3dyp`.
 
 ## 4. Gaps
 
-These call sites have no hq.lifecycle.v0 route, planned or live. Until a route exists they
+These call sites have no hq.lifecycle.v0 route, planned or live, or have a live route the adapter
+does not yet reach through a port method (the status at the end of each row). Until both exist they
 keep the SQL adapter: `hq.route: api` refuses them with `HqUnavailable("no hq-service route
 for <method>")`, and never falls back to SQL.
 
-| Gap | Port method | Callers blocked on `api` | Suggested owner and shape |
+| Gap | Port method | Callers blocked on `api` | Suggested owner and shape (status at hq-service v0.1.0) |
 |---|---|---|---|
-| G1 | `HqReads.read_frame_anchor` | heartbeat, hive-lease and registration submits; session renew/evidence path parameters | `bh-hq-9lh`: return the caller's route (principal, epoch, carrier, signer fingerprint) in `GET /eligibility/{frame}` |
-| G2 | `HqReads.read_eligibility(prefix=..., hive_lease_epoch=...)` hive-lease row and evidence | `read_hive_lease_record`, `host_lease`, `localloop`, `bh host packup/rm`, `incumbent_primary` | `bh-hq-9lh`: `?prefix=` on `GET /eligibility/{frame}`, or `GET /hive-leases/{prefix}` |
-| G3 | `HqReads.read_release_catalog_row` | eligibility release admission, measured beat | `bh-hq-9lh`: include the matched catalog row in the eligibility payload |
+| G1 | `HqReads.read_frame_anchor` | heartbeat, hive-lease and registration submits; session renew/evidence path parameters | `bh-hq-9lh`: return the caller's route (principal, epoch, carrier, signer fingerprint) in `GET /eligibility/{frame}` **Live and wired** (`bh-65s71`): `HqServiceAdapter.read_frame_anchor` reads `GET /eligibility/{frame}` for the host's `host.frame_id`, takes the grant from the verified authority record and checks the served `principal`, `epoch` and `route` against it (`beadhive.hq_frame_grant`); session renew, evidence and the beat need no SQL frame runtime on `api`. Hive-lease submits use it on `api` (`bh-h9dn1`); registration submits have no `api` caller yet. |
+| G2 | `HqReads.read_eligibility(prefix=..., hive_lease_epoch=...)` hive-lease row and evidence | `read_hive_lease_record`, `host_lease`, `localloop`, `bh host packup/rm`, `incumbent_primary` | `bh-hq-9lh`: `?prefix=` on `GET /eligibility/{frame}`, or `GET /hive-leases/{prefix}` **Live and wired** (`bh-h9dn1`): `GET /hive-leases?prefix=` is the port's `HqReads.read_hive_lease`; the api plane qualifies the row (holder, incumbent) from the eligibility read and the signed grant, and judges `current_hive_lease_holder` from it. The composite `read_eligibility(prefix=...)` stays unrouted. The hive-lease write is wired too: `ApiControlPlane.publish_hive_lease` signs the request from the G1 grant and route and submits it to `POST /hive-leases/{prefix}` (`HqLiveness.submit_hive_lease`), so claim, renew, release and packup need no SQL on `api`. |
+| G3 | `HqReads.read_release_catalog_row` | eligibility release admission, measured beat | `bh-hq-9lh`: include the matched catalog row in the eligibility payload **Live and wired**: `GET /release-catalog/{catalog}?release_id=&release_digest=` is `HqServiceAdapter.read_release_catalog_row`; the eligibility body carries the same verdict under `release`. The measured beat on `api` reads it through the port (`bh-65s71`). |
 | G4 | `HqAdmission.describe_incarnation`, `HqAdmission.preflight` | `bh host release-upgrade` | `bh-hq-3sa`: a plan response from `POST /incarnations` |
-| G5 | `HqAdmission.withdraw_manifest` | `bh host rm`, `bh host retire` | `bh-hq-3sa`: `DELETE /manifests/{host_id}` |
+| G5 | `HqAdmission.withdraw_manifest` | `bh host rm`, `bh host retire` | `bh-hq-3sa`: `DELETE /manifests/{host_id}` **Route live**: `DELETE /manifests/{host_id}` is `HqServiceAdapter.withdraw_manifest`. |
 | G6 | `HqOperator.publish_authority` | `bh hq authority observe`, `bind-beadyard`, `bh host admit/cordon/drain/park/resume/quarantine/frame-retire/emergency-*`, `release-upgrade` | `bh-hq-mz3`: one generic signed-authority CAS (`{record, signature, expected_revision}`) covers all of these, since the client already builds and signs the state; rebind and release-policy become special cases |
 | G7 | `HqOperator.read_evidence` | `observe`, lifecycle verbs | `bh-hq-mz3`: operator read of registration and receipts |
 | G8 | `HqOperator.publish_config`, `recover_publication` | every fleet-scope config edit, fleet mode, beadyard binding | a config-publication slice (named in hq-service `docs/DESIGN.md`, not yet a bead) |
 | G9 | Placement (`SqlPlacementDirector`) | `bh hq placement`, director failover, doctor | not yet planned; the director runs on the HQ host today, so it can stay SQL |
-| G10 | Release catalog (`ReleaseCatalogStore`) | `bh hq release-catalog import/revoke/verify` | not yet planned; operator-host tool |
+| G10 | Release catalog (`ReleaseCatalogStore`) | `bh hq release-catalog import/revoke/verify` | not yet planned; operator-host tool **Routes live**: catalog read, verify (`GET`), and operator `import`/`revoke` plan/apply under `/release-catalog/{catalog}`; the read and verify are wired, import and revoke have no port method yet (`bh-lejfy`). |
 
-G1 matters most. Without it, a frame on the hq-service adapter cannot fill the
-`/sessions/{principal}/{epoch}` path, so `bh-u0osy` depends on it as much as on `bh-hq-e9z`.
+G1 mattered most: without it a frame on the hq-service adapter could not fill the
+`/sessions/{principal}/{epoch}` path. It is closed by `bh-65s71`.
 
 ## 5. Notes for the consumers
 
@@ -418,8 +419,8 @@ G1 matters most. Without it, a frame on the hq-service adapter cannot fill the
   `read_history(since=floor)` feeding the same append-only check `_check_floor` runs today
   (superseded by section 7 D1: this is the adapter's private `_read_history`, not a port method).
 - **`bh-u0osy`.** `heartbeat_sender` keeps its loop and error reporting. It gets
-  `renew_session` and `publish_evidence` from the port, plus `read_frame_anchor` once G1 is
-  closed.
+  `renew_session` and `publish_evidence` from the port, plus `read_frame_anchor` (G1, closed by
+  `bh-65s71`).
 
 ## 6. Landed: the SQL adapter (`bh-v3dyp`)
 
@@ -490,10 +491,10 @@ admitted, now, operator_public_key) -> GrantTransition(state, provisioned_route)
 fleet gate (`open_admission_guard`) reads process state and stays with the caller. The grant
 corpus runner is `tests/test_hq_grant_conformance.py`, reading `conformance/grant/v1` from
 hq-service in place (`HQ_GRANT_CORPUS`); the cases themselves are hq-service's to add
-(`bh-hq-2p6`). `HqServiceAdapter.admit` sends the intent, PROVISIONALLY:
-`{"request": {"frame", "candidate": {"authority", "public_key"}, "desired", "admitted",
-"provisioned_route"}, "expected_revision"}`. hq-service `bh-hq-3sa` (`POST /admissions/{frame}`)
-has not reached hq-service main, so this body is re-checked when it lands.
+(`bh-hq-2p6`). `HqServiceAdapter.admit` sends the served body (hq-service v0.1.0, `store/admission.go`):
+`{"kind": "open" | "candidate", "expected_revision", "host_id", "public_key"}`, where an open
+admission (`request.admitted`) names the candidate's host and runtime key and a candidate admission
+names only the head. The service derives the principal and builds and signs the grant itself.
 
 **D4. `read_result` is stateless.** `Submission` gains optional `audience` and `expected_head`
 fields, filled by the SQL adapter's submit; `read_result` rebuilds the `read_public_result` call

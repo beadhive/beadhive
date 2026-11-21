@@ -1,0 +1,103 @@
+{
+  "_comment": "Code registry for conformance/operator/v1 (POST /authority/rebind/{plan,apply}, POST /authority/release-policy/{frame}/{plan,apply}, POST /release-catalog/{catalog}/{import,revoke}/{plan,apply}; scope lifecycle:operator), under the error envelope of ADR 0001. Each entry: the HTTP status, retryable, and the message clients see in error.message; the real reason for a refusal is in error.details.reason. Codes admission/v1, session/v1 and registration/v1 also list (stale_revision, authority_failed, operator_signature_required, config_unreadable, beadyard_mismatch, committed_unreadable, working_set_dirty, publish_busy, path_invalid, request_malformed, deadline_exceeded) keep their entries there. Normative, no Python wire reference: Python has no HTTP surface for these; the records are beadhive's (hq_control_plane.renew, frame_release_policy.prepare). Owned by the corpus, not either implementation.",
+  "rebind_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "the rebind request is not a frame and a duration in their forms"
+  },
+  "release_policy_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "the release policy request or its spec is invalid"
+  },
+  "operator_signature_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "the signature does not verify against the operator key over the plan's signing input"
+  },
+  "plan_expired": {
+    "status": 409,
+    "retryable": false,
+    "message": "the plan is older than its window; plan again"
+  },
+  "plan_mismatch": {
+    "status": 409,
+    "retryable": false,
+    "message": "the apply is not what the plan request yields"
+  },
+  "operator_state_invalid": {
+    "status": 409,
+    "retryable": false,
+    "message": "the authority the operator would publish is invalid"
+  },
+  "rebind_no_frame_grant": {
+    "status": 409,
+    "retryable": false,
+    "message": "the frame has no active or candidate grant to rebind"
+  },
+  "rebind_policy_unavailable": {
+    "status": 409,
+    "retryable": false,
+    "message": "no single current frame policy revision is available to rebind the frame to"
+  },
+  "rebind_policy_ambiguous": {
+    "status": 409,
+    "retryable": false,
+    "message": "managed hives carry different frame policy revisions"
+  },
+  "release_policy_no_grant": {
+    "status": 409,
+    "retryable": false,
+    "message": "the frame has no active or candidate grant"
+  },
+  "release_policy_unchanged": {
+    "status": 409,
+    "retryable": false,
+    "message": "the frame's release policy is already this"
+  },
+  "release_policy_downgrade": {
+    "status": 409,
+    "retryable": false,
+    "message": "the range excludes the attested release while admitting lower ones"
+  },
+  "release_policy_reader_old": {
+    "status": 409,
+    "retryable": false,
+    "message": "frames attest a release too old to read a release policy"
+  },
+  "release_policy_reader_unknown": {
+    "status": 409,
+    "retryable": false,
+    "message": "frames have no attested release, so they may not read a release policy"
+  },
+  "operator_apply_disabled": {
+    "status": 403,
+    "retryable": false,
+    "message": "this service does not write the authority table for operator publication"
+  },
+  "catalog_invalid": {
+    "status": 400,
+    "retryable": false,
+    "message": "the catalog request is not a release and its provenance in their forms"
+  },
+  "catalog_row_exists": {
+    "status": 409,
+    "retryable": false,
+    "message": "the catalog already holds this release active"
+  },
+  "catalog_version_taken": {
+    "status": 409,
+    "retryable": false,
+    "message": "the version already has another active digest in the catalog"
+  },
+  "catalog_row_unknown": {
+    "status": 409,
+    "retryable": false,
+    "message": "the catalog holds no active row for this release"
+  },
+  "catalog_row_revoked": {
+    "status": 409,
+    "retryable": false,
+    "message": "the release is already revoked in the catalog"
+  }
+}

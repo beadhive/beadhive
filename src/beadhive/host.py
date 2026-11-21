@@ -81,7 +81,8 @@ def frame_binding() -> tuple[bool, bool]:
 
 
 def sql_hq_selected() -> bool:
-    """Read the explicit HOST bootstrap selector without a fleet/runtime read."""
+    """Read the explicit HOST bootstrap selector without a fleet/runtime read: the central HQ,
+    by ``hq.sql.enabled`` or ``hq.route: api`` (:func:`beadhive.config.fleet_sql_selected`)."""
     return config.fleet_sql_selected()
 
 

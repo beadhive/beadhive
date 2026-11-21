@@ -157,6 +157,15 @@ def ttl_for_role(role: str, base_ttl: float = DEFAULT_TTL) -> float:
     return base_ttl * ROLE_TTL_SCALE.get(role, 1.0)
 
 
+#: Planes whose hive lease and manifests are central HQ's (the SQL plane, or the hq-service
+#: plane of an ``hq.route: api`` host, bh-h9dn1), not a Git HQ clone's.
+_CENTRAL_BACKENDS = frozenset({"sql", "api"})
+
+
+def _central(plane) -> bool:
+    return getattr(plane, "config_backend", None) in _CENTRAL_BACKENDS
+
+
 def _frame_plane(cwd):
     from . import host, hosts
     from .hq_control_plane import control_plane
@@ -185,16 +194,14 @@ def _frame_plane(cwd):
         return control_plane(cwd) if raw.frame_id else None
 
     plane = control_plane(cwd)
-    if selected_sql and getattr(plane, "config_backend", None) != "sql":
+    if selected_sql and not _central(plane):
         raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL control-plane binding unavailable")
     try:
         manifest = plane.load_host_manifest(identity)
     except FileNotFoundError as exc:
-        if getattr(plane, "config_backend", None) == "sql" and not plane.verified_manifest_absence(
-            exc
-        ):
+        if _central(plane) and not plane.verified_manifest_absence(exc):
             raise
-        if getattr(plane, "config_backend", None) == "sql":
+        if _central(plane):
             raise HostLeaseRejected(
                 "AUTHORITY_NOT_READY: SQL host has no committed host manifest"
             ) from None
@@ -205,7 +212,7 @@ def _frame_plane(cwd):
         raise HostLeaseRejected("enrolled frame has no committed frame binding")
     if manifest.frame_id:
         return plane
-    if getattr(plane, "config_backend", None) == "sql":
+    if _central(plane):
         raise HostLeaseRejected("AUTHORITY_NOT_READY: SQL host has no bound runtime frame")
     return None
 

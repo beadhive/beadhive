@@ -61,6 +61,9 @@ class AuthorityPublicationUnknown(SqlOperatorError):
 
 class SqlRuntimeOperator:
     def __init__(self, settings, *, broker=None, clock=time.time):
+        from .hq_sql_guard import guard_sql_open
+
+        guard_sql_open("SqlRuntimeOperator")
         self.settings = settings
         self.broker = broker or FnoxBroker()
         self.clock = clock

@@ -15,13 +15,20 @@ principal provisioning (account, inbox and session tables) that is not an author
 
 Trust delta: in a trusted fleet anything that can reach HQ with write access and register can
 join. A signed fleet refuses (fail closed) exactly as before.
+
+On an ``hq.route: api`` host (bh-obhfx) the join goes only through the HQ port, with no SQL
+login, grant or escrowed secret and no ``authority_writer`` binding: the incarnation is
+registered with hq-service (``POST /incarnations``, operator-bound at the Gateway) and the frame
+open-admits itself (``POST /admissions/{frame}``, frame-bound); hq-service builds and signs the
+grant from the committed manifest. Each step a caller is not bound for is left to the seat that
+is (:func:`_join_api`).
 """
 
 from __future__ import annotations
 
 from . import hq_authority_enforce
 from . import hq_authority_guard as guard
-from .hq_control_plane import ControlPlaneError, open_admission_guard
+from .hq_control_plane import ControlPlaneError, HqPlaneRefused, open_admission_guard
 
 #: Conformance profile an open-admitted frame echoes when the fleet has no other frame to copy.
 DEFAULT_PROFILE = "open-admission"
@@ -29,8 +36,16 @@ DEFAULT_PROFILE = "open-admission"
 DEFAULT_AUDIENCE = "beadhive"
 
 
+def _api(plane) -> bool:
+    return getattr(plane, "config_backend", None) == "api"
+
+
 def _operator_state(plane) -> tuple[str, dict]:
-    """``(authority head, state)`` read with operator custody, on either plane."""
+    """``(authority head, state)`` read with operator custody, on either plane (the verified
+    ``GET /authority`` on an api plane)."""
+    if _api(plane):
+        head, state, _crossref, _policies = plane.authority_state()
+        return head, state or {}
     if hasattr(plane, "_operator_read"):
         head, state, _policy = plane._operator_read()
         return head, state or {}
@@ -123,12 +138,62 @@ def join(plane, host_id: str, public_key: str, *, operator_key: str = "") -> dic
     if admitted(plane, host_id):
         return {"host_id": host_id, "admitted": True, "changed": False}
     authority, key, desired, expected = request(plane, host_id, public_key)
+    if _api(plane):
+        return _join_api(plane, host_id, authority, key, desired, expected)
     revision = plane.admit_open(
         authority, key, desired, expected=expected, operator_key=operator_key
     )
     return {
         "host_id": host_id,
         "frame_id": authority.frame_id,
+        "admitted": True,
+        "changed": True,
+        "revision": revision,
+        "mode": hq_authority_enforce.mode(),
+    }
+
+
+def _join_api(plane, host_id, authority, key, desired, expected) -> dict:
+    """Register the incarnation, then open-admit it, through the HQ port only.
+
+    ``POST /incarnations`` is operator-bound and ``POST /admissions/{frame}`` frame-bound
+    (hq-service v0.1.0, ``caller_not_bound``), so one credential may hold only one of them:
+    a frame skips the registration it is not bound for (the operator registered it), and an
+    operator skips the admission (the frame admits itself). Both principal and epoch are
+    derived as hq-service derives them, so the two seats name the same incarnation."""
+    from .hq_sql_signatures import sql_principal
+
+    principal = sql_principal(authority)
+    result = {
+        "host_id": host_id,
+        "frame_id": authority.frame_id,
+        "principal": principal,
+        "epoch": authority.epoch,
+        "route": "api",
+    }
+    try:
+        plane.register_incarnation(authority, expected=expected)
+        result["registered"] = True
+    except HqPlaneRefused as exc:
+        if exc.code != "caller_not_bound":
+            raise
+        result["registered"] = False  # not this caller's: the operator registers it
+    try:
+        revision = plane.admit_open(authority, key, desired, expected=expected)
+    except HqPlaneRefused as exc:
+        if exc.code == "caller_not_bound" and result["registered"]:
+            # An operator registered the incarnation; only the frame can admit itself.
+            return {**result, "admitted": False, "changed": True}
+        if exc.code == "incarnation_unprovisioned":
+            raise ControlPlaneError(
+                f"open admission of {host_id}: incarnation {principal} epoch {authority.epoch} "
+                "is not registered with hq-service; an operator-bound caller registers it "
+                f"(`bh hq authority join --frame {host_id} --public-key <key.pub> --confirm`), "
+                "then the frame joins again"
+            ) from None
+        raise
+    return {
+        **result,
         "admitted": True,
         "changed": True,
         "revision": revision,

@@ -859,6 +859,12 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
         "local_only": {"type": "boolean"},
         "allow_unknown_readers": {"type": "boolean"},
     },
+    # bh-6se58.3 (operator approval: Brian Cripe, 2026-11-21, recorded on bh-6se58.3): `bh host
+    # init` appends the optional `--instance-ref` (overrides HOST key host.instance_ref) so a
+    # route=api frame manifest can carry it. Callers that omit it keep their exact request.
+    "host.init": {
+        "instance_ref": {"type": "string"},
+    },
     "host.release-upgrade": {
         "frame_address": {"type": "string"},
         "password_stdin": {"type": "boolean"},

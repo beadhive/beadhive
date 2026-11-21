@@ -232,7 +232,11 @@ def _lease(prefix: str):
 
     hq_dir = config.hq_dir()
     binding = config.load_host().get("hq", {}) or {}
-    if (binding.get("sql") or {}).get("enabled") or binding.get("authority_anchor"):
+    if (
+        (binding.get("sql") or {}).get("enabled")
+        or binding.get("authority_anchor")
+        or config.fleet_sql_selected()  # hq.route: api reads it through the port (bh-h9dn1)
+    ):
         return control_plane(hq_dir).read_hive_lease(prefix)
     if not (hq_dir / ".git").exists():
         return None

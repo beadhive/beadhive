@@ -329,7 +329,7 @@ def test_sql_admit_refuses_an_untyped_or_mismatched_request(frame, request_of):
     assert operator.published == []
 
 
-# ---- HqServiceAdapter.admit (provisional D3 body, pending bh-hq-3sa on hq-service main) -----
+# ---- HqServiceAdapter.admit (hq-service v0.1.0 body: store/admission.go) -------------------
 
 
 def test_api_admit_sends_the_intent_and_never_signs():
@@ -337,14 +337,13 @@ def test_api_admit_sends_the_intent_and_never_signs():
 
     import httpx
 
-    from beadhive.hq_authority_payload import authority_payload
     from beadhive.hq_service_adapter import HqServiceAdapter
 
     calls = []
 
     def handler(request):
         calls.append(request)
-        return httpx.Response(200, json={"revision": "r8"})
+        return httpx.Response(200, json={"revision": "r8", "frame_id": "frame2"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://hq")
     adapter = HqServiceAdapter(client)
@@ -365,13 +364,6 @@ def test_api_admit_sends_the_intent_and_never_signs():
     assert head == "r8"
     (sent,) = calls
     assert (sent.method, sent.url.path) == ("POST", "/hq/lifecycle/v0/admissions/frame2")
-    assert json.loads(sent.content) == {
-        "request": {
-            "frame": "frame2",
-            "candidate": {"authority": authority_payload(authority), "public_key": key},
-            "desired": DESIRED,
-            "admitted": False,
-            "provisioned_route": ["p", "frame2", "host2", "vm2", 1, "fp"],
-        },
-        "expected_revision": "r7",
-    }
+    # A candidate admission names nothing but the head: the service promotes the committed
+    # candidate and reads the desired policy and release from its own state.
+    assert json.loads(sent.content) == {"kind": "candidate", "expected_revision": "r7"}

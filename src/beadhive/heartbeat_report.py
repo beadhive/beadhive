@@ -270,7 +270,15 @@ def refusal_category(exc: BaseException) -> str:
         if "grant" in text or "identity" in text:
             return "grant"
         return "configuration"
-    if isinstance(exc, SqlRuntimeError | OSError | TimeoutError):
+    from .hq_port import HqDeadline, HqOutcomeUnknown, HqRefused, HqUnavailable
+
+    if isinstance(exc, HqRefused):
+        # A definite hq-service verdict on this frame's grant or route (bh-65s71).
+        return "grant"
+    if isinstance(
+        exc,
+        SqlRuntimeError | OSError | TimeoutError | HqUnavailable | HqDeadline | HqOutcomeUnknown,
+    ):
         return "transport"
     return "configuration"
 
@@ -529,8 +537,11 @@ def sql_plane():
 
 
 def _sql_plane():
-    from .hq_control_plane import SqlControlPlane, control_plane
+    from .hq_control_plane import SqlControlPlane, control_plane, host_route
 
+    if host_route() == "api":
+        # An api host reads its frame grant through hq-service (bh-65s71): no SQL frame runtime.
+        return None
     plane = control_plane(config.hq_dir())
     if not isinstance(plane, SqlControlPlane) or plane.settings.get("runtime") is None:
         return None
@@ -554,9 +565,14 @@ def _session_opener(plane):
 
 def session_renewer(select_port=None):
     """The frame's :class:`~beadhive.hq_sql_session.SessionRenewer`, or ``None`` when this host
-    has no SQL frame runtime (git HQ keeps its signed beat and has no session row)."""
+    has no SQL frame runtime (git HQ keeps its signed beat and has no session row).
+
+    On an ``hq.route: api`` host every tick goes through the port (:func:`port_session`) and no
+    SQL plane is read."""
     from .hq_sql_session import SessionRenewer
 
+    if api_route():
+        return _port_renewer(None, select_port)
     plane = _sql_plane()
     if session_via_port():
         return _port_renewer(plane, select_port)
@@ -600,8 +616,11 @@ def publish_session_evidence(select_port=None, *, renew_first: bool = False):
     :class:`~beadhive.hq_sql_session.NotSwitched` on a legacy incarnation.
 
     ``renew_first`` is the sender's port-path ordering (bh-a3369, see
-    :func:`_publish_evidence_via_port`); it has no effect with ``hq.session_via_port`` off, where
-    the direct SQL path is unchanged."""
+    :func:`_publish_evidence_via_port`); it has no effect on the direct SQL path (route ``sql``
+    with ``hq.session_via_port`` off), which is unchanged. An ``hq.route: api`` host always
+    posts through the port and reads no SQL plane."""
+    if api_route():
+        return _publish_evidence_via_port(None, select_port, renew_first=renew_first)
     plane = _sql_plane()
     if session_via_port():
         return _publish_evidence_via_port(plane, select_port, renew_first=renew_first)
@@ -635,30 +654,29 @@ def _direct_evidence(plane):
 SESSION_VIA_PORT_ENV = "BH_HQ_SESSION_VIA_PORT"
 
 
-SESSION_DUAL_WRITE_ENV = "BH_HQ_SESSION_DUAL_WRITE"
+def api_route() -> bool:
+    """Whether this host's ``hq.route`` is ``api`` (``BH_HQ_ROUTE`` > ``hq.route`` >
+    ``hq.mode: api``). An unreadable host config is not api: the SQL path then reports its own
+    failure. An invalid route raises :class:`~beadhive.hq_port.HqRouteError`, never a default."""
+    from .hq_port import configured_route
 
-
-def _flag(env_name: str, key: str) -> bool:
-    raw = os.environ.get(env_name)
-    if raw:
-        return raw.strip().lower() in ("1", "true", "yes", "on")
     try:
-        hq = config.load_host().get("hq")
-        return bool(hq.get(key)) if hasattr(hq, "get") else False
-    except Exception:  # noqa: BLE001 - off: today's behaviour
+        host_config = config.load_host()
+    except Exception:  # noqa: BLE001 - not api: the SQL path reads the config again and fails
         return False
+    return configured_route(host_config) == "api"
 
 
-def session_dual_write() -> bool:
-    """Whether, with ``hq.session_via_port`` on and the ``api`` route, the direct SQL session
-    writes ALSO run after the port accepted its write (bh-a3369). Default off: the port is then
-    the only writer, exactly as ``hq.session_via_port`` alone behaves. ``BH_HQ_SESSION_DUAL_WRITE``
-    overrides ``hq.session_dual_write``; an unreadable host config is off. Nothing sets it."""
-    return _flag(SESSION_DUAL_WRITE_ENV, "session_dual_write")
+def port_session() -> bool:
+    """Whether session renew and conformance evidence go through the HQ port: always on an
+    ``hq.route: api`` host (bh-65s71), else as ``hq.session_via_port`` says."""
+    return api_route() or session_via_port()
 
 
 def session_via_port() -> bool:
-    """Whether session renew and conformance evidence go through the HQ port.
+    """Whether a ``route: sql`` host's session renew and conformance evidence go through the HQ
+    port (the SQL adapter). An ``hq.route: api`` host ignores it: it always uses the port
+    (:func:`port_session`).
 
     ``BH_HQ_SESSION_VIA_PORT`` (``1``/``true``/``yes``/``on``; any other set value is off)
     overrides the host ``hq.session_via_port`` setting, which defaults off. An unreadable
@@ -674,17 +692,22 @@ def session_via_port() -> bool:
 
 
 def _port_deadline(plane) -> float:
-    timeout = plane.settings["runtime"]["operation_timeout"] if plane is not None else 30.0
+    timeout = getattr(plane, "operation_timeout", None)
+    if timeout is None:
+        timeout = plane.settings["runtime"]["operation_timeout"] if plane is not None else 30.0
     return time.monotonic() + timeout
 
 
-def _port_anchor(plane):
-    """This frame's route as a port anchor, from its own SQL runtime principal.
+def _port_anchor(plane, port=None, route: str = "sql"):
+    """This frame's route as a port anchor.
 
-    hq-service serves no per-frame route (design gap G1), so the api route needs this host's
-    SQL frame runtime for the anchor too; without one nothing is sent (``HqUnavailable``)."""
+    api: the port's ``read_frame_anchor`` (``GET /eligibility/{frame}`` bound to the verified
+    authority, bh-65s71); no SQL frame runtime is read. sql: this host's own SQL runtime
+    principal; without one nothing is sent (``HqUnavailable``)."""
     from .hq_port import FrameAnchor, HqUnavailable
 
+    if route == "api":
+        return port.read_frame_anchor(expected_head=None, deadline=_port_deadline(plane))
     if plane is None:
         raise HqUnavailable("no SQL frame runtime to resolve this frame's route")
     binding = plane._runtime_authority().load_frame_binding(expected_head=None)
@@ -704,7 +727,7 @@ def _select_port(select):
     from .hq_port import HqRouteError, configured_route
 
     if select is None:
-        raise HqRouteError("hq.session_via_port is on but no HQ port selector was supplied")
+        raise HqRouteError("session calls go through the HQ port but no selector was supplied")
     return select(), configured_route(config.load_host())
 
 
@@ -726,8 +749,8 @@ def _port_renewer(plane, select):
     """A renewer whose every tick is one ``HqPort.renew_session`` on the ``hq.route`` adapter.
 
     ``None`` only where the direct path is also ``None`` (route ``sql``, no frame runtime).
-    On the api route a missing runtime is a failed renewal: the tick raises ``HqUnavailable``
-    and nothing is sent. No tick falls back to the SQL session path."""
+    On the api route the anchor is the port's (:func:`_port_anchor`) and *plane* is unused: no
+    SQL frame runtime is needed or read. No tick falls back to the SQL session path."""
     from .hq_sql_session import SessionRenewer, SessionRoute, evidence_table, session_table
 
     port, route = _select_port(select)
@@ -746,7 +769,7 @@ def _port_renewer(plane, select):
         def _tick(self):
             try:
                 if self._anchor is None:
-                    self._anchor = _port_anchor(plane)
+                    self._anchor = _port_anchor(plane, port, route)
                 result = _renew_recorded(port, self._anchor, plane)
             except BaseException as exc:
                 self._anchor = self.route = None
@@ -754,8 +777,6 @@ def _port_renewer(plane, select):
                 if unwrapped is exc:
                     raise
                 raise unwrapped from exc
-            if route == "api" and session_dual_write():
-                self._direct_renew(plane)
             self.route = SessionRoute(
                 result.principal,
                 result.epoch,
@@ -764,11 +785,6 @@ def _port_renewer(plane, select):
             )
             self.renewals += 1
             return self.route
-
-        def _direct_renew(self, plane):
-            """Dual-write: the direct session-row UPDATE after the port accepted its renew."""
-            opener, database = _session_opener(plane)
-            SessionRenewer(opener, database=database).tick()
 
     return PortRenewer()
 
@@ -860,15 +876,20 @@ def _publish_evidence_via_port(plane, select, *, renew_first: bool = False):
     (``HqNoCurrentBeat`` included) is raised and nothing is re-routed to SQL.
 
     ``renew_first`` (the sender): evidence is never posted before an accepted renew. If this
-    process has none yet for the incarnation it renews first; any renew failure (including the
-    G1 ``HqUnavailable`` of an api host with no SQL frame runtime) is raised and no evidence is
-    posted. On ``HqNoCurrentBeat`` it renews once more and posts once more, no loop, no wait; any
-    failure of that renew or post is raised. Without it a single post is made, as before."""
+    process has none yet for the incarnation it renews first; any renew failure is raised and no
+    evidence is posted. On ``HqNoCurrentBeat`` it renews once more and posts once more, no loop,
+    no wait; any failure of that renew or post is raised. Without it a single post is made, as
+    before. On the api route the anchor and any beat rebuilt for the report come from the port
+    (:class:`~beadhive.hq_frame_grant.ApiFrameAuthority`), never from a SQL plane."""
     port, route = _select_port(select)
     if plane is None and route == "sql":
         return None
     try:
-        anchor = _port_anchor(plane)
+        anchor = _port_anchor(plane, port, route)
+        if route == "api":
+            from .hq_frame_grant import ApiFrameAuthority
+
+            plane = ApiFrameAuthority(port, anchor.frame)
         if not renew_first:
             result = _post_evidence_unordered(port, plane, anchor, route)
         else:
@@ -880,8 +901,6 @@ def _publish_evidence_via_port(plane, select, *, renew_first: bool = False):
                 except _no_current_beat():
                     _renew_recorded(port, anchor, plane)
                     result = _post_evidence(port, plane, anchor, route)
-        if route == "api" and session_dual_write():
-            _direct_evidence(plane)  # after the port accepted; not on the sql route (same write)
         return result
     except Exception as exc:
         unwrapped = _unswitched(exc)

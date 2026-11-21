@@ -12,56 +12,83 @@ covers the two steps that touch frames:
 
 | Service-side step | What the service README says | Beadhive side (this runbook) |
 |---|---|---|
-| 5 | Deploy the pio.7+ build; run `hq-service cutover` again right before the restart. From the restart liveness decays until each frame renews; either switch the frames' renew timers and conformance job to the new endpoints at or just before the restart, or announce a stale window. | [Section 4](#4-service-step-5-switch-the-frame-within-one-ttl-of-the-restart): turn the flags on and prove one renew and one evidence post. |
-| 6 | Frames now renew through `POST /sessions/{principal}/{epoch}/renew` and `/evidence`. Stop the per-frame `beadhive-session-renew` timers and the conformance job's direct writes. | [Section 5](#5-service-step-6-stop-the-direct-writes): the timers are **not** stopped on the beadhive side. The same timers keep running and their writes are redirected by `hq.session_via_port`. What stops is the direct SQL write. |
+| 5 | Deploy the pio.7+ build; run `hq-service cutover` again right before the restart. From the restart liveness decays until each frame renews; either switch the frames' renew timers and conformance job to the new endpoints at or just before the restart, or announce a stale window. | [Section 4](#4-service-step-5-switch-the-frame-within-one-ttl-of-the-restart): set `hq.route: api` and prove one renew and one evidence post. |
+| 6 | Frames now renew through `POST /sessions/{principal}/{epoch}/renew` and `/evidence`. Stop the per-frame `beadhive-session-renew` timers and the conformance job's direct writes. | [Section 5](#5-service-step-6-stop-the-direct-writes): the timers are **not** stopped on the beadhive side. The same timers keep running and `hq.route: api` sends their writes to hq-service. What stops is the direct SQL write. |
 
 The numbering matches the service's: "step 5" and "step 6" here are the service's Order items 5
 and 6. The one wording difference is step 6: the service says "stop the timers", the beadhive
 timers (`beadhive-session-renew`, `beadhive-heartbeat-conformance`) stay installed and enabled,
-and a flag changes what they do.
+and the route changes what they do.
 
 Related: [HQ lifecycle port](hq-lifecycle-port.md) (the port and its gaps),
 [HQ configuration authority migration](dolt-hq-config-migration-runbook.md) (the `fleet.json`
 republish, see [section 9](#9-rollback)), and the `hq.*` rows of
 [CONFIGURATION](../CONFIGURATION.md).
 
-## 1. The flags
+## 1. The settings
 
-All three are HOST-only: set them in the host's own config (never in a published fleet
-document). Each has an environment override that wins for one process.
+All are HOST-only: set them in the host's own config (never in a published fleet document).
+Each has an environment override that wins for one process.
 
 | Setting | Env override | Default | Meaning |
 |---|---|---|---|
-| `hq.route` | `BH_HQ_ROUTE` | `sql` | Which adapter this host's HQ calls use: `sql` or `api` (hq-service through the Gateway `hq` plane named by `hq.api`). No fallback between them; an invalid value is refused. **Host-wide:** it moves every HQ call on the host, not only session renew, to hq-service. |
-| `hq.session_via_port` | `BH_HQ_SESSION_VIA_PORT` (`1`/`true`/`yes`/`on`; any other set value is off) | off | Session renew (`heartbeat_sender renew`) and the conformance evidence post go through the port the route selects instead of the direct SQL session writes. An unreadable host config reads as off. |
-| `hq.session_dual_write` | `BH_HQ_SESSION_DUAL_WRITE` (`1`/`true`/`yes`/`on`) | off | Only with `hq.route: api` and `hq.session_via_port` on: after the port accepted a renew or evidence post, also run the direct SQL write. **Keep it off, see the first caution below.** |
+| `hq.route` | `BH_HQ_ROUTE` | `sql` | Which adapter this host's HQ calls use: `sql` or `api` (hq-service through the Gateway `hq` plane named by `hq.api`). No fallback between them; an invalid value is refused. **Host-wide:** it moves every HQ call on the host, not only session renew, to hq-service. On `api`, session renew (`heartbeat_sender renew`) and the conformance evidence post **always** go through hq-service (bh-65s71); nothing else needs to be switched on. |
+| `host.frame_id` | none | unset | The frame this host renews. On `api` the renew reads that frame's grant from `GET /eligibility/{frame}`; without it renew fails `HqUnavailable` and sends nothing. An enrolled frame already has it. |
+| `hq.session_via_port` | `BH_HQ_SESSION_VIA_PORT` (`1`/`true`/`yes`/`on`; any other set value is off) | off | `hq.route: sql` hosts only: session renew and the evidence post go through the SQL adapter instead of the direct SQL session writes. **Ignored on `api`** (bh-65s71): it may stay set or be removed. |
+| `hq.session_dual_write` | `BH_HQ_SESSION_DUAL_WRITE` | off | **Retired (bh-65s71): accepted and ignored.** An `api` host makes no SQL write at all. A SQL dual write waits on `bh-ubpoc`; see the first caution below. |
 
-Two things the flags alone do not give you:
+What the route alone does not give you:
 
-- **`hq.api`** (URL or unix socket, mTLS client certificate and key, CA) must already be valid
-  for `hq.route: api`.
+- **`hq.api`** (URL or unix socket, mTLS client certificate and key, CA, and the response
+  verifier's trust pins: `floor_path`, `initial_revision`, `operator_public_key`,
+  `backend_identity`, `generation`) must already be valid for `hq.route: api`. Without
+  `floor_path` the adapter has no response verifier and the grant read fails closed: renew raises
+  `HqUnavailable` and sends nothing.
 - **The signing key.** The service renew is a signed beat. It is signed with the host's recorded
   frame signing key, `host.yaml` `signing_key` (an absolute path), the same key
   `heartbeat_sender beat` signs with. With the key missing or unusable the renew raises
   `HqUnavailable` and sends nothing.
 
+### What an api host reads for one renew (bh-65s71)
+
+No SQL frame runtime: an `hq.route: api` host needs **no `hq.sql` block** and opens no SQL
+connection. Each renew reads, through hq-service:
+
+1. `GET /authority` (verified against the signature and the restore floor) and
+   `GET /eligibility/{frame}` at the same head. The anchor (principal, epoch, holder, instance) is
+   the **signed** grant's (`state.frames[frame].active`); the eligibility body must carry that same
+   grant, the principal and epoch it derives, and a route whose signer is the granted key. Anything
+   else is refused before a beat is built (gap G1, closed).
+2. For the beat's grant-bound fields: the same two reads, `GET /config` (the committed host manifest,
+   at the head the grant names) and, under a release policy, `GET /release-catalog/{catalog}` for
+   the measured release (gap G3).
+3. `POST /sessions/{principal}/{epoch}/renew` with the signed beat. The conformance job then
+   posts `/evidence`.
+
+The beat's `seq` is the client's renew-seq store's (section 7), never a SQL row.
+
+**The `beat` timer does nothing on an api host.** `heartbeat_sender beat` prints `beat skipped:
+hq.route api beats through session renew` and exits 0: hq-service takes the signed beat on the
+session renew and mirrors it into the frame's signed inbox itself, so a second sender (`PUT
+/heartbeats`) would only race the same `seq` floor. `beadhive-heartbeat.timer` can stay enabled
+(it is a no-op) or be disabled; `beadhive-session-renew.timer` is now the frame's only liveness
+writer and **must** be enabled.
+
 ### Cautions that apply to the whole cutover
 
-1. **Leave `hq.session_dual_write` off until `bh-ubpoc` settles** whether the SQL runtime and
-   hq-service share their liveness floor tables (`hq_live_floors`, `hq_live_receipts`,
-   `hq_live_public_observations`). The client's renew `seq` is rebased to the wall clock
-   (about 1.78e9 now); if the SQL sender writes to the same floor, its small sequence numbers
-   could be refused. Nothing enables the flag automatically and this cutover does not need it.
-2. **The direct SQL writes stop immediately, and that is not undone here.** With `hq.route: api`
-   and dual-write off, the port path is port-only: the frame's SQL `_session` and `_evidence`
-   rows stop updating the moment `hq.session_via_port` is turned on. Stopping the direct writes
-   *for good* (dropping the per-frame SQL accounts and tables, the service README's "Retiring the
-   Python layout") is a **follow-up and not part of this cutover**. See
+1. **There is no dual write (`bh-ubpoc`).** Whether the SQL runtime and hq-service share their
+   liveness floor tables (`hq_live_floors`, `hq_live_receipts`, `hq_live_public_observations`)
+   is unsettled: the client's renew `seq` is rebased to the wall clock (about 1.78e9 now), and a
+   SQL sender's small sequence numbers could be refused on a shared floor. `hq.session_dual_write`
+   is retired and ignored; nothing writes SQL from an api host.
+2. **The direct SQL writes stop immediately, and that is not undone here.** The frame's SQL
+   `_session` and `_evidence` rows stop updating the moment `hq.route: api` is set. Stopping the
+   direct writes *for good* (dropping the per-frame SQL accounts and tables, the service README's
+   "Retiring the Python layout") is a **follow-up and not part of this cutover**. See
    [section 6](#6-what-sql-side-readers-see).
-3. **Design gap G1 (`bh-b2mq7`).** hq-service serves no frame-grant route, so a fresh beat still
-   reads this host's SQL frame authority for its grant-bound fields. An `hq.route: api` host
-   with **no SQL frame runtime cannot build a beat**: renew fails with `HqUnavailable`, nothing
-   is sent, and there is no fallback. Such a host cannot be cut over until G1 is closed.
+3. **Design gap G1 is closed (`bh-65s71`).** An `hq.route: api` host no longer needs a SQL frame
+   runtime: the anchor and the beat's grant come from hq-service (above). A host may keep its
+   `hq.sql` block for rollback (section 9); an api host never reads it for liveness.
 4. **No cross-process lock yet (`bh-ktd2x`).** See [section 7](#7-expected-noise-seq_not_advanced).
 
 ## 2. Required before the cutover: a real staged run (open operator step)
@@ -98,32 +125,25 @@ Cautions:
 
 ## 3. Preconditions
 
-### 3.1 The installed bh must contain both flags (every frame)
+### 3.1 The installed bh must read the frame grant from hq-service (every frame)
 
 The timers run the **installed** bh (`python -m beadhive.heartbeat_sender`), not a checkout.
-`hq.session_via_port` (`bh-osom7`, commit `def9b89d`) and `hq.session_dual_write` (`bh-a3369`,
-commit `43af1eae`) are **not in `v0.38.0` or any earlier tag** (checked with `git tag` and
-`git merge-base --is-ancestor`). Install, on every frame, the first release that includes
-commits `def9b89d` and `43af1eae`; which release that is was not known when this was written.
+Install, on every frame, the first release that contains `bh-65s71` (the epic `bh-6se58`, bh
+0.40.0). An older build behaves differently under `hq.route: api`: before `bh-65s71` the session
+path follows `hq.session_via_port` (off: the direct SQL writes continue and verification step 1,
+section 8, **passes falsely**, because the SQL path also prints `{"renewed": ...}` and exits 0),
+and with it on a host with no SQL frame runtime refuses every renew (the G1 refusal).
 
-On a build without the flag, the setting is ignored, the direct SQL writes continue, and
-verification step 1 (section 8) **passes falsely**: the SQL path also prints `{"renewed": ...}`
-and exits 0. After the service restart that frame then goes stale with no error.
-
-Check the build on each frame before flipping anything:
+Check the build on each frame before flipping anything; it must exit 0:
 
 ```sh
-bh config schema | grep -c -E 'hq\.session_via_port|hq\.session_dual_write'
+"$(head -1 "$(command -v bh)" | sed 's/^#!//')" -c 'import beadhive.hq_frame_grant'
 ```
 
-It must print `2`. On a build without the flags it prints `0` (run against an installed
-`0.36.0`; a build with the flags printed `2`). Do **not** rely on `bh --version`: it reports the
-last tag, so a build from after `v0.38.0` also reads `0.38.0`. `bh config get hq.session_via_port`
-prints `hq.session_via_port is not set` and exits 1 while the flag is unset, on either build, so
-it does not tell you whether the flag is recognised (it was not run with the flag set here).
-To confirm the port path is really in use once flipped, see section 8 step 3 (the service's
-`liveness.session.age_s` must keep falling back near 0 every 60 s; that read depends on a Gateway
-route that is unverified).
+(the interpreter of the installed `bh`; the module exists only from `bh-65s71`). Do **not** rely
+on `bh --version`: it reports the last tag. To confirm the port path is really in use once
+flipped, see section 8 step 3 (the service's `liveness.session.age_s` must keep falling back near
+0 every 60 s; that read depends on a Gateway route that is unverified).
 
 ### 3.2 Service-side (service steps 1-4)
 
@@ -140,12 +160,13 @@ clears with no restart); 200 is the state to reach after that rerun, not one to 
 
 Order of operations on each frame (do one frame first and verify before the rest):
 
-1. Confirm the installed bh has both flags ([section 3.1](#31-the-installed-bh-must-contain-both-flags-every-frame)),
-   `hq.api` and `host.yaml` `signing_key` are in place, and that the host has a SQL frame
-   runtime (G1).
-2. Set `hq.route: api` and `hq.session_via_port: true` in the host config. Leave
-   `hq.session_dual_write` unset. For a one-off trial use the environment overrides
-   (`BH_HQ_ROUTE=api BH_HQ_SESSION_VIA_PORT=1`) on a single command instead.
+1. Confirm the installed bh reads the frame grant from hq-service
+   ([section 3.1](#31-the-installed-bh-must-read-the-frame-grant-from-hq-service-every-frame)),
+   and that `hq.api` (with its verifier pins), `host.frame_id` and `host.yaml` `signing_key` are
+   in place. A SQL frame runtime is **not** needed (G1 is closed).
+2. Set `hq.route: api` in the host config. `hq.session_via_port` and `hq.session_dual_write` are
+   ignored on `api`; remove them or leave them. For a one-off trial use the environment override
+   (`BH_HQ_ROUTE=api`) on a single command instead.
    **`hq.route: api` is host-wide**: every HQ call on this host moves to hq-service with no
    fallback, not just session renew. Before flipping, inventory the host's other HQ call paths
    (dispatch, admission, lifecycle and config reads, anything else that calls HQ) and confirm
@@ -175,8 +196,11 @@ Order of operations on each frame (do one frame first and verify before the rest
      the beat the service holds even if the conformance cache changed in between.
    - On `no_current_beat` it renews once more and re-posts once more: no loop, no wait. A second
      failure is reported.
-5. Systemd/launchd units keep running unchanged. If the flags are set by `Environment=` lines in
-   a unit instead of the host config, `heartbeat_sender units --install` preserves
+5. Systemd/launchd units keep running unchanged; make sure `beadhive-session-renew.timer`
+   (`dev.beadhive.session-renew` on launchd) is enabled, since it is now the frame's only
+   liveness writer. `beadhive-heartbeat.timer` becomes a no-op (`beat skipped: hq.route api beats
+   through session renew`, exit 0) and may be disabled. If the route is set by an `Environment=`
+   line in a unit instead of the host config, `heartbeat_sender units --install` preserves
    operator-set values (use `--replace` only to drop them).
 
 ### Sequence relative to the service restart
@@ -268,8 +292,8 @@ place for evidence, and never fall back to SQL.
 
 ## 5. Service step 6: stop the direct writes
 
-On the beadhive side there is nothing further to stop: the moment `hq.session_via_port` is on
-and dual-write is off, `heartbeat_sender` makes no direct session or evidence SQL write. Leave
+On the beadhive side there is nothing further to stop: the moment `hq.route` is `api`,
+`heartbeat_sender` makes no direct session or evidence SQL write and reads no SQL frame runtime. Leave
 the renew and conformance timers enabled; stopping them would stop the only renew path. The
 per-frame SQL accounts and the `_session`/`_evidence` tables stay in place and untouched
 (they are what [section 9](#9-rollback) returns to, and only before the new service build
@@ -307,8 +331,8 @@ The readers found in `src/` (grep for `session_table`, `evidence_table`, `read_e
 `hives-ready` is **not** a reader of the frame session or evidence tables.
 
 What to check: inventory those readers before flipping a frame, and switch or tolerate them; if
-one cannot be tolerated, hold the frame back from service step 6. Do not
-turn on `hq.session_dual_write` as the workaround until `bh-ubpoc` is settled (first caution).
+one cannot be tolerated, hold the frame back from service step 6. There is
+no dual write to fall back on (`hq.session_dual_write` is retired, first caution).
 
 ## 7. Expected noise: seq_not_advanced
 
@@ -331,21 +355,22 @@ beat is resent byte for byte while younger than half its lease, so a transport r
 On each frame, across at least two conformance intervals (so at least 10 minutes):
 
 1. `python -m beadhive.heartbeat_sender renew` prints `{"renewed": ...}` and exits 0. **Exit 0
-   alone is not proof**: the verb also exits 0 after printing `session renewal skipped: no
-   dolt-server frame runtime` or `... incarnation not switched`, and a conformance run prints
-   `conformance run already in progress; skipped` and exits 0 without posting evidence.
+   alone is not proof**: on a `sql` host the verb also exits 0 after printing `session renewal
+   skipped: no dolt-server frame runtime` or `... incarnation not switched`, and a conformance run
+   prints `conformance run already in progress; skipped` and exits 0 without posting evidence.
 2. No `session renewal refused` / `session evidence refused` lines in the unit journals
    (systemd: `journalctl --user -u beadhive-session-renew -u beadhive-heartbeat-conformance`;
    launchd: `$BH_HOME/heartbeat/renew.err.log` and `$BH_HOME/heartbeat/conformance.err.log`, the
    `StandardErrorPath` per verb in `heartbeat_sender.py`) over the same window.
 3. hq-service shows the frame fresh through the whole window. The read is the service's
    eligibility route, `GET /hq/lifecycle/v0/eligibility/{frame}` (`hq.lifecycle.v0`; the adapter
-   in `hq_service_adapter.py` `read_eligibility`, marked PROVISIONAL, calls `/eligibility/{frame}`
+   in `hq_service_adapter.py` `read_eligibility`, pinned to hq-service 205fd5b, calls `/eligibility/{frame}`
    relative to its configured base, not this public path, and whether the Gateway exposes the
    route to operators is still unverified), which returns
    `liveness.session` and `liveness.evidence` with `verdict`, `age_s` and `ttl_s`. This is also
-   the check that the port path is really in use: on a build without the flag the SQL writes
-   continue and the service row stops moving after the restart. Expect
+   the check that the port path is really in use: on a build older than `bh-65s71` without
+   `hq.session_via_port` the SQL writes continue and the service row stops moving after the
+   restart. Expect
    `session` fresh with `age_s` always below the TTL (renews arrive every 60 s) and `evidence`
    fresh after each conformance interval (300 s against a 900 s TTL). It returns `null` liveness
    when there is no active grant or no row. *Not verified here:* whether the Gateway exposes
@@ -359,16 +384,18 @@ or repeated refusals in step 2.
 
 ## 9. Rollback
 
-**After the new service build serves, unsetting `hq.session_via_port` alone is NOT a safe
-rollback.** From the restart hq-service is the admission authority and judges only its own
+**After the new service build serves, switching the frame back to `hq.route: sql` alone is NOT
+a safe rollback.** From the restart hq-service is the admission authority and judges only its own
 liveness row; once the frame stops renewing there, that row ages and admission refuses
 `session_stale` within about 300 s (evidence: 900 s), even though the SQL rows are fresh again.
 After the restart, rolling back means returning to the old service build as well (below).
 
-**Before the restart** (the old build still serves) the rollback is the simple one: unset
-`hq.session_via_port` (and `BH_HQ_SESSION_VIA_PORT`); `hq.route` may stay `api` for other calls,
-since the session path is direct SQL whenever the flag is off. The next renew tick writes the SQL
-session row again, so the SQL-side readers, and the old build, recover within one tick.
+**Before the restart** (the old build still serves) the rollback is the simple one: set
+`hq.route: sql` (or remove it, and `BH_HQ_ROUTE`), with the host's `hq.sql` frame runtime binding
+still in place. Since `bh-65s71` an `api` host always renews through hq-service, so the session
+path can only return to SQL with the whole host's route; `hq.session_via_port` no longer selects
+it. The next renew tick writes the SQL session row again, so the SQL-side readers, and the old
+build, recover within one tick. A host whose `hq.sql` block was removed must get it back first.
 
 - **Local seq state:** the `hq-renew-seq-<hash>.json` file is harmless and left in place.
 - **hq-service state:** the service floor and receipts remain. The service's liveness row simply
@@ -378,11 +405,11 @@ session row again, so the SQL-side readers, and the old build, recover within on
 - **After the restart, roll back the service too.** The service README's step 4 rollback
   (restoring dumped `hq_live_*` values) is valid only before the new build serves. After it
   serves, rolling back means returning to the old service build **and** the SQL session tables,
-  and unsetting the flag (in that combination: old build serving, flag unset, SQL rows renewed
+  and `hq.route: sql` (in that combination: old build serving, route `sql`, SQL rows renewed
   again), which requires the tables and accounts from "Retiring the Python layout" to still be
   intact: do not retire them until the cutover has held.
-- **`fleet.json` republish (`bh-vrqne`, `bh-se4se`):** the three session flags are HOST-only and
-  never touch `fleet.yaml` or `fleet.json`, so unsetting them is independent of that republish
+- **`fleet.json` republish (`bh-vrqne`, `bh-se4se`):** the route and the session flags are
+  HOST-only and never touch `fleet.yaml` or `fleet.json`, so changing them is independent of that republish
   and does not undo it. The `fleet.json` republish is **inferred** to remain one-way until every frame
   runs a version that knows it (that is an inference, **not run**; `bh-se4se`); see the
   [`fleet.json` projection section](dolt-hq-config-migration-runbook.md#fleetjson-projection-bh-vrqne)
@@ -390,19 +417,19 @@ session row again, so the SQL-side readers, and the old build, recover within on
 
 ## 10. Not verified by this runbook
 
-- **Documented gap, no flag-recognised indicator (bh-dp6aq):** neither `bh --version` nor
-  `bh config get` shows whether the installed build recognises `hq.session_via_port` or
-  `hq.session_dual_write`. A "flag recognised" indicator was considered and is deliberately not
-  built; until one exists, the check that the port path is in use is the service freshness read in
-  section 6 (SQL writes continue and the service row stops moving on a build without the flag).
+- **Documented gap, no build indicator (bh-dp6aq):** neither `bh --version` nor `bh config get`
+  shows whether the installed build has `bh-65s71`; the module import in section 3.1 is the check,
+  and the service freshness read in section 8 is the check that the port path is in use.
+- The api renew against a real hq-service: the grant reads (`/authority`, `/eligibility/{frame}`,
+  `/config`, `/release-catalog/{catalog}`) were driven only against the in-process fake
+  (`tests/test_hq_api_route_liveness.py`); the staged run (section 2) stubs the grant reads.
 
 - A real staged pass of the end-to-end test (section 2).
 - Whether the Gateway exposes `GET /eligibility/{frame}` to operators (section 8).
 - The refusal code behind a refused renew: the sender prints no code and what the service logs was
   not checked (section 4).
-- Which release first contains `def9b89d` and `43af1eae`: unknown until it is released (section
-  3.1); the `bh config schema` check was run only against an installed `0.36.0` and a worktree
-  build, and `bh config get hq.session_via_port` was not run with the flag set.
+- Which release first contains `bh-65s71`: expected 0.40.0 (epic `bh-6se58`), unknown until it
+  is released (section 3.1).
 - Whether the other HQ call paths on a host work under `hq.route: api` (section 4 step 2).
 - Whether the director failover loop is enabled on the frames (section 6); it is off by default
   (`host.daemon.failover.enabled`, `host_daemon.py`).

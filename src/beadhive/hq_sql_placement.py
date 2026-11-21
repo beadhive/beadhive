@@ -714,6 +714,9 @@ class SqlPlacementDirector:
         connect: Callable | None = None,
         storage=None,
     ):
+        from .hq_sql_guard import guard_sql_open
+
+        guard_sql_open("SqlPlacementDirector", host_only=True)
         self.settings = settings
         self.broker = broker
         self.clock = clock

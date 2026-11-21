@@ -1791,10 +1791,32 @@ class HqApiConfig(_Section):
     ca_cert: str = Field(
         "", description="Absolute path of the CA bundle that verifies the Gateway (PEM)."
     )
+    operator_public_key: str = Field(
+        "",
+        description=(
+            "OpenSSH Ed25519 public key of the HQ operator. Authority, config and eligibility "
+            "responses are verified against it (`signed` authority mode); unset, they are "
+            "refused in that mode."
+        ),
+    )
+    floor_path: str = Field(
+        "",
+        description=(
+            "Absolute path of this host's durable restore floor for api reads. Unset, "
+            "authority-bearing reads are refused (nothing is verified without a floor)."
+        ),
+    )
+    initial_revision: str = Field(
+        "", description="Head the restore floor starts at when no floor file exists yet."
+    )
+    backend_identity: str = Field("", description="Pinned HQ backend identity (optional).")
+    generation: str = Field("", description="Pinned HQ authority generation (optional).")
 
     @model_validator(mode="after")
     def _absolute_paths(self):
-        for name in ("unix_socket", "client_cert", "client_key", "ca_cert"):
+        if self.operator_public_key and not self.operator_public_key.startswith("ssh-ed25519 "):
+            raise ValueError("hq.api operator_public_key must be an Ed25519 public key")
+        for name in ("unix_socket", "client_cert", "client_key", "ca_cert", "floor_path"):
             value = getattr(self, name)
             if value and not Path(value).is_absolute():
                 raise ValueError(f"hq.api {name} must be an absolute path")
@@ -1806,7 +1828,14 @@ class HqApiConfig(_Section):
 class HqConfig(_Section):
     """Factory HQ remote (``hq``) — where the factory's central HQ store publishes to."""
 
-    mode: Literal["git", "dolt-server"] = "git"
+    mode: Literal["git", "dolt-server", "api"] = Field(
+        "git",
+        description=(
+            "HQ backend: `git` (default), `dolt-server` (the HQ SQL server) or `api` (a HOST "
+            "bootstrap that reaches HQ only through the hq-service, the same as `hq.route: "
+            "api`; it needs `hq.api` and carries no `hq.sql`)."
+        ),
+    )
     beadyard_id: str | None = Field(
         None,
         description=(
@@ -1870,21 +1899,43 @@ class HqConfig(_Section):
     session_via_port: bool = Field(
         False,
         description=(
-            "HOST-only. Route this frame's session renew and conformance-evidence post through "
-            "the HQ port, on the adapter `hq.route` selects, instead of the direct SQL session "
-            "calls. Off (default) keeps the direct SQL path unchanged. `BH_HQ_SESSION_VIA_PORT` "
-            "(`1`/`true`) overrides it for one process. A port renew that cannot be sent is a "
-            "failed renewal, never a silent SQL fallback."
+            "HOST-only, `hq.route: sql` hosts only. Route this frame's session renew and "
+            "conformance-evidence post through the HQ port (the SQL adapter) instead of the "
+            "direct SQL session calls. Off (default) keeps the direct SQL path unchanged. An "
+            "`hq.route: api` host ignores it: it always renews and posts evidence through "
+            "hq-service. `BH_HQ_SESSION_VIA_PORT` (`1`/`true`) overrides it for one process. A "
+            "port renew that cannot be sent is a failed renewal, never a silent SQL fallback."
         ),
     )
     session_dual_write: bool = Field(
         False,
         description=(
-            "HOST-only. With `hq.session_via_port` on and `hq.route: api`, also run the direct "
-            "SQL session-row and evidence-row writes after the HQ service accepted its write. "
-            "Off (default) leaves the port as the only writer. Do not enable until the SQL and "
-            "service liveness floors are known not to be shared (bh-ubpoc). "
-            "`BH_HQ_SESSION_DUAL_WRITE` (`1`/`true`) overrides it for one process."
+            "HOST-only. Retired (bh-65s71): accepted and ignored. An `hq.route: api` host "
+            "reads and writes no SQL frame runtime, so hq-service is the only writer of its "
+            "session and evidence; a SQL dual write waits on bh-ubpoc. "
+            "`BH_HQ_SESSION_DUAL_WRITE` is ignored too."
+        ),
+    )
+    service_host: bool = Field(
+        False,
+        description=(
+            "HOST-only. Marks this host as the hq-service host (bh-d9anb), the only host that "
+            "may open HQ SQL directly (the SQL openers, placement, `hq migrate`, `bh hq "
+            "authority prune-inbox`). Off (default): every SQL opener on this host is guarded "
+            "per `hq.sql_guard`. Nothing infers it. `BH_HQ_SERVICE_HOST` (`1`/`true`) overrides "
+            "it for one process."
+        ),
+    )
+    sql_guard: Literal["warn", "refuse", "off"] | None = Field(
+        None,
+        description=(
+            "HOST-only. What a host not marked `hq.service_host` gets when something opens HQ "
+            "SQL: `warn` writes one stderr line per process and call site, naming the opener "
+            "and caller, and changes no exit code or output; `refuse` raises before "
+            "connecting; `off` is silent. Unset (default, 0.40.0): an `hq.route: api` host "
+            "warns and an `hq.route: sql` host is untouched and silent; 0.41.0 makes `warn` "
+            "plus refuse the default. The guard never selects a route and never falls back. "
+            "`BH_HQ_SQL_GUARD` overrides it for one process."
         ),
     )
     api: HqApiConfig = Field(default_factory=HqApiConfig)
@@ -1903,6 +1954,18 @@ class HqConfig(_Section):
             "confirm the result interactively unless `--auto` is passed."
         ),
     )
+
+    @model_validator(mode="after")
+    def _api_route_binding(self):
+        """``hq.route: api`` (or ``hq.mode: api``) needs the service endpoint in ``hq.api``;
+        ``hq.sql`` is optional there and never consulted for HQ calls (bh-e437a)."""
+        explicit_route = "route" in self.model_fields_set
+        if self.mode == "api" and explicit_route and self.route != "api":
+            raise ValueError("hq.mode api needs hq.route api (or no hq.route)")
+        api_route = self.route == "api" if explicit_route else self.mode == "api"
+        if api_route and not (self.api.url or self.api.unix_socket):
+            raise ValueError("hq.route api needs hq.api.url or hq.api.unix_socket")
+        return self
 
 
 # ---- host (multi-host primary / host lease, bh-ytbb.6) ------------------------
@@ -2097,6 +2160,31 @@ class FrameBridgeIdentityConfig(_Section):
     primary_hive_id: str | None = None
 
 
+class HostFrameCapabilitiesConfig(_Section):
+    """Operator-declared capabilities of this frame (``host.frame.capabilities``), published in
+    its host manifest by ``bh host init``. Every field is explicit: nothing is probed or inferred
+    (``arch`` alone comes from the running machine)."""
+
+    isolation: Literal["kvm", "microvm", "container", "workstation"] | None = Field(
+        None, description="Isolation the frame runs under (required to enroll a frame)."
+    )
+    trust_zone: Literal["self-hosted", "vendor-hosted"] | None = Field(
+        None, description="Trust zone of the frame's substrate (required to enroll a frame)."
+    )
+    harnesses: list[str] | None = Field(
+        None, description="Agent harnesses the frame offers (required to enroll a frame)."
+    )
+    max_sessions: int | None = Field(
+        None, ge=0, description="Concurrent sessions the frame accepts (required to enroll)."
+    )
+
+
+class HostFrameConfig(_Section):
+    """Frame-declared manifest inputs (``host.frame``); HOST-only, never fleet-published."""
+
+    capabilities: HostFrameCapabilitiesConfig = Field(default_factory=HostFrameCapabilitiesConfig)
+
+
 class HostConfig(_Section):
     """Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.
 
@@ -2108,6 +2196,15 @@ class HostConfig(_Section):
         "",
         description="Enrollment-owned Fleet identity; config storage does not enroll a host.",
     )
+    instance_ref: str = Field(
+        "",
+        description=(
+            "Substrate-owned instance identity of this frame, published in its host manifest "
+            "by `bh host init` (`--instance-ref` overrides). Never inferred: a frame without "
+            "it cannot be admitted."
+        ),
+    )
+    frame: HostFrameConfig = Field(default_factory=HostFrameConfig)
     frame_bridge: FrameBridgeIdentityConfig = Field(default_factory=FrameBridgeIdentityConfig)
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)

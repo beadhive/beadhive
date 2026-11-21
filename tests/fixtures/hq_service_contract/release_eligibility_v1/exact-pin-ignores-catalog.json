@@ -1,0 +1,107 @@
+{
+  "name": "exact-pin-ignores-catalog",
+  "source": "beadhive src/beadhive/release_policy.py admits",
+  "kind": "release-eligibility",
+  "now": 1793000000,
+  "rows": {
+    "hq_authority": [
+      {
+        "singleton_id": 1,
+        "schema_version": 1,
+        "backend_identity": "dolt:hq",
+        "generation": "gen-1",
+        "revision": 1,
+        "config_backend": "sql:config",
+        "config_generation": "generation",
+        "config_head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "state_json": "{\"domain\":\"beadhive/git-authority/v1\",\"expires_at\":1793086400,\"frames\":{\"frame-a\":{\"active\":{\"authority\":{\"audience\":\"hq\",\"candidate_expires_at\":null,\"config_revision\":\"cfg-1\",\"epoch\":3,\"frame_id\":\"frame-a\",\"holder_identity\":\"host-a\",\"instance_ref\":\"inst-host-a\",\"key_fingerprint\":\"SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw\"},\"cordoned\":false,\"desired\":{\"caps\":{\"arch\":\"x86_64\",\"harnesses\":[\"claude\"],\"isolation\":\"container\",\"max_sessions\":2,\"trust_zone\":\"self-hosted\"},\"declared\":true,\"profile\":\"reviewed\",\"release\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"id\":\"0.28.2\"}},\"drain_deadline\":null,\"public_key\":\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA\",\"receipt\":{\"consecutive\":0,\"first_seen\":null,\"lease\":null,\"registration\":null,\"sequence\":0,\"sha\":\"\"},\"state\":\"active\"},\"candidate\":null,\"epoch_floor\":3,\"retired\":[]}},\"generation\":\"gen-1\",\"issued_at\":1792999900,\"revision\":1}",
+        "state_sha256": "1357e0ce53e1b05669579fd0ef53d041a92607fbc363ec8f81070413ff87ff1c",
+        "hive_policies_json": "{}",
+        "hive_policies_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "operator_signature": "Q8RuPTqx5g+Hd43ck9gGAwFqU95UCXYew4z7AjXJZTf3ZNsVLBLUCZh7f5+z2my7QUiRcWyaZ3Yjkv6x0A7wBQ=="
+      }
+    ],
+    "hq_principal_registry": [
+      {
+        "principal": "frame_principal_a",
+        "frame_id": "frame-a",
+        "holder_identity": "host-a",
+        "instance_ref": "inst-host-a",
+        "epoch": 3,
+        "signer_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+        "inbox_table": "hq_live_inbox_frame_principal_a_3"
+      }
+    ],
+    "hq_config_meta": [
+      {
+        "singleton_id": 1,
+        "schema_version": 1,
+        "backend_identity": "config",
+        "generation": "generation",
+        "publication_sequence": 1,
+        "publication_id": "00000000-0000-4000-8000-000000000001",
+        "documents_sha256": "8d63aba907932c1dfda88d49a107f1cc263431659f5886a40e40294fa4b80c09",
+        "document_count": 1,
+        "initial_attempt_nonce": null
+      }
+    ],
+    "hq_config_documents": [
+      {
+        "path": "fleet.yaml",
+        "ordinal": 0,
+        "kind": "fleet",
+        "content": "{\"managed_repos\": [{\"org\": \"bee\", \"prefix\": \"hl\", \"provider\": \"github\", \"repo\": \"hive\"}]}\n",
+        "content_sha256": "b96ba9f02a0698b89d2c4ebeb9f51e977bde8e2e09840883678c4e44d6611c29"
+      }
+    ],
+    "hq_config_publications": [
+      {
+        "publication_id": "00000000-0000-4000-8000-000000000001",
+        "publication_sequence": 1,
+        "generation": "generation",
+        "expected_parent_revision": "",
+        "documents_sha256": "8d63aba907932c1dfda88d49a107f1cc263431659f5886a40e40294fa4b80c09",
+        "document_count": 1
+      }
+    ],
+    "hq_release_catalog": [
+      {
+        "catalog": "beadhive",
+        "version": "0.28.2",
+        "measured_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "status": "active",
+        "algorithm": "beadhive-tree-sha256-v1",
+        "wheel_sha256": "5d4cc820b37f3d1fd0c6e04ed50a56ead8d497ecfd3c25c749855ed9d852837d",
+        "commit": "0000000000000000000000000000000000000000",
+        "bundle": "{}",
+        "reason": "",
+        "recorded_at": 1792996400
+      },
+      {
+        "catalog": "beadhive",
+        "version": "0.28.3",
+        "measured_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "status": "active",
+        "algorithm": "beadhive-tree-sha256-v1",
+        "wheel_sha256": "8298e88dce61b333d6c06d20df1b566301d66df06501e26e74683cb580503242",
+        "commit": "0000000000000000000000000000000000000000",
+        "bundle": "{}",
+        "reason": "",
+        "recorded_at": 1792996400
+      }
+    ]
+  },
+  "floor": null,
+  "observer": null,
+  "trust": {
+    "operator_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDSGCzU8aUIT/ItMEuHFaQ6e0rj7prJ0UdfbrTPr2BgH"
+  },
+  "frame_id": "frame-a",
+  "measured": {
+    "id": "0.28.3",
+    "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "expect": {
+    "admits": false
+  }
+}

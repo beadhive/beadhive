@@ -131,10 +131,15 @@ class Submission:
 
 @dataclass(frozen=True)
 class HistorySinceFloor:
-    """Commits and a diff summary since the caller's floor."""
+    """The revisions after the caller's floor (hq-service ``GET /history?since=``).
 
-    commits: tuple[Mapping[str, Any], ...] = ()
-    diff_summary: tuple[Mapping[str, Any], ...] = ()
+    ``revisions`` are those reachable from ``head`` but not from ``floor``, each ``{id, message,
+    at, parents, changes[{table, data, schema}]}``; the order is by commit time, so a reader
+    walks ``parents``."""
+
+    head: str = ""
+    floor: str = ""
+    revisions: tuple[Mapping[str, Any], ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -237,6 +242,16 @@ class HqReads(Protocol):
     def read_config(
         self, *, revision: str | None = None, cached_ok: bool = False, deadline: float
     ) -> Any: ...
+    def read_hive_lease(self, prefix: str, *, deadline: float) -> Any:
+        """The hive's lease row, unqualified (bh-h9dn1). hq-service answers ``{head, prefix,
+        revision, lease, held}`` (an unknown prefix is :class:`HqRefused` ``unknown_prefix``);
+        the SQL adapter answers the plane's ``(revision, lease)``."""
+        ...
+
+    def read_release_catalog(self, catalog: str, *, deadline: float) -> list[dict]:
+        """Every row of ``catalog`` whole (api route only; the SQL route reads through the
+        release-catalog store binding)."""
+        ...
 
 
 class HqOperator(Protocol):
@@ -246,6 +261,17 @@ class HqOperator(Protocol):
     def release_policy(
         self, frame: str, state: dict, *, signer: Signer, expected_revision: str, deadline: float
     ) -> str: ...
+    def plan_release_policy(self, frame: str, request: dict, *, deadline: float) -> dict:
+        """Plan only (api route): the service's plan, ``record`` unsigned, nothing written."""
+        ...
+
+    def import_release_catalog(
+        self, catalog: str, request: dict, *, signer: Signer, deadline: float
+    ) -> str:
+        """Import one release row (api route): plan, sign under the catalog domain, apply.
+        Returns the new head."""
+        ...
+
     def publish_authority(
         self,
         state: dict,
@@ -287,15 +313,18 @@ def sql_adapter_factory() -> Callable[[], HqPort] | None:
 
 
 def configured_route(host_config: Mapping[str, Any]) -> str:
-    """``BH_HQ_ROUTE`` > host ``hq.route`` > ``sql``. An invalid value raises
-    :class:`HqRouteError`; it never degrades to a default. *host_config* is the loaded host
-    config (``config.load_host()``)."""
+    """``BH_HQ_ROUTE`` > host ``hq.route`` > ``api`` when host ``hq.mode`` is ``api`` > ``sql``.
+    An invalid value raises :class:`HqRouteError`; it never degrades to a default.
+    *host_config* is the loaded host config (``config.load_host()``)."""
     value: Any = os.environ.get(ROUTE_ENV) or None
     source = ROUTE_ENV
+    hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
     if value is None:
-        hq = host_config.get("hq") if isinstance(host_config, Mapping) else None
         value = hq.get("route") if isinstance(hq, Mapping) else None
         source = "hq.route"
+    if value is None and isinstance(hq, Mapping) and hq.get("mode") == "api":
+        # ``hq.mode: api`` names the same host binding as ``hq.route: api`` (bh-e437a).
+        return "api"
     if value is None:
         return DEFAULT_ROUTE
     if value not in ROUTES:

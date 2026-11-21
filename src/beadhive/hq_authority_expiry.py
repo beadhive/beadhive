@@ -147,6 +147,10 @@ def _config_bound(plane, crossref, policies, state) -> bool:
 
 def read_state(plane):
     """(revision, state, config_bound) for any backend, reading even an expired authority."""
+    if getattr(plane, "config_backend", None) == "api":
+        # route=api (bh-e437a): the verified authority through the HQ port, never SQL.
+        head, state, crossref, policies = plane.authority_state(allow_expired=True)
+        return head, state, _config_bound(plane, crossref, policies, state)
     if hasattr(plane, "_read") and not hasattr(plane, "_runtime_authority"):
         sha, state, _policy = plane._read(allow_expired=True)
         return sha, state, True
@@ -237,7 +241,11 @@ def _frame_plane():
 
     hq = hq_control_plane.config.load_host().get("hq", {})
     _learn_recheck(hq)
-    if not (hq.get("authority_anchor") or (hq.get("sql") or {}).get("runtime")):
+    if not (
+        hq.get("authority_anchor")
+        or (hq.get("sql") or {}).get("runtime")
+        or hq_control_plane.host_route() == "api"  # the port's verified authority (bh-h9dn1)
+    ):
         return None
     plane = control_plane()
     if isinstance(plane, SqlControlPlane) and plane.settings.get("runtime") is None:

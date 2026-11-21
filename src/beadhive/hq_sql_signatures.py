@@ -24,6 +24,8 @@ from .hq_framelease_contracts import DOMAIN_V2, HeartbeatLease
 DOMAIN = b"beadhive/sql-framelease/v1\x00"
 DOMAIN_V2_SIGNATURE = b"beadhive/sql-framelease/v2\x00"
 AUTHORITY_DOMAIN = b"beadhive/sql-authority/v1\x00"
+#: The operator's signature over one hq-service release-catalog row (hq-service store/catalog.go).
+CATALOG_DOMAIN = b"beadhive/hq-catalog/v1\x00"
 HIVE_LEASE_DOMAIN = b"beadhive/sql-hive-lease/v1\x00"
 HIVE_LEASE_DOMAIN_V2 = b"beadhive/sql-hive-lease/v2\x00"
 REGISTRATION_DOMAIN = b"beadhive/sql-registration/v1\x00"
@@ -170,14 +172,31 @@ def sign_authority(record: dict, *, signing_key: str) -> str:
         raise SqlSignatureError("operator signing key unavailable or invalid") from None
 
 
-def verify_authority(record: dict, signature: str, *, granted_public_key: str) -> None:
+def sign_catalog_record(record: dict, *, signing_key: str) -> str:
+    """Sign one release-catalog plan record (``CATALOG_DOMAIN``) with the operator key."""
+    if not isinstance(signing_key, str) or not Path(signing_key).is_absolute():
+        raise SqlSignatureError("explicit absolute operator signing key required")
+    try:
+        private = serialization.load_ssh_private_key(Path(signing_key).read_bytes(), password=None)
+        if not isinstance(private, Ed25519PrivateKey):
+            raise ValueError()
+        return base64.b64encode(
+            private.sign(CATALOG_DOMAIN + canonical(record, limit=4 * 1024 * 1024))
+        ).decode()
+    except (OSError, TypeError, ValueError):
+        raise SqlSignatureError("operator signing key unavailable or invalid") from None
+
+
+def verify_authority(
+    record: dict, signature: str, *, granted_public_key: str, domain: bytes = AUTHORITY_DOMAIN
+) -> None:
     try:
         public = serialization.load_ssh_public_key(granted_public_key.encode())
         if not isinstance(public, Ed25519PublicKey):
             raise SqlSignatureError("operator key type unsupported")
         public.verify(
             base64.b64decode(signature, validate=True),
-            AUTHORITY_DOMAIN + canonical(record, limit=4 * 1024 * 1024),
+            domain + canonical(record, limit=4 * 1024 * 1024),
         )
     except SqlSignatureError:
         raise

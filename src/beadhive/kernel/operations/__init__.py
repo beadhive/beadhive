@@ -173,7 +173,7 @@ host park|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:s
 host resume|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
 host quarantine|action:string:r,frame_id:string:r,expected:string:o,expected_host_id:string:o,expected_release:string:o,operator_key:string:o,confirm:boolean:o,supersede:boolean:o,deadline:number:o,operator_settings:string:o
 host identity|dry_run:boolean:o
-host init|role:string:r,label:string:o,identity_kind:string:o,identity_value:string:o,remote_only_hive:array:o,force:boolean:o
+host init|role:string:r,label:string:o,identity_kind:string:o,identity_value:string:o,remote_only_hive:array:o,force:boolean:o,instance_ref:string:o
 host lease adopt|hive:string:r,force:boolean:o
 host lease release|hive:string:o,all_hives:boolean:o
 host list|as_json:boolean:o,lease_hive:string:o
