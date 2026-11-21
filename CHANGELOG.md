@@ -13,6 +13,26 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.40.0 (2026-11-21)
+
+### Feat
+
+- **host**: host init publishes frame_id, instance_ref, release and capabilities so a route=api frame can join (bh-6se58.3)
+- **hq**: SQL plane retirement guard - HQ SQL openers warn on route=api
+- **hq**: route operator rebind, release-policy and release-catalog import/verify through hq-service on route=api (bh-lejfy)
+- **hq**: hive-lease claim, renew, release and packup through the port on route=api (bh-h9dn1)
+- **hq**: api eligibility, config and hive-lease reads bound to the signed authority (bh-h9dn1)
+- **hq**: join and provisioning through the HQ port on route=api (bh-obhfx)
+- **hq**: frame liveness on route=api with no SQL frame runtime (bh-65s71)
+- **hq**: control_plane() and attach_fleet_config honor hq.route; api-backed plane for route=api (bh-e437a)
+- **hq**: verify authority signature and restore floor on route=api reads
+
+### Fix
+
+- **host**: require beadyard_id on every api route resolution (bh-wyofx)
+- **test**: build the frame-bridge wheel against the real uv cache (bh-bj5yy)
+- **hq**: re-sync the api adapter and plane shapes with hq-service v0.1.0 (bh-21vpt)
+
 ## v0.39.0 (2026-11-19)
 
 ### Feat
