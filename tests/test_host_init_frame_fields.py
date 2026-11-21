@@ -7,6 +7,8 @@ unchanged. Nothing probes the machine and no HQ is contacted.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from typer.testing import CliRunner
 
@@ -20,11 +22,16 @@ RELEASE = {"id": "0.40.0", "digest": "sha256:" + "a" * 64}
 CAPS = {"isolation": "kvm", "trust_zone": "self-hosted", "harnesses": ["claude"], "max_sessions": 2}
 
 
+def _write_config(document: dict) -> None:
+    """The HOST config the verb reads, written for real under the sandboxed BH_HOME."""
+    (config.home() / "config.yaml").write_text(json.dumps(document))
+
+
 def _frame(monkeypatch, *, frame_id="frame-01", instance_ref="vm-1", caps=CAPS, release=RELEASE):
     section = {"frame_id": frame_id, "frame": {"capabilities": dict(caps)}}
     if instance_ref:
         section["instance_ref"] = instance_ref
-    monkeypatch.setattr(config, "load_host", lambda: {"host": section})
+    _write_config({"host": section})
     monkeypatch.setattr(host, "load", lambda: {"host_id": HOST_ID, "label": "frame"})
     monkeypatch.setattr(host_cli.platform, "system", lambda: "Linux")
     monkeypatch.setattr(host_cli.platform, "machine", lambda: "x86_64")
@@ -97,7 +104,7 @@ def test_an_invalid_capability_value_is_a_schema_error(monkeypatch):
     _frame(monkeypatch, caps={**CAPS, "isolation": "jail"})
     result = runner.invoke(app, ["host", "init", "--role", "executor"])
     assert result.exit_code != 0
-    assert not roster.exists(config.hq_dir(), HOST_ID)
+    assert "host.frame.capabilities.isolation" in str(result.exception)
 
 
 def test_no_clobber_keeps_an_existing_manifest_and_force_refreshes_it(monkeypatch):
@@ -111,7 +118,7 @@ def test_no_clobber_keeps_an_existing_manifest_and_force_refreshes_it(monkeypatc
 
 
 def test_a_host_without_a_frame_id_is_unchanged(monkeypatch):
-    monkeypatch.setattr(config, "load_host", lambda: {"host": {}})
+    _write_config({"host": {}})
     monkeypatch.setattr(host, "load", lambda: {"host_id": HOST_ID, "label": "plain"})
 
     def never():
@@ -133,10 +140,10 @@ def test_an_api_frame_binds_the_hq_instance_and_is_refused_without_it(monkeypatc
     yard = "12345678-1234-4234-8234-123456789abc"
     _frame(monkeypatch)
     base = config.load_host()
-    monkeypatch.setattr(config, "load_host", lambda: {**base, "hq": {"route": "api"}})
+    _write_config({**base, "hq": {"route": "api", "api": {"url": "https://hq.test"}}})
     with pytest.raises(host_cli.FrameManifestError, match="hq.beadyard_id"):
         host_cli.frame_manifest_fields(arch="x86_64")
-    monkeypatch.setattr(
-        config, "load_host", lambda: {**base, "hq": {"route": "api", "beadyard_id": yard}}
+    _write_config(
+        {**base, "hq": {"route": "api", "api": {"url": "https://hq.test"}, "beadyard_id": yard}}
     )
     assert host_cli.frame_manifest_fields(arch="x86_64")["beadyard_id"] == yard
