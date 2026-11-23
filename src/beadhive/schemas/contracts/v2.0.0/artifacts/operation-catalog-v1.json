@@ -11577,6 +11577,22 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "plan",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "manifest",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "privileged",
@@ -11623,7 +11639,9 @@
             "allow_downgrade",
             "allow_unknown_readers",
             "plan_sha256",
-            "verb"
+            "verb",
+            "plan",
+            "manifest"
           ],
           "path": "hq authority",
           "progress": {

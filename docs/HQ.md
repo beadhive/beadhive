@@ -447,6 +447,52 @@ next heartbeat carries the new revision; until it lands (one beat interval) its 
 longer verify. In trusted mode `--operator-key` may be omitted; signed mode still requires it.
 Git HQ refuses `--frame`: re-grant the frame with `bh hq authority grant`.
 
+**Previewing a rebind (`--plan`, `hq.route: api`, `bh-hb75g`).** `bh hq authority rebind
+--plan [--frame <frame>] [--duration ...]` prints hq-service's rebind plan and writes nothing; it
+needs no `--confirm` and no `--operator-key`. The JSON shows the authority head the plan was made
+at (`revision`), the `next_revision`, `config_moved` and a `summary` with `config_head_before` /
+`config_head_after` and, with `--frame`, the grant's `config_revision_before` /
+`config_revision_after`. The SQL and Git routes publish a rebind in one step and refuse `--plan`.
+
+### Publishing a host manifest on `hq.route: api` {#publish-manifest}
+
+On `api`, a manifest `bh host init` publishes (`PUT /manifests`) is committed to the fleet config
+but not served: the config hq-service serves is the one the authority pins, and a signed fleet
+refuses the `PUT` outright. `bh hq authority publish-manifest` is the operator operation that
+commits the manifest AND rebinds the authority onto the config head that commit makes, in one
+signed plan/apply (hq-service v0.1.3 `POST /manifests/{host_id}/publish/{plan,apply}`,
+`bh-hb75g`). There is no separate rebind step.
+
+```sh
+bh hq authority publish-manifest --manifest HOST_ID.yaml --plan
+bh hq authority publish-manifest --manifest HOST_ID.yaml --confirm [--operator-key <key>]
+```
+
+- `--manifest` is the file `bh host init` leaves on the frame (`<hq>/hosts/HOST_ID.yaml`; it
+  prints the path). Without it, `--frame HOST_ID` reads that path under this host's HQ
+  directory. `--frame` with `--manifest` must name the manifest's own `host_id`.
+- `--plan` writes nothing and needs no key or `--confirm`. It prints `host_id`, `path`,
+  `manifest_sha256` (the document the service will write), `config_head` (the head now),
+  `config_head_after` (the head the publication makes, which the signed record binds),
+  `config_published` (`false` when the config already holds this exact manifest, e.g. after the
+  frame's `PUT`: only the rebind runs) and `signature_needed`.
+- `--confirm` plans again, signs the plan's `signing_input` with `--operator-key` (the same
+  signer as `rebind`; omit it in a trusted fleet) and applies. The answer has `outcome`
+  (`accepted`, or `replayed` for a publication already applied), the new authority `revision`
+  and `config_head`.
+- **Not atomic, safe to repeat.** hq-service commits the config, then the authority. If the
+  apply's outcome is unknown or it fails transiently, bh sends the same apply again (twice):
+  that completes a publication that stopped between the two commits. If it still fails, run the
+  command again: the new plan sees the committed manifest and only rebinds.
+- Refusals name hq-service's code and what to do: `stale_revision`, `plan_expired`,
+  `plan_mismatch` and `committed_unreadable` mean run it again (a fresh plan);
+  `operator_apply_disabled` means the service runs without `-operator-apply`;
+  `operator_signature_required` / `operator_signature_invalid` mean a missing or wrong
+  `--operator-key`; `working_set_dirty` needs an HQ administrator; a 404 means the service is
+  older than v0.1.3.
+- The SQL and Git routes refuse it: there `bh host init` publishes and `bh hq authority rebind`
+  moves the authority.
+
 ### Fleet-config edits and the bound head {#config-edit-tolerance}
 
 The SQL authority is signed against one config head (H0) and carries a `hive_policies`

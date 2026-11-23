@@ -261,6 +261,39 @@ def test_release_policy_routes_name_the_frame_in_the_path(name):
     assert apply[3]["spec"] == state["spec"] and "frame" not in apply[3]
 
 
+@pytest.mark.parametrize(
+    ("name", "published"),
+    [("manifest-publish-apply-signed", True), ("manifest-publish-already-published", False)],
+)
+def test_manifest_publication_routes_name_the_host_and_echo_the_plan(name, published):
+    """hq-service v0.1.3 (bh-hb75g): ``POST /manifests/{host_id}/publish/{plan,apply}``; the plan
+    body is the case's own and the apply is it plus the plan's inputs, signed once."""
+    from beadhive.hq_service_adapter import operator_apply_body
+
+    operator = _Operator(_case("operator_v1", name), None)
+    host, body = operator.case["host"], json.loads(operator.case["plan"]["body"])
+    if not published:
+        operator.fake.manifest_bodies[host] = body["manifest"]
+    signed: list[dict] = []
+
+    def publish(adapter):
+        plan = adapter.plan_manifest_publish(host, body, deadline=_later())
+        apply = operator_apply_body(
+            body, plan, signer=lambda record: signed.append(record) or "c2ln"
+        )
+        return plan, adapter.apply_manifest_publish(host, apply, deadline=_later())
+
+    plan, answer = operator.run(publish)
+    planned, applied = operator.fake.requests
+    assert planned[:2] == ("POST", f"/manifests/{host}/publish/plan") and planned[3] == body
+    assert applied[:2] == ("POST", f"/manifests/{host}/publish/apply")
+    inputs = {"expected_revision", "config_head", "issued_at", "expires_at", "signature", "record"}
+    assert set(applied[3]) == {*body, *inputs}
+    assert signed == [plan["record"]] and plan["record"]["config_head"] == plan["config_head_after"]
+    assert plan["config_publication"]["publish"] is published
+    assert answer["outcome"] == "accepted" and answer["config_published"] is published
+
+
 def test_a_trusted_fleet_plan_skips_the_signer():
     operator = _Operator(_case("operator_v1", "rebind-plain-signed"), None)
     operator.fake.trusted = True

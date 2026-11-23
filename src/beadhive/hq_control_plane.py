@@ -4141,6 +4141,30 @@ class ApiControlPlane:
         except hq_api_operator.ApiOperatorError as exc:
             raise ControlPlaneError(str(exc)) from None
 
+    def rebind_plan(self, *, expected="", duration=None, ceiling=None, frame=None):
+        """``bh hq authority rebind --plan``: ``POST /authority/rebind/plan`` only (bh-hb75g)."""
+        from . import hq_api_operator
+
+        try:
+            return hq_api_operator.rebind_plan(
+                self, expected=expected, duration=duration, ceiling=ceiling, frame=frame
+            )
+        except hq_api_operator.ApiOperatorError as exc:
+            raise ControlPlaneError(str(exc)) from None
+
+    def operator_publish_manifest(self, manifest, **kwargs):
+        """``bh hq authority publish-manifest``: the signed manifest publication that also
+        rebinds (``POST /manifests/{host_id}/publish/{plan,apply}``, hq-service v0.1.3)."""
+        from . import config_publish_signal, hq_api_operator
+
+        try:
+            return hq_api_operator.publish_manifest(self, manifest, **kwargs)
+        except hq_api_operator.ApiOperatorError as exc:
+            raise ControlPlaneError(str(exc)) from None
+        finally:
+            if not kwargs.get("plan_only"):
+                config_publish_signal.published()
+
     def release_policy(self, frame, action="plan", **kwargs):
         """Release-policy plan/apply through ``POST /authority/release-policy/{frame}/...``."""
         from . import hq_api_operator

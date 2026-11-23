@@ -885,6 +885,12 @@ _APPROVED_OPTIONAL_REPAIR_PARAMS = {
         "allow_unknown_readers": {"type": "boolean"},
         "plan_sha256": {"type": "string"},
         "verb": {"type": "string"},
+        # bh-hb75g (operator-filed bead acceptance, `bh hq authority rebind --plan`, and the
+        # dispatcher's go-ahead for the route=api manifest publication, 2026-11-23): `--plan`
+        # (rebind / publish-manifest preview) and `--manifest` (publish-manifest's input) append
+        # two optional inputs. Callers that omit them keep their exact request and behaviour.
+        "plan": {"type": "boolean"},
+        "manifest": {"type": "string"},
     },
     # bh-73td2 (operator-authorised wire 2.16.0 cut, dispatcher instruction 2026-10-29): the
     # external-intake linking options `accept --work <id>` / `--new-work` append these two

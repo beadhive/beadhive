@@ -1,7 +1,8 @@
 """Replay of hq-service ``conformance/operator/v1`` against the adapter (bh-lejfy).
 
-The corpus is normative for hq-service's operator routes (rebind, release-policy and release
-catalog import plan/apply). This replays it from the CLIENT's side: a scripted service answers
+The corpus is normative for hq-service's operator routes (rebind, release-policy, release
+catalog import and, from v0.1.3, the signed manifest publication plan/apply, bh-hb75g). This
+replays it from the CLIENT's side: a scripted service answers
 each case's own plan (and accepted apply) and the test asserts what the adapter puts on the wire
 and what it signs, with a real Ed25519 key over the plan's ``signing_input``. Cases that
 exercise server rules only (a tampered or missing signature, edited replays, clock moves, apply
@@ -28,7 +29,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from beadhive.hq_port import HqRefused, HqUnavailable
-from beadhive.hq_service_adapter import PREFIX, HqServiceAdapter
+from beadhive.hq_service_adapter import PREFIX, HqServiceAdapter, operator_apply_body
 from beadhive.hq_sql_signatures import (
     AUTHORITY_DOMAIN,
     CATALOG_DOMAIN,
@@ -39,7 +40,8 @@ from beadhive.hq_sql_signatures import (
 )
 
 ENV = "BH_HQ_SERVICE_CONFORMANCE"
-HEAD, NEW_HEAD, CONFIG_HEAD = "a" * 32, "b" * 32, "c" * 32
+HEAD, NEW_HEAD, CONFIG_HEAD, CONFIG_AFTER = "a" * 32, "b" * 32, "c" * 32, "d" * 32
+OPS = {"rebind", "release-policy", "catalog-import", "manifest-publish"}
 
 
 def _cases_dir() -> Path | None:
@@ -59,7 +61,7 @@ def _later() -> float:
 
 def _replayable(case: dict) -> str | None:
     """Why a case is not a client-side replay (``None``: it is)."""
-    if case["op"] not in {"rebind", "release-policy", "catalog-import"}:
+    if case["op"] not in OPS:
         return "the route is not routed by the adapter (catalog revoke is 0.41.0)"
     try:
         body = json.loads(case["plan"]["body"])
@@ -95,6 +97,7 @@ class Script:
             "$BACKEND": "svc:hq",
             "$GENERATION": "g1",
             "$CONFIG_HEAD": CONFIG_HEAD,
+            "$CONFIG_AFTER": CONFIG_AFTER,
             "$HEAD": HEAD,
         }.items():
             text = text.replace(token, replacement)
@@ -139,8 +142,18 @@ class Script:
         }
         if not self.is_catalog:
             state = record["state"]
-            self.plan["config_head"] = record.get("config_head", CONFIG_HEAD)
+            if self.case["op"] != "manifest-publish":  # its plan names the base head itself
+                self.plan["config_head"] = record.get("config_head", CONFIG_HEAD)
             self.plan["expires_at"] = state["expires_at"]
+        if self.case["op"] == "manifest-publish":
+            host = self.case["host"]
+            content = json.dumps(expect.get("manifest"), sort_keys=True)
+            self.plan["manifest"] = {
+                "host_id": host,
+                "path": f"hosts/{host}.yaml",
+                "content": content,
+                "sha256": hashlib.sha256(content.encode()).hexdigest(),
+            }
         return httpx.Response(200, json=self.plan)
 
     def _apply_response(self, body: dict) -> httpx.Response:
@@ -170,7 +183,10 @@ class Script:
                 domain=self.domain,
             )
         outcome = self.case["apply"]["expect"].get("outcome", "accepted")
-        return httpx.Response(200, json={"outcome": outcome, "revision": NEW_HEAD})
+        answer = {"outcome": outcome, "revision": NEW_HEAD}
+        if self.case["op"] == "manifest-publish":
+            answer["host_id"] = self.case["host"]
+        return httpx.Response(200, json=answer)
 
 
 @pytest.mark.parametrize("name", _case_names() or ["<no corpus>"])
@@ -213,6 +229,12 @@ def test_operator_case_replays_against_the_adapter(name, tmp_path):
                 expected_revision=HEAD,
                 deadline=_later(),
             )
+        if op == "manifest-publish":
+            plan = adapter.plan_manifest_publish(case["host"], request, deadline=_later())
+            body = operator_apply_body(
+                request, plan, signer=lambda r: sign_authority(r, signing_key=str(key))
+            )
+            return adapter.apply_manifest_publish(case["host"], body, deadline=_later())["revision"]
         if op == "release-policy":
             return adapter.release_policy(
                 case["frame"],
@@ -235,6 +257,11 @@ def test_operator_case_replays_against_the_adapter(name, tmp_path):
         assert [m for m, _, _ in script.requests] == ["POST"]  # the plan; never an apply
         return
     if case.get("apply") is None:
+        if op == "manifest-publish":
+            plan = adapter.plan_manifest_publish(case["host"], request, deadline=_later())
+            assert plan["record"] == script.plan["record"]
+            assert plan["record"]["config_head"] == plan["config_head_after"]
+            return
         if op != "release-policy":
             pytest.skip("a plan-only case: the adapter plans only to apply it")
         plan = adapter.plan_release_policy(case["frame"], request, deadline=_later())

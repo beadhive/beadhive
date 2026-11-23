@@ -265,6 +265,20 @@ class HqOperator(Protocol):
         """Plan only (api route): the service's plan, ``record`` unsigned, nothing written."""
         ...
 
+    def plan_rebind(self, request: dict, *, deadline: float) -> dict:
+        """Plan a rebind only (api route): the service's plan, nothing written (bh-hb75g)."""
+        ...
+
+    def plan_manifest_publish(self, host_id: str, request: dict, *, deadline: float) -> dict:
+        """Plan a signed manifest publication + rebind (api route, hq-service v0.1.3):
+        ``request`` is ``{manifest, duration_s?}``; nothing written."""
+        ...
+
+    def apply_manifest_publish(self, host_id: str, body: dict, *, deadline: float) -> dict:
+        """Apply a planned manifest publication with the exact apply ``body`` (api route). The
+        same body is safe to send again: it completes a half-done publication or replays."""
+        ...
+
     def import_release_catalog(
         self, catalog: str, request: dict, *, signer: Signer, deadline: float
     ) -> str:
@@ -291,6 +305,25 @@ class HqOperator(Protocol):
     def recover_publication(
         self, publication_id: str, *, expected_revision: str, deadline: float
     ) -> Any: ...
+
+
+def operator_apply_body(request: Mapping[str, Any], plan: Mapping[str, Any], *, signer) -> dict:
+    """The apply body of an operator plan/apply pair: the plan request plus the plan's
+    ``{expected_revision (its head), config_head, issued_at, expires_at, record}`` and, unless the
+    plan says no signature is needed (a trusted fleet), ``signer(record)``. Deterministic for one
+    plan (Ed25519 signs deterministically), so the same plan always yields the same bytes."""
+    record = plan["record"]
+    body: dict[str, Any] = {
+        **request,
+        "expected_revision": plan.get("revision"),
+        "config_head": plan.get("config_head"),
+        "issued_at": plan.get("issued_at"),
+        "expires_at": plan.get("expires_at"),
+        "record": record,
+    }
+    if plan.get("signature_needed") is not False:
+        body["signature"] = signer(record)
+    return body
 
 
 class HqPort(HqLiveness, HqAdmission, HqReads, HqOperator, Protocol):

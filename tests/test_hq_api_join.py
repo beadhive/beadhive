@@ -89,11 +89,12 @@ def _dump(body: dict) -> str:
     return stream.getvalue()
 
 
-def _config(service: FakeHqService) -> dict:
-    """``GET /config`` over what the fake committed: fleet.yaml plus every PUT manifest."""
+def _config(service: FakeHqService, bodies: dict | None = None) -> dict:
+    """``GET /config`` over what the fake committed: fleet.yaml plus every PUT manifest (or
+    ``bodies``: the manifests the authority's pinned head serves)."""
+    bodies = service.manifest_bodies if bodies is None else bodies
     documents = [("fleet.yaml", FLEET_YAML)] + [
-        (f"hosts/{host_id}.yaml", _dump(body))
-        for host_id, body in sorted(service.manifest_bodies.items())
+        (f"hosts/{host_id}.yaml", _dump(body)) for host_id, body in sorted(bodies.items())
     ]
     return {
         "authority": _authority(service),
@@ -476,4 +477,79 @@ def test_a_signed_api_fleet_has_no_registration_route(api_frame, service, tripwi
     with pytest.raises(hq_control_plane.HqPlaneUnavailable, match="publish_registration"):
         hq.publish_host_manifest(config.hq_dir(), HOST_ID)
     assert _calls(service) == [("PUT", f"/manifests/{HOST_ID}")]
+    assert tripwires == []
+
+
+# -- the route=api join with the signed manifest publication (hq-service v0.1.3, bh-hb75g) -----
+
+
+def _serve_pinned(service: FakeHqService) -> None:
+    """Serve what the authority pins, as hq-service does: a PUT manifest is committed but not
+    served until an operator publication rebinds the authority onto it."""
+    service.reads["/config"] = lambda: {
+        **_config(service, service.served_manifests),
+        "authority": _authority(service),
+    }
+
+
+def test_an_operator_join_of_an_unserved_manifest_names_the_publication(
+    api_frame, service, tripwires, frame_key
+):
+    _serve_pinned(service)
+    roster.save(config.hq_dir(), _manifest())
+    service.caller = {"kind": "operator"}
+    result = _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub")
+    assert result.exit_code == 1
+    assert "hq-service does not serve it" in result.output
+    assert f"bh hq authority publish-manifest --frame {HOST_ID}" in result.output
+    assert ("POST", "/incarnations") not in _calls(service)
+    assert tripwires == []
+
+
+def test_a_fresh_frame_joins_after_publish_register_admit(api_frame, service, tripwires, frame_key):
+    """J7-J10: the frame writes its manifest, the operator publishes it (and so rebinds), the
+    operator registers the incarnation and the frame admits itself, with no separate rebind."""
+    from beadhive.cli import app
+
+    _serve_pinned(service)
+    service.trusted = True  # a trusted fleet: the publication needs no operator signature
+    local = roster.save(config.hq_dir(), _manifest())  # J7: what `bh host init` does
+    assert local.is_file()  # the file the operator publishes
+    assert not roster.served(HOST_ID)
+
+    service.caller = {"kind": "operator"}
+    base = ["hq", "authority", "publish-manifest", "--manifest", str(local)]
+    plan = CliRunner().invoke(app, [*base, "--plan"])
+    assert plan.exit_code == 0, plan.output
+    assert _result(plan.output)["config_published"] is False  # the PUT committed it already
+    assert not roster.served(HOST_ID)
+    publish = CliRunner().invoke(app, [*base, "--confirm"])
+    assert publish.exit_code == 0, publish.output
+    assert _result(publish.output)["outcome"] == "accepted"
+    assert roster.served(HOST_ID)
+
+    register = _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub")
+    assert register.exit_code == 0, register.output
+    assert _result(register.output)["registered"] is True
+
+    service.caller = {"kind": "frame", "frame_id": FRAME, "host_id": HOST_ID}
+    admit = _join()
+    assert admit.exit_code == 0, admit.output
+    assert _result(admit.output)["admitted"] is True
+    assert service.authority_state["frames"][FRAME]["active"]["state"] == "active"
+    assert [path for method, path in _calls(service) if "/rebind" in path] == []
+    assert tripwires == []
+
+
+def test_host_init_leaves_the_manifest_for_the_operator_and_names_the_publication(
+    api_frame, service, tripwires
+):
+    from beadhive.cli import app
+
+    _serve_pinned(service)
+    result = CliRunner().invoke(app, ["host", "init", "--role", "executor"])
+    assert result.exit_code == 0, result.output
+    assert "bh hq authority publish-manifest --manifest" in result.output
+    local = roster.manifest_path(config.hq_dir(), HOST_ID)
+    assert YAML(typ="safe").load(local.read_text())["host_id"] == HOST_ID
     assert tripwires == []

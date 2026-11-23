@@ -657,12 +657,15 @@ def publish_host_manifest(hq_dir: Path, host_id: str, *, attempts: int = 3) -> b
 
     if _api_route():
         plane = control_plane()
-        plane.load_host_manifest(host_id)  # committed, or refused naming the host
+        from . import hq_open_admission
+
+        # committed, or refused naming the host and the operator publication that serves it
+        hq_open_admission.committed_manifest(plane, host_id)
         from . import hq_authority_enforce
 
         if not hq_authority_enforce.fleet_trusted():
             return plane.publish_registration(host_id, attempts=attempts)
-        from . import hq_authority_fleet_mode, hq_open_admission
+        from . import hq_authority_fleet_mode
 
         result = hq_open_admission.join(plane, host_id, hq_authority_fleet_mode._local_public_key())
         return bool(result.get("changed"))

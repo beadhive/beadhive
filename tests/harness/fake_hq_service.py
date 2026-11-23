@@ -42,6 +42,17 @@ The write routes serve the bodies of hq-service v0.1.0 (``api/writes.go``, ``sto
   ``{expected_revision, config_head, issued_at, expires_at, signature?, record?}``, refuses a
   stale head, a mismatched echoed record, and a missing signature when ``signature_needed``.
 
+* ``POST /manifests/{host_id}/publish/{plan,apply}`` (hq-service v0.1.3, bh-hq-0ci): the signed
+  manifest publication that also rebinds. A plan takes ``{manifest, duration_s?}`` and answers
+  the rebind plan over ``operator_record`` with its ``config_head`` set to the head the
+  publication makes (``config_head_after``; the current head when the config already holds the
+  manifest), plus ``manifest {host_id, path, content, sha256}`` and ``config_publication``. An
+  apply commits the config, then the authority (``served_manifests`` becomes what is committed:
+  the config a frame join then reads). ``crash_between_commits`` (a count) fails that many
+  applies with a 503 after the config commit; the SAME apply sent again sees the config already
+  at the signed head (its parent is the plan's) and publishes only the authority. An identical
+  apply after completion is ``replayed``. ``operator_apply`` off refuses every apply
+  (``operator_apply_disabled``).
 * ``GET /hive-leases?prefix=`` serves ``hive_leases[prefix]`` (``unknown_prefix`` otherwise) and
   ``GET /release-catalog/{catalog}`` lists ``catalog_rows`` or, with ``release_id`` and
   ``release_digest`` together, folds them into the verdict ``{id, digest, verified, row}``.
@@ -129,7 +140,7 @@ CODES: dict[str, tuple[int, str]] = {
 }
 
 #: Codes the registry marks retryable (``conformance/http/v1/codes.json``).
-RETRYABLE = frozenset({"stale_revision"})
+RETRYABLE = frozenset({"stale_revision", "storage_unavailable"})
 
 _REVISION = re.compile(r"^[0-9a-v]{32}$")
 _PRINCIPAL = re.compile(r"^frame_[0-9a-f]{20}$")
@@ -174,6 +185,15 @@ V0_CODES: dict[str, tuple[int, str]] = {
         "capabilities",
     ),
     "admission_conflict": (409, "the frame already has an active or pending incarnation"),
+    # hq-service v0.1.3 signed manifest publication (``conformance/operator/v1``, bh-hq-0ci).
+    "operator_apply_disabled": (
+        403,
+        "this service does not write the authority table for operator publication",
+    ),
+    "plan_expired": (409, "the plan is older than its window; plan again"),
+    "working_set_dirty": (409, "the runtime working set is not clean"),
+    "committed_unreadable": (500, "the committed result could not be read back"),
+    "storage_unavailable": (503, "storage is unavailable"),
 }
 
 
@@ -272,6 +292,15 @@ class FakeHqService:
         #: The operator authority state (``{revision, frames}``) an open admission writes into,
         #: as the service does (bh-obhfx). ``None`` keeps the canned admission answer.
         self.authority_state: dict[str, Any] | None = None
+        #: Manifest publication (bh-hb75g): the manifests the authority's pinned config head
+        #: serves, set by each completed publication apply; whether applies are enabled; how many
+        #: applies fail between the config and the authority commit; the base head each host's
+        #: publication was committed on; and the last completed apply body, for replay.
+        self.served_manifests: dict[str, dict[str, Any]] = {}
+        self.operator_apply = True
+        self.crash_between_commits = 0
+        self._published_on: dict[str, str] = {}
+        self._completed_publications: list[dict[str, Any]] = []
 
     def provision(self, principal: str, **kwargs: Any) -> Principal:
         record = Principal(**kwargs)
@@ -349,6 +378,16 @@ class FakeHqService:
             and _FRAME.match(parts[1])
         ):
             return self._write(request, body, lambda b: self._catalog_import(parts[1], b, parts[3]))
+        if (
+            method == "POST"
+            and len(parts) == 4
+            and parts[0] == "manifests"
+            and parts[2] == "publish"
+            and parts[3] in ("plan", "apply")
+        ):
+            return self._write(
+                request, body, lambda b: self._manifest_publish(parts[1], b, parts[3])
+            )
         if method == "POST" and parts[:2] == ["authority", "rebind"] and len(parts) == 3:
             if parts[2] in ("plan", "apply"):
                 return self._write(request, body, lambda b: self._operate("rebind", b, parts[2]))
@@ -821,6 +860,112 @@ class FakeHqService:
             except SqlSignatureError:
                 return "operator_signature_invalid", None
         return None, {"outcome": "accepted", "revision": self._new_head(kind, signature)}
+
+    def _manifest_publish(self, host_id: str, body: dict, phase: str):
+        """``store/operator_manifest.go`` ``operateManifest``, reduced to what a client sees."""
+        apply_fields = {
+            "expected_revision", "config_head", "issued_at", "expires_at", "signature", "record",
+        }  # fmt: skip
+        if set(body) - {"manifest", "duration_s"} - (apply_fields if phase == "apply" else set()):
+            return "manifest_invalid", None
+        manifest = body.get("manifest")
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("host_id"), str):
+            return "manifest_invalid", None
+        if manifest["host_id"] != host_id:
+            return "host_id_mismatch", None
+        if phase == "apply" and not self.operator_apply:
+            return "operator_apply_disabled", None
+        document = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+        written = self.manifest_bodies.get(host_id) == manifest
+        path = f"hosts/{host_id}.yaml"
+        if phase == "plan":
+            base = self.config_head
+            after = base if written else hashlib.sha256(base.encode() + document).hexdigest()[:32]
+            record = {**self.operator_record, "config_head": after}
+            signing_input = AUTHORITY_DOMAIN + canonical(record)
+            sha = hashlib.sha256(document).hexdigest()
+            return None, {
+                "outcome": "planned",
+                "revision": self.head,
+                "config_head": base,
+                "config_head_after": after,
+                "record": record,
+                "signing_input": base64.b64encode(signing_input).decode(),
+                "signing_sha256": hashlib.sha256(signing_input).hexdigest(),
+                "issued_at": 1793000000.0,
+                "expires_at": 4102444800.0,
+                "plan_expires_at": 1793000900.0,
+                "signature_needed": not self.trusted,
+                "manifest": {
+                    "host_id": host_id,
+                    "path": path,
+                    "content": document.decode(),
+                    "sha256": sha,
+                },
+                "config_publication": {
+                    "publish": not written,
+                    "publication_id": hashlib.sha256(base.encode() + document).hexdigest()[:36],
+                    "date": "2026-10-26T08:53:20Z",
+                    "base_head": base,
+                    "resulting_head": after,
+                },
+                "summary": {
+                    "config_head_before": base,
+                    "config_head_after": after,
+                    "config_moved": after != base,
+                    "host_id": host_id,
+                    "path": path,
+                    "sha256": sha,
+                    "config_published": not written,
+                },
+            }
+        if body in self._completed_publications:
+            return None, {"outcome": "replayed", "revision": self.head}
+        if body.get("expected_revision") != self.head:
+            return "stale_revision", None
+        if body.get("config_head") == self.config_head:
+            after = (
+                self.config_head
+                if written
+                else hashlib.sha256(self.config_head.encode() + document).hexdigest()[:32]
+            )
+        elif written and self._published_on.get(host_id) == body.get("config_head"):
+            after = self.config_head  # a half-done apply, sent again: only the authority is left
+        else:
+            return "stale_revision", None
+        record = {**self.operator_record, "config_head": after}
+        if "record" in body and body["record"] != record:
+            return "plan_mismatch", None
+        signature = body.get("signature")
+        if signature is None and not self.trusted:
+            return "operator_signature_required", None
+        if signature is not None and self.operator_key is not None:
+            try:
+                verify_authority(record, signature, granted_public_key=self.operator_key)
+            except SqlSignatureError:
+                return "operator_signature_invalid", None
+        published = after != self.config_head
+        if published:
+            self.manifests.add(host_id)
+            self.manifest_bodies[host_id] = manifest
+            self._published_on[host_id] = self.config_head
+            self.config_head = after
+        if self.crash_between_commits > 0:
+            self.crash_between_commits -= 1
+            return "storage_unavailable", None
+        self.served_manifests = dict(self.manifest_bodies)
+        self._completed_publications.append(body)
+        return None, {
+            "outcome": "accepted",
+            "revision": self._new_head("manifest", host_id, signature),
+            "kind": "manifest",
+            "signed": signature is not None,
+            "host_id": host_id,
+            "path": path,
+            "sha256": hashlib.sha256(document).hexdigest(),
+            "config_head": after,
+            "config_published": published,
+        }
 
     def _decide(
         self, request: httpx.Request, principal: str, epoch_text: str, kind: str
