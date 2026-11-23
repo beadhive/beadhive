@@ -13,6 +13,14 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.40.3 (2026-11-23)
+
+### Fix
+
+- **hq**: publish a route=api host manifest with its rebind in one signed operator step
+- **config**: strip fleet-only host keys when hq.route switches to api
+- **host**: withdraw an unserved manifest on route=api and report publish status in host init
+
 ## v0.40.2 (2026-11-23)
 
 ### Fix
