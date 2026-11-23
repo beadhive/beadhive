@@ -49,7 +49,8 @@ from .hq_port import HistorySinceFloor, HqRefused, HqUnavailable
 from .hq_sql_deadline import flock_until
 from .hq_sql_signatures import SqlSignatureError, verify_authority
 
-#: Most commits walked between the floor and a presented head (the SQL reader's bound).
+#: Most commits a same-sequence (provisioning-only) head may sit past the floor (the SQL
+#: reader's bound). The whole-history descent walk is bounded by the service response instead.
 MAX_HISTORY = 64
 #: Tables a same-sequence descendant may touch: reviewed session provisioning only.
 #: ``hq_release_catalog`` is judged separately (:meth:`_check_catalog`), not listed here.
@@ -243,8 +244,6 @@ class ServiceResponseVerifier:
                 continue
             seen.add(current)
             reached.append(by_id[current])
-            if len(reached) > MAX_HISTORY:
-                break
             for parent in by_id[current]["parents"]:
                 found = found or parent == floor_head
                 pending.append(parent)
@@ -255,6 +254,13 @@ class ServiceResponseVerifier:
                 f"floor {floor_head[:12]}",
             )
         if same_sequence:
+            if len(reached) > MAX_HISTORY:
+                raise _refuse(
+                    "restore_floor",
+                    f"HQ history exceeds verifier bound: {len(reached)} commits between restore "
+                    f"floor {floor_head[:12]} and head {head[:12]} (limit {MAX_HISTORY}) for a "
+                    "same-sequence head",
+                )
             self._check_provisioning(reached, floor_head, head)
 
     def _check_provisioning(

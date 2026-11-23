@@ -366,3 +366,57 @@ def test_a_same_sequence_catalog_change_with_no_catalog_reader_is_unavailable(
     port._verifier._catalog = None
     with pytest.raises(HqUnavailable, match="catalog reader"):
         port.read_authority(deadline=_later())
+
+
+# --- whole-history descent is not capped at the provisioning bound (bh-qivt4) ---
+
+
+def _descent_verifier(tmp_path, revisions, head):
+    from beadhive.hq_port import HistorySinceFloor
+    from beadhive.hq_service_verifier import ServiceResponseVerifier
+
+    verifier = ServiceResponseVerifier(floor_path=str(tmp_path / "f.json"), initial_revision=FLOOR)
+    verifier.bind_history(
+        lambda **_: HistorySinceFloor(head=head, floor=FLOOR, revisions=revisions)
+    )
+    return verifier
+
+
+def _linear(count, first_parent=FLOOR, table="frame_x"):
+    revisions, previous = [], first_parent
+    for index in range(count):
+        identifier = f"r{index:031d}"
+        revisions.append({"id": identifier, "parents": [previous], "changes": [{"table": table}]})
+        previous = identifier
+    return revisions, previous
+
+
+@pytest.mark.parametrize("count", [64, 65, 171, 1000])
+def test_a_linear_history_of_any_length_descends_from_the_floor(tmp_path, count):
+    revisions, head = _linear(count)
+    _descent_verifier(tmp_path, revisions, head)._check_descent(FLOOR, head, same_sequence=False)
+
+
+def test_a_history_whose_floor_is_not_an_ancestor_is_a_fork(tmp_path):
+    revisions, head = _linear(100, first_parent="e" * 32)
+    with pytest.raises(HqRefused, match="history fork detected") as err:
+        _descent_verifier(tmp_path, revisions, head)._check_descent(
+            FLOOR, head, same_sequence=False
+        )
+    assert err.value.code == "restore_floor"
+
+
+def test_a_same_sequence_head_past_the_provisioning_bound_is_truncated_not_a_fork(tmp_path):
+    revisions, head = _linear(65)
+    with pytest.raises(HqRefused, match="exceeds verifier bound") as err:
+        _descent_verifier(tmp_path, revisions, head)._check_descent(FLOOR, head, same_sequence=True)
+    assert err.value.code == "restore_floor"
+    assert "fork" not in str(err.value)
+
+
+def test_a_same_sequence_head_within_the_bound_is_still_judged_on_its_changes(tmp_path):
+    revisions, head = _linear(64)
+    _descent_verifier(tmp_path, revisions, head)._check_descent(FLOOR, head, same_sequence=True)
+    bad, head = _linear(3, table="hq_authority")
+    with pytest.raises(HqRefused, match="only reviewed session provisioning"):
+        _descent_verifier(tmp_path, bad, head)._check_descent(FLOOR, head, same_sequence=True)
