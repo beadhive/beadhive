@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.40.1 (2026-11-23)
+
+### Fix
+
+- **hq**: present mTLS client cert via one SSLContext in adapter_from_config
+
 ## v0.40.0 (2026-11-21)
 
 ### Feat
