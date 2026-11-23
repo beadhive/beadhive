@@ -9,6 +9,11 @@ Pinned to hq-service v0.1.0 (commit 4e0fc6b, which includes the bh-hq-91a molecu
   exact request of POST /incarnations, PUT and DELETE /manifests/{host_id}, POST
   /admissions/{frame} and GET /release-catalog/{catalog} (list and verify); the operator cases
   carry each plan request body and the plan's record. Recopy to refresh, do not edit.
+- `operator_v1/manifest-publish-apply-signed.json` and
+  `operator_v1/manifest-publish-already-published.json` (bh-hb75g): copied verbatim from
+  hq-service `conformance/operator/v1/cases` at v0.1.3 (commit 5723c1a, the signed manifest
+  publication of bh-hq-0ci). The rest of `operator_v1/` stays at v0.1.0. Recopy to refresh, do
+  not edit.
 - `reads_v0.1.0.json`: hand-built from hq-service `store/reads.go` (the JSON tags of
   `ConfigRead`, `HistoryRead`, `EligibilityRead`, `Liveness`, `ReleaseRead`, `HiveLeaseRead`) and
   `docs/DESIGN.md` "Reads"; the config document digest is `ordered_documents_digest` of the

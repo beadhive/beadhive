@@ -928,7 +928,9 @@ def init_cmd(
         else:
             typer.echo(
                 f"✓ published {host_id} to HQ; pending a rebind — the manifest is not served "
-                f"until an operator rebinds the authority head (local {target} is a cache)"
+                f"until an operator publishes it with the rebind: copy {target} to the operator "
+                f"host and run `bh hq authority publish-manifest --manifest <that file> --plan`, "
+                "then the same with --confirm"
             )
         return
     typer.echo(f"✓ wrote {target}")

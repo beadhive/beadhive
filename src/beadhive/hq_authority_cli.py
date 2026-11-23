@@ -51,14 +51,54 @@ def _operator_mode_scope(command):
     return wrapped
 
 
+def _manifest_document(path, frame):
+    """The host manifest ``publish-manifest`` sends: *path* (default ``<hq>/hosts/<frame>.yaml``)
+    validated as a :class:`~beadhive.hosts.HostManifest` and dumped exactly as ``bh host init``
+    publishes it, so an already-committed manifest is recognised byte for byte."""
+    from pydantic import ValidationError
+    from ruamel.yaml import YAML
+    from ruamel.yaml.error import YAMLError
+
+    from . import hosts
+
+    if path is None:
+        if not frame:
+            raise hq_control_plane.ControlPlaneError(
+                "publish-manifest requires --manifest <file> (the frame's hosts/HOST_ID.yaml) "
+                "or --frame HOST_ID with that file under this HQ's hosts/"
+            )
+        path = hosts.manifest_path(config.hq_dir(), frame)
+    try:
+        raw = YAML(typ="safe").load(Path(path).read_text())
+    except (OSError, YAMLError) as exc:
+        raise hq_control_plane.ControlPlaneError(
+            f"publish-manifest: cannot read the manifest {path}: {exc}"
+        ) from None
+    if isinstance(raw, dict) and "state" not in raw:
+        raw = {**raw, "state": "active"}
+    try:
+        document = hosts.HostManifest.model_validate(raw)
+    except ValidationError as exc:
+        raise hq_control_plane.ControlPlaneError(
+            f"publish-manifest: {path} is not a host manifest: {exc.error_count()} invalid field(s)"
+        ) from None
+    if frame and document.host_id != frame:
+        raise hq_control_plane.ControlPlaneError(
+            f"publish-manifest: {path} is the manifest of {document.host_id}, not --frame {frame}"
+        )
+    return document.model_dump(mode="json", exclude_none=True)
+
+
 @_operator_mode_scope
 def authority_cmd(
     action: str = typer.Argument(
         ...,
         help="install, bind, bind-beadyard, grant, observe, rebind, renew (deprecated alias of "
         "rebind), status, check, prune-inbox, mode (show the fleet default authority mode), "
-        "mode-signed / mode-trusted (set it), join (open admission in a trusted fleet), or "
-        "release-policy <plan|apply> (SQL HQ: reviewed per-frame release range, no epoch advance)",
+        "mode-signed / mode-trusted (set it), join (open admission in a trusted fleet), "
+        "release-policy <plan|apply> (SQL HQ: reviewed per-frame release range, no epoch "
+        "advance), or publish-manifest (hq.route api: publish a host manifest and rebind onto "
+        "it in one signed operation, hq-service v0.1.3)",
     ),
     record: Annotated[Path | None, typer.Option("--record")] = None,
     frame: str = typer.Option("", "--frame"),
@@ -129,11 +169,27 @@ def authority_cmd(
         "", "--plan-sha256", help="release-policy apply: exact reviewed plan digest"
     ),
     verb: str = typer.Argument("", help="release-policy: plan or apply"),
+    plan: bool = typer.Option(
+        False,
+        "--plan",
+        help="rebind / publish-manifest (hq.route api): print hq-service's plan and change "
+        "nothing; needs no --confirm or key",
+    ),
+    manifest: Annotated[
+        Path | None,
+        typer.Option(
+            "--manifest",
+            help="publish-manifest: the host manifest file (YAML or JSON) the frame's `bh host "
+            "init` wrote; default <hq>/hosts/<--frame>.yaml",
+        ),
+    ] = None,
 ) -> None:
     if verb and action != "release-policy":
         # The second positional belongs to release-policy only; keep every other action's
         # usage error (exit 2) for stray arguments, e.g. `mode trusted`.
         raise typer.BadParameter(f"unexpected extra argument ({verb})")
+    if plan and action not in {"rebind", "renew", "publish-manifest"}:
+        raise typer.BadParameter(f"--plan applies to rebind and publish-manifest, not {action}")
     try:
         # The fleet default rides in the action value (`mode-trusted`), so the published
         # hq.authority operation keeps its parameter list (bh-taa04.3).
@@ -205,6 +261,39 @@ def authority_cmd(
                 confirm=confirm,
                 allow_downgrade=allow_downgrade,
                 allow_unknown_readers=allow_unknown_readers,
+            )
+        elif action in {"rebind", "renew"} and plan:
+            # Plan-only (bh-hb75g): hq-service plans the rebind and nothing is written, so no
+            # --confirm and no key. The SQL and Git planes publish in one step and have no plan.
+            if not hasattr(plane, "rebind_plan"):
+                raise hq_control_plane.ControlPlaneError(
+                    "rebind --plan needs hq.route api (hq-service plans the rebind)"
+                )
+            result = plane.rebind_plan(
+                expected=expected,
+                duration=duration,
+                ceiling=hq_authority_ceiling.resolve_ceiling(
+                    cli=max_duration, settings=getattr(plane, "authority_max_duration_s", None)
+                ),
+                frame=frame or None,
+            )
+        elif action == "publish-manifest":
+            if not hasattr(plane, "operator_publish_manifest"):
+                raise hq_control_plane.ControlPlaneError(
+                    "publish-manifest needs hq.route api (hq-service v0.1.3); on the SQL route "
+                    "`bh host init` publishes the manifest and `bh hq authority rebind` moves "
+                    "the authority onto it"
+                )
+            result = plane.operator_publish_manifest(
+                _manifest_document(manifest, frame),
+                plan_only=plan,
+                confirm=confirm,
+                operator_key=str(operator_key) if operator_key is not None else "",
+                expected=expected,
+                duration=duration,
+                ceiling=hq_authority_ceiling.resolve_ceiling(
+                    cli=max_duration, settings=getattr(plane, "authority_max_duration_s", None)
+                ),
             )
         elif action == "prune-inbox":
             # Signed-mode inbox retention (bh-ce886): a dry run unless --confirm. The margin

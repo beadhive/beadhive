@@ -53,6 +53,36 @@ def _operator_state(plane) -> tuple[str, dict]:
     return head, state
 
 
+def publish_command(host_id: str) -> str:
+    """The operator command that publishes ``host_id``'s manifest AND rebinds the authority
+    onto it on ``hq.route: api`` (hq-service v0.1.3, bh-hb75g)."""
+    return (
+        f"bh hq authority publish-manifest --frame {host_id} --manifest <hosts/{host_id}.yaml> "
+        "--plan, then the same with --confirm (and --operator-key in a signed fleet)"
+    )
+
+
+def committed_manifest(plane, host_id: str):
+    """``host_id``'s committed manifest, as the join needs it.
+
+    On ``hq.route: api`` a manifest hq-service does not serve (never published, or published
+    but the authority still pins an older config head, bh-e4aou) is refused naming the
+    operator step that fixes it: the signed publication that also rebinds. The exception keeps
+    its type (:class:`~beadhive.hq_control_plane.CommittedManifestAbsent`)."""
+    from .hq_control_plane import CommittedManifestAbsent
+
+    try:
+        return plane.load_host_manifest(host_id)
+    except CommittedManifestAbsent as exc:
+        if not _api(plane):
+            raise
+        raise CommittedManifestAbsent(
+            f"{exc}: hq-service does not serve it (not published, or published while the "
+            "authority still pins an older config head). An operator publishes it and rebinds "
+            f"in one step: `{publish_command(host_id)}`; then join again"
+        ) from None
+
+
 def _fingerprint(plane, public_key: str) -> str:
     if hasattr(plane, "_operator_read"):
         from .hq_control_plane import fingerprint
@@ -74,7 +104,7 @@ def request(plane, host_id: str, public_key: str) -> tuple:
     from .host_heartbeat_core import ObservationAuthority
 
     open_admission_guard({})
-    manifest = plane.load_host_manifest(host_id)
+    manifest = committed_manifest(plane, host_id)
     if (
         not manifest.frame_id
         or not manifest.instance_ref

@@ -13,7 +13,9 @@ incarnations, manifests (PUT and DELETE), admissions, the rebind and release-pol
 pairs, and session renew and evidence. The write routes are caller-bound at v0.1.0 (the Gateway
 mints the principal kind, frame and host, and a mismatch is ``caller_not_bound``); the adapter
 sends nothing extra for that. The release-catalog import plan/apply pair is routed (bh-lejfy);
-revoke is served but stays unrouted until 0.41.0. The
+revoke is served but stays unrouted until 0.41.0. The signed manifest publication pair
+``POST /manifests/{host_id}/publish/{plan,apply}`` (publish and rebind in one operator
+operation) is pinned to hq-service v0.1.3 (bh-hq-0ci; bh-hb75g). The
 fixtures are in ``tests/test_hq_service_contract.py``, ``tests/test_hq_service_renew_contract.py``
 and ``tests/test_hq_service_evidence_contract.py``. A shape the service does not serve yet would
 be marked ``PROVISIONAL`` with the upstream gap; none remains. Methods with no route raise
@@ -59,6 +61,7 @@ from .hq_port import (
     Signer,
     Submission,
     configured_route,
+    operator_apply_body,
     sql_adapter_factory,
 )
 from .hq_sql_signatures import AUTHORITY_DOMAIN, CATALOG_DOMAIN, SqlSignatureError, canonical
@@ -200,6 +203,7 @@ class HqServiceAdapter:
         commit_write: bool = False,
         raw_body: bytes | None = None,
         envelope_errors: bool = False,
+        definite: frozenset[str] = frozenset(),
     ) -> tuple[int, Any]:
         """One request. Returns ``(status, json)`` for a 2xx; maps everything else.
 
@@ -207,6 +211,8 @@ class HqServiceAdapter:
         caller sees, so a ``5xx`` raises :class:`HqOutcomeUnknown` rather than ``HqUnavailable``.
         ``raw_body`` sends exactly those bytes (a signed canonical document must not be
         re-encoded); ``envelope_errors`` reads a non-2xx body as the ``{"error": {...}}`` envelope.
+        ``definite`` names envelope codes that are a definite refusal on this route whatever their
+        status (see :meth:`_raise_envelope`).
         """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -237,13 +243,18 @@ class HqServiceAdapter:
                 raise HqOutcomeUnknown(expected_revision, f"connection lost: {exc}") from exc
             raise HqUnavailable(f"hq-service read failed: {exc}") from exc
         if envelope_errors and not 200 <= response.status_code < 300:
-            self._raise_envelope(response, commit_write=commit_write)
+            self._raise_envelope(response, commit_write=commit_write, definite=definite)
         return response.status_code, self._decode(
             response, commit_write=commit_write, expected_revision=expected_revision
         )
 
     @staticmethod
-    def _raise_envelope(response: httpx.Response, *, commit_write: bool = False) -> None:
+    def _raise_envelope(
+        response: httpx.Response,
+        *,
+        commit_write: bool = False,
+        definite: frozenset[str] = frozenset(),
+    ) -> None:
         """Map an ADR bh-hq-pio.5 error envelope onto the port taxonomy; return when the body
         is not one (the caller's ordinary status mapping then applies).
 
@@ -258,6 +269,9 @@ class HqServiceAdapter:
           ``unknown_prefix``).
         - a 5xx on a ``commit_write`` is left to the ordinary mapping, which reports it as
           :class:`HqOutcomeUnknown`: the commit may have landed before the failure.
+        - a code in ``definite`` -> :class:`HqRefused` whatever its status: the route documents it
+          as a verdict (manifest publication's 500 ``committed_unreadable`` means "plan again",
+          not "maybe committed").
 
         Decision (bh-1bsvh): an unknown non-retryable code on any other 4xx (403, 404, 422 ...)
         stays :class:`HqUnavailable`, not :class:`HqRefused`. The conformance corpus has no such
@@ -277,6 +291,8 @@ class HqServiceAdapter:
             return
         message = str(error.get("message") or code)
         status = response.status_code
+        if code in definite:
+            raise HqRefused(code, message)
         if commit_write and status >= 500:
             return
         if code == "deadline_exceeded":
@@ -869,21 +885,10 @@ class HqServiceAdapter:
             deadline=deadline,
             expected_revision=expected_revision,
         )
-        record = plan["record"]
-        apply_body: dict[str, Any] = {
-            **request,
-            "expected_revision": expected_revision,
-            "config_head": plan.get("config_head"),
-            "issued_at": plan.get("issued_at"),
-            "expires_at": plan.get("expires_at"),
-            "record": record,
-        }
-        if plan.get("signature_needed") is not False:
-            apply_body["signature"] = signer(record)
         _, payload = self._call(
             "POST",
             route + "/apply",
-            apply_body,
+            operator_apply_body(request, plan, signer=signer),
             deadline=deadline,
             expected_revision=expected_revision,
             commit_write=True,
@@ -918,6 +923,71 @@ class HqServiceAdapter:
             expected_revision=expected_revision,
             deadline=deadline,
         )
+
+    def plan_rebind(self, request: dict, *, deadline: float) -> dict:
+        """Plan only (``/authority/rebind/plan``, bh-hb75g): writes nothing. Returns the
+        service's plan (``revision``, ``config_head``, ``record``, ``issued_at``, ``expires_at``,
+        ``signing_sha256``, ``signature_needed``, ``summary`` with ``config_head_before`` /
+        ``config_head_after`` / ``config_moved`` and, for a frame, its ``config_revision_before``
+        / ``config_revision_after``), its ``signing_input`` already checked against its record."""
+        return self._plan(
+            "/authority/rebind",
+            dict(request),
+            domain=AUTHORITY_DOMAIN,
+            deadline=deadline,
+            expected_revision=None,
+        )
+
+    def plan_manifest_publish(self, host_id: str, request: dict, *, deadline: float) -> dict:
+        """Plan a signed manifest publication (``POST /manifests/{host_id}/publish/plan``,
+        hq-service v0.1.3, bh-hq-0ci): writes nothing.
+
+        ``request`` is ``{manifest, duration_s?}``. The plan is a rebind's (``revision``,
+        ``config_head``: the config head it was made at, ``record``, ``signing_input``, ...) plus
+        ``manifest {host_id, path, content, sha256}`` (the document the service will write),
+        ``config_publication {publish, publication_id, date, base_head, resulting_head}`` and
+        ``config_head_after``, the head the publication makes, which the signed record binds.
+        Both are checked here before anything is signed."""
+        plan = self._plan(
+            f"/manifests/{_seg(host_id)}/publish",
+            dict(request),
+            domain=AUTHORITY_DOMAIN,
+            deadline=deadline,
+            expected_revision=None,
+        )
+        document = plan.get("manifest")
+        if not isinstance(document, dict) or document.get("host_id") != host_id:
+            raise HqUnavailable("hq-service plan publishes a different host manifest")
+        after = plan.get("config_head_after")
+        if not isinstance(after, str) or not after or plan["record"].get("config_head") != after:
+            raise HqUnavailable("hq-service plan record does not bind the config head it makes")
+        return plan
+
+    def apply_manifest_publish(self, host_id: str, body: dict, *, deadline: float) -> dict:
+        """``POST /manifests/{host_id}/publish/apply`` with ``body`` exactly as built by
+        :func:`operator_apply_body` from the plan. It commits the config, then the authority
+        (two databases, not atomic): sending the SAME body again completes a publication that
+        failed between the two, and repeats a completed one as ``replayed``. Returns the answer
+        ``{outcome, revision (the new authority head), host_id, path, sha256, config_head,
+        config_published, signed}`` (a replay carries ``outcome`` and ``revision`` only).
+
+        ``committed_unreadable`` (500: the config committed at a head other than the signed one)
+        is a definite refusal here, not an unknown outcome: the same body cannot succeed, a new
+        plan can."""
+        _, payload = self._call(
+            "POST",
+            f"/manifests/{_seg(host_id)}/publish/apply",
+            body,
+            deadline=deadline,
+            expected_revision=body.get("expected_revision"),
+            commit_write=True,
+            envelope_errors=True,
+            definite=frozenset({"committed_unreadable"}),
+        )
+        self._revision(payload)
+        if payload.get("host_id", host_id) != host_id:
+            raise HqUnavailable("hq-service published a different host manifest than the one sent")
+        return payload
 
     def plan_release_policy(self, frame: str, request: dict, *, deadline: float) -> dict:
         """Plan only (``/authority/release-policy/{frame}/plan``): writes nothing. Returns the

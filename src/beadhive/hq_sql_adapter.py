@@ -476,6 +476,15 @@ class SqlHqAdapter:
     def plan_release_policy(self, frame: str, request: dict, *, deadline: float) -> dict:
         raise HqUnavailable("plan_release_policy is the api route's; SQL plans in the plane")
 
+    def plan_rebind(self, request: dict, *, deadline: float) -> dict:
+        raise HqUnavailable("plan_rebind is the api route's; hq-service plans the rebind")
+
+    def plan_manifest_publish(self, host_id: str, request: dict, *, deadline: float) -> dict:
+        raise HqUnavailable("plan_manifest_publish is the api route's (hq-service v0.1.3)")
+
+    def apply_manifest_publish(self, host_id: str, body: dict, *, deadline: float) -> dict:
+        raise HqUnavailable("apply_manifest_publish is the api route's (hq-service v0.1.3)")
+
     def import_release_catalog(
         self, catalog: str, request: dict, *, signer, deadline: float
     ) -> str:

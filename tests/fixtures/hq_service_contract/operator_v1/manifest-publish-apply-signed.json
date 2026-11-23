@@ -1,0 +1,218 @@
+{
+  "name": "manifest-publish-apply-signed",
+  "source": "normative HTTP; records from beadhive hq_control_plane.renew/_rebind_frame_grant, frame_release_policy.prepare, hq_sql_operator.publish, hq_hive_policy.project_hive_policies; docs/DESIGN.md Operator publication",
+  "kind": "operator",
+  "note": "the operator signs the plan's signing_input; one apply publishes the manifest and rebinds the authority onto the head that publication made, so a frame join sees the manifest with no separate rebind",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "operator",
+    "scope": "lifecycle:operator"
+  },
+  "given": {
+    "mode": "signed",
+    "authority": "",
+    "frames": {
+      "frame-a": {
+        "active": {
+          "authority": {
+            "frame_id": "frame-a",
+            "holder_identity": "host-a",
+            "instance_ref": "inst-host-a",
+            "epoch": 3,
+            "key_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+            "audience": "hq",
+            "config_revision": "cfg-1",
+            "candidate_expires_at": null
+          },
+          "state": "active",
+          "cordoned": false,
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+          "desired": {
+            "release": {
+              "id": "rel-1",
+              "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "caps": {
+              "isolation": "container",
+              "trust_zone": "self-hosted",
+              "arch": "x86_64",
+              "harnesses": [
+                "claude"
+              ],
+              "max_sessions": 2
+            },
+            "profile": "reviewed",
+            "declared": true
+          },
+          "receipt": {
+            "sequence": 0,
+            "sha": "",
+            "first_seen": null,
+            "consecutive": 0,
+            "lease": null,
+            "registration": null
+          },
+          "drain_deadline": null
+        },
+        "candidate": null,
+        "retired": [],
+        "epoch_floor": 3
+      }
+    },
+    "config": {
+      "documents": [
+        {
+          "path": "fleet.yaml",
+          "content": "{\"managed_repos\": [{\"provider\": \"github\", \"org\": \"beadhive\", \"repo\": \"p1-repo\", \"prefix\": \"p1\", \"kind\": \"org-native\", \"frame_policy\": {\"config_revision\": \"cfg-2\", \"evict_after_s\": 600}}, {\"provider\": \"github\", \"org\": \"beadhive\", \"repo\": \"p2-repo\", \"prefix\": \"p2\", \"kind\": \"org-native\", \"frame_policy\": {\"config_revision\": \"cfg-2\", \"evict_after_s\": 900, \"requires\": {\"isolation\": \"container\"}}}]}"
+        }
+      ]
+    },
+    "registry": [],
+    "liveness": false,
+    "derive": [],
+    "provisioned": [],
+    "pairs": [],
+    "incarnations": [],
+    "inboxes": [],
+    "history": [],
+    "working": [],
+    "floors": [],
+    "receipts": [],
+    "registrations": [],
+    "observations": []
+  },
+  "op": "manifest-publish",
+  "frame": "",
+  "plan": {
+    "body": "{\"manifest\":{\"host_id\":\"host-n\",\"label\":\"host-n\",\"os\":\"linux\",\"arch\":\"x86_64\",\"role\":\"executor\",\"identity\":{\"kind\":\"none\"}}}",
+    "expect": {
+      "status": 200,
+      "outcome": "planned",
+      "record": {
+        "backend_identity": "$BACKEND",
+        "generation": "$GENERATION",
+        "revision": 2,
+        "config_backend": "sql:cfg-backend",
+        "config_generation": "cfg-gen",
+        "config_head": "$CONFIG_AFTER",
+        "state": {
+          "domain": "beadhive/git-authority/v1",
+          "generation": "gen-1",
+          "revision": 2,
+          "issued_at": 1793000000,
+          "expires_at": 4102444800,
+          "frames": {
+            "frame-a": {
+              "active": {
+                "authority": {
+                  "frame_id": "frame-a",
+                  "holder_identity": "host-a",
+                  "instance_ref": "inst-host-a",
+                  "epoch": 3,
+                  "key_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+                  "audience": "hq",
+                  "config_revision": "cfg-1",
+                  "candidate_expires_at": null
+                },
+                "state": "active",
+                "cordoned": false,
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+                "desired": {
+                  "release": {
+                    "id": "rel-1",
+                    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  },
+                  "caps": {
+                    "isolation": "container",
+                    "trust_zone": "self-hosted",
+                    "arch": "x86_64",
+                    "harnesses": [
+                      "claude"
+                    ],
+                    "max_sessions": 2
+                  },
+                  "profile": "reviewed",
+                  "declared": true
+                },
+                "receipt": {
+                  "sequence": 0,
+                  "sha": "",
+                  "first_seen": null,
+                  "consecutive": 0,
+                  "lease": null,
+                  "registration": null
+                },
+                "drain_deadline": null
+              },
+              "candidate": null,
+              "retired": [],
+              "epoch_floor": 3
+            }
+          }
+        },
+        "hive_policies": {
+          "p1": {
+            "config_revision": "cfg-2",
+            "config_head": "$CONFIG_AFTER",
+            "valid_until": 4102444800,
+            "requires": {},
+            "evict_after_s": 600
+          },
+          "p2": {
+            "config_revision": "cfg-2",
+            "config_head": "$CONFIG_AFTER",
+            "valid_until": 4102444800,
+            "requires": {
+              "isolation": "container"
+            },
+            "evict_after_s": 900
+          }
+        }
+      },
+      "body": {
+        "config_head": "$CONFIG_HEAD",
+        "config_head_after": "$CONFIG_AFTER",
+        "config_publication": {
+          "publish": true,
+          "base_head": "$CONFIG_HEAD",
+          "resulting_head": "$CONFIG_AFTER"
+        },
+        "summary": {
+          "host_id": "host-n",
+          "path": "hosts/host-n.yaml",
+          "config_published": true
+        },
+        "signature_needed": true,
+        "expires_at": 4102444800
+      },
+      "manifest": {
+        "state": "active",
+        "identity": {
+          "kind": "none",
+          "value": ""
+        },
+        "capacity": {},
+        "harnesses": {},
+        "remote_only_hives": [],
+        "host_id": "host-n",
+        "label": "host-n",
+        "os": "linux",
+        "arch": "x86_64",
+        "role": "executor"
+      }
+    }
+  },
+  "apply": {
+    "sign": "operator",
+    "expect": {
+      "status": 200,
+      "outcome": "accepted",
+      "effects": {
+        "revision": 2,
+        "signature": "signed",
+        "readable": true
+      }
+    }
+  },
+  "host": "host-n"
+}

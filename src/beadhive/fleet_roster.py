@@ -57,7 +57,8 @@ def api_route() -> bool:
 def served(host_id: str) -> bool:
     """Whether the SERVED (authority-pinned) config snapshot shows ``host_id``'s manifest,
     read fresh rather than from an open transaction. On route=api a published manifest is
-    not served until an operator rebind moves the pinned head (bh-e4aou), so ``True`` here
+    not served until an operator's signed publication (``bh hq authority publish-manifest``)
+    rebinds the pinned head onto it (bh-e4aou, bh-hb75g), so ``True`` here
     means live and ``False`` means published-but-pending (or never published)."""
     return exists(config.hq_dir(), host_id)
 
@@ -113,6 +114,11 @@ def save(hq_dir: Path, manifest: HostManifest) -> Path:
         return _files.save(hq_dir, manifest)
     plane = _api_plane()
     if plane is not None:
+        # The local copy is the file an operator publishes with `bh hq authority
+        # publish-manifest --manifest` (bh-hb75g): a PUT manifest is not served until the
+        # operator's signed publication rebinds the authority onto it, and a signed fleet
+        # refuses the PUT outright. Nothing on this route reads it back.
+        _files.save(hq_dir, manifest)
         plane.publish_manifest(manifest, expected_revision=_read_revision())
         return manifest_path(hq_dir, manifest.host_id)
     stream = StringIO()

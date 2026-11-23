@@ -596,6 +596,11 @@ No SQL login, grant or escrow is created at any step, and `hq.sql` is never set.
 be trusted (`hq.default_authority_mode: trusted`): a signed fleet has no api join.
 `xeno-mac` must be on `api` with its operator binding first.
 
+The join is: the frame writes its manifest (J7), the operator publishes it with the rebind and
+registers the incarnation (J8), the frame admits itself (J10). On bh 0.40.0-0.40.2 the manifest
+J7 publishes is never served (no step moved the authority onto it, `bh-hb75g`); use a bh with
+`bh hq authority publish-manifest` on `xeno-mac` and hq-service v0.1.3 (J8's preconditions).
+
 Steps J4 and J9 bind the same certificate first as `kind` host (to publish the manifest) and then
 as `kind` frame (to admit and renew). Gateway `v0.1.0` binds a certificate as exactly one kind, so
 J9 replaces J4's entry; it does not add a second one.
@@ -656,29 +661,77 @@ Expect `✓ hq.route = 'api'`. Set it in the HOST config, not only through `BH_H
 (`bh-wyofx`), so a frame on `api` only through the environment is not refused early and fails
 later at renew with a beadyard mismatch.
 
-**J7. Publish the manifest (frame, host-bound).**
+**J7. Write the manifest (frame, host-bound).**
 
 ```sh
 bh host init --role executor
 ```
 
-- One `PUT /manifests/HOST_ID`. Expect `✓ wrote .../hosts/HOST_ID.yaml`. A missing input is
-  refused before anything is written, naming the key (for example `set host.instance_ref in the
-  HOST config or pass --instance-ref`, or `set host.frame.capabilities.trust_zone in the HOST
+- One `PUT /manifests/HOST_ID`. In a trusted fleet it commits the manifest, but hq-service does
+  not serve it yet: the served config is the one the authority pins. Expect `✓ published HOST_ID
+  to HQ; pending a rebind`, naming the local copy it leaves for the operator
+  (`<hq>/hosts/HOST_ID.yaml`) and `bh hq authority publish-manifest`. A missing input is refused
+  before anything is written, naming the key (for example `set host.instance_ref in the HOST
+  config or pass --instance-ref`, or `set host.frame.capabilities.trust_zone in the HOST
   config`); set it and re-run. To republish after changing a key: `bh host init --role executor
   --force`.
-- Check: `bh host show HOST_ID --json` prints `frame_id`, `instance_ref`, `release`,
-  `capabilities` and a `beadyard_id` equal to J2's pin.
+- `bh host show HOST_ID` prints "no host manifest in HQ" until J8 publishes it: expected here.
 
-**J8. Register the incarnation (operator, on xeno-mac).** Copy the frame's public key
-(`SIGNING_KEY.pub` from J1) to `xeno-mac` as `~/bead-frame-03.pub`, then:
+**J8. Publish with the rebind, then register the incarnation (operator, on xeno-mac).**
+
+Preconditions (`bh-hb75g`):
+
+- hq-service **v0.1.3 or later**, started with **`-operator-apply`**. An older service answers
+  404 to the publication route; without the flag the apply is refused `operator_apply_disabled`
+  (the plan still works).
+- hq-service's config-database account holds the grants the publication needs (hq-service
+  `deploy/README.md`, "Signed-fleet manifest publication"): `INSERT`, `UPDATE`, `DELETE` on
+  `hq_config_meta`, `hq_config_documents` and `hq_config_publications`, and `EXECUTE` on
+  `dolt_add`, `dolt_commit` and `dolt_branch` (the plan predicts the config commit on a scratch
+  branch), plus the runtime operator grants (`UPDATE` on `hq_authority`, `EXECUTE` on `dolt_add`,
+  `dolt_commit`). A signed fleet holds none of the config grants by default; a trusted
+  deployment has the config ones except `dolt_branch`. Without them the plan fails as a storage
+  error.
+- The fleet config carries the `fleet.json` bh publishes beside `fleet.yaml`. hq-service before
+  **v0.1.2** (the `bh-hq-3k8` fix, merge `f5dba49`, first tagged in v0.1.2) cannot read such a
+  config and refuses `config_unreadable`; v0.1.3 includes the fix.
+
+Copy the frame's manifest (`<hq>/hosts/HOST_ID.yaml`, the path J7 printed) to `xeno-mac` as
+`~/HOST_ID.yaml` and the frame's public key (`SIGNING_KEY.pub` from J1) as
+`~/bead-frame-03.pub`. Preview, then publish:
+
+```sh
+bh hq authority publish-manifest --manifest ~/HOST_ID.yaml --plan
+bh hq authority publish-manifest --manifest ~/HOST_ID.yaml --confirm
+```
+
+- `--plan` writes nothing. Expect JSON with `"plan": true`, `"host_id"`, `"manifest_sha256"`,
+  `"config_head"` and `"config_head_after"`. After J7's `PUT`, expect `"config_published":
+  false`: the config already holds the manifest and only the rebind runs.
+- `--confirm` publishes the manifest (if needed) and rebinds the authority onto the config head
+  that holds it, in one operation. There is no separate `bh hq authority rebind` step. Expect
+  `"outcome": "accepted"` and a new `"revision"`. In a signed fleet add `--operator-key
+  ~/.ssh/OPERATOR_KEY` (the plan says `"signature_needed": true`); a trusted fleet needs none.
+- If it reports `did not complete`, run the same command again: bh has already re-sent the
+  apply, and a new plan sees the committed manifest and only rebinds. `stale_revision`,
+  `plan_expired` or `plan_mismatch`: run it again.
+- Check, from the frame: `bh host show HOST_ID --json` prints `frame_id`, `instance_ref`,
+  `release`, `capabilities` and a `beadyard_id` equal to J2's pin.
+
+Then register the incarnation:
 
 ```sh
 bh hq authority join --frame HOST_ID --public-key ~/bead-frame-03.pub --confirm
 ```
 
 Expect JSON with `"registered": true`, `"admitted": false`, and `"principal"` and `"epoch"`.
-Note the principal.
+Note the principal. If it refuses with "hq-service does not serve it", the publication above has
+not completed: re-run it.
+
+To preview a plain rebind at any time: `bh hq authority rebind --plan` (writes nothing; shows
+`config_moved` and the heads). A `rebind --frame` additionally needs every managed hive's
+`frame_policy.config_revision` to agree, else `rebind_policy_ambiguous`; the publication above
+rebinds no frame grant and has no such precondition.
 
 **J9. Frame binding.** G2 again for `bead-frame-03`: replace J4's entry (same
 `identity`) with the `kind` frame binding (G2's frame JSON) with `"principal": "PRINCIPAL_FROM_J8"`,
@@ -693,8 +746,8 @@ bh hq authority join --confirm
 
 Expect `"admitted": true` (`bh host provision --push` does the same). **The principal includes
 the config head:** if the head moved between J8 and J10, this fails with
-`incarnation_unprovisioned`. Then re-run J8, update J9's binding with the new principal, and
-re-run J10.
+`incarnation_unprovisioned`. Then re-run J8's `join --frame`, update J9's binding with the new
+principal, and re-run J10.
 
 **J11. Liveness.** The grant is ACTIVE as admitted, so it renews straight away:
 
@@ -751,8 +804,8 @@ Rollback: as for `bead-frame-01`; re-enable the failover loop if you turned it o
   row-level change kinds (`bh-hq-34d`).
 - **Eligibility predicates on `api` are weaker than on SQL** for the conformance profile and
   `release_matches`.
-- **The join principal includes the config head:** re-register (J8) if the head moves before
-  the frame admits.
+- **The join principal includes the config head:** re-register (J8's `join --frame`) if the
+  head moves before the frame admits.
 - **`DELETE /manifests` is host-bound:** only the host itself can withdraw its manifest.
 - **One certificate, one binding kind (bh-pm1s4).** bh 0.40.0 has a single `hq.api` client
   certificate and Gateway `v0.1.0` binds a certificate as exactly one kind. Every later manifest
