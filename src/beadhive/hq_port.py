@@ -52,6 +52,19 @@ class HqUnavailable(HqError):
     """HQ could not be reached or read. Nothing was written."""
 
 
+class HqGatewayForbidden(HqUnavailable):
+    """A bare Gateway 403 (``{"error": "<reason>"}``, no hq-service envelope): the Gateway
+    refused the caller before forwarding (beadhive-gateway ``internal/gateway/hq_plane.go``
+    ``authorizeHQ`` / ``hqReply``). Still :class:`HqUnavailable` (bh-1bsvh: a Gateway status is
+    not a verdict on the request); the ``reason`` is kept so a caller that knows a route's
+    seat (the route=api join, bh-garne) can tell "not this credential's route" apart."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = 403
+        self.reason = reason
+
+
 class HqDeadline(HqError):
     """The caller's deadline ran out (never reported as :class:`HqUnavailable`)."""
 

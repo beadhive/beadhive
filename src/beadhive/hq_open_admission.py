@@ -28,7 +28,30 @@ from __future__ import annotations
 
 from . import hq_authority_enforce
 from . import hq_authority_guard as guard
-from .hq_control_plane import ControlPlaneError, HqPlaneRefused, open_admission_guard
+from .hq_control_plane import (
+    ControlPlaneError,
+    HqPlaneRefused,
+    HqPlaneUnavailable,
+    open_admission_guard,
+)
+from .hq_port import HqGatewayForbidden
+
+#: The bare Gateway 403 reasons (no hq-service envelope, so no stable code) that mean "this
+#: credential is not the seat for this route", per route of the route=api join. Exact strings
+#: from beadhive-gateway v0.1.1 ``internal/gateway/hq_plane.go``: ``authorizeHQ`` answers a
+#: principal without the route's scope "principal is not bound to this route", and
+#: ``hqKindRefusal`` (``hqScopeKinds``: ``POST /incarnations`` needs an operator, ``POST
+#: /admissions/{frame}`` a frame) a principal of another kind "the caller is not bound as
+#: <kind>". hq-service itself answers the same mismatch as ``caller_not_bound`` (bh-garne). Any
+#: other Gateway 403 (another frame's path, a body host mismatch) is never skipped.
+GATEWAY_WRONG_SEAT = {
+    "register_incarnation": frozenset(
+        {"principal is not bound to this route", "the caller is not bound as the operator"}
+    ),
+    "admit": frozenset(
+        {"principal is not bound to this route", "the caller is not bound as a frame"}
+    ),
+}
 
 #: Conformance profile an open-admitted frame echoes when the fleet has no other frame to copy.
 DEFAULT_PROFILE = "open-admission"
@@ -160,16 +183,20 @@ def admitted(plane, host_id: str) -> bool:
     return False
 
 
-def join(plane, host_id: str, public_key: str, *, operator_key: str = "") -> dict:
+def join(
+    plane, host_id: str, public_key: str, *, operator_key: str = "", operator: bool = False
+) -> dict:
     """Open-admit `host_id` (idempotent: an already-admitted holder is reported, not rewritten).
 
-    Refused unless this process has learned a trusted fleet default."""
+    ``operator`` says the caller is known to be the operator seat (it joins a host other than
+    its own, which no frame credential may admit): on ``hq.route: api`` it then only registers
+    the incarnation. Refused unless this process has learned a trusted fleet default."""
     open_admission_guard({})
     if admitted(plane, host_id):
         return {"host_id": host_id, "admitted": True, "changed": False}
     authority, key, desired, expected = request(plane, host_id, public_key)
     if _api(plane):
-        return _join_api(plane, host_id, authority, key, desired, expected)
+        return _join_api(plane, host_id, authority, key, desired, expected, operator=operator)
     revision = plane.admit_open(
         authority, key, desired, expected=expected, operator_key=operator_key
     )
@@ -183,14 +210,28 @@ def join(plane, host_id: str, public_key: str, *, operator_key: str = "") -> dic
     }
 
 
-def _join_api(plane, host_id, authority, key, desired, expected) -> dict:
+def _wrong_seat(exc: Exception, method: str) -> bool:
+    """Whether `exc` (from the api plane's `method`) says this credential is not the seat for
+    that route: hq-service's ``caller_not_bound``, or the Gateway's bare 403 refusing the
+    principal's scope or kind before forwarding (:data:`GATEWAY_WRONG_SEAT`)."""
+    if isinstance(exc, HqPlaneRefused):
+        return exc.code == "caller_not_bound"
+    cause = exc.__cause__
+    return isinstance(cause, HqGatewayForbidden) and cause.reason in GATEWAY_WRONG_SEAT[method]
+
+
+def _join_api(plane, host_id, authority, key, desired, expected, *, operator=False) -> dict:
     """Register the incarnation, then open-admit it, through the HQ port only.
 
     ``POST /incarnations`` is operator-bound and ``POST /admissions/{frame}`` frame-bound
-    (hq-service v0.1.0, ``caller_not_bound``), so one credential may hold only one of them:
-    a frame skips the registration it is not bound for (the operator registered it), and an
-    operator skips the admission (the frame admits itself). Both principal and epoch are
-    derived as hq-service derives them, so the two seats name the same incarnation."""
+    (hq-service v0.1.0 ``caller_not_bound``; the Gateway from v0.1.1 refuses the wrong kind
+    itself, a bare 403), so one credential may hold only one of them. A caller known to be the
+    operator (``operator``) only registers. Otherwise the seat is not knowable locally (the
+    principal kind lives in the Gateway's binding), so each half a caller is not bound for is
+    skipped: a frame skips the registration (the operator registered it), an operator the
+    admission (the frame admits itself). A caller bound for neither half is refused. Both
+    principal and epoch are derived as hq-service derives them, so the two seats name the same
+    incarnation."""
     from .hq_sql_signatures import sql_principal
 
     principal = sql_principal(authority)
@@ -201,20 +242,31 @@ def _join_api(plane, host_id, authority, key, desired, expected) -> dict:
         "epoch": authority.epoch,
         "route": "api",
     }
+    not_operator = ""
     try:
         plane.register_incarnation(authority, expected=expected)
         result["registered"] = True
-    except HqPlaneRefused as exc:
-        if exc.code != "caller_not_bound":
+    except (HqPlaneRefused, HqPlaneUnavailable) as exc:
+        if operator or not _wrong_seat(exc, "register_incarnation"):
             raise
         result["registered"] = False  # not this caller's: the operator registers it
+        not_operator = str(exc)
+    if operator:
+        # The operator registered the incarnation; only the frame can admit itself.
+        return {**result, "admitted": False, "changed": True}
     try:
         revision = plane.admit_open(authority, key, desired, expected=expected)
-    except HqPlaneRefused as exc:
-        if exc.code == "caller_not_bound" and result["registered"]:
-            # An operator registered the incarnation; only the frame can admit itself.
-            return {**result, "admitted": False, "changed": True}
-        if exc.code == "incarnation_unprovisioned":
+    except (HqPlaneRefused, HqPlaneUnavailable) as exc:
+        if _wrong_seat(exc, "admit"):
+            if result["registered"]:
+                # An operator registered the incarnation; only the frame can admit itself.
+                return {**result, "admitted": False, "changed": True}
+            raise ControlPlaneError(
+                f"open admission of {host_id}: this hq.api credential is bound for neither "
+                f"half of the join (register as the operator: {not_operator}; admit as the "
+                f"frame: {exc})"
+            ) from exc
+        if isinstance(exc, HqPlaneRefused) and exc.code == "incarnation_unprovisioned":
             raise ControlPlaneError(
                 f"open admission of {host_id}: incarnation {principal} epoch {authority.epoch} "
                 "is not registered with hq-service; an operator-bound caller registers it "

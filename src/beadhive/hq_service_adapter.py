@@ -51,6 +51,7 @@ from .hq_port import (
     FrameAnchor,
     HistorySinceFloor,
     HqDeadline,
+    HqGatewayForbidden,
     HqNoCurrentBeat,
     HqOutcomeUnknown,
     HqPort,
@@ -337,6 +338,8 @@ class HqServiceAdapter:
             )
         # 401/403/404/405 come from the Gateway before the service; on a read, an idempotent
         # submission or a plan phase, 5xx means HQ could not be used and nothing was written.
+        if status == 403 and isinstance(message, str):
+            raise HqGatewayForbidden(message, f"hq-service answered {status}: {message}")
         raise HqUnavailable(f"hq-service answered {status}" + (f": {message}" if message else ""))
 
     def _submission(

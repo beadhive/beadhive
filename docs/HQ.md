@@ -620,6 +620,15 @@ automatically when the frame holds HQ authority-write access (`BH_HQ_OPERATOR_SE
 otherwise it prints the `join` command to run where HQ is writable. Cordon, drain and retire act
 on the record as on any other. A signed fleet refuses `join`.
 
+*On `hq.route: api`* the join is split between two seats: the operator registers the
+incarnation (`POST /incarnations`) and the frame admits itself (`POST /admissions/{frame}`).
+`join --frame <host_id>` naming a host other than this one is the operator's half alone; it
+registers and reports `registered: true, admitted: false`. Otherwise each half the caller's
+`hq.api` credential is not bound for is skipped, whether hq-service refuses it
+(`caller_not_bound`) or the Gateway does (v0.1.1+, a bare 403 `principal is not bound to this
+route` or `the caller is not bound as …`). Any other refusal, or a credential bound for neither
+half, fails the join (bh-garne).
+
 *Limit.* Open admission is an authority step only. A new SQL frame still needs its DB account,
 inbox and session tables provisioned (`hq_open_admission.request` computes the record that
 authority needs); that is infrastructure the operator or director provisions, not something

@@ -553,3 +553,112 @@ def test_host_init_leaves_the_manifest_for_the_operator_and_names_the_publicatio
     local = roster.manifest_path(config.hq_dir(), HOST_ID)
     assert YAML(typ="safe").load(local.read_text())["host_id"] == HOST_ID
     assert tripwires == []
+
+
+# -- Gateway v0.1.1 enforces the principal kind itself: a bare 403 (bh-garne) ------------------
+
+OPERATOR = {"kind": "operator"}
+FRAME_CALLER = {"kind": "frame", "frame_id": FRAME, "host_id": HOST_ID}
+
+
+def test_through_the_gateway_each_seat_skips_the_half_it_is_not_bound_for(
+    api_frame, service, tripwires, frame_key
+):
+    """The Gateway answers the wrong seat's half with a bare 403 before hq-service sees it:
+    the operator's admit and the frame's register are skipped, not refused."""
+    roster.save(config.hq_dir(), _manifest())
+    service.gateway_kinds = True
+    service.caller = OPERATOR
+    operator = _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub")
+    assert operator.exit_code == 0, operator.output
+    registered = _result(operator.output)
+    assert (registered["registered"], registered["admitted"]) == (True, False)
+    assert registered["principal"].startswith("frame_")
+    assert ("POST", f"/admissions/{FRAME}") in _calls(service)  # probed, Gateway-refused
+    assert service.authority_state["frames"] == {}
+
+    service.caller = FRAME_CALLER
+    frame = _join()
+    assert frame.exit_code == 0, frame.output
+    admitted = _result(frame.output)
+    assert (admitted["registered"], admitted["admitted"]) == (False, True)
+    assert admitted["principal"] == registered["principal"]
+    assert service.authority_state["frames"][FRAME]["active"]["state"] == "active"
+    assert tripwires == []
+
+
+def test_an_operator_joining_another_host_only_registers(api_frame, service, tripwires, frame_key):
+    """--frame naming a host other than this one is the operator's half alone: no admit."""
+    (api_frame / "host.yaml").write_text("host_id: operator-box\nlabel: operator\n")
+    roster.save(config.hq_dir(), _manifest())
+    service.gateway_kinds = True
+    service.caller = OPERATOR
+    result = _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub")
+    assert result.exit_code == 0, result.output
+    joined = _result(result.output)
+    assert (joined["registered"], joined["admitted"]) == (True, False)
+    assert ("POST", "/incarnations") in _calls(service)
+    assert not [path for _method, path in _calls(service) if path.startswith("/admissions/")]
+    assert tripwires == []
+
+
+def test_an_operator_refused_its_own_registration_fails(api_frame, service, tripwires, frame_key):
+    """The seat is known (another host), so a Gateway 403 on the register half is not skipped."""
+    (api_frame / "host.yaml").write_text("host_id: operator-box\nlabel: operator\n")
+    roster.save(config.hq_dir(), _manifest())
+    service.gateway_kinds = True
+    service.caller = FRAME_CALLER  # a frame credential is not the operator
+    result = _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub")
+    assert result.exit_code == 1
+    assert "principal is not bound to this route" in result.output
+    assert not [path for _method, path in _calls(service) if path.startswith("/admissions/")]
+    assert tripwires == []
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "a worker may act only on its own frame",
+        "the caller is bound to another host than the body's host_id",
+    ],
+)
+def test_a_gateway_403_on_the_frames_own_admit_fails(
+    api_frame, service, tripwires, frame_key, reason
+):
+    roster.save(config.hq_dir(), _manifest())
+    service.gateway_kinds = True
+    service.caller = OPERATOR
+    assert _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub").exit_code == 0
+
+    service.caller = FRAME_CALLER
+    service.gateway_refusals[("POST", f"/admissions/{FRAME}")] = reason
+    result = _join()
+    assert result.exit_code == 1
+    assert reason in result.output
+    assert service.authority_state["frames"] == {}
+    assert tripwires == []
+
+
+def test_a_gateway_403_on_the_operators_admit_probe_other_than_wrong_seat_fails(
+    api_frame, service, tripwires, frame_key
+):
+    roster.save(config.hq_dir(), _manifest())
+    service.caller = OPERATOR
+    reason = "a worker may act only on its own frame"
+    service.gateway_refusals[("POST", f"/admissions/{FRAME}")] = reason
+    result = _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub")
+    assert result.exit_code == 1
+    assert reason in result.output
+    assert tripwires == []
+
+
+def test_a_credential_bound_for_neither_half_is_refused(api_frame, service, tripwires):
+    roster.save(config.hq_dir(), _manifest())
+    service.gateway_kinds = True
+    service.caller = {"kind": "host", "host_id": HOST_ID}
+    result = _join()
+    assert result.exit_code == 1
+    assert "bound for neither half of the join" in result.output
+    assert service.incarnations == set()
+    assert service.authority_state["frames"] == {}
+    assert tripwires == []
