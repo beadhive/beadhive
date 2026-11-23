@@ -415,6 +415,59 @@ def test_host_rm_withdraws_the_manifest_through_the_port(api_frame, service, tri
     assert tripwires == []
 
 
+def _pin_config(service: FakeHqService) -> None:
+    """Serve the config as pinned BEFORE any publish: a PUT manifest is not in it (bh-e4aou)."""
+    pinned = _config(service)
+    service.reads["/config"] = lambda: {**pinned, "authority": _authority(service)}
+
+
+def test_host_init_reports_a_published_manifest_pending_a_rebind(api_frame, service, tripwires):
+    from beadhive.cli import app
+
+    _pin_config(service)
+    result = CliRunner().invoke(app, ["host", "init", "--role", "executor"])
+    assert result.exit_code == 0, result.output
+    assert _calls(service) == [("PUT", f"/manifests/{HOST_ID}")]
+    assert "pending a rebind" in result.output
+    assert "wrote" not in result.output
+    assert tripwires == []
+
+
+def test_host_init_reports_a_served_manifest(api_frame, service, tripwires):
+    from beadhive.cli import app
+
+    result = CliRunner().invoke(app, ["host", "init", "--role", "executor"])
+    assert result.exit_code == 0, result.output
+    assert "the manifest is served" in result.output
+    assert "pending" not in result.output
+
+
+def test_host_rm_force_withdraws_a_published_but_unserved_manifest(api_frame, service, tripwires):
+    from beadhive.cli import app
+
+    _pin_config(service)
+    roster.save(config.hq_dir(), _manifest())
+    assert not roster.served(HOST_ID)
+    result = CliRunner().invoke(app, ["host", "rm", HOST_ID, "--force", "--confirm"])
+    assert result.exit_code == 0, result.output
+    assert _calls(service)[-1] == ("DELETE", f"/manifests/{HOST_ID}")
+    assert HOST_ID not in service.manifests
+    assert tripwires == []
+
+
+def test_host_rm_without_force_refuses_an_unserved_manifest_with_a_hint(
+    api_frame, service, tripwires
+):
+    from beadhive.cli import app
+
+    _pin_config(service)
+    roster.save(config.hq_dir(), _manifest())
+    result = CliRunner().invoke(app, ["host", "rm", HOST_ID, "--confirm"])
+    assert result.exit_code == 1
+    assert "--force" in result.output
+    assert _calls(service) == [("PUT", f"/manifests/{HOST_ID}")]
+
+
 def test_a_signed_api_fleet_has_no_registration_route(api_frame, service, tripwires):
     (api_frame / "state" / "hq-fleet-authority-mode.json").write_text(
         json.dumps({"mode": "signed"})

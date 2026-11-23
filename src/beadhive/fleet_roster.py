@@ -49,6 +49,19 @@ def exists(hq_dir: Path, host_id: str) -> bool:
     return any(item.path == _document_path(host_id) for item in snapshot.documents)
 
 
+def api_route() -> bool:
+    """Whether this host publishes/withdraws manifests through the hq-service port."""
+    return config.fleet_sql_selected() and _api_plane() is not None
+
+
+def served(host_id: str) -> bool:
+    """Whether the SERVED (authority-pinned) config snapshot shows ``host_id``'s manifest,
+    read fresh rather than from an open transaction. On route=api a published manifest is
+    not served until an operator rebind moves the pinned head (bh-e4aou), so ``True`` here
+    means live and ``False`` means published-but-pending (or never published)."""
+    return exists(config.hq_dir(), host_id)
+
+
 def manifest_paths(hq_dir: Path) -> list[Path]:
     if not config.fleet_sql_selected():
         directory = _files.hosts_dir(hq_dir)
@@ -121,8 +134,8 @@ def remove(hq_dir: Path, host_id: str) -> Path:
         return _files.remove(hq_dir, host_id)
     plane = _api_plane()
     if plane is not None:
-        if not exists(hq_dir, host_id):
-            raise FileNotFoundError(f"no host manifest for {host_id!r}")
+        # Host-bound DELETE by id: a manifest published but not yet served (pending a
+        # rebind) is absent from the snapshot yet withdrawable (bh-e4aou).
         plane.withdraw_manifest(host_id, expected_revision=_read_revision())
         return manifest_path(hq_dir, host_id)
     transaction = (
