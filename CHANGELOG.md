@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.40.2 (2026-11-23)
+
+### Fix
+
+- **hq**: stop reporting a false history fork when the floor is >64 commits behind
+
 ## v0.40.1 (2026-11-23)
 
 ### Fix
