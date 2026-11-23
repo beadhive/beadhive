@@ -18,7 +18,7 @@ import tomllib
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import config, gitworkspace, identity
+from beadhive import config, config_store, gitworkspace, identity
 from beadhive.cli import app
 
 runner = CliRunner()
@@ -155,3 +155,54 @@ def test_config_init_reuses_gitworkspace_ensure_seeded(_isolated, monkeypatch):
     runner.invoke(app, ["config", "init"])
 
     assert len(calls) == 1
+
+
+# ---- hq.route api strips scaffolded fleet-only host keys (bh-9ifub) ----------------
+
+
+@pytest.fixture
+def _api_host(_isolated, monkeypatch):
+    monkeypatch.delenv("BH_HQ_ROUTE", raising=False)
+    # switching to the api route is persisted only after a qualified HQ readback; fake it.
+    monkeypatch.setattr(config_store, "_sql_attachment", lambda *a, **k: (None, None))
+    monkeypatch.setattr(config_store, "_fleet_document", lambda *a, **k: {})
+
+
+def _invoke_ok(*args):
+    result = runner.invoke(app, list(args))
+    assert result.exit_code == 0, result.output
+    return result
+
+
+def test_init_then_route_api_strips_scaffolded_fleet_keys(_api_host):
+    _invoke_ok("config", "init")
+    assert config.fleet_override_violations(config.load_host())  # the scaffold has them
+
+    _invoke_ok("config", "set", "hq.api.unix_socket", "/run/hq.sock")
+    result = _invoke_ok("config", "set", "hq.route", "api")
+
+    host = config.load_host()
+    assert host["hq"]["route"] == "api"
+    assert host["hq"]["api"]["unix_socket"] == "/run/hq.sock"
+    assert config.fleet_override_violations(host) == []
+    config._reject_fleet_overrides(host)  # what every later command runs; must not raise
+    assert "removed fleet-only key providers" in result.output
+
+
+def test_default_route_keeps_scaffolded_keys(_api_host):
+    _invoke_ok("config", "init")
+    _invoke_ok("config", "set", "hq.mode", "git")
+    assert config.fleet_override_violations(config.load_host())
+
+
+def test_existing_fleet_overrides_error_names_keys_and_fix(_api_host):
+    _invoke_ok("config", "init")
+    host = config.load_host()
+    keys = config.fleet_override_violations(host)
+    assert keys
+    with pytest.raises(config.ConfigError) as exc:
+        config._reject_fleet_overrides(host)
+    text = str(exc.value)
+    for key in keys:
+        assert f"- {key}" in text
+        assert f"bh config unset {key}" in text
