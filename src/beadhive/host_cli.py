@@ -919,6 +919,18 @@ def init_cmd(
     if not wrote:
         typer.echo(f"skip {target} (exists) — use --force to overwrite")
         return
+    if hosts.api_route():
+        # The publish result, not the local path: the next snapshot refresh replaces that
+        # file, and a PUT lands in the served config only after an operator rebind (bh-e4aou).
+        host_id = host.host_id()
+        if hosts.served(host_id):
+            typer.echo(f"✓ published {host_id} to HQ; the manifest is served")
+        else:
+            typer.echo(
+                f"✓ published {host_id} to HQ; pending a rebind — the manifest is not served "
+                f"until an operator rebinds the authority head (local {target} is a cache)"
+            )
+        return
     typer.echo(f"✓ wrote {target}")
 
 
@@ -2246,8 +2258,18 @@ def rm_cmd(
     try:
         manifest = hosts.load(hq_dir, host_id)
     except FileNotFoundError:
-        typer.echo(f"✗ no host manifest for {host_id!r} in HQ", err=True)
-        raise typer.Exit(1) from None
+        if not (force and hosts.api_route()):
+            hint = (
+                " (published but not yet served? pass --force to withdraw it by id)"
+                if hosts.api_route()
+                else ""
+            )
+            typer.echo(f"✗ no host manifest for {host_id!r} in HQ{hint}", err=True)
+            raise typer.Exit(1) from None
+        # route=api: a manifest published but pending a rebind is not in the served snapshot,
+        # yet the host-bound DELETE by id withdraws it (bh-e4aou).
+        manifest = None
+        typer.echo(f"• {host_id} is not in the served snapshot; withdrawing the published manifest")
     except hosts.ManifestError as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from None
