@@ -889,10 +889,12 @@ def reject_fleet_overrides(api, host) -> None:
     if not violations:
         return
     keys = "\n".join(f"  - {key}" for key in violations)
+    fixes = "\n".join(f"    {api.BINARY_ALIAS} config unset {key}" for key in violations)
     raise api.ConfigError(
         f"host config {api.config_path()} overrides fleet-only key(s):\n{keys}\n"
         f"  these are fleet-wide truth and belong in {api.fleet_path()} — remove them from "
-        "the host config, or add the key to "
+        f"the host config:\n{fixes}\n"
+        "  (re-running `config set hq.route api` also strips them), or add the key to "
         "config_partition.FLEET_HOST_OVERRIDE_ALLOWLIST if a per-host override is genuinely "
         "intended."
     )

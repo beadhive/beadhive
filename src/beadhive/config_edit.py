@@ -226,6 +226,15 @@ def get_value(api, dotted: str, cfg=None, scope: str | None = None) -> dict:
     return {"ok": True, "problems": [], "value": value}
 
 
+def _selects_api_route(host) -> bool:
+    """True when the host mapping itself (not the environment) selects ``hq.route: api``."""
+    hq = host.get("hq")
+    if not isinstance(hq, MutableMapping):
+        return False
+    route = hq.get("route")
+    return route == "api" or (route is None and hq.get("mode") == "api")
+
+
 def _set_in(api, dotted: str, raw: str, as_json: bool, cfg, *, persist: bool, scope: str) -> dict:
     parts = api._split_key(dotted)
     value = api.coerce_value(raw, as_json)
@@ -274,6 +283,18 @@ def _set_in(api, dotted: str, raw: str, as_json: bool, cfg, *, persist: bool, sc
     if api._has_errors(problems):
         return {"ok": False, "problems": problems, "old": old, "new": None}
     node[leaf] = value
+    if persist and scope == api.SCOPE_HOST and parts[0] == "hq" and _selects_api_route(cfg):
+        # An api host reads fleet-wide truth through the hq-service, and a host config that
+        # still carries the scaffolded fleet-only keys would fail every later command (bh-9ifub).
+        for path in api.fleet_override_violations(cfg):
+            api._delete_leaf_pruning_empty(cfg, path)
+            problems.append(
+                api._problem(
+                    "warning",
+                    f"removed fleet-only key {path} from the host config (hq.route is api: "
+                    "fleet-wide truth comes from the HQ, not this host)",
+                )
+            )
     if persist:
         try:
             api.save_fleet(cfg) if scope == api.SCOPE_FLEET else api.save(cfg)
