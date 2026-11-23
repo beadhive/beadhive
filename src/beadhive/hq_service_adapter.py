@@ -34,6 +34,7 @@ import functools
 import hashlib
 import json
 import logging
+import ssl
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -1052,9 +1053,12 @@ def adapter_from_config(
     if transport is not None:
         kwargs["transport"] = transport
     else:
-        kwargs["verify"] = ca or True
+        # One SSLContext carries both the CA and the client chain: httpx 0.28 drops
+        # ``cert=`` when ``verify`` is a path, so mTLS would present no client cert.
+        ctx = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
         if cert:
-            kwargs["cert"] = (cert, key)
+            ctx.load_cert_chain(cert, key or None)
+        kwargs["verify"] = ctx
     host = host_config.get("host") if isinstance(host_config, Mapping) else None
     frame = str(host.get("frame_id") or "") if isinstance(host, Mapping) else ""
     adapter = HqServiceAdapter(
