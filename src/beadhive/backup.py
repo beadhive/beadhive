@@ -111,7 +111,7 @@ def migrate_root(cfg=None) -> Path:
     return root(cfg) / "migrate"
 
 
-def _backed_up_entries(cfg) -> list:
+def _backed_up_entries(cfg, skipped: list[str] | None = None) -> list:
     """Every registered entry that can hold backup artifacts — ordinary hives PLUS the Factory
     HQ singleton.
 
@@ -124,12 +124,13 @@ def _backed_up_entries(cfg) -> list:
     from . import registry
 
     hq = registry.hive_of_kind(cfg, registry.HQ_KIND)
-    return _with_triplet([*registry.hives(cfg), *([hq] if hq is not None else [])])
+    return _with_triplet([*registry.hives(cfg), *([hq] if hq is not None else [])], skipped)
 
 
-def _with_triplet(entries) -> list:
+def _with_triplet(entries, skipped: list[str] | None = None) -> list:
     """`entries` minus any lacking a provider/org/repo triplet, each skipped with a stderr
-    warning naming it: a fleet-wide backup pass must not die on one malformed entry (bh-n2gj1)."""
+    warning naming it: a fleet-wide backup pass must not die on one malformed entry (bh-n2gj1).
+    Each skip's message is also appended to `skipped` when given, so a pass can surface it."""
     from . import registry
 
     out = []
@@ -138,6 +139,8 @@ def _with_triplet(entries) -> list:
             registry.entry_triplet(entry)
         except registry.FleetEntryError as exc:
             print(f"warning: backup skipping malformed fleet entry: {exc}", file=sys.stderr)
+            if skipped is not None:
+                skipped.append(str(exc))
             continue
         out.append(entry)
     return out
@@ -947,10 +950,11 @@ class LayoutMigration:
     dry_run: bool = False
     moves: list[LayoutMove] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)  # malformed fleet entries not healed
 
     @property
     def ok(self) -> bool:
-        return not any(m.error for m in self.moves)
+        return not self.skipped and not any(m.error for m in self.moves)
 
     @property
     def moved_bytes(self) -> int:
@@ -1010,7 +1014,7 @@ def migrate_layout(cfg=None, *, dry_run: bool = True, actor: str = "") -> Layout
     # independently of whether THIS run has anything left to relocate for that hive.
     from . import registry
 
-    for entry in _backed_up_entries(cfg):
+    for entry in _backed_up_entries(cfg, out.skipped):
         hive_dir = registry.hive_dir(entry)
         if not hive_dir.is_dir():
             continue

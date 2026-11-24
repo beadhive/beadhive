@@ -3831,7 +3831,9 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
 
 def show():
     """Pretty-print the resolved config: the doctor overview + config-only sections."""
-    cfg, _skipped = _skip_tripletless(config.load())
+    cfg, skipped = _skip_tripletless(config.load())
+    for msg in skipped:
+        typer.echo(f"warning: {msg}", err=True)
     root = Path(workspace_root())
     _overview(cfg, root)
     _section_dimensions(cfg)

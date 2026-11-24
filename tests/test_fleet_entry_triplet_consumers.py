@@ -95,3 +95,25 @@ def test_operator_sources_registry_rejects_triplet_less_entry_cleanly():
     with pytest.raises(operator_sources.OperatorSourceError) as info:
         operator_sources.OperatorSources.registered_hives(sources)
     assert info.value.code == "invalid_registry"
+
+
+def test_hub_reconcile_never_prunes_when_an_entry_is_malformed(tmp_path, monkeypatch, capsys):
+    """A malformed entry drops out of the desired allow-list; pruning on it would de-register a
+    real hive over a config typo, so no `repo remove` may be issued at all."""
+    stale = str(tmp_path / "stale")
+    monkeypatch.setattr(hub, "_registered_repo_paths", lambda _hub: [stale])
+    calls: list = []
+    monkeypatch.setattr(hub.bd, "run", lambda args, *a, **k: calls.append(args))
+    hub._reconcile_removed(tmp_path / "hub", {}, [BAD, GOOD])
+    assert not [c for c in calls if c[:2] == ["repo", "remove"]]
+    assert "not pruning" in capsys.readouterr().err
+
+
+def test_backup_migrate_layout_surfaces_skipped_entries(tmp_path, monkeypatch):
+    from beadhive import backup
+
+    monkeypatch.setattr(registry, "hives", lambda _cfg: [BAD, GOOD])
+    monkeypatch.setattr(registry, "hive_of_kind", lambda _cfg, _k: None)
+    out = backup.LayoutMigration()
+    backup._backed_up_entries({}, out.skipped)
+    assert len(out.skipped) == 1 and not out.ok
