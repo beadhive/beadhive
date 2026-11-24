@@ -234,7 +234,7 @@ check.
 - GC becomes a supported dispatcher-loop process host as soon as its runtime passes the kit. If
   it fails for structural reasons, the documented fallback is Mode 2.
 - `work.runtime` accepts registered names, and an unregistered name still fails closed.
-- `work.dispatch.loop` makes "who runs the loop" explicit.
-  Under `gc`, BH reports itself as delegated and refuses loop-owning verbs.
+- `work.dispatch.loop` makes "who runs the loop" explicit. Under `gc`, BH reports itself as
+  delegated and refuses loop-owning verbs.
 - `bh-kp64s.2` closes with this ADR. `gas-frameworks-comparison.md:44` ("not currently a runtime
   option") is updated.
