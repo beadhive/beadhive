@@ -68,6 +68,40 @@ def start_command(hive: str) -> str:
     return f"{config.BINARY_ALIAS} host beads start --hive {hive}"
 
 
+def stop_command(hive: str) -> str:
+    return f"{config.BINARY_ALIAS} host beads stop --hive {hive}"
+
+
+def status_command(hive: str) -> str:
+    return f"{config.BINARY_ALIAS} host beads status --hive {hive}"
+
+
+_LADDER_CAUSE = {
+    "stale": "the endpoint record is stale (its process is gone, or the record is unreadable)",
+    "mismatch": "the running service is bound to a different workspace than this hive",
+    "unready": "the service is alive but not answering its readiness probe",
+}
+
+
+def remediation_ladder(hive: str, state: str = "", detail: str = "") -> list[str]:
+    """The ``status -> stop -> start`` recovery ladder for a refused or failed start.
+
+    ``state`` is the failed check (``stale`` / ``mismatch`` / ``unready``; blank when unknown) and
+    ``detail`` the refusal text, so the operator is told which check failed, not only to retry.
+    """
+    cause = _LADDER_CAUSE.get(state, "the service could not be verified for this hive")
+    lines = [f"  cause: {cause}" + (f" ({detail})" if detail else "")]
+    lines += [
+        f"  1. inspect:  {status_command(hive)}",
+        f"  2. release:  {stop_command(hive)}"
+        "   (removes the stale record / ends the mismatched or unready service;"
+        " if the host daemon owns it, `bh host beads disable` first)",
+        f"  3. restart:  {start_command(hive)}",
+        "  see docs/BEADS-SERVICE.md, section Recovery when start is refused",
+    ]
+    return lines
+
+
 def service_spec(main: Path, hive: str, *, root: Path | None = None) -> Any:
     """The :class:`ServiceSpec` for hive ``hive`` whose main clone is ``main``.
 

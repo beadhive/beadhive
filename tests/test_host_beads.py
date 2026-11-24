@@ -500,3 +500,58 @@ def test_daemon_component_shuts_supervisors_down_on_drain(tmp_path, stand_in_bd)
     assert component.name == "beads-service-supervision"
     assert made and made[0].ticks >= 1
     assert made[0].stopped is True
+
+
+def _live_foreign_service(served_hive):
+    """A live service whose recorded database differs from the hive's (a workspace mismatch)."""
+    service = host_beads.service_module()
+    spec = host_beads.service_spec(served_hive, HIVE)
+    record = service.start(spec).record
+    service.write_record(
+        spec.paths, service.EndpointRecord(**{**record.payload(), "database": "other_db"})
+    )
+    return service, spec
+
+
+def test_start_refused_on_workspace_mismatch_prints_the_ladder(served_hive):
+    service, spec = _live_foreign_service(served_hive)
+    try:
+        refused = runner.invoke(app, ["host", "beads", "start"])
+    finally:
+        service.stop(spec)
+
+    assert refused.exit_code == 1
+    assert "mismatch" in refused.output
+    assert "bound to a different workspace" in refused.output
+    assert f"host beads status --hive {HIVE}" in refused.output
+    assert f"host beads stop --hive {HIVE}" in refused.output
+    assert f"host beads start --hive {HIVE}" in refused.output
+    assert refused.output.index("status --hive") < refused.output.index("stop --hive")
+
+
+def test_status_stale_endpoint_prints_the_ladder(served_hive):
+    service = host_beads.service_module()
+    spec = host_beads.service_spec(served_hive, HIVE)
+    record = service.start(spec).record
+    service.write_record(
+        spec.paths,
+        service.EndpointRecord(
+            **{**record.payload(), "state": "stale", "stale_reason": "recorded service is gone"}
+        ),
+    )
+
+    stale = runner.invoke(app, ["host", "beads", "status"])
+    try:
+        assert stale.exit_code == 1
+        assert "stale" in stale.stdout
+        assert "endpoint record is stale" in stale.stdout
+        assert f"host beads stop --hive {HIVE}" in stale.stdout
+    finally:
+        service.stop(spec)
+
+
+def test_remediation_ladder_orders_status_stop_start():
+    lines = host_beads.remediation_ladder(HIVE, "mismatch", "other database")
+    text = "\n".join(lines)
+    assert text.index("status --hive") < text.index("stop --hive") < text.index("start --hive")
+    assert "other database" in text
