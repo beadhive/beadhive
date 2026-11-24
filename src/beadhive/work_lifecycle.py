@@ -270,10 +270,15 @@ def commands(cfg: Any, hive: str, main: Path, entry: Any) -> Iterator[Any]:
 @contextmanager
 def _failing_closed() -> Iterator[None]:
     """Map a core refusal (already rendered) onto the CLI exit code."""
+    from . import bd_floor
+
     try:
         yield
     except _core().LifecycleFailed as failure:
         raise typer.Exit(failure.exit_code) from failure
+    except bd_floor.BdTooOldError as exc:  # a clean refusal naming the floor, not a traceback
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 def _actor(cfg: Any, entry: Any, as_: str) -> str:
@@ -386,7 +391,7 @@ def claim_single_bead(cfg: Any, hive: str, bead: str, as_: str) -> Any:
 
 def try_claim(bead: str, actor: str, main: Path) -> bool:
     """`bh work next`'s CLI-loop claim: acquire the lease, then re-verify by re-reading."""
-    with commands({}, "", main, None) as lifecycle:
+    with _failing_closed(), commands({}, "", main, None) as lifecycle:
         return bool(lifecycle.try_claim(bead, actor))
 
 

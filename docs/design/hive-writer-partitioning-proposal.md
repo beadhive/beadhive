@@ -65,7 +65,8 @@ how the model is enforced:
   operator's laptop.
 - **Upstream multi-writer bugs.** gastownhall/beads
   [#4796](https://github.com/gastownhall/beads/issues/4796) (colliding child IDs block sync),
-  [#4657](https://github.com/gastownhall/beads/issues/4657) (`--claim` is not a hard CAS),
+  [#4657](https://github.com/gastownhall/beads/issues/4657) (`--claim` is not a hard CAS;
+  *superseded by bh-rwjxt: `bd --claim` is atomic from bd 1.3.0*),
   [#5157](https://github.com/gastownhall/beads/issues/5157) (concurrent auto-push contention) and
   [#5657](https://github.com/gastownhall/beads/issues/5657) (label read-then-write). All of
   them get worse the more writers a hive has. Upstream has no multi-writer or quorum design.

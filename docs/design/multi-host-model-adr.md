@@ -214,6 +214,8 @@ Recorded explicitly so none of these is rediscovered as a surprise.
 5. **`bd update --claim` is not a hard CAS** (upstream #4657) — despite the help text saying
    "Atomically claim." Even *single-host* concurrent claims can race. Host-level exclusion does
    not fix bead-level exclusion.
+   *Superseded by bh-rwjxt: `bd update --claim` is an atomic compare-and-set from bd 1.3.0, and
+   `bh` now refuses an older bd (`src/beadhive/bd_floor.py`).*
 
 6. **HQ remains a replicated store presented as a singleton.** Nothing here changes that. Any
    cross-host fact read from HQ is a *reading* with an `as_of`, never a truth — the same
