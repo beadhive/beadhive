@@ -835,6 +835,11 @@ _APPROVED_OPTIONAL_STRING_PARAMS: dict[str, tuple[str, ...]] = {
     # `bh config get <key> --hive <prefix>` appends one optional string. Without it the verb keeps
     # its exact request, output and exit codes; with it the value is read as that hive sees it.
     "config.get": ("hive",),
+    # bh-im4dm (bead acceptance under kickoff-approved epic bh-0a5vq, gas-city-runtime-seam ADR
+    # Decision 2; confirm at its human review gate): `bh role --outcome-sink {stdout,bead}
+    # --session-id <id>` appends two optional strings. Without them (`stdout` is the default) the
+    # verb keeps its exact request, output and exit codes.
+    "role": ("outcome_sink", "session_id"),
 }
 _OPTIONAL_STRING_PARAM = {
     "privilege": "inherited",

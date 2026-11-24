@@ -682,6 +682,51 @@ blocked verdict never spawns; a loose fallback spawns and remains visible in the
 The public fields and availability caveats are specified in
 [Complexity-first routing](COMPLEXITY-ROUTING.md).
 
+#### Outcome sink in bead metadata — `bh role --outcome-sink bead`
+
+A runtime that spawns the seat itself reads the `SeatRun` off the pipe it holds. A process host
+that discards stdout or fires and forgets cannot, so `bh role` (the BH-side seat entry point that
+wraps `bh-<seat>`) gains `--outcome-sink {stdout,bead}`
+([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 2):
+
+```sh
+bh role developer --bead <id> --outcome-sink bead --session-id <session_id>
+```
+
+- **`stdout`** (the default) is today's behavior, byte for byte.
+- **`bead`** runs the seat headless in the foreground, still forwards its stdout, and once it
+  exits writes the same JSON line to the bead's metadata key `bh.outcome.<session_id>`.
+  `--session-id` is the id passed to the seat's `--session_id`. It is minted when unset, and the
+  written key is named on stderr. The write is one `bd update --metadata` merge of that single
+  key, attributed to the workspace's stamped seat identity (`--actor`). No other metadata key and
+  no label is written.
+  The flag needs `--bead` and refuses `-d` and the hitch backend, which emit no `SeatRun`.
+
+**Record schema.** The value of `bh.outcome.<session_id>` is one JSON object, either:
+
+```text
+SeatRun   { outcome: { status: "done"|"blocked"|"handoff", summary, bead_id?, next_action? },
+            session_id, cost_usd, usage, packs }        # as the seat printed it
+Envelope  { session_id, cost_usd, usage, terminal_reason } # no outcome: killed or crashed
+```
+
+A seat that printed a `SeatRun` or a killed-run envelope has that line stored as it was printed.
+A seat that printed neither gets an envelope synthesized by the wrapper, with `terminal_reason`
+`no SeatRun on stdout (exit <code>)`, so a crashed run answers `failed` and not `running`
+forever. The record is append-only per session: an existing key is never overwritten, and BH
+only reads it.
+
+**Reading it.** `beadhive.outcome.read(bead_id, session_id) -> RoleOutcome | None` classifies the
+record through `seatrun.classify_run`, the same rules as the stdout path, and maps the verdict
+the way `LocalRuntime.observe` does (a parity test pins the two): `done` / `blocked` /
+`handoff` carry the seat's summary, and no parseable `SeatRun` is `failed`. A record has no
+exit code and none is consulted, so a bare exit 0 is never success here either. `None` means no
+answer yet: the key is absent, or the record's own `session_id` differs from the requested one
+(a stale session can never answer for a new one). `beadhive.outcome.observe(handle)` is the
+ready-made `observe()` for a non-child runtime: the classified record when present, `running`
+when absent. Like every `observe()`, it is never authoritative about bead lifecycle. Bead state
+still wins.
+
 ### The `local` tier — `bh work loop <epic>`
 
 `bh work loop <epic>` drives one molecule to completion with **no human present and no server

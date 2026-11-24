@@ -16907,6 +16907,22 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "outcome_sink",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "session_id",
+          "privilege": "inherited",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "privilege": "ordinary-mutation",
@@ -16944,7 +16960,9 @@
             "available_seat",
             "current_seat",
             "model",
-            "effort"
+            "effort",
+            "outcome_sink",
+            "session_id"
           ],
           "path": "role",
           "progress": {

@@ -374,6 +374,83 @@ def _role_dispatch_dir() -> Path:
     return d
 
 
+def _refuse_bead_sink(*, bead: str, detached: bool, backend: str) -> None:
+    """``--outcome-sink bead`` needs a bead to write on and a bh process that outlives the seat
+    and holds its stdout. Refuse every other shape before any workspace is claimed."""
+    reason = ""
+    if not bead:
+        reason = "--outcome-sink bead needs --bead <id> (the record is written on that bead)"
+    elif detached:
+        reason = (
+            "--outcome-sink bead cannot detach: the foreground bh process holds the seat's "
+            "stdout and writes the record when it exits"
+        )
+    elif backend == "hitch":
+        reason = "--outcome-sink bead needs a seat binary that emits SeatRun; hitch does not"
+    if reason:
+        typer.echo(f"✗ outcome_sink_unavailable: {reason}", err=True)
+        raise typer.Exit(1)
+
+
+def _run_forwarding_stdout(argv: list[str], *, env: dict[str, str]) -> tuple[int, str]:
+    """Run ``argv`` in the foreground, forwarding its stdout live while also keeping it. stderr
+    is inherited untouched, so only the seat's stdout (the SeatRun channel) is captured."""
+    import subprocess
+
+    from .run import child_env
+
+    chunks: list[bytes] = []
+    out = getattr(sys.stdout, "buffer", None)
+    proc = subprocess.Popen(  # noqa: S603 — argv is built, never shell-interpreted
+        argv, cwd=os.getcwd(), env=child_env(env), stdout=subprocess.PIPE
+    )
+    assert proc.stdout is not None
+    for chunk in iter(lambda: proc.stdout.read1(65536), b""):
+        chunks.append(chunk)
+        if out is not None:
+            out.write(chunk)
+            out.flush()
+        else:
+            sys.stdout.write(chunk.decode("utf-8", errors="replace"))
+            sys.stdout.flush()
+    proc.stdout.close()
+    return proc.wait(), b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _write_bead_outcome(
+    entry, bead: str, session_id: str, stdout: str, exit_code: int | None
+) -> bool:
+    """Write one finished seat run's record to ``bh.outcome.<session_id>`` on ``bead`` as the
+    workspace's stamped seat identity. ``False`` (with the reason on stderr) when bd refused."""
+    from . import identity, outcome
+
+    actor = identity.resolve_actor(cwd=os.getcwd())
+    try:
+        result = outcome.write(
+            bead,
+            session_id,
+            stdout,
+            exit_code=exit_code,
+            cwd=registry.hive_dir(entry),
+            actor=actor,
+        )
+    except outcome.OutcomeWriteError as exc:
+        typer.echo(f"✗ outcome_sink_write_failed: {exc}", err=True)
+        return False
+    if not result.written:
+        typer.echo(f"⚠ {result.key} on {bead}: {result.detail}; left unchanged", err=True)
+        return True
+    recorded = result.document.get("session_id")
+    if recorded != session_id:
+        typer.echo(
+            f"⚠ {result.key} on {bead}: the seat reported session {recorded!r}, so readers "
+            "will ignore this record",
+            err=True,
+        )
+    typer.echo(f"→ outcome: wrote {result.key} on {bead} as {actor}", err=True)
+    return True
+
+
 def _role_headless(
     seat: str,
     harness: str,
@@ -388,10 +465,17 @@ def _role_headless(
     current_seat: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    outcome_sink: str = "stdout",
+    session_id: str = "",
 ):
     """`bh role <seat> --task/-d`'s launch (bh-6t49w.6). Suitability is decided FIRST, before
     any workspace resolution, so an attached-only seat refuses immediately instead of claiming
-    a bead's worktree on the way to a launch that was never going to happen."""
+    a bead's worktree on the way to a launch that was never going to happen.
+
+    ``outcome_sink="bead"`` (gas-city-runtime-seam-adr Decision 2) additionally writes the
+    seat's SeatRun line to the bead's ``bh.outcome.<session_id>`` metadata once it exits, as the
+    seat's stamped identity; see :mod:`beadhive.outcome`. The default ``stdout`` path is
+    unchanged."""
     import subprocess
     import uuid
 
@@ -446,6 +530,9 @@ def _role_headless(
             err=True,
         )
         raise typer.Exit(1)
+    bead_sink = outcome_sink == "bead"
+    if bead_sink:
+        _refuse_bead_sink(bead=bead, detached=detached, backend=plan.backend)
 
     _apply_role_workspace(bead, hive)
     instructions = _role_instructions(seat, bead, task)
@@ -474,8 +561,14 @@ def _role_headless(
     qualified = plan.artifact
     command = str(qualified.binary) if qualified else config.dispatch_seat_command(cfg, entry)
     bundle = "" if qualified else config.dispatch_seat_bundle(cfg, entry)
+    if bead_sink and entry is None:
+        typer.echo(
+            "✗ outcome_sink_unavailable: --outcome-sink bead needs a registered hive workspace",
+            err=True,
+        )
+        raise typer.Exit(1)
     seat_process_id = f"seat-{uuid.uuid4()}"
-    provider_continuation = f"provider-{uuid.uuid4()}"
+    provider_continuation = session_id or f"provider-{uuid.uuid4()}"
     argv = list(
         localloop.seat_argv(
             command,
@@ -527,6 +620,12 @@ def _role_headless(
         ]
         launch_env = journal.child_env(launch_env)
     if not detached:
+        sink_kwargs: dict = {}
+        if bead_sink:
+            # Late-bound: the qualified path above may have re-minted provider_continuation.
+            sink_kwargs["outcome_writer"] = lambda stdout, code: _write_bead_outcome(
+                entry, bead, provider_continuation, stdout, code
+            )
         if qualified is not None:
             from . import role_process
 
@@ -540,8 +639,14 @@ def _role_headless(
                     role=seat,
                     seat_process_id=seat_process_id,
                     provider_continuation=provider_continuation,
+                    **sink_kwargs,
                 )
             )
+        if bead_sink:
+            code, stdout = _run_forwarding_stdout(argv, env=launch_env)
+            if not sink_kwargs["outcome_writer"](stdout, code):
+                raise typer.Exit(1)
+            raise typer.Exit(code)
         raise typer.Exit(run(argv, check=False, capture=False, env=launch_env).returncode)
 
     log_path = _role_dispatch_dir() / f"{stem}.role-{seat}.log"
@@ -702,9 +807,23 @@ def role_cmd(
     ),
     model: str = typer.Option("", "--model", help="allowlisted harness model selection."),
     effort: str = typer.Option("", "--effort", help="allowlisted harness reasoning effort."),
+    outcome_sink: str = typer.Option(
+        "stdout",
+        "--outcome-sink",
+        help="where the seat's SeatRun goes: stdout (default, unchanged) or bead — also write it "
+        "to the --bead's bh.outcome.<session_id> metadata (implies a foreground headless run).",
+    ),
+    session_id: str = typer.Option(
+        "",
+        "--session-id",
+        help="session id to pass the seat (and key a bead outcome record on); minted when unset.",
+    ),
 ):
     from . import hitch_plugin
 
+    if outcome_sink not in ("stdout", "bead"):
+        typer.echo(f"✗ --outcome-sink must be stdout or bead, got {outcome_sink!r}", err=True)
+        raise typer.Exit(1)
     if not name:
         launch_only_flags = [
             flag
@@ -715,6 +834,8 @@ def role_cmd(
                 ("--current-seat", bool(current_seat)),
                 ("--model", bool(model)),
                 ("--effort", bool(effort)),
+                ("--outcome-sink", outcome_sink != "stdout"),
+                ("--session-id", bool(session_id)),
             )
             if present
         ]
@@ -740,7 +861,10 @@ def role_cmd(
         )
         return
 
-    if task or detached:
+    if task or detached or outcome_sink == "bead":
+        sink_kwargs: dict = {}
+        if outcome_sink != "stdout" or session_id:
+            sink_kwargs = {"outcome_sink": outcome_sink, "session_id": session_id}
         _role_headless(
             name,
             harness,
@@ -754,8 +878,13 @@ def role_cmd(
             current_seat=current_seat or None,
             model=model or None,
             effort=effort or None,
+            **sink_kwargs,
         )
         return
+
+    if session_id:
+        typer.echo("✗ --session-id applies to a headless --task/-d launch", err=True)
+        raise typer.Exit(1)
 
     if baml_required:
         typer.echo(
