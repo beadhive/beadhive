@@ -112,7 +112,7 @@ from . import (
 )
 
 if TYPE_CHECKING:
-    from .runtime import GateResolution
+    from .gate_resolution import GateResolution
 
 _LOG = log.get_logger(__name__)
 
@@ -1531,7 +1531,11 @@ class LocalLoop:
         #: The runtime's `on_gate_resolved` (gas-city-runtime-seam-adr.md Decision 3); `None`
         #: when no runtime is listening. Called from the gate_check pass, never from a seat.
         self._on_gate_resolved = on_gate_resolved
-        self._gate_watch = gate_watch.GateWatcher(self.hive_dir) if on_gate_resolved else None
+        self._gate_watch = (
+            gate_watch.GateWatcher(self._read_review_gates, self._read_bead_labels)
+            if on_gate_resolved
+            else None
+        )
         #: The in-flight map. DELIBERATELY VOLATILE — see the module docstring.
         self.in_flight: dict[str, SeatProcess] = {}
         self.halted = False
@@ -1546,6 +1550,24 @@ class LocalLoop:
         #: `None` when a caller drives `run_pass` directly (tests, the demo), which is fine —
         #: the pumps then stand alone and `shutdown` still reaps every process group.
         self._tg: asyncio.TaskGroup | None = None
+
+    # ---- gate observation (bh-6z2cj) ------------------------------------------------------
+
+    def _read_review_gates(self) -> list[dict]:
+        """Every gate row, resolved ones included; `[]` when the read fails (never raises)."""
+        res = bd_cli.routes(self.hive_dir).gate_list_raw(include_resolved=True)
+        if res.returncode != 0:
+            return []
+        try:
+            rows = json.loads(res.stdout or "null")
+        except json.JSONDecodeError:
+            return []
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def _read_bead_labels(self, bead: str) -> list[str]:
+        issue = bd_cli.issues(self.hive_dir).get(bead)
+        labels = issue.get("labels") if isinstance(issue, dict) else None
+        return [str(x) for x in labels] if isinstance(labels, list) else []
 
     # ---- instructions ---------------------------------------------------------------------
 

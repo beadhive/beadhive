@@ -18,20 +18,21 @@ or flood the loop.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from . import bd_cli, log
-from .runtime import GateResolution
-from .work_logic import is_review_gate_desc
+from . import log
+from .gate_resolution import GateResolution
 
 _LOG = log.get_logger(__name__)
 
 #: A raising hook is retried on this many passes in total before the resolution is dropped.
 MAX_ATTEMPTS = 3
 
+# A convention review gate's reason marker (`bh:review <sha>`, legacy bare `review <sha>`); the
+# same shape `work_logic.is_review_gate_desc` selects, kept local so this module stays a leaf.
+_REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
 _BLOCKING = re.compile(r"blocking ([A-Za-z0-9][A-Za-z0-9._-]*)")
 _BATCH = re.compile(r"batch \S+: ([^\n]+)")
 _BEAD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -70,33 +71,27 @@ def verdict_of(row: dict, bead_labels: Callable[[str], list[str]], bead: str) ->
 class GateWatcher:
     """Turns "a review gate closed" into `GateResolution`s, each delivered until it sticks."""
 
-    def __init__(self, hive_dir, *, since: str | None = None) -> None:
-        self.hive_dir = hive_dir
+    def __init__(
+        self,
+        read_gates: Callable[[], list[dict]],
+        read_labels: Callable[[str], list[str]],
+        *,
+        since: str | None = None,
+    ) -> None:
+        self._read_gates = read_gates
+        self._read_labels = read_labels
         self._since = since if since is not None else _now()
         self._delivered: set[tuple[str, str]] = set()
         self._attempts: dict[tuple[str, str], int] = {}
 
-    def _rows(self) -> list[dict]:
-        res = bd_cli.routes(self.hive_dir).gate_list_raw(include_resolved=True)
-        if res.returncode != 0:
-            return []
-        try:
-            rows = json.loads(res.stdout or "null")
-        except json.JSONDecodeError:
-            return []
-        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
-
-    def _labels(self, bead: str) -> list[str]:
-        issue = bd_cli.issues(self.hive_dir).get(bead)
-        labels = issue.get("labels") if isinstance(issue, dict) else None
-        return [str(x) for x in labels] if isinstance(labels, list) else []
-
     def pending(self) -> list[GateResolution]:
         """Every resolved review gate (one per guarded bead) not yet delivered or dropped."""
         out: list[GateResolution] = []
-        for row in self._rows():
+        for row in self._read_gates():
             description = str(row.get("description") or "")
-            if str(row.get("status") or "") != "closed" or not is_review_gate_desc(description):
+            if str(row.get("status") or "") != "closed" or not _REVIEW_REASON.search(
+                description.lower()
+            ):
                 continue
             if str(row.get("closed_at") or "") < self._since:
                 continue
@@ -104,7 +99,7 @@ class GateWatcher:
             for bead in beads_named(description):
                 if (gate_id, bead) in self._delivered:
                     continue
-                verdict = verdict_of(row, self._labels, bead)
+                verdict = verdict_of(row, self._read_labels, bead)
                 out.append(
                     GateResolution(
                         gate_id=gate_id,

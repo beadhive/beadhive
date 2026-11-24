@@ -55,6 +55,7 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 from ...complexity import ComplexityTier, tier_names
 from ...kernel.daemon.contracts.config import HostDaemonConfig
 from ..tracker.contracts import MAX_REQUEST_TIMEOUT_SECONDS
+from .domain.runtime_names import validate_runtime_name
 
 #: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
@@ -1523,10 +1524,8 @@ class WorkConfig(_Section):
     @classmethod
     def _registered_runtime(cls, v):
         """`work.runtime` must name a registered runtime (gas-city-runtime-seam-adr.md Decision
-        1). Imported lazily: the runtime seam reads config, so a module-level import here would
-        be a cycle."""
-        from beadhive.runtime import validate_runtime_name
-
+        1). The name table is config-domain owned so this needs no import of the runtime seam,
+        which reads config."""
         return validate_runtime_name(v)
 
     @field_validator("validate_subset")

@@ -32,9 +32,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from .config_consumer_ports import work_settings as config
+from .gate_resolution import GateResolution
+from .modules.config.domain import runtime_names
 
 # The bead's own no-runtime-only-state invariant (ADR Decision 1) means nothing in this module
 # may persist scheduling state anywhere but beads. `RoleHandle`/`RoleOutcome` below are transient
@@ -68,24 +70,6 @@ class RoleOutcome:
     status: str  # "running" | "done" | "blocked" | "handoff" | "failed"
     summary: str = ""
     routing: dict | None = None
-
-
-@dataclass(frozen=True)
-class GateResolution:
-    """One review gate observed resolving, handed to `Runtime.on_gate_resolved`
-    (gas-city-runtime-seam-adr.md Decision 3). These are the bounce and feedback points.
-
-    `verdict` is `approved` or `changes_requested`. `feedback_ref` is `None` for an approval and,
-    for a bounce, a pointer a runtime can resolve to the reviewer's feedback: the id of the gate
-    that was resolved (its close reason carries the feedback text; the bead also holds it as a
-    comment). A runtime may use the hook to wind a session down or keep it warm and attach the
-    feedback. It must NOT re-dispatch: changes-requested work is re-scheduled by the loop's
-    `resume-changes-requested` decision, which calls `schedule()` again."""
-
-    gate_id: str
-    bead_id: str
-    verdict: Literal["approved", "changes_requested"]
-    feedback_ref: str | None = None
 
 
 @runtime_checkable
@@ -171,47 +155,19 @@ class ClaudeRuntime:
         raise NotImplementedError(self._MSG)
 
 
-# The runtime registry: named factories, resolved by `work.runtime`. Mirrors
-# `claim_authority`'s authority registry (`register_authority` / `available_authorities` /
-# `get_authority`): lookup is by name, nothing is auto-discovered, and a plugin that wants to be
-# selectable calls `register_runtime` itself. A factory takes `(cfg, entry)` — the loaded config
-# and the hive entry, either of which may be `None` — and returns a :class:`Runtime`.
+# The runtime registry: named factories, resolved by `work.runtime`. The name table lives in
+# `modules.config.domain.runtime_names` (so the config schema can validate against it without
+# importing this seam); this module is its public face. Mirrors `claim_authority`'s authority
+# registry (`register_authority` / `available_authorities` / `get_authority`): lookup is by name,
+# nothing is auto-discovered, and a plugin that wants to be selectable calls `register_runtime`
+# itself. A factory takes `(cfg, entry)` — the loaded config and the hive entry, either of which
+# may be `None` — and returns a :class:`Runtime`.
 RuntimeFactory = Callable[[Any, Any], Runtime]
 
-_RUNTIMES: dict[str, RuntimeFactory] = {}
-
-
-def register_runtime(name: str, factory: RuntimeFactory, *, replace: bool = False) -> None:
-    """Register `factory` under `name` so `work.runtime: <name>` resolves it.
-
-    The plugin seam (docs/design/gas-city-runtime-seam-adr.md Decision 1): a third-party runtime
-    (e.g. Gas City) calls this to become selectable by name. It is NOT plugin discovery — nothing
-    auto-calls it. Registering an already-registered name raises `ValueError` unless
-    ``replace=True``, so two plugins cannot silently shadow each other (or a built-in)."""
-    if not name or not isinstance(name, str):
-        raise ValueError("a runtime name must be a non-empty string")
-    if name in _RUNTIMES and not replace:
-        raise ValueError(f"runtime {name!r} is already registered (pass replace=True to override)")
-    _RUNTIMES[name] = factory
-
-
-def available_runtimes() -> list[str]:
-    """The names the registry can resolve, sorted — surfaced in the unknown-runtime error."""
-    return sorted(_RUNTIMES)
-
-
-def _unknown_runtime(name: str) -> ValueError:
-    return ValueError(
-        f"unknown work runtime {name!r}; available: {', '.join(available_runtimes())}"
-    )
-
-
-def validate_runtime_name(name: str) -> str:
-    """`name` itself when registered, else `ValueError` listing the available names — the check
-    the config schema runs when `work.runtime` loads."""
-    if name not in _RUNTIMES:
-        raise _unknown_runtime(name)
-    return name
+_RUNTIMES = runtime_names.RUNTIMES
+register_runtime = runtime_names.register_runtime
+available_runtimes = runtime_names.available_runtimes
+validate_runtime_name = runtime_names.validate_runtime_name
 
 
 def _claude_factory(cfg, entry) -> Runtime:
@@ -232,9 +188,9 @@ def _temporal_factory(cfg, entry) -> Runtime:
     )
 
 
-register_runtime("claude", _claude_factory)
-register_runtime("local", _local_factory)
-register_runtime("temporal", _temporal_factory)
+register_runtime("claude", _claude_factory, replace=True)
+register_runtime("local", _local_factory, replace=True)
+register_runtime("temporal", _temporal_factory, replace=True)
 
 
 def get_runtime(cfg=None) -> Runtime:
@@ -257,8 +213,7 @@ def get_runtime(cfg=None) -> Runtime:
             cfg = None
     entry = None
     name = config.work_runtime(cfg, entry) if cfg is not None else "local"
-    try:
-        factory = _RUNTIMES[name]
-    except KeyError:
-        raise _unknown_runtime(name) from None
+    factory = _RUNTIMES.get(name)
+    if factory is None:
+        raise runtime_names.unknown_runtime(name)
     return factory(cfg, entry)
