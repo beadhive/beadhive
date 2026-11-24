@@ -168,6 +168,31 @@ assuming it. If the worst case can exceed it, raise `listener.max_connections` i
 owns the server, so coordinate with its restart) or cap how many hives run a service on the host.
 Watch `Max_used_connections` during a busy period to see real headroom.
 
+## Recovery when start is refused
+
+`bh host beads start` refuses rather than duplicate a live process it cannot prove is this
+hive's service, and consumers (`route=api`) fail closed with `start it with ...`. When start
+itself is refused or fails, walk the ladder `status -> stop -> start`; the refusal prints it
+and names the failed check.
+
+1. `bh host beads status --hive <hive>` reports the state and detail.
+2. `bh host beads stop --hive <hive>` removes the record and ends the process.
+3. `bh host beads start --hive <hive>` publishes a fresh, context-verified service.
+
+**Stale endpoint** (`stale`): the recorded pid is gone, the record is unreadable, or it is
+marked stale. Stop removes the record; start then replaces it. A start that reports "alive but
+stale" means a live process still holds the slot, so stop it first.
+
+**Workspace mismatch** (`mismatch`): the service answers for another project, database or
+repository (for example after a hive was re-cloned, moved, or its database renamed). Start
+refuses with `bd serve pid N is alive but mismatch: ...`; stop it, check
+`.beads/metadata.json` matches the hive you meant, then start.
+
+If stop says the service is supervised by the host daemon, run
+`bh host beads disable --hive <hive>` first (and `enable` again afterwards). An `unready`
+service that stays unready after a restart: read the log named in the start failure, and
+check the database is up.
+
 ## Known limits
 
 - Readiness is checked at start; afterwards the supervisor checks liveness only, so a database
