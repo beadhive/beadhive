@@ -44,6 +44,7 @@ import errno
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,7 +112,7 @@ def migrate_root(cfg=None) -> Path:
     return root(cfg) / "migrate"
 
 
-def _backed_up_entries(cfg) -> list:
+def _backed_up_entries(cfg, skipped: list[str] | None = None) -> list:
     """Every registered entry that can hold backup artifacts — ordinary hives PLUS the Factory
     HQ singleton.
 
@@ -124,7 +125,26 @@ def _backed_up_entries(cfg) -> list:
     from . import registry
 
     hq = registry.hive_of_kind(cfg, registry.HQ_KIND)
-    return [*registry.hives(cfg), *([hq] if hq is not None else [])]
+    return _with_triplet([*registry.hives(cfg), *([hq] if hq is not None else [])], skipped)
+
+
+def _with_triplet(entries, skipped: list[str] | None = None) -> list:
+    """`entries` minus any lacking a provider/org/repo triplet, each skipped with a stderr
+    warning naming it: a fleet-wide backup pass must not die on one malformed entry (bh-n2gj1).
+    Each skip's message is also appended to `skipped` when given, so a pass can surface it."""
+    from . import registry
+
+    out = []
+    for entry in entries:
+        try:
+            registry.entry_triplet(entry)
+        except registry.FleetEntryError as exc:
+            print(f"warning: backup skipping malformed fleet entry: {exc}", file=sys.stderr)
+            if skipped is not None:
+                skipped.append(str(exc))
+            continue
+        out.append(entry)
+    return out
 
 
 def entry_slug(entry) -> str:
@@ -132,7 +152,9 @@ def entry_slug(entry) -> str:
     ``registry.hive_key`` use, needing no sanitization and introducing no second addressing
     scheme (the pre-bh-5009a migrate root flattened it to ``github-briancripe-nvidia-
     hackathon``). See :func:`write_manifest` for the rename hazard this carries."""
-    return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+    from .registry import entry_triplet
+
+    return "/".join(entry_triplet(entry))
 
 
 def _dated_dirs(base: Path) -> list[Path]:
@@ -334,7 +356,7 @@ def classify_cache_entries(cfg=None) -> list[CacheEntryStatus]:
 
     cfg = cfg if cfg is not None else config.load()
     registered: dict[Path, list] = {}
-    for entry in registry.hives(cfg):
+    for entry in _with_triplet(registry.hives(cfg)):
         registered.setdefault(cache_store.cache_path(config.cache_dir(), entry), []).append(entry)
 
     rows: list[CacheEntryStatus] = []
@@ -393,7 +415,7 @@ def reclaim_cache_entries(cfg=None, *, dry_run: bool = True) -> CacheReclaimResu
         if planned.safe and not dry_run:
             entries = [
                 entry
-                for entry in registry.hives(cfg)
+                for entry in _with_triplet(registry.hives(cfg))
                 if cache_store.cache_path(config.cache_dir(), entry) == planned.path
             ]
             current = (
@@ -516,7 +538,7 @@ def _hive_slug(cfg=None, cwd=None) -> str:
     cfg = cfg if cfg is not None else config.load()
     entry = registry.entry_for_dir(cfg, cwd) if cwd else registry.current_hive(cfg)
     if entry is not None:
-        return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+        return entry_slug(entry)
     res = run(["git", "rev-parse", "--show-toplevel"], check=False, capture=True, cwd=cwd)
     top = (res.stdout or "").strip() if res.returncode == 0 else ""
     return f"_unmanaged/{Path(top).name}" if top else "_unmanaged/unknown"
@@ -929,10 +951,11 @@ class LayoutMigration:
     dry_run: bool = False
     moves: list[LayoutMove] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)  # malformed fleet entries not healed
 
     @property
     def ok(self) -> bool:
-        return not any(m.error for m in self.moves)
+        return not self.skipped and not any(m.error for m in self.moves)
 
     @property
     def moved_bytes(self) -> int:
@@ -992,7 +1015,7 @@ def migrate_layout(cfg=None, *, dry_run: bool = True, actor: str = "") -> Layout
     # independently of whether THIS run has anything left to relocate for that hive.
     from . import registry
 
-    for entry in _backed_up_entries(cfg):
+    for entry in _backed_up_entries(cfg, out.skipped):
         hive_dir = registry.hive_dir(entry)
         if not hive_dir.is_dir():
             continue

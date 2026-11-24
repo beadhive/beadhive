@@ -95,13 +95,13 @@ class LegacyHiveRegistry:
         payload = hive.status_payload(cfg)
         if request.hive_id:
             entry = registry.resolve_hive(cfg, request.hive_id)
-            key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+            key = registry.hive_key(entry)  # FleetEntryError names a triplet-less entry
             payload = {
                 **payload,
                 "hives": [
                     row
                     for row in payload["hives"]
-                    if f"{row['provider']}/{row['org']}/{row['repo']}" == key
+                    if "/".join(str(row.get(k, "")) for k in ("provider", "org", "repo")) == key
                 ],
             }
         return HiveStatusResult(

@@ -4619,8 +4619,12 @@ def backup_migrate_layout_cmd(
     preview = dry_run or not confirm
     result = backup_mod.migrate_layout(cfg, dry_run=preview, actor=resolve_actor("", ""))
 
+    for msg in result.skipped:
+        typer.echo(f"  ! skipped malformed fleet entry: {msg}", err=True)
     if not result.moves:
         typer.echo("nothing to relocate — every backup artifact is already in the current layout")
+        if result.skipped:
+            raise typer.Exit(1)
         return
     for m in result.moves:
         mark = "✗" if m.error else ("○" if preview else "✓")
@@ -4635,7 +4639,7 @@ def backup_migrate_layout_cmd(
     typer.echo(f"\n  {verb} {len(result.moves)} set(s), {format_bytes(result.moved_bytes)}")
     if preview:
         typer.echo("  (preview — pass --confirm to apply)")
-    elif not result.ok:
+    if not result.ok and not (preview and not result.skipped and result.moves):
         raise typer.Exit(1)
 
 
