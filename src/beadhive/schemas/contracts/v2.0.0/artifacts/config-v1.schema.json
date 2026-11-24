@@ -5456,7 +5456,7 @@
         },
         "runtime": {
           "default": "local",
-          "description": "Which scheduler wakes a role binary for a ready bead: claude (today's Task-tool sub-agent fanout — documented, not a bh-owned implementation; harness-bound, cannot be the default) | local (poll loop + subprocess supervision, harness-agnostic default) | temporal (Temporal workers, fleet-scale). Mirrors the `beads.engine` seam in engine.py: a config key selects a thin implementation, not a plugin framework. See docs/WORK.md#runtime-tiers and docs/design/work-runtime-tiers-adr.md.",
+          "description": "Which scheduler wakes a role binary for a ready bead, by registered name: claude (today's Task-tool sub-agent fanout — documented, not a bh-owned implementation; harness-bound, cannot be the default) | local (poll loop + subprocess supervision, harness-agnostic default) | temporal (Temporal workers, fleet-scale) | any name a plugin registered with `beadhive.runtime.register_runtime`. Validated against that registry when the config loads; an unregistered name is rejected. See docs/WORK.md#runtime-tiers, docs/design/work-runtime-tiers-adr.md and docs/design/gas-city-runtime-seam-adr.md. The published contract schema keeps the built-in names as its `enum` (a closed enum cannot be removed within an official contract major); names plugins register are validated by the registry at load.",
           "enum": [
             "claude",
             "local",

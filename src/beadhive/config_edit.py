@@ -80,6 +80,14 @@ def validate(api, parts: list[str], value) -> list[dict]:
                     f"(where bh substitutes the failing test names), got {value!r}",
                 )
             )
+    if dotted == "work.runtime":
+        # A registry-validated string, not a Literal (gas-city-runtime-seam-adr.md Decision 1);
+        # imported lazily because the runtime seam itself reads config.
+        from .runtime import available_runtimes
+
+        if str(value) not in available_runtimes():
+            allowed = "|".join(available_runtimes())
+            problems.append(problem("error", f"{dotted} must be one of {allowed}, got {value!r}"))
     if dotted == "work.routing.tiers":
         try:
             TypeAdapter(list[RoutingTierConfig]).validate_python(value)

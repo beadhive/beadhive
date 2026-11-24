@@ -1439,17 +1439,24 @@ class WorkConfig(_Section):
         default_factory=RoutingConfig,
         description="Complexity-tier model routing intent (selection is reader-owned).",
     )
-    runtime: Literal["claude", "local", "temporal"] = Field(
+    runtime: str = Field(
         "local",
         description=(
-            "Which scheduler wakes a role binary for a ready bead: claude (today's Task-tool "
-            "sub-agent fanout — documented, not a bh-owned implementation; harness-bound, "
-            "cannot be the default) | local (poll loop + subprocess supervision, "
-            "harness-agnostic default) | temporal (Temporal workers, fleet-scale). Mirrors the "
-            "`beads.engine` seam in engine.py: a config key selects a thin implementation, not "
-            "a plugin framework. See docs/WORK.md#runtime-tiers and "
-            "docs/design/work-runtime-tiers-adr.md."
+            "Which scheduler wakes a role binary for a ready bead, by registered name: claude "
+            "(today's Task-tool sub-agent fanout — documented, not a bh-owned implementation; "
+            "harness-bound, cannot be the default) | local (poll loop + subprocess supervision, "
+            "harness-agnostic default) | temporal (Temporal workers, fleet-scale) | any name a "
+            "plugin registered with `beadhive.runtime.register_runtime`. Validated against that "
+            "registry when the config loads; an unregistered name is rejected. See "
+            "docs/WORK.md#runtime-tiers, docs/design/work-runtime-tiers-adr.md and "
+            "docs/design/gas-city-runtime-seam-adr.md. The published contract schema keeps the "
+            "built-in names as its `enum` (a closed enum cannot be removed within an official "
+            "contract major); names plugins register are validated by the registry at load."
         ),
+        # Same-major compatibility (contract_release `closed-union members changed`): dropping
+        # the enum is a major-cut decision, so the published schema still lists the built-ins
+        # while the model accepts any registered name.
+        json_schema_extra={"enum": ["claude", "local", "temporal"]},
     )
     landing: Literal["local", "pr"] = Field(
         "local",
@@ -1511,6 +1518,16 @@ class WorkConfig(_Section):
             "realistic reuse window is minutes-to-hours: tune this DOWN, not up."
         ),
     )
+
+    @field_validator("runtime")
+    @classmethod
+    def _registered_runtime(cls, v):
+        """`work.runtime` must name a registered runtime (gas-city-runtime-seam-adr.md Decision
+        1). Imported lazily: the runtime seam reads config, so a module-level import here would
+        be a cycle."""
+        from beadhive.runtime import validate_runtime_name
+
+        return validate_runtime_name(v)
 
     @field_validator("validate_subset")
     @classmethod
