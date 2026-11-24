@@ -601,6 +601,17 @@ registers the incarnation (J8), the frame admits itself (J10). On bh 0.40.0-0.40
 J7 publishes is never served (no step moved the authority onto it, `bh-hb75g`); use a bh with
 `bh hq authority publish-manifest` on `xeno-mac` and hq-service v0.1.3 (J8's preconditions).
 
+**A trusted fleet keeps an operator-signed authority** (hq-service v0.1.4, `bh-hq-gr9`; bh
+`bh-j7pdz`). Whenever the operator passes `--operator-key`, bh offers the signature (`can_sign`)
+and signs every operator publication (`publish-manifest`, `rebind`, `release-policy`), so the
+authority stays operator-signed and a host in the default signed authority mode keeps reading
+it, learning the trusted fleet from the signed snapshot. Over an operator-signed authority
+hq-service v0.1.4 refuses every unsigned publication (`operator_signature_required`), the frame's
+admission included: J10 is then a signed hand-off (J10a-J10c). With hq-service v0.1.3 bh still
+signs whenever it holds the key (it re-plans without `can_sign`, which v0.1.3 does not know), but
+v0.1.3 admits the frame unsigned and so unsigns the authority: run v0.1.4 when the authority is
+signed.
+
 Steps J4 and J9 bind the same certificate first as `kind` host (to publish the manifest) and then
 as `kind` frame (to admit and renew). Gateway `v0.1.0` binds a certificate as exactly one kind, so
 J9 replaces J4's entry; it does not add a second one.
@@ -710,8 +721,12 @@ bh hq authority publish-manifest --manifest ~/HOST_ID.yaml --confirm
   false`: the config already holds the manifest and only the rebind runs.
 - `--confirm` publishes the manifest (if needed) and rebinds the authority onto the config head
   that holds it, in one operation. There is no separate `bh hq authority rebind` step. Expect
-  `"outcome": "accepted"` and a new `"revision"`. In a signed fleet add `--operator-key
-  ~/.ssh/OPERATOR_KEY` (the plan says `"signature_needed": true`); a trusted fleet needs none.
+  `"outcome": "accepted"` and a new `"revision"`. Add `--operator-key ~/.ssh/OPERATOR_KEY` (to
+  `--plan` too, so the plan shows `"signature_needed": true`): a signed fleet requires it, and in
+  a trusted fleet it keeps the authority operator-signed (see above). Only a key-less trusted
+  fleet, whose authority is unsigned and whose hosts are pinned `hq.authority_mode: trusted`, may
+  leave it out. A refusal `operator_signature_required` says why and names the key: the
+  authority is operator-signed, or the fleet is signed.
 - If it reports `did not complete`, run the same command again: bh has already re-sent the
   apply, and a new plan sees the committed manifest and only rebinds. `stale_revision`,
   `plan_expired` or `plan_mismatch`: run it again.
@@ -748,6 +763,49 @@ Expect `"admitted": true` (`bh host provision --push` does the same). **The prin
 the config head:** if the head moved between J8 and J10, this fails with
 `incarnation_unprovisioned`. Then re-run J8's `join --frame`, update J9's binding with the new
 principal, and re-run J10.
+
+Over an operator-signed authority (hq-service v0.1.4, `bh-j7pdz`) J10 instead prints
+`"admitted": false`, `"signature_needed": true` and `"admission_plan"`: hq-service refused the
+unsigned admission and bh planned it. The frame holds no operator key, so the plan travels to the
+operator as a file and back:
+
+**J10a. Plan (frame).** The J10 command above. It writes the hand-off file
+`~/.beadhive/state/hq-admission-HOST_ID.json` (`--record FILE` names another path) and prints
+`"plan_expires_at"`: **J10b and J10c must complete within 15 minutes** of the plan's
+`"issued_at"`. Running J10 again before the operator signs reports the same pending plan; after
+the window it plans afresh. The file holds the plan, the frame's public key and, once signed,
+the signature: nothing secret.
+
+**J10b. Sign (operator, on xeno-mac).** Copy the file to `xeno-mac` as `~/admission.json`, then:
+
+```sh
+bh hq authority sign-admission --record ~/admission.json
+bh hq authority sign-admission --record ~/admission.json --operator-key ~/.ssh/OPERATOR_KEY --confirm
+```
+
+- Without `--confirm` it reviews and writes nothing. Both check the plan against the current
+  authority (read with the operator's binding) and refuse to sign unless it admits exactly this
+  frame's host with this key at the current head, inside its window, and changes no other frame
+  or authority field. Expect `"frame_id"`, `"host_id"`, `"key_fingerprint"` (compare with
+  `ssh-keygen -lf ~/bead-frame-03.pub`), `"revision"` and `"next_revision"`; with `--confirm`,
+  `"signed": true`.
+- It calls no hq-service write route: the admission route is the frame's alone.
+- "the authority moved since the frame planned" or "the plan's window has passed": re-run J10a.
+
+**J10c. Apply (frame).** Copy the signed file back over
+`~/.beadhive/state/hq-admission-HOST_ID.json`, then re-run `bh hq authority join --confirm`.
+Expect `"admitted": true` and `"signed": true`; the file is removed. `stale_revision`,
+`plan_expired` or `plan_mismatch` void the plan (the file is removed): re-run J10a.
+`operator_signature_invalid`: J10b used a key other than the one hq-service verifies with
+`-operator-key`. A refusal naming `hq.default_authority_mode: trusted` means hq-service is not
+`-trusted` or the committed fleet default is signed: a signed fleet has no api join.
+
+Why a hand-off and not the operator applying the admission (`bh-j7pdz`): Gateway v0.1.1 binds
+`POST /admissions/{frame}` (plan and apply alike) to a `kind` frame principal of that frame
+(`hqOwnFrame`), so an operator credential is refused there before hq-service sees it. Letting
+the operator apply would mean widening the operator's binding to every frame's admission route.
+The hand-off keeps each seat on its own routes (the frame on its own admission, the operator on
+reads), keeps the operator key off the frame, and lets the operator see exactly what it signs.
 
 **J11. Liveness.** The grant is ACTIVE as admitted, so it renews straight away:
 
@@ -806,6 +864,8 @@ Rollback: as for `bead-frame-01`; re-enable the failover loop if you turned it o
   `release_matches`.
 - **The join principal includes the config head:** re-register (J8's `join --frame`) if the
   head moves before the frame admits.
+- **A signed admission is a file hand-off** (J10a-J10c, `bh-j7pdz`): plan, operator signature
+  and apply within the plan's 15-minute window; there is no HQ-carried hand-off yet.
 - **`DELETE /manifests` is host-bound:** only the host itself can withdraw its manifest.
 - **One certificate, one binding kind (bh-pm1s4).** bh 0.40.0 has a single `hq.api` client
   certificate and Gateway `v0.1.0` binds a certificate as exactly one kind. Every later manifest
