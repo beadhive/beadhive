@@ -48,7 +48,7 @@ def hq_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def backup_root(tmp_path, monkeypatch):
-    root = tmp_path / "hq-backups"
+    root = tmp_path / "pre-push-backups"
     monkeypatch.setattr(hq_restore, "_backup_root", lambda cfg: root)
     return root
 
