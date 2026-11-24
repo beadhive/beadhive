@@ -957,3 +957,38 @@ def test_atomic_route_releases_and_skips_a_gc_labeled_member(monkeypatch, tmp_pa
     # None selects the label-filtering CLI route; the member was released, never kept
     assert work_queue.claim_next(tmp_path, {}, "dev/alice") is None
     assert released == ["g1"]
+
+
+def test_atomic_route_fails_closed_when_gc_release_fails(monkeypatch, tmp_path):
+    import pytest
+
+    from beadhive import frame_eligibility, work_queue
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def release_issue(self, bead, req):
+            raise OSError("dolt unavailable")
+
+    class Commands:
+        def claim_next(self, session, actor, observer=None):
+            return SimpleNamespace(claimed={"id": "g1", "labels": ["dispatch-owner:gc"]})
+
+    fake_core = SimpleNamespace(
+        QueueCommands=Commands,
+        RouteMismatch=type("RM", (Exception,), {}),
+        OperationDenied=type("OD", (Exception,), {}),
+        UnknownOperation=type("UO", (Exception,), {}),
+    )
+    monkeypatch.setattr(work_queue, "_core", lambda: fake_core)
+    monkeypatch.setattr(work_queue, "session_factory", lambda main, entry: Session())
+    monkeypatch.setattr(work_queue, "models_release", lambda actor: object())
+    monkeypatch.setattr(frame_eligibility, "GuardedClaimSession", lambda s, m: s)
+
+    # a failed release must raise, never fall back to the CLI route while holding the claim
+    with pytest.raises(work_queue.GcReleaseError, match="g1"):
+        work_queue.claim_next(tmp_path, {}, "dev/alice")
