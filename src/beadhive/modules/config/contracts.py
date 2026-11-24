@@ -293,6 +293,16 @@ class DispatchConfig(_Section):
             "type:human review gate) | advise (warn, allow — explicit opt-out)."
         ),
     )
+    loop: Literal["bh", "gc"] = Field(
+        "bh",
+        description=(
+            "Who owns the dispatcher loop: bh (default) | gc (Gas City). Under gc, bh does not "
+            "run dispatch passes, take the dispatcher lease, install/start the dispatch "
+            "service or reclaim gc-held claims, and `bh host dispatch status` reports "
+            "`delegated`. Lifecycle verbs (claim, submit, review, merge, gate resolve) are "
+            "unchanged. See docs/design/gas-city-runtime-seam-adr.md (Decision 7)."
+        ),
+    )
     # ---- local runtime tier (bh-c6dk.5) ----
     # In-process caps and timings for `bh work loop`. Deliberately under the EXISTING
     # work.dispatch section rather than a parallel one (bh-c6dk.5's design field), and

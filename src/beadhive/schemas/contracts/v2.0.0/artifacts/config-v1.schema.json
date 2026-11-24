@@ -1882,6 +1882,16 @@
           "title": "Envelope Grace",
           "type": "number"
         },
+        "loop": {
+          "default": "bh",
+          "description": "Who owns the dispatcher loop: bh (default) | gc (Gas City). Under gc, bh does not run dispatch passes, take the dispatcher lease, install/start the dispatch service or reclaim gc-held claims, and `bh host dispatch status` reports `delegated`. Lifecycle verbs (claim, submit, review, merge, gate resolve) are unchanged. See docs/design/gas-city-runtime-seam-adr.md (Decision 7).",
+          "enum": [
+            "bh",
+            "gc"
+          ],
+          "title": "Loop",
+          "type": "string"
+        },
         "max_action_retries": {
           "default": 2,
           "description": "Loop-breaker: escalate once a bead's own event record already shows N identical failed attempts of the same action (count DERIVED from event beads, never stored).",

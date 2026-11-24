@@ -897,3 +897,98 @@ def test_next_epic_scope_reads_membership_one_level_matching_the_loop_s_own_mole
         "exactly ONE membership read: `_molecule_members` shells out to `bd`, so resolving it "
         "per candidate row would spawn a subprocess per ready bead"
     )
+
+
+# ---- dispatch-owner:gc members are gc's to pick (bh-njarn) -------------------------------------
+
+
+def test_next_epic_route_reports_a_gc_member_as_a_dispatch_owner_skip(
+    nexthive, monkeypatch, capsys
+):
+    from beadhive import work_queue
+
+    seen = {}
+
+    def fake_claim_in_epic(main, entry, epic, actor, seat_actor):
+        seen["verdict"] = seat_actor({"id": "g1", "labels": ["dispatch-owner:gc"]})
+        return SimpleNamespace(
+            claimed="", claim_actor="", refused=("g1",), tried=(), rows=(), reason=""
+        )
+
+    monkeypatch.setattr(work_queue, "claim_in_epic", fake_claim_in_epic)
+    code, payload = _run_next(capsys, epic="e1")
+    assert seen["verdict"] is None
+    assert payload["status"] == "declined"
+    assert payload["reason"] == "dispatch_owner_gc"
+    assert "g1" not in (payload.get("refused") or [])
+    assert code != 0 and code != work.NEXT_REFUSE_EXIT
+
+
+def test_atomic_route_releases_and_skips_a_gc_labeled_member(monkeypatch, tmp_path):
+    from beadhive import frame_eligibility, work_queue
+
+    released = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def release_issue(self, bead, req):
+            released.append(bead)
+
+    class Commands:
+        def claim_next(self, session, actor, observer=None):
+            return SimpleNamespace(claimed={"id": "g1", "labels": ["dispatch-owner:gc"]})
+
+    fake_core = SimpleNamespace(
+        QueueCommands=Commands,
+        RouteMismatch=type("RM", (Exception,), {}),
+        OperationDenied=type("OD", (Exception,), {}),
+        UnknownOperation=type("UO", (Exception,), {}),
+    )
+    monkeypatch.setattr(work_queue, "_core", lambda: fake_core)
+    monkeypatch.setattr(work_queue, "session_factory", lambda main, entry: Session())
+    monkeypatch.setattr(work_queue, "models_release", lambda actor: object())
+    monkeypatch.setattr(frame_eligibility, "GuardedClaimSession", lambda s, m: s)
+
+    # None selects the label-filtering CLI route; the member was released, never kept
+    assert work_queue.claim_next(tmp_path, {}, "dev/alice") is None
+    assert released == ["g1"]
+
+
+def test_atomic_route_fails_closed_when_gc_release_fails(monkeypatch, tmp_path):
+    import pytest
+
+    from beadhive import frame_eligibility, work_queue
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def release_issue(self, bead, req):
+            raise OSError("dolt unavailable")
+
+    class Commands:
+        def claim_next(self, session, actor, observer=None):
+            return SimpleNamespace(claimed={"id": "g1", "labels": ["dispatch-owner:gc"]})
+
+    fake_core = SimpleNamespace(
+        QueueCommands=Commands,
+        RouteMismatch=type("RM", (Exception,), {}),
+        OperationDenied=type("OD", (Exception,), {}),
+        UnknownOperation=type("UO", (Exception,), {}),
+    )
+    monkeypatch.setattr(work_queue, "_core", lambda: fake_core)
+    monkeypatch.setattr(work_queue, "session_factory", lambda main, entry: Session())
+    monkeypatch.setattr(work_queue, "models_release", lambda actor: object())
+    monkeypatch.setattr(frame_eligibility, "GuardedClaimSession", lambda s, m: s)
+
+    # a failed release must raise, never fall back to the CLI route while holding the claim
+    with pytest.raises(work_queue.GcReleaseError, match="g1"):
+        work_queue.claim_next(tmp_path, {}, "dev/alice")
