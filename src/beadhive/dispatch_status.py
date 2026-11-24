@@ -30,12 +30,16 @@ STATE_ENABLED_STOPPED = "enabled_stopped"
 #: (and `lease_detail`) is what tells the two apart for a human.
 STATE_RUNNING_WITHOUT_LEASE = "running_without_lease"
 STATE_RUNNING_HEALTHY = "running_healthy"
+#: The hive's status could not be computed (e.g. a fleet entry without its provider/org/repo
+#: triplet). Rendered as an error row naming the entry instead of dropping it (bh-p2ptn).
+STATE_ERROR = "error"
 
 DISPATCH_STATES: tuple[str, ...] = (
     STATE_NOT_ENABLED,
     STATE_ENABLED_STOPPED,
     STATE_RUNNING_WITHOUT_LEASE,
     STATE_RUNNING_HEALTHY,
+    STATE_ERROR,
 )
 
 #: A lease with less than this fraction of its TTL remaining is "expiring soon" for doctor's
@@ -216,14 +220,36 @@ def compute_status(
     )
 
 
+def _error_status(name: str, exc: Exception) -> DispatchStatus:
+    return DispatchStatus(
+        hive=name,
+        hive_slug="",
+        backend="",
+        installed=False,
+        running=False,
+        persisted=False,
+        lease_in_force=False,
+        lease_held=False,
+        lease_expires_at="",
+        lease_detail="",
+        last_pass_at="",
+        seats_in_flight=0,
+        last_escalation=None,
+        state=STATE_ERROR,
+        detail=f"{type(exc).__name__}: {exc}",
+    )
+
+
 def compute_status_all(cfg: dict | None = None) -> list[DispatchStatus]:
-    """Every registered hive's status, for `bh host dispatch status --all`."""
+    """Every registered hive's status, for `bh host dispatch status --all`. A hive whose status
+    cannot be computed becomes an error row naming it — one broken entry must not blank the whole
+    table, and must not vanish from it either."""
     cfg = cfg if cfg is not None else config.load()
     out = []
-    for entry in cfg.get("managed_repos", []) or []:
-        hive = registry.hive_key(entry)
+    for index, entry in enumerate(cfg.get("managed_repos", []) or []):
         try:
-            out.append(compute_status(hive, cfg=cfg))
-        except Exception:  # noqa: BLE001 - one broken hive must not blank the whole table
-            continue
+            out.append(compute_status(registry.hive_key(entry), cfg=cfg))
+        except Exception as exc:  # noqa: BLE001 - reported as an error row below
+            label = str(entry.get("prefix") or entry.get("repo") or f"managed_repos[{index}]")
+            out.append(_error_status(f"<invalid entry: {label}>", exc))
     return out

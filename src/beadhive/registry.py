@@ -376,7 +376,28 @@ def hive_key(entry) -> str:
     """`<group>/org/repo` triplet — the ws.metadata cache key for a managed-hive entry. The first
     segment is the repo-group path (`entry['provider']`, a stored config key — not necessarily
     the provider TYPE; see gitworkspace.RepoGroup)."""
-    return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+    return "/".join(entry_triplet(entry))
+
+
+class FleetEntryError(ValueError, KeyError):
+    """A managed_repos entry lacks its provider/org/repo identity triplet. Also a `KeyError` so
+    pre-existing `except KeyError` callers keep working; `__str__` is overridden so the message
+    is not repr-quoted the way a bare KeyError would be."""
+
+    def __str__(self) -> str:
+        return str(self.args[0]) if self.args else ""
+
+
+def entry_triplet(entry) -> tuple[str, str, str]:
+    """`(provider, org, repo)` of a managed-hive entry, or a named `FleetEntryError` listing the
+    missing keys and the entry's other identifying fields (bh-p2ptn)."""
+    missing = [k for k in ("provider", "org", "repo") if not entry.get(k)]
+    if missing:
+        known = {k: entry[k] for k in ("prefix", "org", "repo", "provider", "kind") if entry.get(k)}
+        raise FleetEntryError(
+            f"fleet entry missing {'/'.join(missing)} (provider/org/repo): {known or dict(entry)}"
+        )
+    return str(entry["provider"]), str(entry["org"]), str(entry["repo"])
 
 
 def _key(e) -> str:
