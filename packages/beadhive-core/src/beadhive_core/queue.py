@@ -25,10 +25,11 @@ the compare-and-set that wins a row, and the hydration of the row that was won. 
 optimistic "list ready, try to claim the first candidate, re-read to see who actually won, retry
 the next candidate on a lost race" loop the CLI-compatibility path still runs
 (:mod:`beadhive.work_next`'s ``eligible`` / ``claim_won`` / ``decline`` and
-:mod:`beadhive.work_dispatch`'s ``impl_next_``) — that loop exists ONLY because ``bd update
---claim`` is not a hard compare-and-swap. Once a session negotiates ``issues.claimNext``, there is
-nothing left to retry: :class:`QueueCommands.claim_next` is a single call, and its result is
-final.
+:mod:`beadhive.work_dispatch`'s ``impl_next_``) — that loop exists ONLY because the CLI
+cannot pick and claim in one step: ``bd update --claim`` is atomic per bead (bd >= 1.3.0, a lost
+race is a non-zero exit), but WHICH bead to claim is still a race. Once a session
+negotiates ``issues.claimNext``, there is nothing left to retry:
+:class:`QueueCommands.claim_next` is a single call, and its result is final.
 
 ``bh work next --epic <id>`` (bh-7ip8t) routes through :meth:`QueueCommands.claim_next_in_epic`,
 NOT the atomic ``work.claim-next``: an epic-scoped claim needs a candidate set the atomic op

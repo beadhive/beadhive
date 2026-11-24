@@ -546,7 +546,7 @@ def test_a_refused_lease_propagates_its_exit_code_and_provisions_nothing(world: 
 
 
 def test_a_lease_that_did_not_take_is_a_lost_race_not_a_win(world: World) -> None:
-    world.leases.takes = False  # exit 0, but the store never moved: not a compare-and-swap
+    world.leases.takes = False  # exit 0, but the store never moved: the re-read must not believe it
     assert world.refused(lambda c: c.claim(BEAD, "dev/alice")).exit_code == 1
     assert not any("provision" in e for e in world.log)
     assert world.observer.transitions == []

@@ -178,8 +178,8 @@ class Leases(Protocol):
     """``work.lease.acquire`` / ``work.lease.release`` — the renewable CLI claim lease."""
 
     def acquire(self, bead: str, *, actor: str) -> None:
-        """Claim ``bead`` for ``actor`` (→ in_progress); raise :class:`WriteFailed`. Not a
-        compare-and-swap: the caller re-reads to learn whether it actually won."""
+        """Claim ``bead`` for ``actor`` (→ in_progress); raise :class:`WriteFailed`. Atomic
+        (bd >= 1.3.0): a refusal is a lost race; the caller re-reads to confirm the hold."""
         ...
 
     def release(self, bead: str, *, actor: str) -> None:
@@ -368,9 +368,10 @@ def batch_group(issue: Issue | None) -> str:
 def claim_won(issue: Issue | None, actor: str) -> bool:
     """Did ``actor`` actually end up holding this bead? The re-verify half of claim-then-read.
 
-    The claim lease write is not a compare-and-swap, so a claim is never believed on its exit
-    code: the assignee must be ``actor`` AND the bead must have left ``open`` (a row still open
-    did not transition; a closed one is not held).
+    The claim is atomic, so a non-zero exit is a clean lost race, but a zero exit is confirmed
+    rather than assumed (idempotent re-claims, unknown outcomes): the assignee must be ``actor``
+    AND the bead must have left ``open`` (a row still open did not transition; a closed one is
+    not held).
     """
     if not isinstance(issue, Mapping):
         return False
@@ -585,8 +586,8 @@ class LifecycleCommands:
     def try_claim(self, bead: str, actor: str) -> bool:
         """Take the lease, then RE-VERIFY by re-reading: true only when ``actor`` holds it.
 
-        A refused lease means the race was lost outright; an accepted one proves nothing (the
-        lease write is not a compare-and-swap), so the verdict comes from the re-read alone.
+        A refused lease means the race was lost outright (a clean decline, not an error); an
+        accepted one is confirmed by the re-read, which decides the verdict.
         """
         try:
             self._leases.acquire(bead, actor=actor)
