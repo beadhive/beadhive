@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.40.4 (2026-11-24)
+
+### Fix
+
+- **hq**: skip the Gateway wrong-kind 403 on the route=api join's other seat's half
+
 ## v0.40.3 (2026-11-23)
 
 ### Fix
