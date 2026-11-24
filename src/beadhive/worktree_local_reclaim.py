@@ -976,7 +976,11 @@ EPILOG = (
 
 def _default_roots() -> list[str]:
     env = os.environ.get("BH_WORKTREES") or os.environ.get("WS_WORKTREES")
-    home = os.environ.get("BH_HOME") or os.path.join(os.path.expanduser("~"), ".beadhive")
+    home = os.path.expanduser(
+        os.environ.get("BH_HOME")
+        or os.environ.get("WS_HOME")
+        or os.path.join(os.path.expanduser("~"), ".beadhive")
+    )
     candidates = [
         *([os.path.expanduser(env)] if env else []),
         os.path.join(tempfile.gettempdir(), "bh-worktrees"),

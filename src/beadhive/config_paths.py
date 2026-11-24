@@ -82,6 +82,33 @@ def home(api) -> Path:
     return Path(value).expanduser() if value else api._DEFAULT_HOME_NEW
 
 
+def hq_dir(api) -> Path:
+    """The HQ checkout. Precedence: ``$BH_HQ`` (legacy ``$WS_HQ``) > host config ``hq.path`` >
+    ``<home>/hq``. The config read is best-effort and never raises: a missing, unreadable or
+    malformed host file falls through to the default, exactly as a host without the key."""
+    value = api._env("hq")
+    if value:
+        return Path(value).expanduser()
+    try:
+        host = api.load_host_raw_for_repair() or {}
+        configured = (host.get("hq") or {}).get("path")
+    except Exception:  # noqa: BLE001 - config unreadable: behave as if hq.path were unset
+        configured = None
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured).expanduser()
+    return api.home() / "hq"
+
+
+def hq_home(api) -> Path:
+    """Parent of the HQ checkout: where HQ-adjacent state (HQ backups, fleet state, beadyard
+    adoption journals) lives. ``<home>`` by default, so an unconfigured host is unchanged.
+    Only a host-config ``hq.path`` (with ``$BH_HQ`` unset) relocates it: ``$BH_HQ`` hosts keep
+    their pre-existing state under ``<home>`` so an upgrade never strands it."""
+    if not api._env("hq") and _host_hq_path(api.config_path()):
+        return api.hq_dir().parent
+    return api.home()
+
+
 def config_path(api) -> Path:
     value = api._env("config")
     return Path(value).expanduser() if value else api.home() / "config.yaml"

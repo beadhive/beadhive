@@ -2920,6 +2920,19 @@
           "title": "Mode",
           "type": "string"
         },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "HOST-only location of the HQ checkout. Precedence: $BH_HQ (legacy $WS_HQ) > `hq.path` > <BH_HOME>/hq. HQ-adjacent state (HQ backups, fleet authority state, beadyard adoption journals) lives beside the resolved HQ directory.",
+          "title": "Path"
+        },
         "release_catalog": {
           "$ref": "#/$defs/HqReleaseCatalogConfig"
         },
