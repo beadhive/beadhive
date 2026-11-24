@@ -10,6 +10,7 @@ hq-service v0.1.0 (4e0fc6b): the request bodies are the conformance corpus's own
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ import pytest
 from beadhive.hq_framelease_contracts import ObservationAuthority
 from beadhive.hq_port import AdmissionRequest, HqOutcomeUnknown, HqRefused, HqUnavailable
 from beadhive.hq_service_adapter import PREFIX, HqServiceAdapter
+from beadhive.hq_sql_signatures import AUTHORITY_DOMAIN, canonical
 
 CONTRACT = Path(__file__).parent / "fixtures/hq_service_contract"
 FIXTURES = json.loads((CONTRACT / "responses.json").read_text())
@@ -292,6 +294,104 @@ def test_manifest_publication_routes_name_the_host_and_echo_the_plan(name, publi
     assert signed == [plan["record"]] and plan["record"]["config_head"] == plan["config_head_after"]
     assert plan["config_publication"]["publish"] is published
     assert answer["outcome"] == "accepted" and answer["config_published"] is published
+
+
+def test_a_trusted_rebind_offering_can_sign_is_the_corpus_plan_and_signs():
+    """hq-service v0.1.4 (bh-j7pdz): ``can_sign`` rides in the plan request and the apply; the
+    trusted plan then needs the signature, and bh signs it."""
+    operator = _Operator(_case("operator_v1", "rebind-can-sign-trusted"), None)
+    operator.fake.trusted = True
+    state = json.loads(operator.case["plan"]["body"])
+    assert state == {"can_sign": True}
+    signed: list[dict] = []
+    operator.run(
+        lambda a: a.rebind(
+            state, signer=lambda record: signed.append(record) or "c2ln",
+            expected_revision=operator.fake.head, deadline=_later(),
+        )
+    )  # fmt: skip
+    plan, apply = operator.fake.requests
+    assert plan[3] == state and apply[3]["can_sign"] is True
+    assert signed == [operator.record] and apply[3]["signature"] == "c2ln"
+
+
+def test_a_manifest_publish_offering_can_sign_is_the_corpus_plan():
+    from beadhive.hq_service_adapter import operator_apply_body
+
+    operator = _Operator(_case("operator_v1", "manifest-publish-can-sign-trusted"), None)
+    operator.fake.trusted = True
+    host, body = operator.case["host"], json.loads(operator.case["plan"]["body"])
+    assert body["can_sign"] is True
+
+    def publish(adapter):
+        plan = adapter.plan_manifest_publish(host, body, deadline=_later())
+        assert plan["signature_needed"] is True
+        apply = operator_apply_body(body, plan, signer=lambda record: "c2ln")
+        return adapter.apply_manifest_publish(host, apply, deadline=_later())
+
+    answer = operator.run(publish)
+    planned, applied = operator.fake.requests
+    assert planned[3] == body and applied[3]["can_sign"] is True
+    assert applied[3]["signature"] == "c2ln" and answer["signed"] is True
+
+
+def test_the_signed_admission_plan_is_the_corpus_body():
+    """hq-service v0.1.4 (bh-j7pdz): the plan is the open admission body plus ``"plan": true``,
+    on the same frame-bound route."""
+    case = _case("admission_v1", "admission-open-planned-over-signed-authority")
+    body = _wire(case)
+    frame = case["request"]["path"].rsplit("/", 1)[1]
+    record = {"revision": 2, "state": {"frames": {}}, "hive_policies": {}}
+    plan = {
+        "outcome": "planned",
+        "revision": HEAD,
+        "config_head": "c" * 32,
+        "record": record,
+        "signing_input": base64.b64encode(AUTHORITY_DOMAIN + canonical(record)).decode(),
+        "issued_at": 1.0,
+        "expires_at": 2.0,
+        "signature_needed": True,
+    }
+    adapter, calls = _writer({("POST", f"/admissions/{frame}"): (200, plan)})
+    request = AdmissionRequest(
+        frame, _authority(frame, body["host_id"]), body["public_key"], {}, admitted=True
+    )
+    answered = adapter.plan_admission(frame, request, expected_revision=HEAD, deadline=_later())
+    assert json.loads(calls[0].content) == body
+    assert answered["signature_needed"] is True and answered["record"] == record
+    tampered = {**plan, "signing_input": base64.b64encode(b"other").decode()}
+    adapter, _ = _writer({("POST", f"/admissions/{frame}"): (200, tampered)})
+    with pytest.raises(HqUnavailable, match="signing_input"):
+        adapter.plan_admission(frame, request, expected_revision=HEAD, deadline=_later())
+
+
+def test_the_unsigned_admission_over_a_signed_authority_carries_the_services_reason():
+    """The envelope's message is the registry text; ``details.reason`` says why, and the
+    refusal keeps both so the join can say what to do."""
+    case = _case("admission_v1", "admission-open-refused-unsigned-over-signed-authority")
+    body = _wire(case)
+    frame = case["request"]["path"].rsplit("/", 1)[1]
+    reason = "the current authority is operator-signed: an unsigned publication would unsign it"
+    envelope = {
+        "error": {
+            "code": case["expect"]["code"],
+            "message": "a signed fleet's authority publication needs the operator's signature",
+            "retryable": False,
+            "requestId": "r",
+            "details": {"reason": reason},
+        }
+    }
+    adapter, calls = _writer({("POST", f"/admissions/{frame}"): (409, envelope)})
+    request = AdmissionRequest(
+        frame, _authority(frame, body["host_id"]), body["public_key"], {}, admitted=True
+    )
+    with pytest.raises(HqRefused) as refused:
+        adapter.admit(
+            frame, request, signer=lambda r: "", expected_revision=HEAD, deadline=_later()
+        )
+    assert refused.value.code == "operator_signature_required"
+    assert case["expect"]["reason"] in str(refused.value)
+    assert json.loads(calls[0].content) == body
 
 
 def test_a_trusted_fleet_plan_skips_the_signer():
