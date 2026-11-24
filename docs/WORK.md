@@ -238,19 +238,20 @@ of several, with a mutation test showing the guard is load-bearing (below).
 
 **What is NOT guaranteed — and why:**
 
-- `bd update --claim` is **optimistic, not a hard compare-and-swap**. Its exit code alone proves
-  nothing: two callers racing the same bead can both get exit 0, with the last physical write
-  winning the store. The guarantee above comes ENTIRELY from the re-verify step
-  (`work_next.claim_won`) that runs after every claim attempt — it re-reads the bead and requires
-  BOTH that the assignee is us AND that the bead actually left `open`. Skip that step (trust the
-  exit code instead) and the SAME race produces two callers who both believe they won — this is
-  not hypothetical, it is exactly what `test_claim_won_reverify_is_load_bearing_without_it_both_drivers_win`
-  demonstrates by monkeypatching `claim_won` back to "always true" and re-running the identical
-  race.
+- `bd update --claim` is an **atomic, actor-idempotent claim** from bd 1.3.0 (a conditional
+  write on the row: exactly one of two racing claimers succeeds, the loser exits non-zero). A
+  non-zero exit is therefore a clean lost race — a decline, never surfaced as an error. A bd
+  older than 1.3.0 is refused by name (`bd_floor.require_atomic_claim`). What stays optimistic is
+  WHICH bead a driver picks off `bd ready`: the pick-then-claim loop moves to the next candidate
+  on a lost race. The re-verify step (`work_next.claim_won`) after every claim attempt is the
+  idempotence check on top — it re-reads the bead and requires BOTH that the assignee is us AND
+  that the bead actually left `open`, which covers an idempotent re-claim by the same actor and a
+  write whose outcome is unknown. Two real concurrent claimers are proven exclusive against a
+  real service by `test_real_service_two_concurrent_claimers_exactly_one_wins`.
 - There is a real, if small, window between a claim committing and this driver's re-read of it.
   `bh work next` closes that window for **this driver's own belief** (it never reports success
-  falsely), but it does not make the underlying claim atomic — a losing driver can still have
-  spent real work (a `bd update --claim` round trip) on a bead it never gets.
+  falsely); a losing driver can still have spent a `bd update --claim` round trip on a bead it
+  never gets.
 
 **What an external scheduler must therefore do**, because this verb's contract is "optimistic
 claim + honest re-verify", not "atomic reservation":
@@ -262,7 +263,8 @@ claim + honest re-verify", not "atomic reservation":
    response for THAT call. In particular, do not build a scheduler that first reads `bd ready`
    itself and separately calls `bd update --claim` — that reimplements the exact race this verb
    exists to survive, without the re-verify step that makes it safe.
-3. Poll, don't assume ordering: because the underlying store has no true CAS, two schedulers
+3. Poll, don't assume ordering: because which candidate is "next" is read before it is claimed,
+   two schedulers
    started at the same instant may both see the same candidate as "the" next one; only their
    respective `bh work next` calls, not their own `bd ready` reads, decide who actually gets it.
 

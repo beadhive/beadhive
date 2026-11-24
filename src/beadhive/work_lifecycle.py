@@ -241,9 +241,10 @@ class GuardedFrameLease:
         return getattr(self.leases, name)
 
     def acquire(self, bead, *, actor):
-        from . import frame_eligibility
+        from . import bd_floor, frame_eligibility
 
         frame_eligibility.require_intake(hive_dir=self.main)
+        bd_floor.require_atomic_claim()
         return self.leases.acquire(bead, actor=actor)
 
 

@@ -1395,9 +1395,9 @@ def bh_work_next(
     """Take the next ready bead through `bh work next --json` — the atomic pick-claim-provision
     verb, run as a subprocess so the loop gets the SAME race-free claim every other driver gets.
 
-    Deliberately not re-implemented in-process: `bd update --claim` is not a compare-and-swap,
-    and re-deriving the pick-then-claim race is exactly what an unattended loop must not do
-    (bh-qczj is a recorded dependency of this bead for that reason).
+    Deliberately not re-implemented in-process: `bd update --claim` is atomic but picking WHICH bead
+    to claim is still a race, and re-deriving the pick-then-claim loop is exactly what an
+    unattended loop must not do (bh-qczj is a recorded dependency of this bead for that reason).
 
     `epic` is what keeps that delegation honest (bh-sh6yt). Handing the claim to a hive-wide verb
     also handed it the whole hive: a loop pointed at one molecule spawned live seats for beads

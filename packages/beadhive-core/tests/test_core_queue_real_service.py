@@ -2,13 +2,12 @@
 hive this test creates itself — never a managed hive.
 
 The CLI-compatibility pick/claim/re-verify loop (:mod:`beadhive.work_next`'s ``eligible`` /
-``claim_won`` / ``decline``) exists only because ``bd update --claim`` is not a hard
-compare-and-swap; two real drivers racing the same bead can both exit 0, and the caller learns
-who actually won only by re-reading. ``work.claim-next`` replaces that with one atomic HTTP
-transaction. This proves that guarantee against a real, disposable, embedded-Dolt Beads 1.3.0
-service (the same ``bd serve`` mechanism ``test_real_v13_local_supervision`` in
-``beadhive-beads-client`` uses) — several real OS threads racing ONE ready bead, exactly one of
-which comes back with it claimed.
+``claim_won`` / ``decline``) exists because picking which bead to claim is still a
+race (``bd update --claim`` itself is atomic since bd 1.3.0; the loser exits non-zero).
+``work.claim-next`` replaces that with one atomic HTTP transaction. This proves that guarantee
+against a real, disposable, embedded-Dolt Beads 1.3.0 service (the same ``bd serve`` mechanism
+``test_real_v13_local_supervision`` in ``beadhive-beads-client`` uses) — several real OS threads
+racing ONE ready bead, exactly one of which comes back with it claimed.
 
 Opt-in via ``BEADS_QUEUE_SCRATCH=1``, the same "explicit env var, self-skip otherwise" convention
 every other ``real_service`` test in this workspace follows (see

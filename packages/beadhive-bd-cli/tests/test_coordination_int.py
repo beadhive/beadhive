@@ -286,3 +286,49 @@ def test_reclaim_reverts_stale_lease_and_leaves_a_heartbeated_one_untouched(serv
     live_row = bd_json("show", live, cwd=tmp_path)[0]
     assert live_row["status"] == "in_progress"
     assert live_row.get("assignee")
+
+
+# ---- claim: bd's atomic --claim, driven through CliLeases (bh-rwjxt) --------------------------
+
+
+def test_two_concurrent_claimers_exactly_one_wins_and_the_loser_declines_cleanly(server_store):
+    """`bd update --claim` is an atomic compare-and-set (bd >= 1.3.0, ADR Decision 5): of several
+    drivers racing ONE bead against a real server-mode store, exactly one gets exit 0 and every
+    other gets a non-zero exit, which `CliLeases.acquire` reports as `WriteFailed` — the clean
+    lost-race decline `LifecycleCommands.try_claim` turns into ``False``, never a crash."""
+    from beadhive_bd_cli import CliLeases
+    from beadhive_core import WriteFailed
+
+    tmp_path = server_store
+    _init_server(tmp_path, "cl")
+    bead = create(tmp_path, "contended bead")
+    leases = CliLeases(BD, tmp_path)
+    racers = [f"dev/racer-{i}" for i in range(4)]
+    barrier = threading.Barrier(len(racers))
+    outcomes: dict[str, str] = {}
+
+    def go(actor):
+        barrier.wait(timeout=30)  # every racer arrives before any of them claims
+        try:
+            leases.acquire(bead, actor=actor)
+            outcomes[actor] = "won"
+        except WriteFailed:
+            outcomes[actor] = "declined"
+
+    threads = [threading.Thread(target=go, args=(actor,)) for actor in racers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert sorted(outcomes) == sorted(racers), outcomes  # nobody crashed or hung
+    winners = [actor for actor, outcome in outcomes.items() if outcome == "won"]
+    assert len(winners) == 1, outcomes  # EXACTLY one holder, never zero, never several
+    assert list(outcomes.values()).count("declined") == len(racers) - 1
+
+    row = bd_json("show", bead, cwd=tmp_path)[0]
+    assert row["status"] == "in_progress"
+    assert row["assignee"] == winners[0]  # the store agrees with the believed winner
+
+    # idempotent for the same actor: the winner re-claiming is a no-op success, not a decline
+    leases.acquire(bead, actor=winners[0])
