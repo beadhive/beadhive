@@ -6,8 +6,8 @@
 **Amends:** [work-runtime-tiers-adr.md](work-runtime-tiers-adr.md) (the "not a plugin framework"
 clause of the `work.runtime` key) ·
 **Related:** [gas-frameworks-comparison.md](gas-frameworks-comparison.md),
-[bh-iaubc.1](../spikes/bh-iaubc.1-gc-beads-safety.md) (shared-store hazards;
-reframed as loop ownership in Decision 7),
+[bh-iaubc.1](../spikes/bh-iaubc.1-gc-beads-safety.md)
+(shared-store hazards; reframed as loop ownership in Decision 7),
 [bh-lko4x.1](../spikes/bh-lko4x.1-beadflow-gc-pack.md) (pack scope, unchanged),
 [plugin-kernel-v1-adr.md](plugin-kernel-v1-adr.md), [roles-rbac-matrix.md](roles-rbac-matrix.md)
 
@@ -234,7 +234,7 @@ check.
 - GC becomes a supported dispatcher-loop process host as soon as its runtime passes the kit. If
   it fails for structural reasons, the documented fallback is Mode 2.
 - `work.runtime` accepts registered names, and an unregistered name still fails closed.
-- `work.dispatch.loop` makes "who runs the loop" explicit. Under `gc`, BH reports
-  itself as delegated and refuses loop-owning verbs.
+- `work.dispatch.loop` makes "who runs the loop" explicit. Under `gc`, BH reports itself as
+  delegated and refuses loop-owning verbs.
 - `bh-kp64s.2` closes with this ADR. `gas-frameworks-comparison.md:44` ("not currently a runtime
   option") is updated.
