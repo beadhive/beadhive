@@ -520,3 +520,14 @@ def test_status_named_hive_with_tripletless_entry_is_error_row(monkeypatch):
     result = runner.invoke(app, ["host", "dispatch", "status", "--hive", "orphan/x"])
     assert result.exit_code == 1
     assert not isinstance(result.exception, KeyError)
+
+
+def test_enable_disable_logs_runs_with_hive_on_tripletless_entry_exit_cleanly(monkeypatch):
+    """bh-p2ptn: `--hive` skips the hive_key guard; the slug derivation must fail clean too."""
+    _tripletless(monkeypatch)
+    for verb in ("enable", "disable", "logs", "runs"):
+        result = runner.invoke(app, ["host", "dispatch", verb, "--hive", "orphan/x"])
+        assert result.exit_code == 1, verb
+        assert not isinstance(result.exception, KeyError), verb
+        assert isinstance(result.exception, SystemExit), verb
+        assert "error:" in result.output, verb

@@ -1636,7 +1636,9 @@ def _dispatch_entry(hive: str, cfg: dict):
     """As `_dispatch_entry_raw`, but a triplet-less / unresolved entry is a clean exit 1, not a
     traceback (bh-p2ptn)."""
     try:
-        return _dispatch_entry_raw(hive, cfg)
+        entry, resolved = _dispatch_entry_raw(hive, cfg)
+        dispatch_log.hive_slug(entry)  # every caller derives the slug; fail clean up front
+        return entry, resolved
     except registry.FleetEntryError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
