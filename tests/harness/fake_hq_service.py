@@ -73,6 +73,11 @@ The write routes serve the bodies of hq-service v0.1.0 (``api/writes.go``, ``sto
 * With ``caller`` set (``{kind, frame_id, host_id}``) the write routes are caller-bound as at
   v0.1.0: a caller not bound to the path's frame or host, or to the body's host, is a 403
   ``caller_not_bound``.
+* With ``gateway_kinds`` set as well, the Gateway (beadhive-gateway v0.1.1 ``authorizeHQ``)
+  refuses a caller of the wrong kind for ``POST /incarnations`` (operator) or ``POST
+  /admissions/{frame}`` (frame) before the service sees it: a bare 403 ``{"error": "principal is
+  not bound to this route"}``, no envelope (bh-garne). ``gateway_refusals`` maps a ``(method,
+  path)`` to a bare Gateway 403 reason answered whatever the caller.
 
 Every write CASes ``expected_revision`` on ``head`` (``stale_revision``, retryable). The history
 read takes exactly one ``since`` (``missing_floor`` / ``invalid_floor``). ``requests`` records
@@ -287,6 +292,10 @@ class FakeHqService:
         #: The attested caller the Gateway minted: ``{kind, frame_id, host_id}``; ``None`` skips
         #: the caller-binding rules (an unbound test).
         self.caller: dict[str, str] | None = None
+        #: Gateway v0.1.1 kind/scope enforcement on the join's two routes (bh-garne).
+        self.gateway_kinds = False
+        #: ``(method, path under the plane prefix)`` -> a bare Gateway 403 reason.
+        self.gateway_refusals: dict[tuple[str, str], str] = {}
         #: The committed manifest bodies PUT published, by host id (bh-obhfx).
         self.manifest_bodies: dict[str, dict[str, Any]] = {}
         #: The operator authority state (``{revision, frames}``) an open admission writes into,
@@ -320,6 +329,9 @@ class FakeHqService:
         except ValueError:
             body = None
         self.requests.append((request.method, plane, request.url.query.decode(), body))
+        refusal = self._gateway(request.method, plane)
+        if refusal:
+            return httpx.Response(403, json={"error": refusal})
         if path.startswith(PREFIX):
             routed = self._route_v0(request, plane, body)
             if routed is not None:
@@ -515,6 +527,20 @@ class FakeHqService:
             and chosen == version
         )
         return verdict
+
+    def _gateway(self, method: str, plane: str) -> str | None:
+        """The bare Gateway 403 reason for this request, or ``None`` to forward it."""
+        if (method, plane) in self.gateway_refusals:
+            return self.gateway_refusals[(method, plane)]
+        if not self.gateway_kinds or self.caller is None or method != "POST":
+            return None
+        if plane == "/incarnations":
+            need = "operator"
+        elif plane.startswith("/admissions/"):
+            need = "frame"
+        else:
+            return None
+        return None if self.caller.get("kind") == need else "principal is not bound to this route"
 
     def _bound(self, kind: str, frame: str | None, host_id: str | None) -> str | None:
         """The ``bind*`` rules of ``api/writes.go``: a reason when the caller is not bound."""

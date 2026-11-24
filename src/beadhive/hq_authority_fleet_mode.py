@@ -188,16 +188,24 @@ def join_cmd(frame, public_key, *, operator_settings=None, operator_key=None, co
 
     if not confirm:
         raise ControlPlaneError("operator mutation requires --confirm")
+    # Joining a host other than this one is the operator's half only: a frame credential may
+    # admit only its own frame (Gateway ``hqOwnFrame``, hq-service ``caller_not_bound``).
+    operator = False
     if frame:
         if public_key is None:
             raise ControlPlaneError("join --frame requires the frame's --public-key")
         key_text = Path(public_key).read_text()
+        operator = frame != host.host_id_or_none()
     else:
         frame = host.host_id()
         key_text = Path(public_key).read_text() if public_key is not None else _local_public_key()
     plane = _join_plane(operator_settings)
     return hq_open_admission.join(
-        plane, frame, key_text, operator_key=str(operator_key) if operator_key else ""
+        plane,
+        frame,
+        key_text,
+        operator_key=str(operator_key) if operator_key else "",
+        operator=operator,
     )
 
 
