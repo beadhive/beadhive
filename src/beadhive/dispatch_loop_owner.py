@@ -59,7 +59,8 @@ def refusal(verb: str, hive: str = "") -> str:
     return (
         f"{verb} refused{where}: the dispatcher loop is owned by gc (work.dispatch.loop: gc) — "
         f"bh does not manage dispatch, the lease, or reclaim here. Set work.dispatch.loop: bh "
-        f"to take the loop back. See {ADR_REF}."
+        f"to take the loop back, or run `bh host dispatch disable` to stop this unit. "
+        f"See {ADR_REF}."
     )
 
 

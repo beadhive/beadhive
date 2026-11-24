@@ -207,6 +207,7 @@ def test_lifecycle_verbs_do_not_consult_the_stand_down_predicate():
         "host_cli.py",
         "localloop.py",
         "work_dispatch.py",
+        "work_queue.py",
     }
 
 

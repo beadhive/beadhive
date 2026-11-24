@@ -152,14 +152,16 @@ def impl_next_(api, as_, hive, as_json, epic):
     # undeclared actor stays CLI-compatibility for that one — see `work_queue`'s module
     # docstring). Either returns `None` to mean "select CLI instead" (service absent or a
     # capability missing, and `work.beads.route` permits it), decided before any Beads write.
+    gc_skipped: list[str] = []
+
+    def _epic_seat_actor(row):
+        if _member_delegated(row):
+            gc_skipped.append(str(row.get("id") or ""))
+            return None
+        return api._next_seat_actor(actor, row)
+
     if epic:
-        epic_result = api.work_queue.claim_in_epic(
-            main,
-            entry,
-            epic,
-            actor,
-            lambda row: None if _member_delegated(row) else api._next_seat_actor(actor, row),
-        )
+        epic_result = api.work_queue.claim_in_epic(main, entry, epic, actor, _epic_seat_actor)
         api_result = None
     else:
         epic_result = None
@@ -196,8 +198,12 @@ def impl_next_(api, as_, hive, as_json, epic):
             reason,
         ) = _next_via_cli(api, cfg, hive, main, actor, epic)
 
+    if gc_skipped:
+        refused = [b for b in refused if b not in gc_skipped]
     if claimed:
         status = "claimed"
+    elif gc_skipped and not refused and not tried:
+        status, reason = ("declined", "dispatch_owner_gc")
     elif refused and (not tried):
         status, reason = ("refused", "seat_mismatch")
     else:
