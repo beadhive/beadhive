@@ -44,6 +44,7 @@ import errno
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -123,7 +124,23 @@ def _backed_up_entries(cfg) -> list:
     from . import registry
 
     hq = registry.hive_of_kind(cfg, registry.HQ_KIND)
-    return [*registry.hives(cfg), *([hq] if hq is not None else [])]
+    return _with_triplet([*registry.hives(cfg), *([hq] if hq is not None else [])])
+
+
+def _with_triplet(entries) -> list:
+    """`entries` minus any lacking a provider/org/repo triplet, each skipped with a stderr
+    warning naming it: a fleet-wide backup pass must not die on one malformed entry (bh-n2gj1)."""
+    from . import registry
+
+    out = []
+    for entry in entries:
+        try:
+            registry.entry_triplet(entry)
+        except registry.FleetEntryError as exc:
+            print(f"warning: backup skipping malformed fleet entry: {exc}", file=sys.stderr)
+            continue
+        out.append(entry)
+    return out
 
 
 def entry_slug(entry) -> str:
@@ -131,7 +148,9 @@ def entry_slug(entry) -> str:
     ``registry.hive_key`` use, needing no sanitization and introducing no second addressing
     scheme (the pre-bh-5009a migrate root flattened it to ``github-briancripe-nvidia-
     hackathon``). See :func:`write_manifest` for the rename hazard this carries."""
-    return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+    from .registry import entry_triplet
+
+    return "/".join(entry_triplet(entry))
 
 
 def _dated_dirs(base: Path) -> list[Path]:
@@ -333,7 +352,7 @@ def classify_cache_entries(cfg=None) -> list[CacheEntryStatus]:
 
     cfg = cfg if cfg is not None else config.load()
     registered: dict[Path, list] = {}
-    for entry in registry.hives(cfg):
+    for entry in _with_triplet(registry.hives(cfg)):
         registered.setdefault(cache_store.cache_path(config.cache_dir(), entry), []).append(entry)
 
     rows: list[CacheEntryStatus] = []
@@ -392,7 +411,7 @@ def reclaim_cache_entries(cfg=None, *, dry_run: bool = True) -> CacheReclaimResu
         if planned.safe and not dry_run:
             entries = [
                 entry
-                for entry in registry.hives(cfg)
+                for entry in _with_triplet(registry.hives(cfg))
                 if cache_store.cache_path(config.cache_dir(), entry) == planned.path
             ]
             current = (
@@ -515,7 +534,7 @@ def _hive_slug(cfg=None, cwd=None) -> str:
     cfg = cfg if cfg is not None else config.load()
     entry = registry.entry_for_dir(cfg, cwd) if cwd else registry.current_hive(cfg)
     if entry is not None:
-        return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+        return entry_slug(entry)
     res = run(["git", "rev-parse", "--show-toplevel"], check=False, capture=True, cwd=cwd)
     top = (res.stdout or "").strip() if res.returncode == 0 else ""
     return f"_unmanaged/{Path(top).name}" if top else "_unmanaged/unknown"

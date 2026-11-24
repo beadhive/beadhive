@@ -173,6 +173,12 @@ def _managed_repo_paths(cfg, managed) -> set[str]:
     and its blobless cache — so a registration matching neither is genuinely stale."""
     desired: set[str] = set()
     for e in managed:
+        try:
+            registry.entry_triplet(e)
+        except registry.FleetEntryError as exc:
+            # A batch reconcile: one malformed entry must not abort it (bh-n2gj1).
+            typer.echo(f"  ! skipping malformed fleet entry: {exc}", err=True)
+            continue
         desired.add(str(registry.hive_dir(e)))
         desired.add(str(cache_path(e)))
     return desired
@@ -390,11 +396,10 @@ def _hive_url(cfg, entry):
     `entry['provider']` is the stored triplet's first segment (the repo-group path — see
     gitworkspace.RepoGroup); the derive-fallback below treats it as the provider TYPE directly
     (no group->type resolution), matching this hive's existing entries where the two coincide."""
-    key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
-    url = gitworkspace.repo_urls(cfg).get(key)
+    group_path, org, repo = registry.entry_triplet(entry)
+    url = gitworkspace.repo_urls(cfg).get(f"{group_path}/{org}/{repo}")
     if url:
         return url
-    group_path, org, repo = entry["provider"], entry["org"], entry["repo"]
     if group_path == "github":
         return f"git@github.com:{org}/{repo}.git"
     if group_path == "gitlab":
@@ -577,8 +582,12 @@ def _fetch_cache(cfg, entry):
     `bd bootstrap` declines outright on a store that already exists ("Database already exists.
     Nothing to do", measured), and the repair path only runs when the store is not usable as it
     stands."""
-    cache = cache_path(entry)
     prefix = str(entry.get("prefix") or "?")
+    try:
+        cache = cache_path(entry)
+    except registry.FleetEntryError as exc:
+        typer.echo(f"  ✗ {prefix}: cannot hydrate — {exc}", err=True)
+        return None
     database = cache_database(entry)
     from . import hub_bulk
 

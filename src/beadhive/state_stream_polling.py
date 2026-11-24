@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import tempfile
 import threading
 import time
@@ -40,6 +41,8 @@ from .state_stream import (
 from .state_stream_epic_schedule import project_epic_schedules
 from .state_stream_gate_projection import project_gate_requests
 from .state_stream_process import StreamProcessScope
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_HISTORY_SIZE = 8
@@ -100,7 +103,7 @@ def _scope_key(request: StreamRequest) -> tuple[StreamScope, str]:
 def _hive_slug(entry: dict) -> str:
     """The registry-owned repo slug used by the v1 ``StreamIssue.hive`` field."""
 
-    return str(entry["repo"])
+    return registry.entry_triplet(entry)[2]
 
 
 def _labels(raw: object) -> tuple[str, ...]:
@@ -145,11 +148,8 @@ def _work_dependency(raw: object, hive: str) -> WorkDependency | None:
 
 
 def _entry_labels(entry: dict) -> tuple[str, str, str]:
-    return (
-        f"provider:{entry['provider']}",
-        f"org:{entry['org']}",
-        f"repo:{entry['repo']}",
-    )
+    provider, org, repo = registry.entry_triplet(entry)
+    return (f"provider:{provider}", f"org:{org}", f"repo:{repo}")
 
 
 def project_operator_core(accepted: AcceptedExport) -> SnapshotProjection:
@@ -227,9 +227,13 @@ class PollingStateStreamProvider:
         self._instance = uuid.uuid4().hex
         self._states_lock = threading.Lock()
         self._states: dict[tuple[StreamScope, str], _RefreshState] = {}
-        self._entries_by_labels = {
-            _entry_labels(entry): entry for entry in self._cfg.get("managed_repos", []) or []
-        }
+        self._entries_by_labels = {}
+        for entry in self._cfg.get("managed_repos", []) or []:
+            try:
+                self._entries_by_labels[_entry_labels(entry)] = entry
+            except registry.FleetEntryError as exc:
+                # A long-running provider must outlive one malformed entry (bh-n2gj1).
+                logger.warning("state stream: skipping malformed fleet entry: %s", exc)
 
     def _state(self, request: StreamRequest) -> _RefreshState:
         key = _scope_key(request)
