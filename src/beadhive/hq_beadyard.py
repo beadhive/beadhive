@@ -566,7 +566,7 @@ def _pending_sql_directory(snapshot, *, expected_revision: str | None = None) ->
             expected_revision or snapshot.commit_revision,
         )
     ).encode()
-    return config.home() / "hq-beadyard-adoptions" / hashlib.sha256(key).hexdigest()
+    return config.hq_home() / "hq-beadyard-adoptions" / hashlib.sha256(key).hexdigest()
 
 
 def _private_sql_artifact(path: Path, *, directory: bool) -> None:

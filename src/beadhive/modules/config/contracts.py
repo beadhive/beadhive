@@ -1836,6 +1836,14 @@ class HqConfig(_Section):
             "api`; it needs `hq.api` and carries no `hq.sql`)."
         ),
     )
+    path: str | None = Field(
+        None,
+        description=(
+            "HOST-only location of the HQ checkout. Precedence: $BH_HQ (legacy $WS_HQ) > "
+            "`hq.path` > <BH_HOME>/hq. HQ-adjacent state (HQ backups, fleet authority state, "
+            "beadyard adoption journals) lives beside the resolved HQ directory."
+        ),
+    )
     beadyard_id: str | None = Field(
         None,
         description=(

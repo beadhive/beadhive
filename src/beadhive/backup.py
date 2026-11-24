@@ -91,12 +91,13 @@ def root(cfg=None) -> Path:
 
 
 def hq_root(cfg=None) -> Path:
-    """Root 1 — HQ's pre-push backup sets. ``hq`` (a subject) rather than ``prepush`` (a kind)
+    """Root 1 — HQ's pre-push backup sets, beside HQ (``hq_home``: ``$BH_HOME`` unless ``hq.path``
+    relocates HQ with ``$BH_HQ`` unset). ``hq`` (a subject) rather than ``prepush`` (a kind)
     reads inconsistent next to ``mirrors``/``migrate``, and HQ will legitimately appear in two
     places once HQ itself migrates (``hq/<instant>/`` for pre-push, ``migrate/local/factory/
     hq/<instant>/`` for its storage migration). Deliberate: ``manifest.json``'s ``kind`` field
     disambiguates the two at zero path cost, so don't "fix" this to ``prepush/``."""
-    return root(cfg) / "hq"
+    return config.hq_home() / "backups" / "hq"
 
 
 def mirrors_root(cfg=None) -> Path:
@@ -822,7 +823,7 @@ def legacy_hq_root(cfg=None) -> Path:
     """Root 1's pre-bh-5009a location. Hardcoded under ``~/.beadhive`` in the original — kept
     resolving through :func:`config.home` here so a host with ``$BH_HOME`` set still finds its
     own legacy sets rather than someone else's."""
-    return config.home() / "hq-backups"
+    return config.hq_home() / "hq-backups"
 
 
 def legacy_migrate_root(cfg=None) -> Path:

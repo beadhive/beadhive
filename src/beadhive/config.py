@@ -146,7 +146,11 @@ def hub_dir() -> Path:
 
 
 def hq_dir() -> Path:
-    return _config_paths.named_home(_facade(), "hq", "hq")
+    return _config_paths.hq_dir(_facade())
+
+
+def hq_home() -> Path:
+    return _config_paths.hq_home(_facade())
 
 
 def cache_dir() -> Path:
