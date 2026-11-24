@@ -1371,7 +1371,7 @@ def _data_dispatch(cfg) -> dict:
     stale_after = config.dispatch_stale_after_seconds(cfg)
     rows = []
     for status in dispatch_status.compute_status_all(cfg):
-        if not status.installed:
+        if not status.installed and status.state != dispatch_status.STATE_ERROR:
             continue
         stale_seconds = status.stale_since_seconds()
         stalled = (
@@ -1401,6 +1401,9 @@ def _render_dispatch(d: dict) -> None:
         return
     typer.echo("\n# Unattended Dispatch")
     for row in d["hives"]:
+        if row.get("state") == "error":
+            typer.echo(f"  ✗ {row['hive']}: ERROR — {row['detail']}")
+            continue
         if row["dead"]:
             typer.echo(
                 f"  ✗ {row['hive']}: DEAD — supervised but not running "

@@ -1625,11 +1625,21 @@ def _ensure_lease_for_enable(hive: str, cfg: dict) -> tuple[bool, str]:
     )
 
 
-def _dispatch_entry(hive: str, cfg: dict):
+def _dispatch_entry_raw(hive: str, cfg: dict):
     main = registry.hive_dir_for(cfg, hive)
     entry = registry.entry_for_dir(cfg, main) or {}
-    resolved = hive or registry.hive_key(entry)
+    resolved = hive or registry.hive_key(entry)  # FleetEntryError on a triplet-less entry
     return entry, resolved
+
+
+def _dispatch_entry(hive: str, cfg: dict):
+    """As `_dispatch_entry_raw`, but a triplet-less / unresolved entry is a clean exit 1, not a
+    traceback (bh-p2ptn)."""
+    try:
+        return _dispatch_entry_raw(hive, cfg)
+    except registry.FleetEntryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 @dispatch_app.command(
@@ -1782,8 +1792,18 @@ def dispatch_status_cmd(
             typer.echo(_render_dispatch_status_row(row))
         return
 
-    _entry, resolved_hive = _dispatch_entry(hive, cfg)
-    status = dispatch_status.compute_status(resolved_hive, cfg=cfg)
+    try:
+        _entry, resolved_hive = _dispatch_entry_raw(hive, cfg)
+        status = dispatch_status.compute_status(resolved_hive, cfg=cfg)
+    except registry.FleetEntryError as exc:
+        # bh-p2ptn: a triplet-less entry / unresolved cwd is an error ROW, not a traceback.
+        err_row = dispatch_status.error_status(hive or "<unresolved hive>", exc)
+        if as_json:
+            jsonout.emit(err_row.as_dict())
+        else:
+            typer.echo(_render_dispatch_status_row(err_row))
+            typer.echo(f"  {err_row.detail}")
+        raise typer.Exit(1) from exc
     if as_json:
         jsonout.emit(status.as_dict())
         return

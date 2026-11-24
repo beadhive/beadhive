@@ -486,3 +486,37 @@ def test_runs_human_output_warns_host_local_even_when_sink_is_absent(monkeypatch
     assert "HOST-LOCAL" in result.output
     assert str(missing) in result.output
     assert "no agent run records yet" in result.output
+
+
+# ---- bh-p2ptn: single-hive status on a triplet-less / unresolved entry ----
+# Written from the bead description (the GC team's original traceback is still wanted).
+
+
+def _tripletless(monkeypatch):
+    broken = {"prefix": "orphan", "org": "acme"}
+    monkeypatch.setattr(host_cli.config, "load", lambda: {"managed_repos": [broken]})
+    monkeypatch.setattr(host_cli.registry, "hive_dir_for", lambda cfg, hive: "/nowhere")
+    monkeypatch.setattr(host_cli.registry, "entry_for_dir", lambda cfg, cwd: broken)
+
+
+def test_status_single_hive_tripletless_entry_is_error_row_not_traceback(monkeypatch):
+    _tripletless(monkeypatch)
+    result = runner.invoke(app, ["host", "dispatch", "status"])
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, KeyError)
+    assert "error" in result.output.lower()
+
+
+def test_status_single_hive_tripletless_entry_json(monkeypatch):
+    _tripletless(monkeypatch)
+    result = runner.invoke(app, ["host", "dispatch", "status", "--json"])
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, KeyError)
+    assert json.loads(result.output[result.output.index("{") :])["state"] == "error"
+
+
+def test_status_named_hive_with_tripletless_entry_is_error_row(monkeypatch):
+    _tripletless(monkeypatch)
+    result = runner.invoke(app, ["host", "dispatch", "status", "--hive", "orphan/x"])
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, KeyError)

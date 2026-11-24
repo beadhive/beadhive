@@ -146,7 +146,7 @@ def compute_status(
     cfg = cfg if cfg is not None else config.load()
     main = registry.hive_dir_for(cfg, hive)
     entry = registry.entry_for_dir(cfg, main) or {}
-    slug = dispatch_log.hive_slug(entry)
+    slug = dispatch_log.hive_slug(entry)  # FleetEntryError on a triplet-less/unresolved entry
 
     sup = backend or dispatch_supervisor.get_supervisor_backend(cfg)
     sup_state = sup.status(slug)
@@ -220,7 +220,7 @@ def compute_status(
     )
 
 
-def _error_status(name: str, exc: Exception) -> DispatchStatus:
+def error_status(name: str, exc: Exception) -> DispatchStatus:
     return DispatchStatus(
         hive=name,
         hive_slug="",
@@ -251,5 +251,5 @@ def compute_status_all(cfg: dict | None = None) -> list[DispatchStatus]:
             out.append(compute_status(registry.hive_key(entry), cfg=cfg))
         except Exception as exc:  # noqa: BLE001 - reported as an error row below
             label = str(entry.get("prefix") or entry.get("repo") or f"managed_repos[{index}]")
-            out.append(_error_status(f"<invalid entry: {label}>", exc))
+            out.append(error_status(f"<invalid entry: {label}>", exc))
     return out
