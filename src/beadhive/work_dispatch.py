@@ -223,6 +223,18 @@ def impl_next_(api, as_, hive, as_json, epic):
         raise api.typer.Exit(api.NEXT_DECLINE_EXIT)
 
 
+def _runtime_gate_hook(cfg):
+    """The configured runtime's `on_gate_resolved`, or None when no runtime can be resolved
+    (an unregistered or not-yet-implemented `work.runtime`). The loop owns lifecycle either way;
+    the hook is only the bounce / feedback signal (gas-city-runtime-seam-adr.md Decision 3)."""
+    from . import runtime
+
+    try:
+        return runtime.get_runtime(cfg).on_gate_resolved
+    except (ValueError, NotImplementedError):
+        return None
+
+
 def impl_loop(
     api, epic, as_, hive, passes, as_json, dry_run, seat_binary, harness="", baml_required=False
 ):
@@ -302,6 +314,7 @@ def impl_loop(
         max_action_retries=api.config.dispatch_max_action_retries(cfg, entry),
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
         dry_run=dry_run,
+        on_gate_resolved=_runtime_gate_hook(cfg),
         launch_context=(
             (lambda role: launch_contexts[role]) if launch_contexts is not None else None
         ),
