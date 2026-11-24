@@ -15,6 +15,12 @@ host manifest to the fleet config AND rebinds the authority onto the config head
 makes, so a frame join sees the manifest with no separate rebind. It is not atomic (config
 first, then authority, two databases): a failure between the two is completed by sending the
 same apply again, which :func:`publish_manifest` does itself, and a fresh plan also recovers.
+
+Keeping a trusted fleet signed (hq-service v0.1.4, bh-hq-gr9; bh-j7pdz): with an operator key
+every plan request carries ``can_sign: true`` and the apply is always signed, so a trusted
+fleet's authority stays operator-signed and every default (signed-mode) host keeps reading it.
+Over an operator-signed authority hq-service refuses an unsigned apply
+(``operator_signature_required``); :func:`signature_hint` names the missing key.
 """
 
 from __future__ import annotations
@@ -50,7 +56,9 @@ def signer(operator_key, *, catalog=False):
     def sign_record(record):
         if not operator_key:
             raise ApiOperatorError(
-                "the service requires the operator's signature: pass --operator-key"
+                "the service's plan needs the operator's signature (a signed fleet, or a trusted "
+                "fleet whose authority is operator-signed): pass --operator-key with the "
+                "operator's Ed25519 private key"
             )
         try:
             return sign(record, signing_key=str(operator_key))
@@ -72,7 +80,7 @@ HINTS = {
     "again to plan afresh (the new plan sees the committed manifest and only rebinds)",
     "operator_state_invalid": "the authority it would publish is invalid: check this host's and "
     "hq-service's clocks (issued_at must not be in the future) and --duration",
-    "operator_signature_required": "this fleet is signed: pass --operator-key",
+    "operator_signature_required": "pass --operator-key",
     "operator_signature_invalid": "the signature does not verify under hq-service's operator "
     "key: check --operator-key",
     "operator_apply_disabled": "hq-service must run with -operator-apply (hq-service v0.1.3 or "
@@ -91,12 +99,40 @@ HINTS = {
 }
 
 
+def signature_hint(reason: str) -> str:
+    """What the operator does about ``operator_signature_required``, by hq-service's reason
+    (v0.1.4 ``store/operator.go`` ``signatureNeeded``)."""
+    if "operator-signed" in reason:
+        why = (
+            "the current authority is operator-signed, and an unsigned publication would unsign "
+            "it and break every signed-mode host"
+        )
+    elif "can_sign" in reason:
+        why = "the request offered the operator's signature (can_sign) but carried none"
+    else:
+        why = (
+            "this fleet is signed (hq-service is not -trusted, or the committed "
+            "hq.default_authority_mode is not trusted)"
+        )
+    return (
+        f"{why}: pass --operator-key with the operator's Ed25519 private key (the key whose "
+        "public half hq-service verifies with -operator-key); bh then offers can_sign and signs "
+        "the plan"
+    )
+
+
+#: Codes whose hint is always appended: the operator cannot act on them without it.
+ALWAYS_HINTED = frozenset({"operator_signature_required", "operator_signature_invalid"})
+
+
 def _hinted(error: HqError) -> str:
     text = str(error)
     code = getattr(error, "code", None)
     if code is None:  # a retryable refusal arrives as unavailable, naming its code
         code = next((name for name in HINTS if name in text), None)
     hint = HINTS.get(code or "")
+    if code == "operator_signature_required":
+        hint = signature_hint(text)
     if hint is None and isinstance(error, HqUnavailable):
         if " 404" in text:
             hint = "this hq-service does not serve the route: manifest publication needs v0.1.3"
@@ -109,6 +145,7 @@ def refusal(error: HqError, *, hinted: bool = False) -> ApiOperatorError:
     """A port refusal as the control-plane error every operator CLI path already reports.
     ``hinted`` appends what the operator does about it (:data:`HINTS`)."""
     if isinstance(error, HqRefused):
+        hinted = hinted or error.code in ALWAYS_HINTED
         return ApiOperatorError(f"hq-service refused: {_hinted(error) if hinted else error}")
     if hinted and isinstance(error, HqUnavailable):
         coded = any(code in str(error) for code in HINTS)  # a retryable refusal, by its code
@@ -139,12 +176,19 @@ def rebind(plane, *, expected, operator_key, duration=None, ceiling=None, frame=
         request["frame"] = frame
     if duration is not None:
         request["duration_s"] = int(duration)
+    request.update(_can_sign(operator_key))
     try:
         return plane._port_call(
             "rebind", request, signer=signer(operator_key), expected_revision=expected
         )
     except (HqRefused, HqOutcomeUnknown, HqDeadline) as exc:
         raise refusal(exc) from None
+
+
+def _can_sign(operator_key) -> dict:
+    """``{"can_sign": true}`` when the operator holds a key (hq-service v0.1.4): the plan then
+    asks for the signature and the apply carries it, so a trusted fleet stays signed."""
+    return {"can_sign": True} if operator_key else {}
 
 
 def _request(duration, ceiling, **fields):
@@ -230,7 +274,7 @@ def publish_manifest(
     host_id = manifest.get("host_id") if isinstance(manifest, dict) else None
     if not host_id:
         raise ApiOperatorError("publish-manifest: the manifest carries no host_id")
-    request = _request(duration, ceiling, manifest=manifest)
+    request = {**_request(duration, ceiling, manifest=manifest), **_can_sign(operator_key)}
     if not plan_only:
         if not confirm:
             raise ApiOperatorError(
@@ -362,6 +406,7 @@ def release_policy(
         request["allow_downgrade"] = True
     if allow_unknown_readers:
         request["allow_unknown_readers"] = True
+    request.update(_can_sign(operator_key))
     try:
         plan = plane._port_call("plan_release_policy", frame, request)
         result = _plan_summary(frame, plan)

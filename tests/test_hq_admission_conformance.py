@@ -15,6 +15,13 @@ and ``tests/test_hq_release_eligibility_conformance.py`` cover them) test the se
 client. They are skipped by shape, never by name. The server rules themselves (the cases'
 ``effects``) are asserted by hq-service's own Go runner.
 
+A signed admission's plan (hq-service v0.1.4, ``"plan": true``, bh-j7pdz) is driven through
+:meth:`~beadhive.hq_service_adapter.HqServiceAdapter.plan_admission`: the script answers the
+case's ``signature_needed`` over a record of its own (the corpus pins the answer's flags, not
+its record), and the test asserts the wire body and that the plan is handed back checked. The
+planned apply needs a plan the service made and the operator signed, so its cases test the
+service.
+
 The corpus is read in place from an hq-service export: set ``BH_HQ_SERVICE_CONFORMANCE`` to the
 export's root (the directory holding ``conformance/``). With it unset the pinned subset in
 ``tests/fixtures/hq_service_contract/admission_v1`` is replayed instead (see its PROVENANCE).
@@ -22,6 +29,7 @@ export's root (the directory holding ``conformance/``). With it unset the pinned
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -41,6 +49,7 @@ from beadhive.hq_port import (
     HqUnavailable,
 )
 from beadhive.hq_service_adapter import PREFIX, HqServiceAdapter
+from beadhive.hq_sql_signatures import AUTHORITY_DOMAIN, canonical
 
 ENV = "BH_HQ_SERVICE_CONFORMANCE"
 PINNED = Path(__file__).parent / "fixtures/hq_service_contract/admission_v1"
@@ -110,6 +119,10 @@ def _shape(method: str, route: str, name: str, body, query) -> tuple[str, dict] 
         return "withdraw_manifest", {"host": name}
     if route == "admissions" and method == "POST":
         keys = set(body) if isinstance(body, dict) else set()
+        if keys == {"kind", "expected_revision", "host_id", "public_key", "plan"}:
+            if query or body["plan"] is not True or body["kind"] != "open":
+                return "the admission plan body is not what a client builds"
+            return "plan_admission", {"frame": name, "body": body}
         if query or keys not in (
             {"kind", "expected_revision", "host_id", "public_key"},
             {"kind", "expected_revision"},
@@ -192,6 +205,18 @@ class Script:
 
     def _accepted(self, expect: dict) -> dict:
         args = self.arguments
+        if self.operation == "plan_admission":
+            record = {"revision": 2, "state": {"frames": {}}, "hive_policies": {}}
+            return {
+                **expect["body"],
+                "revision": HEAD,
+                "config_head": CONFIG_HEAD,
+                "record": record,
+                "signing_input": base64.b64encode(AUTHORITY_DOMAIN + canonical(record)).decode(),
+                "issued_at": float(self.case["now"]),
+                "expires_at": float(self.case["now"]) + 3600,
+                "plan_expires_at": float(self.case["now"]) + 900,
+            }
         if self.operation == "read_release_catalog":
             return {**self.case["expect"]["body"], "head": HEAD}
         if self.operation == "read_release_catalog_row":
@@ -229,7 +254,7 @@ def _drive(adapter: HqServiceAdapter, operation: str, arguments: dict):
         return adapter.withdraw_manifest(
             arguments["host"], expected_revision=HEAD, deadline=_later()
         )
-    if operation == "admit":
+    if operation in ("admit", "plan_admission"):
         body = arguments["body"]
         authority = ObservationAuthority(
             arguments["frame"], body.get("host_id", "host-c"), "inst", "SHA256:k", 0, "hq", "cfg-1"
@@ -241,6 +266,13 @@ def _drive(adapter: HqServiceAdapter, operation: str, arguments: dict):
             {},
             admitted=body["kind"] == "open",
         )
+        if operation == "plan_admission":
+            return adapter.plan_admission(
+                arguments["frame"],
+                request,
+                expected_revision=body["expected_revision"],
+                deadline=_later(),
+            )
         return adapter.admit(
             arguments["frame"],
             request,
@@ -281,6 +313,9 @@ def test_admission_case_replays_against_the_adapter(name):
             assert result == expect["body"]["rows"]
         elif operation == "read_release_catalog_row":
             assert result == expect["body"]["release"]["row"]
+        elif operation == "plan_admission":
+            assert result["outcome"] == "planned" and result["revision"] == HEAD
+            assert result["signature_needed"] is expect["body"]["signature_needed"]
         else:
             assert result == _fill(expect["revision"])
     (sent,) = script.requests

@@ -662,3 +662,278 @@ def test_a_credential_bound_for_neither_half_is_refused(api_frame, service, trip
     assert service.incarnations == set()
     assert service.authority_state["frames"] == {}
     assert tripwires == []
+
+
+# -- the signed admission over an operator-signed authority (hq-service v0.1.4, bh-j7pdz) ------
+
+
+@pytest.fixture
+def operator_key(tmp_path):
+    private = Ed25519PrivateKey.generate()
+    path = tmp_path / "operator_ed25519"
+    path.write_bytes(
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+    path.chmod(0o600)
+    public = (
+        private.public_key()
+        .public_bytes(serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH)
+        .decode()
+    )
+    return str(path), public
+
+
+class _Clock:
+    """The one mocked clock both the fake service and both seats read (no sleeping)."""
+
+    def __init__(self, now: float = NOW) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(service, monkeypatch):
+    from beadhive import hq_admission_signing
+
+    tick = _Clock()
+    service._clock = tick
+    monkeypatch.setattr(hq_admission_signing, "now", tick)
+    return tick
+
+
+@pytest.fixture
+def signed_fleet(api_frame, service, operator_key, clock, frame_key):
+    """A trusted fleet whose authority is operator-signed, the manifest committed and the
+    incarnation registered by the operator, through the Gateway's kind enforcement."""
+    service.trusted = True
+    service.authority_signed = True
+    service.operator_key = operator_key[1]
+    service.gateway_kinds = True
+    roster.save(config.hq_dir(), _manifest())
+    service.caller = OPERATOR
+    register = _join("--frame", HOST_ID, "--public-key", f"{frame_key[0]}.pub")
+    assert register.exit_code == 0, register.output
+    service.caller = FRAME_CALLER
+    return api_frame
+
+
+def _handoff() -> Path:
+    """The frame's default hand-off file (``$BH_HOME/state``)."""
+    from beadhive import hq_admission_signing
+
+    return hq_admission_signing.default_path(HOST_ID, config.home() / "state")
+
+
+def _admissions(service: FakeHqService) -> list[dict]:
+    return [body for m, p, _q, body in service.requests if p == f"/admissions/{FRAME}"]
+
+
+def _sign(record: Path, operator_key: str | None, *extra: str):
+    from beadhive.cli import app
+
+    args = ["hq", "authority", "sign-admission", "--record", str(record), *extra]
+    if operator_key:
+        args += ["--operator-key", operator_key]
+    return CliRunner().invoke(app, args)
+
+
+def test_over_a_signed_authority_the_frame_plans_the_operator_signs_and_the_frame_admits(
+    signed_fleet, service, tripwires, frame_key, operator_key, tmp_path
+):
+    from beadhive.hq_sql_signatures import verify_authority
+
+    probed = len(_admissions(service))  # the operator's join probed the frame's route
+    pending = _join()
+    assert pending.exit_code == 0, pending.output
+    planned = _result(pending.output)
+    assert (planned["admitted"], planned["signature_needed"]) == (False, True)
+    handoff = _handoff()
+    assert planned["admission_plan"] == str(handoff) and handoff.is_file()
+    assert "sign-admission" in planned["next"]
+    unsigned, plan = _admissions(service)[probed:]
+    assert "plan" not in unsigned and plan["plan"] is True  # refused unsigned, then planned
+    assert service.authority_state["frames"] == {}
+
+    # The operator works on its own copy and calls no write route: the admission is the frame's.
+    copy = tmp_path / "operator-copy.json"
+    copy.write_text(handoff.read_text())
+    service.caller = OPERATOR
+    writes = len(_calls(service))
+    preview = _sign(copy, None)
+    assert preview.exit_code == 0, preview.output
+    assert _result(preview.output)["plan"] is True
+    assert "signature" not in json.loads(copy.read_text())
+    signed = _sign(copy, operator_key[0], "--confirm")
+    assert signed.exit_code == 0, signed.output
+    assert _result(signed.output)["signed"] is True
+    assert len(_calls(service)) == writes
+    record = json.loads(copy.read_text())
+    verify_authority(
+        record["plan"]["record"], record["signature"], granted_public_key=operator_key[1]
+    )
+
+    handoff.write_text(copy.read_text())
+    service.caller = FRAME_CALLER
+    admit = _join()
+    assert admit.exit_code == 0, admit.output
+    admitted = _result(admit.output)
+    assert (admitted["admitted"], admitted["signed"]) == (True, True)
+    apply = _admissions(service)[-1]
+    assert apply["signature"] == record["signature"]
+    assert apply["issued_at"] == NOW and apply["config_head"] == service.config_head
+    assert apply["expires_at"] == record["plan"]["expires_at"]
+    assert service.authority_signed is True  # the served authority stays operator-signed
+    assert service.authority_state["frames"][FRAME]["active"]["public_key"] == frame_key[1]
+    assert not handoff.exists()
+    assert tripwires == []
+
+
+def test_a_pending_plan_is_reported_again_not_replanned(signed_fleet, service, tripwires):
+    assert _join().exit_code == 0
+    planned = len(_admissions(service))
+    again = _join()
+    assert again.exit_code == 0, again.output
+    assert _result(again.output)["signature_needed"] is True
+    assert len(_admissions(service)) == planned
+    assert tripwires == []
+
+
+def test_a_signed_plan_applied_after_its_window_is_void_and_the_next_join_plans_afresh(
+    signed_fleet, service, tripwires, operator_key, clock
+):
+
+    assert _join().exit_code == 0
+    handoff = _handoff()
+    assert _sign(handoff, operator_key[0], "--confirm").exit_code == 0
+    clock.now += 901
+    void = _join()
+    assert void.exit_code == 1
+    assert "plan_expired" in void.output and "plan afresh" in void.output
+    assert not handoff.exists()
+    assert service.authority_state["frames"] == {}
+    replanned = _join()
+    assert replanned.exit_code == 0, replanned.output
+    assert _result(replanned.output)["issued_at"] == clock.now
+    assert tripwires == []
+
+
+def test_a_signature_hq_service_does_not_verify_names_its_operator_key(
+    signed_fleet, service, tripwires, frame_key, tmp_path
+):
+
+    assert _join().exit_code == 0
+    handoff = _handoff()
+    assert _sign(handoff, frame_key[0], "--confirm").exit_code == 0  # not the operator's key
+    refused = _join()
+    assert refused.exit_code == 1
+    assert "operator_signature_invalid" in refused.output and "-operator-key" in refused.output
+    assert not handoff.exists()
+    assert service.authority_state["frames"] == {}
+    assert tripwires == []
+
+
+def test_the_operator_refuses_to_sign_a_plan_that_grants_more_than_the_frame(
+    signed_fleet, service, tripwires, operator_key
+):
+    import base64
+
+    from beadhive.hq_sql_signatures import AUTHORITY_DOMAIN, canonical
+
+    assert _join().exit_code == 0
+    handoff = _handoff()
+    original = json.loads(handoff.read_text())
+
+    tampered = json.loads(json.dumps(original))
+    tampered["plan"]["record"]["state"]["frames"]["frame-x"] = {"active": None}
+    handoff.write_text(json.dumps(tampered))
+    refused = _sign(handoff, operator_key[0], "--confirm")
+    assert refused.exit_code == 1 and "signing_input is not its record" in refused.output
+
+    record = tampered["plan"]["record"]
+    tampered["plan"]["signing_input"] = base64.b64encode(
+        AUTHORITY_DOMAIN + canonical(record)
+    ).decode()
+    handoff.write_text(json.dumps(tampered))
+    refused = _sign(handoff, operator_key[0], "--confirm")
+    assert refused.exit_code == 1 and "changes frames other than" in refused.output
+    assert "signature" not in json.loads(handoff.read_text())
+
+    rekeyed = json.loads(json.dumps(original))
+    rekeyed["public_key"] = operator_key[1]
+    handoff.write_text(json.dumps(rekeyed))
+    refused = _sign(handoff, operator_key[0], "--confirm")
+    assert refused.exit_code == 1 and "not the hand-off's frame and key" in refused.output
+    assert tripwires == []
+
+
+def test_the_operator_refuses_a_plan_the_authority_moved_past(
+    signed_fleet, service, tripwires, operator_key
+):
+
+    assert _join().exit_code == 0
+    service.head = "f" * 32  # another publication landed since the frame planned
+    refused = _sign(_handoff(), operator_key[0], "--confirm")
+    assert refused.exit_code == 1
+    assert "authority moved since the frame planned" in refused.output
+    assert "bh hq authority join --confirm" in refused.output
+    assert tripwires == []
+
+
+def test_sign_admission_without_a_record_or_key_is_refused(
+    signed_fleet, service, tripwires, operator_key, tmp_path
+):
+
+    missing = _sign(tmp_path / "absent.json", operator_key[0], "--confirm")
+    assert missing.exit_code == 1 and "no admission plan" in missing.output
+    assert _join().exit_code == 0
+    keyless = _sign(_handoff(), None, "--confirm")
+    assert keyless.exit_code == 1 and "--operator-key" in keyless.output
+    assert tripwires == []
+
+
+def test_a_signed_service_refuses_even_the_plan_and_names_the_trusted_fleet(
+    signed_fleet, service, tripwires
+):
+    reason = (
+        "this service publishes unsigned authority only in trusted mode; a signed fleet's "
+        "admission needs the operator's signature over the new record"
+    )
+    service.refusals[("POST", f"/admissions/{FRAME}")] = ("operator_signature_required", reason)
+    refused = _join()
+    assert refused.exit_code == 1
+    assert "operator_signature_required" in refused.output
+    assert "hq.default_authority_mode: trusted" in refused.output
+    assert tripwires == []
+
+
+def test_an_unsigned_trusted_authority_still_admits_with_no_hand_off(
+    api_frame, service, tripwires, clock
+):
+    """A key-less trusted fleet (authority unsigned) is unchanged: one unsigned admission."""
+
+    service.trusted = True
+    roster.save(config.hq_dir(), _manifest())
+    result = _join()
+    assert result.exit_code == 0, result.output
+    assert _result(result.output)["admitted"] is True
+    assert [("plan" in body) for body in _admissions(service)] == [False]  # no plan
+    assert not _handoff().exists()
+    assert tripwires == []
+
+
+def test_provision_push_over_a_signed_authority_names_the_join_that_plans(
+    signed_fleet, service, tripwires
+):
+    """A join with no hand-off (``bh host provision --push``) cannot plan for the operator: it
+    is refused naming the command that does."""
+    with pytest.raises(hq_control_plane.ControlPlaneError, match="bh hq authority join --confirm"):
+        hq.publish_host_manifest(config.hq_dir(), HOST_ID)
+    assert not _handoff().exists()
+    assert service.authority_state["frames"] == {}
+    assert tripwires == []

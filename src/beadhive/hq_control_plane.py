@@ -3769,6 +3769,31 @@ class ApiControlPlane:
             expected_revision=expected,
         )
 
+    def plan_admission(self, authority, public_key, desired, *, expected):
+        """``POST /admissions/{frame}`` with ``"plan": true`` (hq-service v0.1.4, bh-j7pdz):
+        the plan of the open admission :meth:`admit_open` would make, for the operator to sign
+        (an operator-signed authority is never replaced unsigned). Nothing is written.
+        Frame-bound at the Gateway. Returns ``(request body, plan)``."""
+        from .hq_port import AdmissionRequest, admission_body
+
+        desired = open_admission_guard(desired)
+        request = AdmissionRequest(
+            frame=authority.frame_id,
+            authority=authority,
+            public_key=public_key,
+            desired=desired,
+            admitted=True,
+        )
+        plan = self._port_write(
+            "plan_admission", authority.frame_id, request, expected_revision=expected
+        )
+        return admission_body(request, expected), plan
+
+    def apply_admission(self, frame, body):
+        """``POST /admissions/{frame}`` with the planned, operator-signed apply ``body``
+        (bh-j7pdz). Frame-bound at the Gateway. Returns the new authority head."""
+        return self._port_write("apply_admission", frame, body)
+
     def load_host_manifest(self, host_id: str):
         return _committed_host_manifest(self.config_store().load_snapshot(), host_id)
 

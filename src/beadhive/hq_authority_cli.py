@@ -95,7 +95,9 @@ def authority_cmd(
         ...,
         help="install, bind, bind-beadyard, grant, observe, rebind, renew (deprecated alias of "
         "rebind), status, check, prune-inbox, mode (show the fleet default authority mode), "
-        "mode-signed / mode-trusted (set it), join (open admission in a trusted fleet), "
+        "mode-signed / mode-trusted (set it), join (open admission in a trusted fleet; "
+        "hq.route api: --record names the signed admission hand-off), sign-admission (hq.route "
+        "api operator: review and, with --confirm, sign a frame's admission plan --record), "
         "release-policy <plan|apply> (SQL HQ: reviewed per-frame release range, no epoch "
         "advance), or publish-manifest (hq.route api: publish a host manifest and rebind onto "
         "it in one signed operation, hq-service v0.1.3)",
@@ -214,6 +216,24 @@ def authority_cmd(
                 operator_settings=operator_settings,
                 operator_key=operator_key,
                 confirm=confirm,
+                record=record,
+                state_dir=config.home() / "state",
+            )
+            typer.echo(json.dumps(result, sort_keys=True))
+            return
+        if action == "sign-admission":
+            # The operator's half of the route=api signed admission (bh-j7pdz): review the
+            # frame's admission plan against the current authority and, with --confirm, sign
+            # it in place. It calls no write route (the admission route is the frame's own).
+            from . import hq_admission_signing, hq_open_admission
+
+            signing_plane = hq_operator_settings.select_plane(operator_settings)
+            result = hq_admission_signing.sign(
+                record,
+                authority=lambda: hq_open_admission.operator_state(signing_plane),
+                operator_key=str(operator_key) if operator_key is not None else "",
+                confirm=confirm,
+                frame=frame,
             )
             typer.echo(json.dumps(result, sort_keys=True))
             return

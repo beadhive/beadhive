@@ -15,7 +15,9 @@ mints the principal kind, frame and host, and a mismatch is ``caller_not_bound``
 sends nothing extra for that. The release-catalog import plan/apply pair is routed (bh-lejfy);
 revoke is served but stays unrouted until 0.41.0. The signed manifest publication pair
 ``POST /manifests/{host_id}/publish/{plan,apply}`` (publish and rebind in one operator
-operation) is pinned to hq-service v0.1.3 (bh-hq-0ci; bh-hb75g). The
+operation) is pinned to hq-service v0.1.3 (bh-hq-0ci; bh-hb75g). The operator plans'
+``can_sign`` flag and the signed admission (``POST /admissions/{frame}`` with ``"plan": true``,
+then the planned apply) are pinned to hq-service v0.1.4 (bh-hq-gr9; bh-j7pdz). The
 fixtures are in ``tests/test_hq_service_contract.py``, ``tests/test_hq_service_renew_contract.py``
 and ``tests/test_hq_service_evidence_contract.py``. A shape the service does not serve yet would
 be marked ``PROVISIONAL`` with the upstream gap; none remains. Methods with no route raise
@@ -47,6 +49,8 @@ from urllib.parse import quote
 import httpx
 
 from .hq_port import (
+    CAN_SIGN_DROPPED,
+    AdmissionRequest,
     EvidenceReport,
     FrameAnchor,
     HistorySinceFloor,
@@ -61,6 +65,7 @@ from .hq_port import (
     SessionRoute,
     Signer,
     Submission,
+    admission_body,
     configured_route,
     operator_apply_body,
     sql_adapter_factory,
@@ -143,6 +148,13 @@ EVIDENCE_REFUSALS = frozenset(
 _DEFINITE_OTHER_4XX = frozenset(
     {"caller_not_bound", "operator_apply_disabled", "unknown_frame", "unknown_prefix"}
 )
+
+
+def _unknown_can_sign(error: HqRefused) -> bool:
+    """Whether *error* is an older hq-service refusing ``can_sign`` as an unknown plan field
+    (``rebind_invalid`` / ``release_policy_invalid`` / ``manifest_invalid``: ``unknown field
+    "can_sign"``, hq-service v0.1.3 ``store/operator.go`` ``parseOperator``)."""
+    return error.code.endswith("_invalid") and '"can_sign"' in str(error.reason)
 
 
 def _seg(value: object) -> str:
@@ -291,6 +303,12 @@ class HqServiceAdapter:
         if not isinstance(code, str) or not code:
             return
         message = str(error.get("message") or code)
+        # The message is the code's registry text; the service's real reason for THIS refusal
+        # is ``details.reason`` (hq-service ``api/errors.go``), which says what to do about it.
+        details = error.get("details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        if isinstance(reason, str) and reason.strip() and reason.strip() != message:
+            message = f"{message} ({reason.strip()})"
         status = response.status_code
         if code in definite:
             raise HqRefused(code, message)
@@ -636,23 +654,42 @@ class HqServiceAdapter:
         # candidate admission names neither (the committed candidate is promoted). The rest of
         # the request (desired policy, release, caps) is read by the service from the committed
         # host manifest.
-        from .hq_port import AdmissionRequest
+        return self.apply_admission(
+            frame, admission_body(request, expected_revision), deadline=deadline
+        )
 
-        if not isinstance(request, AdmissionRequest):
-            raise HqRefused("bad_request", "admit takes an AdmissionRequest")
-        body: dict[str, Any] = {
-            "kind": "open" if request.admitted else "candidate",
-            "expected_revision": expected_revision,
-        }
-        if request.admitted:
-            body["host_id"] = str(getattr(request.authority, "holder_identity", "") or "")
-            body["public_key"] = request.public_key
-        _, payload = self._call(
+    def plan_admission(
+        self, frame: str, request: AdmissionRequest, *, expected_revision: str, deadline: float
+    ) -> dict:
+        """Plan a signed admission (hq-service v0.1.4, bh-hq-gr9): the admission body plus
+        ``"plan": true`` on ``POST /admissions/{frame}``, which writes nothing and answers an
+        operator plan (``revision``, ``config_head``, ``record``, ``signing_input``,
+        ``signing_sha256``, ``issued_at``, ``expires_at``, ``plan_expires_at``,
+        ``signature_needed`` and the admission's facts as ``summary``). Its ``signing_input`` is
+        checked against its record and its head against ``expected_revision``."""
+        body = {**admission_body(request, expected_revision), "plan": True}
+        _, plan = self._call(
             "POST",
             f"/admissions/{_seg(frame)}",
             body,
             deadline=deadline,
             expected_revision=expected_revision,
+            envelope_errors=True,
+        )
+        return self._checked_plan(
+            plan, domain=AUTHORITY_DOMAIN, expected_revision=expected_revision
+        )
+
+    def apply_admission(self, frame: str, body: dict, *, deadline: float) -> str:
+        """``POST /admissions/{frame}`` with ``body`` exactly: an unsigned admission, or a
+        planned one (the admission body plus the plan's ``issued_at`` / ``config_head`` /
+        ``expires_at`` / ``record`` and the operator's ``signature``). Returns the new head."""
+        _, payload = self._call(
+            "POST",
+            f"/admissions/{_seg(frame)}",
+            body,
+            deadline=deadline,
+            expected_revision=body.get("expected_revision"),
             commit_write=True,
             envelope_errors=True,
         )
@@ -833,15 +870,40 @@ class HqServiceAdapter:
         """``POST {route}/plan``: the service's plan, checked before anything is signed.
 
         It carries a ``record`` and the ``signing_input`` of ``domain`` over that record's
-        canonical bytes. With ``expected_revision`` the plan must have been made at that head."""
-        _, plan = self._call(
-            "POST",
-            route + "/plan",
-            request,
-            deadline=deadline,
-            expected_revision=expected_revision,
-            envelope_errors=True,
-        )
+        canonical bytes. With ``expected_revision`` the plan must have been made at that head.
+
+        A request offering ``can_sign`` (bh-j7pdz) that an older hq-service (before v0.1.4)
+        refuses as an unknown field is planned again without it, and the plan is marked
+        :data:`~beadhive.hq_port.CAN_SIGN_DROPPED` so the apply leaves it out too (the apply is
+        still signed: a present signature is verified by every version)."""
+        try:
+            _, plan = self._call(
+                "POST",
+                route + "/plan",
+                request,
+                deadline=deadline,
+                expected_revision=expected_revision,
+                envelope_errors=True,
+            )
+            dropped = False
+        except HqRefused as exc:
+            if not request.get("can_sign") or not _unknown_can_sign(exc):
+                raise
+            _, plan = self._call(
+                "POST",
+                route + "/plan",
+                {key: value for key, value in request.items() if key != "can_sign"},
+                deadline=deadline,
+                expected_revision=expected_revision,
+                envelope_errors=True,
+            )
+            dropped = True
+        plan = self._checked_plan(plan, domain=domain, expected_revision=expected_revision)
+        return {**plan, CAN_SIGN_DROPPED: True} if dropped else plan
+
+    @staticmethod
+    def _checked_plan(plan: Any, *, domain: bytes, expected_revision: str | None) -> dict:
+        """A plan's record, outcome, head and ``signing_input``, checked before any signing."""
         record = plan.get("record") if isinstance(plan, dict) else None
         if not isinstance(record, dict) or plan.get("outcome") != "planned":
             raise HqUnavailable("hq-service plan carries no record to sign")

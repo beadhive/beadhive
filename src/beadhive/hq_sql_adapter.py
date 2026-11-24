@@ -490,6 +490,14 @@ class SqlHqAdapter:
     ) -> str:
         raise HqUnavailable("import_release_catalog is the api route's; SQL imports via the store")
 
+    def plan_admission(
+        self, frame: str, request: AdmissionRequest, *, expected_revision: str, deadline: float
+    ) -> dict:
+        raise HqUnavailable("plan_admission is the api route's (hq-service v0.1.4)")
+
+    def apply_admission(self, frame: str, body: dict, *, deadline: float) -> str:
+        raise HqUnavailable("apply_admission is the api route's (hq-service v0.1.4)")
+
     @_mapped
     def read_config(
         self, *, revision: str | None = None, cached_ok: bool = False, deadline: float

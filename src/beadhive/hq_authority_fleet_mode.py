@@ -182,9 +182,20 @@ def _local_public_key() -> str:
     return (public if public.exists() else Path(key)).read_text()
 
 
-def join_cmd(frame, public_key, *, operator_settings=None, operator_key=None, confirm=False):
-    """``bh hq authority join [--frame <host_id> --public-key <path>] --confirm``."""
-    from . import host, hq_open_admission
+def join_cmd(
+    frame,
+    public_key,
+    *,
+    operator_settings=None,
+    operator_key=None,
+    confirm=False,
+    record=None,
+    state_dir=None,
+):
+    """``bh hq authority join [--frame <host_id> --public-key <path>] [--record <file>]
+    --confirm``. ``--record`` names the signed admission hand-off of an ``hq.route: api`` frame
+    (bh-j7pdz; default ``hq-admission-<host_id>.json`` under ``state_dir``, ``$BH_HOME/state``)."""
+    from . import host, hq_admission_signing, hq_open_admission
 
     if not confirm:
         raise ControlPlaneError("operator mutation requires --confirm")
@@ -206,6 +217,8 @@ def join_cmd(frame, public_key, *, operator_settings=None, operator_key=None, co
         key_text,
         operator_key=str(operator_key) if operator_key else "",
         operator=operator,
+        handoff=record
+        or (hq_admission_signing.default_path(frame, state_dir) if state_dir else None),
     )
 
 
