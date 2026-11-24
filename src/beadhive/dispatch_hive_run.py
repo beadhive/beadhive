@@ -46,7 +46,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import bd_cli, config, dispatch_log, log, registry
+from . import bd_cli, config, dispatch_log, dispatch_loop_owner, log, registry
 
 _LOG = log.get_logger(__name__)
 
@@ -99,7 +99,9 @@ def kicked_off_ready_epics(hive_dir: Path) -> list[str]:
         if str(row.get("issue_type") or "") != "epic":
             continue
         labels = row.get("labels") or []
-        if KICKOFF_APPROVED_LABEL in labels:
+        # `dispatch-owner:gc` (bh-njarn): the molecule-scoped stand-down — gc owns this epic's
+        # loop, so the picker never spawns a `bh work loop` for it.
+        if KICKOFF_APPROVED_LABEL in labels and not dispatch_loop_owner.member_delegated(labels):
             out.append(str(row.get("id") or ""))
     return [b for b in out if b]
 
@@ -163,6 +165,7 @@ class HiveDispatchRun:
         seat_binary: str = "",
         eligible=None,
         drain_timeout: float | None = None,
+        delegated=None,
     ):
         self.hive_dir = Path(hive_dir)
         self.hive = hive
@@ -188,6 +191,10 @@ class HiveDispatchRun:
         self.passes = 0
         self.stopping = False
         self._eligible = eligible
+        #: bh-njarn — the stand-down predicate (`dispatch_loop_owner.hive_delegated`), re-read
+        #: every pass so flipping `work.dispatch.loop` takes effect without a restart. `None`
+        #: (the default) means "bh owns the loop" — behavior unchanged.
+        self._delegated = delegated
         self.drain_timeout = drain_timeout
         self._stop: asyncio.Event | None = None
 
@@ -257,6 +264,14 @@ class HiveDispatchRun:
         # Non-blocking: a finished child's returncode is already set by asyncio's own child
         # watcher, so reaping never needs to await here.
         report.reaped = self._reap_finished()
+
+        if self._delegated is not None and self._delegated():
+            # `work.dispatch.loop: gc` (ADR Decision 7): gc owns the loop. No lease renewal, no
+            # pick, no spawn — idle and say who owns it. In-flight children finish on their own.
+            report.idle = True
+            report.epics_in_flight = tuple(self.children)
+            _LOG.info("hive_dispatch_delegated", hive=self.hive, owner=dispatch_loop_owner.LOOP_GC)
+            return report
 
         lease_status = self.lease.renew(active=bool(self.children))
         report.lease_held = lease_status.held
@@ -390,6 +405,10 @@ def build_run(
     cfg = cfg if cfg is not None else config.load()
     main = registry.hive_dir_for(cfg, hive)
     entry = registry.entry_for_dir(cfg, main) or {}
+    if dispatch_loop_owner.hive_delegated(cfg, entry):
+        raise dispatch_loop_owner.LoopDelegatedError(
+            dispatch_loop_owner.refusal("host dispatch run", hive)
+        )
     resolved_actor = identity.resolve_actor(actor, config.work_identity(cfg, entry)["name"] or "")
     dispatch_log.ensure_sink_dir()
     sink = dispatch_log.sink_path(cfg, entry)
@@ -409,7 +428,14 @@ def build_run(
         # startup snapshot can outlive a central revision or its validity window.
         eligible=(lambda: process_eligible(hive, hive_dir=main)) if process_mode else None,
         drain_timeout=60.0 if process_mode else None,
+        delegated=lambda: _hive_delegated(main),
     )
+
+
+def _hive_delegated(hive_dir: Path) -> bool:
+    """Re-read config and ask the shared stand-down predicate (bh-njarn)."""
+    cfg = config.load()
+    return dispatch_loop_owner.hive_delegated(cfg, registry.entry_for_dir(cfg, hive_dir) or {})
 
 
 def process_eligible(hive: str, *, hive_dir: Path) -> bool:

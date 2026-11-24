@@ -67,6 +67,7 @@ work_settings = CapabilitySettings(
         "dispatch_max_depth",
         "dispatch_max_run_seconds",
         "dispatch_mode",
+        "dispatch_loop",
         "dispatch_poll_interval",
         "dispatch_reviewer_cross_seat",
         "dispatch_seat_bundle",

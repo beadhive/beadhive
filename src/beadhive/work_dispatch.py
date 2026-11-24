@@ -64,6 +64,12 @@ def impl__next_payload(
     )
 
 
+def _member_delegated(row) -> bool:
+    from . import dispatch_loop_owner
+
+    return dispatch_loop_owner.member_delegated(row.get("labels") if hasattr(row, "get") else None)
+
+
 def _next_via_api(api, cfg, hive, main, actor, api_result):
     """Translate one `work_queue.claim_next` verdict into this verb's own vocabulary.
 
@@ -103,6 +109,8 @@ def _next_via_cli(api, cfg, hive, main, actor, epic):
     the atomic claim-next, or the `--epic` guarded claim — applies up front: see `work_queue`'s
     module docstring for exactly when and why."""
     rows = [r for r in api.bd_cli.ready_rows(main, ["--limit", "0"]) or [] if isinstance(r, dict)]
+    # `dispatch-owner:gc` members are gc's to pick (bh-njarn): the same stand-down predicate.
+    rows = [r for r in rows if not _member_delegated(r)]
     if epic:
         members = api._molecule_members(epic, main)
         rows = [r for r in rows if str(r.get("id") or "") in members]
@@ -136,6 +144,7 @@ def impl_next_(api, as_, hive, as_json, epic):
     main = api.registry.hive_dir_for(cfg, hive)
     entry = api.registry.entry_for_dir(cfg, main) or {}
     actor = api.identity.resolve_actor(as_, api.config.work_identity(cfg, entry)["name"] or "")
+    _refuse_if_loop_delegated(api, "work next", cfg, entry, hive)
     api._pull_state(cfg, main)
 
     # Pre-execution route selection (never a retry after an API failure): `--epic` scoping tries
@@ -143,10 +152,16 @@ def impl_next_(api, as_, hive, as_json, epic):
     # undeclared actor stays CLI-compatibility for that one — see `work_queue`'s module
     # docstring). Either returns `None` to mean "select CLI instead" (service absent or a
     # capability missing, and `work.beads.route` permits it), decided before any Beads write.
+    gc_skipped: list[str] = []
+
+    def _epic_seat_actor(row):
+        if _member_delegated(row):
+            gc_skipped.append(str(row.get("id") or ""))
+            return None
+        return api._next_seat_actor(actor, row)
+
     if epic:
-        epic_result = api.work_queue.claim_in_epic(
-            main, entry, epic, actor, lambda row: api._next_seat_actor(actor, row)
-        )
+        epic_result = api.work_queue.claim_in_epic(main, entry, epic, actor, _epic_seat_actor)
         api_result = None
     else:
         epic_result = None
@@ -183,8 +198,12 @@ def impl_next_(api, as_, hive, as_json, epic):
             reason,
         ) = _next_via_cli(api, cfg, hive, main, actor, epic)
 
+    if gc_skipped:
+        refused = [b for b in refused if b not in gc_skipped]
     if claimed:
         status = "claimed"
+    elif gc_skipped and not refused and not tried:
+        status, reason = ("declined", "dispatch_owner_gc")
     elif refused and (not tried):
         status, reason = ("refused", "seat_mismatch")
     else:
@@ -223,6 +242,17 @@ def impl_next_(api, as_, hive, as_json, epic):
         raise api.typer.Exit(api.NEXT_DECLINE_EXIT)
 
 
+def _refuse_if_loop_delegated(api, verb, cfg, entry, hive):
+    """Loop-owning verbs refuse under `work.dispatch.loop: gc`, naming gc as the owner (bh-njarn,
+    ADR Decision 7). Lifecycle verbs (claim, submit, review, merge, gate resolve) never call
+    this."""
+    from . import dispatch_loop_owner
+
+    if dispatch_loop_owner.hive_delegated(cfg, entry):
+        api.typer.echo(f"✗ {dispatch_loop_owner.refusal(verb, hive)}", err=True)
+        raise api.typer.Exit(1)
+
+
 def impl_loop(
     api, epic, as_, hive, passes, as_json, dry_run, seat_binary, harness="", baml_required=False
 ):
@@ -232,6 +262,7 @@ def impl_loop(
     entry = api.registry.entry_for_dir(cfg, main) or {}
     actor = api.identity.resolve_actor(as_, api.config.work_identity(cfg, entry)["name"] or "")
     api.otel.set_bead(epic)
+    _refuse_if_loop_delegated(api, "work loop", cfg, entry, hive)
     dispatch_sink = api.os.environ.get("BH_DISPATCH_LOG_SINK", "").strip()
     if dispatch_sink:
         api.log.add_file_sink(dispatch_sink)

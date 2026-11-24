@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from . import config, dispatch_log, dispatch_supervisor, guard, registry, state
+from . import config, dispatch_log, dispatch_loop_owner, dispatch_supervisor, guard, registry, state
 
 # ---- the closed state vocabulary -----------------------------------------------------------
 
@@ -30,12 +30,17 @@ STATE_ENABLED_STOPPED = "enabled_stopped"
 #: (and `lease_detail`) is what tells the two apart for a human.
 STATE_RUNNING_WITHOUT_LEASE = "running_without_lease"
 STATE_RUNNING_HEALTHY = "running_healthy"
+#: `work.dispatch.loop: gc` (bh-njarn, ADR Decision 7): Gas City owns the dispatcher loop, so bh
+#: is not managing dispatch, the lease, or reclaim for this hive. Distinct from `not_enabled`
+#: (bh could run a loop but none is installed) and from `running_*` (a bh loop is up).
+STATE_DELEGATED = "delegated"
 
 DISPATCH_STATES: tuple[str, ...] = (
     STATE_NOT_ENABLED,
     STATE_ENABLED_STOPPED,
     STATE_RUNNING_WITHOUT_LEASE,
     STATE_RUNNING_HEALTHY,
+    STATE_DELEGATED,
 )
 
 #: A lease with less than this fraction of its TTL remaining is "expiring soon" for doctor's
@@ -195,6 +200,9 @@ def compute_status(
     # `dispatch_state`, not `state` — the module-level `state` import owns that name.
     dispatch_state = _classify(sup_state.installed, sup_state.running, lease_in_force, lease_held)
     detail = sup_state.detail or lease_detail
+    if dispatch_loop_owner.hive_delegated(cfg, entry):
+        dispatch_state = STATE_DELEGATED
+        detail = dispatch_loop_owner.DELEGATED_DETAIL
 
     return DispatchStatus(
         hive=hive or registry.hive_key(entry),

@@ -99,6 +99,7 @@ from . import (
     bd_cli,
     config,
     coordination,
+    dispatch_loop_owner,
     log,
     model_routing,
     otel,
@@ -1308,6 +1309,8 @@ class PassReport:
     in_flight: tuple[str, ...] = ()
     halted: bool = False
     done: bool = False
+    #: `work.dispatch.loop: gc` (bh-njarn): this pass stood down — gc owns the loop.
+    delegated: bool = False
     #: THE LOUD FLAG (bh-3xl60). Stamped on every `dispatch_pass` record a decide-only loop
     #: emits, not left to a banner alone, so a log read a week later can never mistake a dry
     #: pass for a real one. `dispatched` / `harvested` / `cancelled` / `causes` all being empty
@@ -1347,6 +1350,7 @@ class PassReport:
             "in_flight": list(self.in_flight),
             "halted": self.halted,
             "done": self.done,
+            **({"delegated": True} if self.delegated else {}),
         }
 
 
@@ -1615,6 +1619,16 @@ class LocalLoop:
 
     # ---- molecule ------------------------------------------------------------------------
 
+    def _loop_delegated(self) -> bool:
+        """The hive-scoped half of the stand-down predicate (bh-njarn), re-read every pass so a
+        config flip needs no restart."""
+        cfg = config.load()
+        from . import registry
+
+        return dispatch_loop_owner.hive_delegated(
+            cfg, registry.entry_for_dir(cfg, self.hive_dir) or {}
+        )
+
     def _hive_entry(self) -> dict:
         """The registry entry for this loop's hive — static per-hive metadata (not bead state),
         re-resolved rather than cached across passes for the same reason :meth:`_default_routing`
@@ -1737,12 +1751,27 @@ class LocalLoop:
         gate = coordination.gate_check(self.hive_dir, actor=self.actor, dry_run=self.dry_run)
         report.gate_resolved = gate.resolved
 
+        # `work.dispatch.loop: gc` (bh-njarn, ADR Decision 7): gc owns dispatch, the dispatcher
+        # lease and reclaim. The gate sweep above stays bh's; everything below this line is
+        # loop-owning, so a delegated pass stops here — no reclaim, no lease, no decide/act.
+        if self._loop_delegated():
+            report.delegated = True
+            report.halted = self.halted
+            _LOG.info("dispatch_pass", **report.as_dict())
+            return report
+
         if not self.dry_run:
             # 2. Dead-worker recovery. THE backstop, not the normal path: a cancelled seat
             #    releases its own claim, and this catches the holder that simply died (lease
             #    TTL 5 min). SKIPPED in dry_run: `bd reclaim` reverts stale claims — a write —
             #    and has no `--dry-run` of its own to fall back to.
-            rec = coordination.reclaim(self.hive_dir, actor=self.actor)
+            #    `dispatch-owner:gc` members are gc's to recover (bh-njarn) — excluded by the same
+            #    label the stand-down predicate reads.
+            rec = coordination.reclaim(
+                self.hive_dir,
+                actor=self.actor,
+                exclude_label=[dispatch_loop_owner.OWNER_LABEL_GC],
+            )
             report.reclaimed = rec.reclaimed_ids
 
             # 2b. STARTUP RECONCILIATION, once: a seat left running by a loop that was killed -9

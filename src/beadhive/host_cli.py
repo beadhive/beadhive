@@ -72,6 +72,7 @@ from . import (
     config,
     dispatch_hive_run,
     dispatch_log,
+    dispatch_loop_owner,
     dispatch_status,
     dispatch_supervisor,
     git_identity,
@@ -1625,6 +1626,15 @@ def _ensure_lease_for_enable(hive: str, cfg: dict) -> tuple[bool, str]:
     )
 
 
+def _refuse_if_loop_delegated(verb: str, hive: str, cfg: dict, entry: dict) -> None:
+    """Loop-owning verbs stand down when the hive declares `work.dispatch.loop: gc` (bh-njarn,
+    ADR Decision 7): refuse BEFORE any lease is taken or any service is installed/started, with
+    a message that names gc as the owner. Reads the shared stand-down predicate."""
+    if dispatch_loop_owner.hive_delegated(cfg, entry):
+        typer.echo(f"✗ {dispatch_loop_owner.refusal(verb, hive)}", err=True)
+        raise typer.Exit(1)
+
+
 def _dispatch_entry(hive: str, cfg: dict):
     main = registry.hive_dir_for(cfg, hive)
     entry = registry.entry_for_dir(cfg, main) or {}
@@ -1679,6 +1689,7 @@ def dispatch_enable_cmd(
     "No such option" rather than an advertised flag that refuses itself."""
     cfg = config.load()
     entry, resolved_hive = _dispatch_entry(hive, cfg)
+    _refuse_if_loop_delegated("host dispatch enable", resolved_hive, cfg, entry)
 
     lease_ok, lease_msg = _ensure_lease_for_enable(resolved_hive, cfg)
     if not lease_ok:
@@ -1903,7 +1914,13 @@ def dispatch_run_cmd(
     A human can run this directly for debugging, which is why it is `hidden`, not `internal`-only
     gated: hidden keeps it off `--help` without making it inaccessible."""
     cfg = config.load()
-    driver = dispatch_hive_run.build_run(hive, cfg=cfg, dry_run=dry_run, seat_binary=seat_binary)
+    try:
+        driver = dispatch_hive_run.build_run(
+            hive, cfg=cfg, dry_run=dry_run, seat_binary=seat_binary
+        )
+    except dispatch_loop_owner.LoopDelegatedError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
     from . import log as log_mod
 
     log_mod.add_file_sink(str(driver.sink_path))

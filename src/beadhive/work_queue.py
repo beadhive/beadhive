@@ -99,6 +99,15 @@ class ApiNextResult:
     row: dict = field(default_factory=dict)
 
 
+class GcReleaseError(RuntimeError):
+    """Releasing a gc-owned claim failed; the caller must not fall back to the CLI route."""
+
+
+def models_release(actor: str) -> Any:
+    models = importlib.import_module("beads_v1_3.models")
+    return models.ReleaseIssueRequest(actor=actor)
+
+
 def _seat_mismatch(actor: str, claimed_row: dict) -> bool:
     declared = work_guards.seat_of(actor)
     wanted = "dispatcher" if work_guards.is_epic(claimed_row) else "developer"
@@ -135,13 +144,31 @@ def claim_next(main: Path, entry: Any, actor: str) -> ApiNextResult | None:
             row = outcome.claimed
             bead = str(row.get("id") or "")
             if _seat_mismatch(actor, row):
-                models = importlib.import_module("beads_v1_3.models")
-                session.release_issue(bead, models.ReleaseIssueRequest(actor=actor))
+                session.release_issue(bead, models_release(actor))
                 return ApiNextResult(refused=(bead,), row=row)
+            from . import dispatch_loop_owner
+
+            if dispatch_loop_owner.member_delegated(row.get("labels")):
+                # `dispatch-owner:gc` members are gc's to pick (bh-njarn): give it straight
+                # back and let the label-filtering CLI route choose among the rest.
+                try:
+                    session.release_issue(bead, models_release(actor))
+                except (OSError, ValueError) as exc:
+                    # Fail closed: falling back to the CLI route here would leave this actor
+                    # holding a gc-owned claim that only gc's sweep / the lease TTL recovers.
+                    log.get_logger("beadhive.work").error(
+                        "queue_gc_release_failed", bead=bead, detail=str(exc)
+                    )
+                    raise GcReleaseError(
+                        f"could not release gc-owned claim on {bead}: {exc}; "
+                        f"{actor} may still hold it - release it manually"
+                    ) from exc
+                log.get_logger("beadhive.work").info("queue_skip_dispatch_owner_gc", bead=bead)
+                return None
             otel.set_bead(bead)
             otel.count_bead_transition("claimed")
             return ApiNextResult(claimed=bead, row=row)
-    except frame_eligibility.EligibilityError:
+    except (frame_eligibility.EligibilityError, GcReleaseError):
         raise
     except (
         core.RouteMismatch,
