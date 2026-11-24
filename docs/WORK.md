@@ -592,8 +592,8 @@ implements this and none of them can forget it.
 AGF's lifecycle advances only while something wakes up and runs `bh work` verbs against a
 ready bead. `work.runtime` picks **what does that waking up** — three tiers behind one config
 key, mirroring the `beads.engine` seam in `engine.py` (a config key selects a thin
-implementation from a name-keyed registry, not a plugin framework). Full rationale, evidence, and the role-binary
-contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
+implementation from a name-keyed registry, not a plugin framework). Full rationale, evidence,
+and the role-binary contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
 
 ```yaml
 work:
