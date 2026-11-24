@@ -6,7 +6,8 @@
 **Amends:** [work-runtime-tiers-adr.md](work-runtime-tiers-adr.md) (the "not a plugin framework"
 clause of the `work.runtime` key) ·
 **Related:** [gas-frameworks-comparison.md](gas-frameworks-comparison.md),
-[bh-iaubc.1](../spikes/bh-iaubc.1-gc-beads-safety.md) (shared-store hazards; reframed as loop ownership in Decision 7),
+[bh-iaubc.1](../spikes/bh-iaubc.1-gc-beads-safety.md)
+(shared-store hazards; reframed as loop ownership in Decision 7),
 [bh-lko4x.1](../spikes/bh-lko4x.1-beadflow-gc-pack.md) (pack scope, unchanged),
 [plugin-kernel-v1-adr.md](plugin-kernel-v1-adr.md), [roles-rbac-matrix.md](roles-rbac-matrix.md)
 
@@ -65,6 +66,7 @@ classified outcome; absent ⇒ `running`". A record with a different `session_id
 stale session cannot answer for a new one.
 
 Invariants carried over unchanged:
+
 - `observe()` is never authoritative about bead lifecycle, and bead state still wins.
 - A bare exit 0 is still never "success".
 - The record is append-only per session and read-only to BH.
@@ -89,6 +91,7 @@ changes-requested work stays **BH-owned**. The loop's `resume-changes-requested`
 
 A registered runtime owns **process liveness only**. That covers spawning, restarting and
 reaping its own sessions. It must not:
+
 - claim, assign or change status on a bead;
 - write any label;
 - write any metadata key except through the outcome sink;
@@ -100,6 +103,7 @@ until `observe()` returns a terminal outcome or the lease expires.
 
 `beadhive.runtime.conformance` ships a contract suite that a third-party runtime runs against a
 disposable hive. It covers:
+
 - the shape of `schedule()`;
 - `observe()` transitions;
 - outcome-sink round-trip and stale-session rejection;
@@ -205,6 +209,7 @@ one owner per mode:
 | Gate sweep | BH | BH, and GC's gate sweep must stay off for hive gates |
 
 With `loop: gc`, BH does three things:
+
 - **Status.** `bh host dispatch status` reports a distinct state, `delegated (loop: gc)`, which
   says plainly that BH is not managing dispatch, the lease or reclaim for that hive. It is not
   shown as `not_enabled` or `running`.
@@ -229,6 +234,7 @@ check.
 - GC becomes a supported dispatcher-loop process host as soon as its runtime passes the kit. If
   it fails for structural reasons, the documented fallback is Mode 2.
 - `work.runtime` accepts registered names, and an unregistered name still fails closed.
-- `work.dispatch.loop` makes "who runs the loop" explicit. Under `gc`, BH reports itself as delegated and refuses loop-owning verbs.
+- `work.dispatch.loop` makes "who runs the loop" explicit.
+  Under `gc`, BH reports itself as delegated and refuses loop-owning verbs.
 - `bh-kp64s.2` closes with this ADR. `gas-frameworks-comparison.md:44` ("not currently a runtime
   option") is updated.
