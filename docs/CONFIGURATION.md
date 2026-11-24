@@ -1388,6 +1388,7 @@ grouping and seat only; it never claims or merges anything.
 | `work.dispatch.max_beads_per_session` | `8` | int | Cap on beads a single collapsed session holds before it splits into chunked sessions. |
 | `work.dispatch.auto_budget` | `8` | int | `size:`-weighted budget `auto` mode may absorb before it prefers fanout. |
 | `work.dispatch.review_mode` | `self` | `self` \| `fresh` | Who resolves a dispatched bead's review gate (see below). |
+| `work.dispatch.loop` | `bh` | `bh` \| `gc` | Who owns the dispatcher loop for the hive (see [below](#workdispatchloop--who-owns-the-dispatcher-loop)). Unknown values fall back to `bh`. |
 | `work.dispatch.poll_interval` | `5.0` | float (s) | `local` tier: seconds between poll passes. Gate latency is bounded by this. |
 | `work.dispatch.max_concurrency` | `2` | int ≥ 1 | `local` tier: seat processes in flight at once. In-process; resets on restart. Below 1 **clamps to 1** — there is no "unlimited" spelling. |
 | `work.dispatch.max_run_seconds` | `1800.0` | float (s), `0` = off | `local` tier: per-run wall-time cap; an over-running seat is cancelled through the CANCEL ladder. `0` is the one "off" sentinel in this section. |
@@ -1417,6 +1418,29 @@ v1 does not build it (deferred to `bh-3yoh`).
   (`xs=1`, `s=2`, `m=3`, `l=4`, `xl=5`; an unlabeled or unrecognized size counts as `m`) and
   collapses the epic only when that total stays within budget **and** the set is single model
   tier / single review gate. Over budget or mixed ⇒ fanout.
+
+### `work.dispatch.loop` — who owns the dispatcher loop
+
+`work.dispatch.loop: bh | gc` (default `bh`, per-hive overridable like every `work.dispatch.*`
+key) **declares** which loop runs a hive's dispatch. Sharing a beads store with Gas City is not
+unsafe in itself; two loops each assuming they own the same concern is, so the fix is a declared
+owner — see [Decision 7 of the Gas City runtime seam ADR](design/gas-city-runtime-seam-adr.md#7-the-hive-declares-which-loop-it-runs-and-bh-says-what-it-is-not-managing).
+Unset, blank or unknown values mean `bh`, and behavior is then unchanged.
+
+With `loop: gc`, bh stands down from the loop-owning concerns, through ONE predicate (hive
+`loop: gc` **or** a member labeled `dispatch-owner:gc`, the molecule-scoped form of the same
+declaration):
+
+- **Status.** `bh host dispatch status` reports state `delegated` — "delegated (loop: gc) — bh not
+  managing dispatch, lease, or reclaim" — never `not_enabled` or `running_*`.
+- **Refusals, naming gc as the owner:** `bh host dispatch enable` (service install/start/lease),
+  `bh host dispatch run`, `bh work loop` and `bh work next` exit non-zero before taking a lease or
+  running a pass. A dispatch pass that is already running idles: no lease renewal, no reclaim, no
+  pick, no spawn.
+- **Members.** A `dispatch-owner:gc` member is skipped by the picker (epics), by `bh work next`'s
+  CLI and `--epic` routes, and excluded from the loop's reclaim.
+- **Unchanged.** Lifecycle verbs — `bh work claim`, `submit`, `review`, `merge`, and gate
+  resolution — work exactly as before, and the gate sweep stays bh's.
 
 ### Planner hints vs. operator override — precedence
 

@@ -2596,3 +2596,45 @@ async def test_spawn_sets_baml_profile_dir_and_keeps_the_env(tmp_path, monkeypat
     assert seen["BAML_PROFILE_DIR"] == str(tmp_path / "bhhome" / "baml-profiles" / "sess-baml")
     assert seen["BH_CANARY"] == "inherited", "the inherited environment must not be dropped"
     assert Path(seen["BAML_PROFILE_DIR"]).is_dir(), "the profile dir is created before the spawn"
+
+
+# ---- work.dispatch.loop: gc (bh-njarn, ADR Decision 7) --------------------------------------
+
+
+@async_test
+async def test_a_delegated_pass_does_not_reclaim_renew_or_dispatch(tmp_path, fakebd):
+    """`work.dispatch.loop: gc`: the gate sweep stays bh's, but no reclaim, no lease touch, no
+    decide/act — the pass stops and says it is delegated."""
+    fake = fakebd(FakeBd(children=[_child("b1")]))
+    leased = []
+
+    class _Lease:
+        def renew(self, *, active):  # noqa: ARG002
+            leased.append(1)
+            return localloop.LeaseStatus(True, False, "")
+
+    claims = []
+    loop = _loop(
+        tmp_path,
+        lease=_Lease(),
+        claim=lambda: claims.append(1) or localloop.ClaimResult(claimed="b1"),
+    )
+    loop._loop_delegated = lambda: True
+    report = await loop.run_pass()
+
+    assert report.delegated and report.as_dict()["delegated"] is True
+    assert report.dispatched == () and report.decision is None
+    assert leased == [] and claims == []
+    assert not any(c and c[0] == "reclaim" for c in fake.calls)
+
+
+@async_test
+async def test_a_bh_pass_reclaims_but_excludes_gc_owned_members(tmp_path, fakebd):
+    """Unset/`bh` behavior is unchanged except that `dispatch-owner:gc` members are never
+    reclaimed by bh (the same label the stand-down predicate reads)."""
+    fake = fakebd(FakeBd(children=[]))
+    report = await _loop(tmp_path).run_pass()
+    assert not report.delegated and "delegated" not in report.as_dict()
+    reclaim_calls = [c for c in fake.calls if c and c[0] == "reclaim"]
+    assert reclaim_calls and "--exclude-label" in reclaim_calls[0]
+    assert "dispatch-owner:gc" in reclaim_calls[0]

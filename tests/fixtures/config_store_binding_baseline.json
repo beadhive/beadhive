@@ -1437,6 +1437,7 @@
               "max_depth": 2,
               "max_run_seconds": 1800.0,
               "mode": "fanout",
+              "loop": "bh",
               "poll_interval": 5.0,
               "review_mode": "self",
               "reviewer_cross_seat": "hard",

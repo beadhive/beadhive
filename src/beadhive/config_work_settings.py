@@ -408,6 +408,15 @@ def _dispatch_positive_float(cfg, entry, key, default, *, allow_zero=False):
     return value
 
 
+def dispatch_loop(cfg, entry):
+    """Who owns the dispatcher loop for a hive: `bh` (default) | `gc`. Config key
+    `work.dispatch.loop`. Under `gc` bh stands down from dispatch passes, the dispatcher lease,
+    service install/start and reclaim (gas-city-runtime-seam-adr.md Decision 7). Unknown values
+    fall back to `bh`, so a typo can never silently hand the loop away."""
+    value = str(dispatch_value(cfg, entry, "loop", "bh")).strip().lower()
+    return value if value in ("bh", "gc") else "bh"
+
+
 def dispatch_poll_interval(cfg, entry):
     """Seconds the `local` runtime sleeps between poll passes. Config key
     `work.dispatch.poll_interval`, default 5.0. Gate latency is bounded by this
@@ -696,6 +705,7 @@ __all__ = [
     "dispatch_review_mode",
     "dispatch_reviewer_cross_seat",
     "_dispatch_positive_float",
+    "dispatch_loop",
     "dispatch_poll_interval",
     "dispatch_max_concurrency",
     "dispatch_max_run_seconds",
