@@ -93,12 +93,14 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import bd as bd_mod
 from . import (
     bd_cli,
     config,
     coordination,
+    gate_watch,
     log,
     model_routing,
     otel,
@@ -108,6 +110,9 @@ from . import (
     state,
     work_next,
 )
+
+if TYPE_CHECKING:
+    from .gate_resolution import GateResolution
 
 _LOG = log.get_logger(__name__)
 
@@ -1287,6 +1292,8 @@ class PassReport:
 
     number: int = 0
     gate_resolved: int = 0
+    #: Review-gate resolutions handed to the runtime's `on_gate_resolved` this pass.
+    gate_notified: int = 0
     reclaimed: tuple[str, ...] = ()
     lease: LeaseStatus = field(default_factory=lambda: LeaseStatus(True, False, ""))
     heartbeats: tuple[str, ...] = ()
@@ -1488,6 +1495,7 @@ class LocalLoop:
         launch_context: Callable[[str], SeatLaunchContext] | None = None,
         journal_base: Path | None = None,
         dry_run: bool = False,
+        on_gate_resolved: Callable[[GateResolution], None] | None = None,
     ):
         self.hive_dir = Path(hive_dir)
         self.epic = epic
@@ -1520,6 +1528,14 @@ class LocalLoop:
         #: DECIDE-ONLY mode (bh-3xl60) — see the class docstring. Read once at construction and
         #: never flipped mid-run, so a dry loop cannot accidentally start acting partway through.
         self.dry_run = dry_run
+        #: The runtime's `on_gate_resolved` (gas-city-runtime-seam-adr.md Decision 3); `None`
+        #: when no runtime is listening. Called from the gate_check pass, never from a seat.
+        self._on_gate_resolved = on_gate_resolved
+        self._gate_watch = (
+            gate_watch.GateWatcher(self._read_review_gates, self._read_bead_labels)
+            if on_gate_resolved
+            else None
+        )
         #: The in-flight map. DELIBERATELY VOLATILE — see the module docstring.
         self.in_flight: dict[str, SeatProcess] = {}
         self.halted = False
@@ -1534,6 +1550,24 @@ class LocalLoop:
         #: `None` when a caller drives `run_pass` directly (tests, the demo), which is fine —
         #: the pumps then stand alone and `shutdown` still reaps every process group.
         self._tg: asyncio.TaskGroup | None = None
+
+    # ---- gate observation (bh-6z2cj) ------------------------------------------------------
+
+    def _read_review_gates(self) -> list[dict]:
+        """Every gate row, resolved ones included; `[]` when the read fails (never raises)."""
+        res = bd_cli.routes(self.hive_dir).gate_list_raw(include_resolved=True)
+        if res.returncode != 0:
+            return []
+        try:
+            rows = json.loads(res.stdout or "null")
+        except json.JSONDecodeError:
+            return []
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+    def _read_bead_labels(self, bead: str) -> list[str]:
+        issue = bd_cli.issues(self.hive_dir).get(bead)
+        labels = issue.get("labels") if isinstance(issue, dict) else None
+        return [str(x) for x in labels] if isinstance(labels, list) else []
 
     # ---- instructions ---------------------------------------------------------------------
 
@@ -1736,6 +1770,11 @@ class LocalLoop:
         #    forwards straight to `bd gate check --dry-run`: a real evaluation, zero writes.
         gate = coordination.gate_check(self.hive_dir, actor=self.actor, dry_run=self.dry_run)
         report.gate_resolved = gate.resolved
+        if self._gate_watch is not None and self._on_gate_resolved and not self.dry_run:
+            # Review gates a person resolved (approve / bounce) are invisible to `gate_check`'s
+            # counts, so the watcher reads them; the runtime is told, and may NOT re-dispatch —
+            # a bounced bead is re-scheduled by this loop's own resume-changes-requested row.
+            report.gate_notified = self._gate_watch.deliver(self._on_gate_resolved)
 
         if not self.dry_run:
             # 2. Dead-worker recovery. THE backstop, not the normal path: a cancelled seat
@@ -2760,13 +2799,19 @@ class LocalRuntime:
         summary = cls.seat_run.outcome.summary if cls.seat_run else ""
         return RoleOutcome(status=str(cls.outcome), summary=summary, routing=seat.routing)
 
-    def on_gate_resolved(self, gate_id: str) -> None:
+    def on_gate_resolved(self, resolution: GateResolution) -> None:
         """A no-op with a reason, not an oversight. This tier notices a resolved gate on its next
         poll regardless — `bd gate check` runs at the head of every pass — and the ADR rejects a
         push doorbell outright (Decision 1's rejected alternative: `bd gate` is already a durable
         addressable wait, and a broker would only reduce latency). Gate latency bounded by
         `work.dispatch.poll_interval` is the documented trade (Limitation 1)."""
-        _LOG.debug("gate_resolved_noop", gate=gate_id, runtime=self.name)
+        _LOG.debug(
+            "gate_resolved_noop",
+            gate=resolution.gate_id,
+            bead=resolution.bead_id,
+            verdict=resolution.verdict,
+            runtime=self.name,
+        )
 
     def cancel(self, bead_id: str) -> CancelResult | None:
         """Walk the CANCEL ladder against a scheduled run. Not part of the `Runtime` protocol —

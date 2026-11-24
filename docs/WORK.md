@@ -592,12 +592,12 @@ implements this and none of them can forget it.
 AGF's lifecycle advances only while something wakes up and runs `bh work` verbs against a
 ready bead. `work.runtime` picks **what does that waking up** — three tiers behind one config
 key, mirroring the `beads.engine` seam in `engine.py` (a config key selects a thin
-implementation, not a plugin framework). Full rationale, evidence, and the role-binary
-contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
+implementation from a name-keyed registry, not a plugin framework). Full rationale, evidence,
+and the role-binary contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
 
 ```yaml
 work:
-  runtime: local    # claude | local | temporal, default local
+  runtime: local    # claude | local | temporal | any registered name, default local
 ```
 
 | Tier | Wake-up mechanism | Infra | Target | Status |
@@ -655,10 +655,23 @@ than silently assumed away.
 
 `src/beadhive/runtime.py` names the `Runtime` protocol: three operations, nothing else —
 `schedule` a role binary for a bead, `observe` whether it finished, and `on_gate_resolved`
-react to a `bd gate` the scheduler was waiting on. `config.work_runtime()` reads the config key
-(tolerant getter, falls back to `local`); `runtime.get_runtime()` resolves it to a concrete
-implementation, raising `NotImplementedError` naming the sibling bead for any tier not yet
-built (today: `temporal`, bh-c6dk.4).
+react to a review gate resolving. `runtime.get_runtime()` resolves `work.runtime` through a
+name-keyed registry that mirrors `claim_authority`'s: `register_runtime(name, factory)`,
+`available_runtimes()`. The built-ins `local`, `claude` and `temporal` register at import
+(`temporal` still raises `NotImplementedError` naming bh-c6dk.4); nothing is auto-discovered,
+so a plugin such as Gas City calls `register_runtime` itself. A second registration of a name
+raises unless `replace=True`. `work.runtime` is a string validated against the registry when the
+config loads (and by `bh config set`); an unregistered name is rejected listing the available
+ones, and `get_runtime` raises the same `ValueError`
+([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 1).
+
+`on_gate_resolved(resolution: GateResolution)` is called from the loop's gate pass for each
+review gate it observes resolving, with `GateResolution(gate_id, bead_id, verdict, feedback_ref)`
+where `verdict` is `approved` or `changes_requested` and `feedback_ref` (the gate id) is set only
+for a bounce. Delivery is at-least-once (hooks must be idempotent), bounded by
+`work.dispatch.poll_interval` with no push doorbell; a raising hook is logged and retried a few
+passes, never fatal. A runtime must not re-dispatch: bounced work is re-scheduled by the loop's
+own `resume-changes-requested` decision (Decision 3).
 
 Every manual/Task launch and local-runtime launch consumes the same canonical routing decision
 shown by `bh work schedule`: required complexity, optional preferred model, selected
