@@ -385,4 +385,3 @@ def test_save_denies_controller_hq_write(cfg_path, monkeypatch):
         config.save(cfg)
     monkeypatch.setenv("WS_DEV", "cust/care")  # custodian writes hive config
     config.save(cfg)  # no raise
-
