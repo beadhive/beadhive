@@ -3900,8 +3900,18 @@ class ApiControlPlane:
         )
         if isinstance(result, tuple) and len(result) == 3:
             return result, None, {}
+        lease_error = None
         if hive_lease is None and prefix is not None:
-            hive_lease = self._hive_lease_row(prefix)
+            # The lease row feeds ONE predicate, ``current_hive_lease_holder`` (bh-5i27m): a
+            # failed lease read fails that predicate closed (no holder) and is surfaced as the
+            # observation's ``reason``; it is not an authority read failure, so the frame's
+            # other predicates are still judged on the signed eligibility read.
+            try:
+                hive_lease = self._hive_lease_row(prefix)
+            except authority_mode.AuthorityEnforcementError:
+                raise
+            except (ValueError, OSError, RuntimeError) as exc:
+                lease_error = f"hive lease unavailable for {prefix}: {exc}"
         try:
             head, active, desired, policies, observation = api_reads.eligibility(
                 result,
@@ -3918,6 +3928,8 @@ class ApiControlPlane:
             observation = VerifiedObservation(
                 status="missing", verified=True, age_basis="hq-server-session-row"
             )
+        elif lease_error is not None:
+            observation = dataclasses.replace(observation, reason=lease_error)
         return (head, desired, observation), active, policies
 
     def _hive_lease_row(self, prefix):

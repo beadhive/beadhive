@@ -447,7 +447,11 @@ def load_facts(frame, *, hq_dir, cfg=None, at=None, prefix=None):
     """Read through the selected provider, rejecting a changed policy around observation.
 
     `prefix` (optional) names the hive, so a data-switched SQL read also reports whether
-    placement names this frame (``current_hive_lease_holder``, recorded with the claim)."""
+    placement names this frame (``current_hive_lease_holder``, recorded with the claim).
+
+    Only a failed eligibility read is ``authority-unavailable``. A failed read of the hive's
+    lease row alone fails just ``current_hive_lease_holder`` (closed) on the plane's
+    observation, never every authority predicate (bh-5i27m)."""
     from . import config
     from .hq_control_plane import control_plane
 
