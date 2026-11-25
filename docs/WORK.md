@@ -653,7 +653,7 @@ than silently assumed away.
 
 ### The `Runtime` seam
 
-`src/beadhive/runtime.py` names the `Runtime` protocol: three operations, nothing else —
+`src/beadhive/runtime/__init__.py` names the `Runtime` protocol: three operations, nothing else —
 `schedule` a role binary for a bead, `observe` whether it finished, and `on_gate_resolved`
 react to a review gate resolving. `runtime.get_runtime()` resolves `work.runtime` through a
 name-keyed registry that mirrors `claim_authority`'s: `register_runtime(name, factory)`,
@@ -726,6 +726,55 @@ answer yet: the key is absent, or the record's own `session_id` differs from the
 ready-made `observe()` for a non-child runtime: the classified record when present, `running`
 when absent. Like every `observe()`, it is never authoritative about bead lifecycle. Bead state
 still wins.
+
+#### The conformance kit — `beadhive.runtime.conformance`
+
+Passing the kit is the GO condition for documenting a runtime as supported, and a failure is
+the mode-selection signal ([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md)
+Decisions 4 and 6). Every failure names the ADR invariant it broke and a fix class:
+**GC-fixable** (fix the runtime and re-run) or **structural** (Mode 2).
+
+| Check | Invariant | Class |
+|---|---|---|
+| `schedule()` returns a `RoleHandle` for the bead | `handle-shape` | GC-fixable |
+| `observe()` runs `running` to a terminal outcome | `observe-transitions` | GC-fixable |
+| outcome sink round trip (`bh role --outcome-sink bead --session-id`) | `sink-round-trip` | GC-fixable |
+| a finished earlier session never answers for a new session on the same bead | `stale-session-rejected` | GC-fixable (outcome sink, ADR Decision 6) |
+| `on_gate_resolved` is idempotent and never re-dispatches | `gate-idempotent` | GC-fixable |
+| a restarted session answers for the same `session_id` | `same-session-id` | structural |
+| no claim, status, label, gate or other metadata write over a full turn (diffed in the bead store) | `no-lifecycle-writes` | structural |
+
+Run it from any package that depends on `beadhive`; no BeadHive fixture is needed. With pytest:
+
+```python
+from beadhive.runtime.conformance import RuntimeConformanceSuite, RuntimeEnv
+
+class TestMyRuntime(RuntimeConformanceSuite):
+    def make_runtime(self, env: RuntimeEnv):
+        return MyRuntime(seat_command=env.seat_command)
+```
+
+Or from the command line, with a factory `package.module:callable` that takes a `RuntimeEnv`:
+`python -m beadhive.runtime.conformance my_pkg.runtime:make_runtime` (exit 0 only on GO).
+`env.seat_command` is a `work.dispatch.seat_command` template for a stand-in seat that the
+runtime must launch with the settled `bh-<role>` argv.
+
+`env.hive` is a disposable hive. **By default, when `bd` is on `PATH`, it is a `BdHive`: a real
+scratch beads store (`bd init --server`) whose snapshot reads status, assignee, labels, metadata
+and gates from `bd` itself**, so a runtime that runs `bd update --claim`, `bd label add` or
+`bd gate resolve` is caught by `no-lifecycle-writes` (the Mode 1 versus Mode 2 split of ADR
+Decision 4). The JSON `FileHive` is for hermetic unit use only: a runtime never touches its
+files, so it cannot see bd-level writes, and a verdict obtained on one prints `GO (FileHive:
+bd-level lifecycle writes NOT exercised)` rather than a plain `GO`. Do not treat that caveated
+verdict as the Mode 1 GO; re-run where `bd` is available. Implement the `DisposableHive`
+protocol to run over your own store.
+
+Two things the kit does not do, stated plainly. The restart check
+(`same-session-id`) re-schedules a *finished* session under the same `session_id`; it does not
+restart a live one. And the runner maps any exception a check raises (a crash in the runtime,
+a factory error) to a GC-fixable failure, so a crash reads as NOT YET, never NO-GO. Polling uses
+`RuntimeEnv.clock` / `RuntimeEnv.sleep`, which a test can replace. Each attempt uses a fresh
+session id, because session ids are write-once.
 
 ### The `local` tier — `bh work loop <epic>`
 

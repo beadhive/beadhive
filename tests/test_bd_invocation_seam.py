@@ -102,6 +102,8 @@ def test_source_has_no_unjustified_raw_bd_invocations():
                 assert "bd-seam-justified" in doc
 
     assert sorted(found) == [
+        ("bdhive.py", "__init__"),
+        ("bdhive.py", "bd"),
         ("dolt_health.py", "_read_local_bd_version_string"),
         ("dolt_health.py", "_scratch_probe_local_version"),
         ("dolt_health.py", "probe_server_schema_version"),
@@ -111,5 +113,7 @@ def test_source_has_no_unjustified_raw_bd_invocations():
         ("registry.py", "report"),
         ("safety.py", "_bd_dolt_status_payload"),
         ("safety.py", "_bd_has_dolt_remote"),
+        ("seat.py", "write_outcome_bd"),
+        ("seat.py", "write_outcome_bd"),
         ("validate.py", "_issues_and_problems"),
     ]
