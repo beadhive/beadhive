@@ -740,11 +740,14 @@ Decisions 4 and 6). Every failure names the ADR invariant it broke and a fix cla
 |---|---|---|
 | `schedule()` returns a `RoleHandle` for the bead | `handle-shape` | GC-fixable |
 | `observe()` runs `running` to a terminal outcome | `observe-transitions` | GC-fixable |
-| outcome sink round trip (`bh role --outcome-sink bead --session-id`) | `sink-round-trip` | GC-fixable |
 | a finished earlier session never answers for a new session on the same bead | `stale-session-rejected` | GC-fixable (outcome sink, ADR Decision 6) |
 | `on_gate_resolved` is idempotent and never re-dispatches | `gate-idempotent` | GC-fixable |
 | a restarted session answers for the same `session_id` | `same-session-id` | structural |
 | no claim, status, label, gate or other metadata write over a full turn (diffed in the bead store) | `no-lifecycle-writes` | structural |
+
+The outcome sink round trip (`bh role --outcome-sink bead --session-id`) is not a kit check: it
+never calls the runtime (only the hive's writer and BH's reader), so no runtime can fail it. It is
+tested in BH's own suite (`tests/test_runtime_conformance.py`) and never counts toward the verdict.
 
 Run it from any package that depends on `beadhive`; no BeadHive fixture is needed. With pytest:
 

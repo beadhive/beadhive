@@ -52,13 +52,6 @@ INVARIANTS: dict[str, Invariant] = {
             GC_FIXABLE,
         ),
         Invariant(
-            "sink-round-trip",
-            "Decision 2: outcome sink round trip",
-            "a SeatRun written through the outcome sink reads back, for its own session, as the "
-            "classification the same line has on stdout",
-            GC_FIXABLE,
-        ),
-        Invariant(
             "stale-session-rejected",
             "Decision 2: a stale session cannot answer for a new one",
             "a record for another session_id never answers observe() for this one "
@@ -270,51 +263,6 @@ def check_observe_running_to_terminal(env: RuntimeEnv, factory: RuntimeFactory) 
         _close(runtime)
 
 
-_SINK_LINES = {
-    "done": ("done", "shipped"),
-    "blocked": ("blocked", "needs a decision"),
-    "handoff": ("handoff", "over to review"),
-}
-
-
-def check_outcome_sink_round_trip(env: RuntimeEnv, factory: RuntimeFactory | None = None) -> None:
-    """Independent of the runtime: the sink as Gas City uses it (``bh role --outcome-sink
-    bead --session-id``) round-trips every seat verdict and an empty run classifies failed."""
-    import json
-
-    from ... import outcome
-
-    for expected, summary in _SINK_LINES.values():
-        bead, session_id = env.hive.create_bead(), new_session_id()
-        line = json.dumps(
-            {
-                "outcome": {"status": expected, "summary": summary, "bead_id": bead},
-                "session_id": session_id,
-                "cost_usd": 0.0,
-                "usage": {},
-                "packs": [],
-            }
-        )
-        if not env.hive.record_outcome(bead, session_id, line):
-            raise ConformanceFailure("sink-round-trip", "a fresh session's record was refused")
-        found = outcome.from_metadata(env.hive.snapshot(bead).metadata, session_id, bead_id=bead)
-        if found is None or found.status != expected or found.summary != summary:
-            raise ConformanceFailure(
-                "sink-round-trip", f"wrote a {expected!r} SeatRun and read back {found!r}"
-            )
-        if env.hive.record_outcome(bead, session_id, line.replace(summary, "rewritten")):
-            raise ConformanceFailure(
-                "sink-round-trip", "the sink overwrote an existing record for the same session"
-            )
-    bead, session_id = env.hive.create_bead(), new_session_id()
-    env.hive.record_outcome(bead, session_id, "")
-    found = outcome.from_metadata(env.hive.snapshot(bead).metadata, session_id, bead_id=bead)
-    if found is None or found.status != "failed":
-        raise ConformanceFailure(
-            "sink-round-trip", f"an empty run (a bare exit 0) classified as {found!r}, not failed"
-        )
-
-
 def check_stale_session_rejected(env: RuntimeEnv, factory: RuntimeFactory) -> None:
     """Runtime-only: a finished attempt on a bead must not answer for the next attempt's
     (fresh) session. BH's own sink reader is tested in BH's tests, not here."""
@@ -410,7 +358,6 @@ def check_no_lifecycle_writes(env: RuntimeEnv, factory: RuntimeFactory) -> None:
 CHECKS: dict[str, Callable[[RuntimeEnv, RuntimeFactory], None]] = {
     "schedule_handle_shape": check_schedule_handle_shape,
     "observe_running_to_terminal": check_observe_running_to_terminal,
-    "outcome_sink_round_trip": check_outcome_sink_round_trip,
     "stale_session_rejected": check_stale_session_rejected,
     "gate_resolution_idempotent": check_gate_resolution_idempotent,
     "restarted_session_keeps_session_id": check_restarted_session_keeps_session_id,

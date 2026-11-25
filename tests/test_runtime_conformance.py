@@ -24,8 +24,11 @@ from beadhive.runtime.conformance import (
     verdict,
 )
 from beadhive.runtime.conformance.checks import (
+    CHECKS,
+    INVARIANTS,
     check_no_lifecycle_writes,
     check_observe_running_to_terminal,
+    new_session_id,
 )
 from beadhive.runtime.conformance.seat import scrubbed_env
 
@@ -386,12 +389,54 @@ def test_kit_sink_reader_matches_bh_role_output(status):
     assert outcome.from_metadata({outcome.metadata_key("S"): doc}, "S").status == status
 
 
+_SINK_LINES = (("done", "shipped"), ("blocked", "needs a decision"), ("handoff", "over to review"))
+
+
+def _sink_round_trip(env: RuntimeEnv) -> None:
+    """Independent of any runtime: the sink as Gas City uses it (`bh role --outcome-sink bead
+    --session-id`) round-trips every seat verdict and an empty run classifies failed. This
+    exercises only the hive's writer and BH's reader, so it is BH's test, not a conformance
+    check: no runtime can fail it, so it never counts toward the verdict."""
+    from beadhive import outcome
+
+    for expected, summary in _SINK_LINES:
+        bead, session_id = env.hive.create_bead(), new_session_id()
+        line = json.dumps(
+            {
+                "outcome": {"status": expected, "summary": summary, "bead_id": bead},
+                "session_id": session_id,
+                "cost_usd": 0.0,
+                "usage": {},
+                "packs": [],
+            }
+        )
+        assert env.hive.record_outcome(bead, session_id, line), "a fresh record was refused"
+        found = outcome.from_metadata(env.hive.snapshot(bead).metadata, session_id, bead_id=bead)
+        assert found is not None and found.status == expected and found.summary == summary
+        assert not env.hive.record_outcome(bead, session_id, line.replace(summary, "rewritten"))
+    bead, session_id = env.hive.create_bead(), new_session_id()
+    env.hive.record_outcome(bead, session_id, "")
+    found = outcome.from_metadata(env.hive.snapshot(bead).metadata, session_id, bead_id=bead)
+    assert found is not None and found.status == "failed"
+
+
+def test_sink_round_trip_is_not_a_conformance_check(tmp_path):
+    """The kit-only sink round trip never calls the runtime, so the verdict must ignore it."""
+    assert "sink-round-trip" not in INVARIANTS
+    assert not any("sink" in name and "stale" not in name for name in CHECKS)
+    results = _run(_FakeRuntime, tmp_path)
+    assert [r.check for r in results] == list(CHECKS)
+    assert len(results) == 6
+    assert verdict(results).startswith("GO")
+
+
 # ---- the sink as Gas City uses it: through the real `bh role` command ------------------------
 
 
 def test_sink_check_passes_through_bh_role_outcome_sink(monkeypatch, tmp_path):
-    """The kit's sink round trip, with the record written by `bh role developer --bead B
-    --outcome-sink bead --session-id S` (a stand-in seat prints the line) onto a FileHive."""
+    """BH's own sink round trip (no runtime involved), with the record written by
+    `bh role developer --bead B --outcome-sink bead --session-id S` (a stand-in seat prints the
+    line) onto a FileHive."""
     from types import SimpleNamespace
 
     from tests.test_outcome_sink import _wire_headless
@@ -399,7 +444,6 @@ def test_sink_check_passes_through_bh_role_outcome_sink(monkeypatch, tmp_path):
 
     from beadhive import bd, bd_cli
     from beadhive.cli import app
-    from beadhive.runtime.conformance.checks import check_outcome_sink_round_trip
 
     class RoleSinkHive(FileHive):
         def record_outcome(self, bead_id, session_id, seat_stdout):
@@ -434,4 +478,4 @@ def test_sink_check_passes_through_bh_role_outcome_sink(monkeypatch, tmp_path):
     monkeypatch.setattr(bd_cli, "routes", lambda cwd: Routes())
     env = RuntimeEnv(hive, hive.seat_command(), tmp_path, tmp_path / "i.md")
 
-    check_outcome_sink_round_trip(env)
+    _sink_round_trip(env)
