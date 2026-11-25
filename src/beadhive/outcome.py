@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import bd, bd_cli, seatrun
-from .runtime import RoleHandle, RoleOutcome
+from .runtime.protocol import RoleHandle, RoleOutcome
 
 #: Flat metadata key prefix; the dots are part of the key, not a JSON path.
 METADATA_PREFIX = "bh.outcome."
