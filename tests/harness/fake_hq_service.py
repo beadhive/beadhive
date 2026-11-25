@@ -53,6 +53,18 @@ The write routes serve the bodies of hq-service v0.1.0 (``api/writes.go``, ``sto
   at the signed head (its parent is the plan's) and publishes only the authority. An identical
   apply after completion is ``replayed``. ``operator_apply`` off refuses every apply
   (``operator_apply_disabled``).
+* hq-service v0.1.4 (bh-hq-gr9): every operator plan takes ``can_sign`` (``can_sign_supported``
+  off models v0.1.3, which refuses it as an unknown field) and answers ``signature_needed`` when
+  the service is not ``trusted``, the authority is ``authority_signed`` or the request offers
+  ``can_sign``; an unsigned apply is then ``operator_signature_required`` with the service's
+  reason. A signed apply leaves the authority signed, an unsigned one unsigned. ``POST
+  /admissions/{frame}`` (open, with ``authority_state``) refuses the unsigned admission over a
+  signed authority (or with ``can_sign``); ``"plan": true`` answers the record to sign over the
+  next ``authority_state`` (stamped at the server clock, expiry ``max(old, issued + 3600)``),
+  and the planned apply (``issued_at``, ``config_head``, ``expires_at``, ``signature``,
+  ``record``) is judged as the service does: config head, plan window (``plan_expired`` after
+  900 s, ``operator_state_invalid`` 30 s ahead), ``plan_mismatch`` and the signature under
+  ``operator_key``. ``refusals`` maps a ``(method, path)`` to an envelope refusal.
 * ``GET /hive-leases?prefix=`` serves ``hive_leases[prefix]`` (``unknown_prefix`` otherwise) and
   ``GET /release-catalog/{catalog}`` lists ``catalog_rows`` or, with ``release_id`` and
   ``release_digest`` together, folds them into the verdict ``{id, digest, verified, row}``.
@@ -171,6 +183,7 @@ V0_CODES: dict[str, tuple[int, str]] = {
     "catalog_row_exists": (409, "the catalog already holds this release active"),
     "catalog_version_taken": (409, "the version already has another active digest"),
     "operator_signature_required": (409, "a signed fleet's publication needs the signature"),
+    "operator_state_invalid": (409, "the authority it would publish is invalid"),
     "plan_mismatch": (409, "the apply is not what the plan request yields"),
     "missing_floor": (400, "exactly one since parameter is required"),
     "invalid_floor": (400, "since is not a revision id"),
@@ -222,8 +235,17 @@ HIVE_LEASE_CODES: dict[str, tuple[int, str]] = {
 }
 
 
-def error_response(code: str) -> httpx.Response:
-    """The service's error envelope for *code* (ADR bh-hq-pio.5), as a response."""
+#: ``POST /admissions/{frame}``'s body (v0.1.0) and the signed admission's fields (v0.1.4).
+ADMISSION_FIELDS = frozenset({"kind", "expected_revision", "host_id", "public_key"})
+SIGNED_ADMISSION_FIELDS = frozenset(
+    {"plan", "can_sign", "issued_at", "config_head", "expires_at", "signature", "record"}
+)
+
+
+def error_response(code: str, reason: str | None = None) -> httpx.Response:
+    """The service's error envelope for *code* (ADR bh-hq-pio.5), as a response: the message
+    is the registry's, and ``reason`` (the service's own, e.g. why a signature is required) is
+    ``details.reason`` as hq-service ``api/errors.go`` carries it."""
     status, message = {**CODES, **V0_CODES, **UNLISTED_CODES, **HIVE_LEASE_CODES}[code]
     body = {
         "error": {
@@ -231,7 +253,7 @@ def error_response(code: str) -> httpx.Response:
             "message": message,
             "retryable": code in RETRYABLE,
             "requestId": "req-fake",
-            "details": None,
+            "details": {"reason": reason} if reason else None,
         }
     }
     return httpx.Response(status, json=body)
@@ -310,6 +332,14 @@ class FakeHqService:
         self.crash_between_commits = 0
         self._published_on: dict[str, str] = {}
         self._completed_publications: list[dict[str, Any]] = []
+        #: hq-service v0.1.4 (bh-hq-gr9): whether the current authority carries a verifying
+        #: operator signature (an operator publication or admission over it then needs one), and
+        #: whether plans know ``can_sign`` (``False`` models v0.1.3: an unknown field).
+        self.authority_signed = False
+        self.can_sign_supported = True
+        #: ``(method, path under the plane prefix)`` -> ``(code, message)``: an envelope refusal
+        #: the service answers whatever the body.
+        self.refusals: dict[tuple[str, str], tuple[str, str]] = {}
 
     def provision(self, principal: str, **kwargs: Any) -> Principal:
         record = Principal(**kwargs)
@@ -332,6 +362,10 @@ class FakeHqService:
         refusal = self._gateway(request.method, plane)
         if refusal:
             return httpx.Response(403, json={"error": refusal})
+        if (request.method, plane) in self.refusals:
+            code, message = self.refusals[(request.method, plane)]
+            self.seen.append(("write", code))
+            return error_response(code, message)
         if path.startswith(PREFIX):
             routed = self._route_v0(request, plane, body)
             if routed is not None:
@@ -578,8 +612,9 @@ class FakeHqService:
             return self._refuse("request_malformed")
         refusal, facts = handler(body)
         if refusal:
-            self.seen.append(("write", refusal))
-            return self._refuse(refusal)
+            code, message = refusal if isinstance(refusal, tuple) else (refusal, None)
+            self.seen.append(("write", code))
+            return error_response(code, message)
         self.seen.append(("write", str(facts["outcome"])))
         return httpx.Response(200, json=facts)
 
@@ -653,20 +688,25 @@ class FakeHqService:
         if self._bound("frame", frame, body.get("host_id")):
             return "caller_not_bound", None
         kind, host_id = body.get("kind"), body.get("host_id", "")
+        planned = "issued_at" in body
+        apply_fields = set(body) & (SIGNED_ADMISSION_FIELDS - {"plan", "can_sign"})
         if (
-            set(body) - {"kind", "expected_revision", "host_id", "public_key"}
+            set(body) - ADMISSION_FIELDS - SIGNED_ADMISSION_FIELDS
             or kind not in ("open", "candidate")
             or not isinstance(body.get("expected_revision"), str)
             or not _REVISION.match(body["expected_revision"])
             or not isinstance(host_id, str)
             or (kind == "open" and (not host_id or not body.get("public_key")))
             or (kind == "candidate" and "public_key" in body)
+            or any(not isinstance(body.get(f, False), bool) for f in ("plan", "can_sign"))
+            or (body.get("plan") and apply_fields)
+            or (not planned and apply_fields)
         ):
             return "admission_invalid", None
         if body["expected_revision"] != self.head:
             return "stale_revision", None
         if self.authority_state is not None and kind == "open":
-            return self._open_admission(frame, host_id, str(body["public_key"]).strip())
+            return self._open_admission(frame, host_id, str(body["public_key"]).strip(), body)
         principal = "frame_" + hashlib.sha256(f"{frame}/{host_id}".encode()).hexdigest()[:20]
         revision = self._new_head("admission", frame, kind)
         return None, {
@@ -679,8 +719,9 @@ class FakeHqService:
             "epoch": 0,
         }
 
-    def _open_admission(self, frame: str, host_id: str, key: str):
-        """``store/admission.go`` ``open``: the ACTIVE grant hq-service builds and records."""
+    def _open_admission(self, frame: str, host_id: str, key: str, body: dict):
+        """``store/admission.go`` ``open``: the ACTIVE grant hq-service builds and records,
+        unsigned, or planned and signed over an operator-signed authority (v0.1.4)."""
         from beadhive.hq_framelease_contracts import ObservationAuthority
 
         state = self.authority_state
@@ -735,7 +776,7 @@ class FakeHqService:
         principal = sql_principal(authority)
         if (principal, epoch) not in self.incarnations:
             return "incarnation_unprovisioned", None
-        frames[frame] = {
+        granted = {
             "active": {
                 "authority": {
                     k: v
@@ -756,23 +797,104 @@ class FakeHqService:
             "retired": [],
             "epoch_floor": epoch,
         }
-        state["revision"] = int(state.get("revision", 0)) + 1
-        self.provision(
-            principal,
-            frame_id=frame,
-            holder=host_id,
-            instance=manifest["instance_ref"],
-            epoch=epoch,
-            public_key=key,
-        )
-        return None, {
-            "outcome": "accepted",
-            "revision": self._new_head("admission", frame, "open"),
+        facts = {
             "frame_id": frame,
             "host_id": host_id,
             "kind": "open",
             "principal": principal,
             "epoch": epoch,
+        }
+        needed, why = self.authority_signed or body.get("can_sign") is True, ""
+        if needed:
+            why = (
+                "the current authority is operator-signed: an unsigned publication would unsign "
+                "it and break every signed-mode host; sign the plan's signing_input"
+                if self.authority_signed
+                else "the request offers the operator's signature (can_sign); sign the plan's "
+                "signing_input"
+            )
+        if not body.get("plan") and "issued_at" not in body:
+            if needed:
+                return (
+                    "operator_signature_required",
+                    why + '; plan the admission with "plan": true and apply it with the plan\'s '
+                    "issued_at, config_head, expires_at and signature",
+                ), None
+            frames[frame] = granted
+            state["revision"] = int(state.get("revision", 0)) + 1
+            self.authority_signed = False
+            return None, self._admitted(principal, granted, manifest, facts, signature=None)
+        now = self._clock()
+        issued = now
+        if "issued_at" in body:
+            if body.get("config_head") != self.config_head:
+                return "stale_revision", None
+            issued = float(body["issued_at"])
+            if issued > now + 30:
+                return "operator_state_invalid", None
+            if now - issued > 900:
+                return "plan_expired", None
+        expires = max(float(state.get("expires_at") or 0), issued + 3600)
+        after = json.loads(json.dumps(state))
+        after["frames"][frame] = granted
+        after.update(revision=int(state.get("revision", 0)) + 1, issued_at=issued)
+        after["expires_at"] = expires
+        record = {
+            "revision": after["revision"],
+            "config_head": self.config_head,
+            "state": after,
+            "hive_policies": {},
+        }
+        signing_input = AUTHORITY_DOMAIN + canonical(record)
+        if body.get("plan"):
+            return None, {
+                "outcome": "planned",
+                "revision": self.head,
+                "config_head": self.config_head,
+                "record": record,
+                "signing_input": base64.b64encode(signing_input).decode(),
+                "signing_sha256": hashlib.sha256(signing_input).hexdigest(),
+                "issued_at": issued,
+                "expires_at": expires,
+                "plan_expires_at": issued + 900,
+                "signature_needed": needed,
+                "summary": facts,
+            }
+        if body.get("expires_at") != expires:
+            return "plan_mismatch", None
+        if "record" in body and body["record"] != record:
+            return "plan_mismatch", None
+        signature = body.get("signature")
+        if signature is None:
+            if needed:
+                return ("operator_signature_required", why), None
+        elif self.operator_key is not None:
+            try:
+                verify_authority(record, signature, granted_public_key=self.operator_key)
+            except SqlSignatureError:
+                return "operator_signature_invalid", None
+        self.authority_state = after
+        self.authority_signed = signature is not None
+        return None, {
+            **self._admitted(principal, granted, manifest, facts, signature=signature),
+            "signed": signature is not None,
+        }
+
+    def _admitted(self, principal, granted, manifest, facts, *, signature):
+        """Provision the admitted principal (its route) and answer the accepted admission."""
+        authority = granted["active"]["authority"]
+        self.provision(
+            principal,
+            frame_id=authority["frame_id"],
+            holder=authority["holder_identity"],
+            instance=manifest["instance_ref"],
+            epoch=authority["epoch"],
+            public_key=granted["active"]["public_key"],
+        )
+        return {
+            "outcome": "accepted",
+            "revision": self._new_head("admission", authority["frame_id"], "open", signature),
+            **facts,
         }
 
     def _catalog_import(self, catalog: str, body: dict, phase: str):
@@ -850,8 +972,9 @@ class FakeHqService:
         apply_fields = {
             "expected_revision", "config_head", "issued_at", "expires_at", "signature", "record",
         }  # fmt: skip
-        if set(body) - plan_fields - (apply_fields if phase == "apply" else set()):
-            return invalid, None
+        if unknown := self._unknown_field(body, plan_fields, apply_fields, phase, invalid):
+            return unknown, None
+        needed, why = self._signature_needed(body)
         if kind == "release-policy" and not str(body.get("spec") or "").strip():
             return invalid, None
         signing_input = AUTHORITY_DOMAIN + canonical(self.operator_record)
@@ -866,7 +989,7 @@ class FakeHqService:
                 "issued_at": 1793000000.0,
                 "expires_at": 4102444800.0,
                 "plan_expires_at": 1793000900.0,
-                "signature_needed": not self.trusted,
+                "signature_needed": needed,
                 "summary": {},
             }
         if body.get("expected_revision") != self.head:
@@ -876,8 +999,8 @@ class FakeHqService:
         if "record" in body and body["record"] != self.operator_record:
             return "plan_mismatch", None
         signature = body.get("signature")
-        if signature is None and not self.trusted:
-            return "operator_signature_required", None
+        if signature is None and needed:
+            return ("operator_signature_required", why), None
         if signature is not None and self.operator_key is not None:
             try:
                 verify_authority(
@@ -885,15 +1008,49 @@ class FakeHqService:
                 )
             except SqlSignatureError:
                 return "operator_signature_invalid", None
+        self.authority_signed = signature is not None
         return None, {"outcome": "accepted", "revision": self._new_head(kind, signature)}
+
+    def _unknown_field(self, body, plan_fields, apply_fields, phase, invalid):
+        """The ``*_invalid`` refusal of a body field the route does not take, naming it as
+        hq-service does (``unknown field "<name>"``); ``can_sign`` only from v0.1.4."""
+        known = set(plan_fields) | ({"can_sign"} if self.can_sign_supported else set())
+        extra = sorted(set(body) - known - (set(apply_fields) if phase == "apply" else set()))
+        if not extra:
+            return None
+        return invalid, f'unknown field "{extra[0]}"'
+
+    def _signature_needed(self, body) -> tuple[bool, str]:
+        """hq-service v0.1.4 ``signatureNeeded``: whether the publication must be signed, and
+        the refusal reason when it is not."""
+        if not self.trusted:
+            return True, (
+                "this service publishes unsigned authority only in a trusted fleet (service mode "
+                "and the committed hq.default_authority_mode); sign the plan's signing_input"
+            )
+        if self.authority_signed:
+            return True, (
+                "the current authority is operator-signed: an unsigned publication would unsign "
+                "it and break every signed-mode host; sign the plan's signing_input"
+            )
+        if body.get("can_sign") is True:
+            return True, (
+                "the request offers the operator's signature (can_sign); sign the plan's "
+                "signing_input"
+            )
+        return False, ""
 
     def _manifest_publish(self, host_id: str, body: dict, phase: str):
         """``store/operator_manifest.go`` ``operateManifest``, reduced to what a client sees."""
         apply_fields = {
             "expected_revision", "config_head", "issued_at", "expires_at", "signature", "record",
         }  # fmt: skip
-        if set(body) - {"manifest", "duration_s"} - (apply_fields if phase == "apply" else set()):
-            return "manifest_invalid", None
+        plan_fields = {"manifest", "duration_s"}
+        if unknown := self._unknown_field(
+            body, plan_fields, apply_fields, phase, "manifest_invalid"
+        ):
+            return unknown, None
+        needed, why = self._signature_needed(body)
         manifest = body.get("manifest")
         if not isinstance(manifest, dict) or not isinstance(manifest.get("host_id"), str):
             return "manifest_invalid", None
@@ -921,7 +1078,7 @@ class FakeHqService:
                 "issued_at": 1793000000.0,
                 "expires_at": 4102444800.0,
                 "plan_expires_at": 1793000900.0,
-                "signature_needed": not self.trusted,
+                "signature_needed": needed,
                 "manifest": {
                     "host_id": host_id,
                     "path": path,
@@ -963,8 +1120,8 @@ class FakeHqService:
         if "record" in body and body["record"] != record:
             return "plan_mismatch", None
         signature = body.get("signature")
-        if signature is None and not self.trusted:
-            return "operator_signature_required", None
+        if signature is None and needed:
+            return ("operator_signature_required", why), None
         if signature is not None and self.operator_key is not None:
             try:
                 verify_authority(record, signature, granted_public_key=self.operator_key)
@@ -981,6 +1138,7 @@ class FakeHqService:
             return "storage_unavailable", None
         self.served_manifests = dict(self.manifest_bodies)
         self._completed_publications.append(body)
+        self.authority_signed = signature is not None
         return None, {
             "outcome": "accepted",
             "revision": self._new_head("manifest", host_id, signature),

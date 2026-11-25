@@ -236,6 +236,22 @@ class HqAdmission(Protocol):
         and ``signer`` is unused."""
         ...
 
+    def plan_admission(
+        self, frame: str, request: AdmissionRequest, *, expected_revision: str, deadline: float
+    ) -> dict:
+        """Plan a signed admission (api route, hq-service v0.1.4, bh-j7pdz): the service's
+        operator-style plan of the authority the admission would publish (``record``,
+        ``signing_input``, ``issued_at``, ``config_head``, ``expires_at``, ...), its
+        ``signing_input`` checked against its record; nothing written. Frame-bound like
+        :meth:`admit`."""
+        ...
+
+    def apply_admission(self, frame: str, body: dict, *, deadline: float) -> str:
+        """Apply a planned admission with the exact apply ``body`` (the admission request plus
+        the plan's ``issued_at`` / ``config_head`` / ``expires_at`` / ``record`` and the
+        operator's ``signature``); returns the new authority head (api route)."""
+        ...
+
 
 class HqReads(Protocol):
     def read_authority(self, *, allow_expired: bool = False, deadline: float) -> Any: ...
@@ -320,12 +336,45 @@ class HqOperator(Protocol):
     ) -> Any: ...
 
 
+def admission_body(request: Any, expected_revision: str) -> dict[str, Any]:
+    """``POST /admissions/{frame}``'s body (``store/admission.go``): exactly ``{kind,
+    expected_revision}`` plus, for an open admission (``request.admitted``), the candidate's
+    ``host_id`` and runtime ``public_key``; a candidate admission names neither (the committed
+    candidate is promoted). The rest (desired policy, release, caps) the service reads from the
+    committed host manifest."""
+    if not isinstance(request, AdmissionRequest):
+        raise HqRefused("bad_request", "admit takes an AdmissionRequest")
+    body: dict[str, Any] = {
+        "kind": "open" if request.admitted else "candidate",
+        "expected_revision": expected_revision,
+    }
+    if request.admitted:
+        body["host_id"] = str(getattr(request.authority, "holder_identity", "") or "")
+        body["public_key"] = request.public_key
+    return body
+
+
+#: The marker :meth:`~beadhive.hq_service_adapter.HqServiceAdapter` sets on a plan an older
+#: hq-service (before v0.1.4) made without the request's ``can_sign``, which it does not know:
+#: the apply then leaves ``can_sign`` out too.
+CAN_SIGN_DROPPED = "can_sign_dropped"
+
+
 def operator_apply_body(request: Mapping[str, Any], plan: Mapping[str, Any], *, signer) -> dict:
     """The apply body of an operator plan/apply pair: the plan request plus the plan's
-    ``{expected_revision (its head), config_head, issued_at, expires_at, record}`` and, unless the
-    plan says no signature is needed (a trusted fleet), ``signer(record)``. Deterministic for one
-    plan (Ed25519 signs deterministically), so the same plan always yields the same bytes."""
+    ``{expected_revision (its head), config_head, issued_at, expires_at, record}`` and
+    ``signer(record)``. Deterministic for one plan (Ed25519 signs deterministically), so the same
+    plan always yields the same bytes.
+
+    The record is signed unless the plan says no signature is needed (a key-less trusted fleet)
+    AND the request did not offer one: a request carrying ``can_sign`` (the operator holds the
+    key, bh-j7pdz) is always signed, which keeps a trusted fleet's authority operator-signed and
+    is correct against every hq-service version (a present signature is always verified). A plan
+    marked :data:`CAN_SIGN_DROPPED` was made without ``can_sign``, so the apply leaves it out."""
     record = plan["record"]
+    can_sign = bool(request.get("can_sign"))
+    if plan.get(CAN_SIGN_DROPPED):
+        request = {key: value for key, value in request.items() if key != "can_sign"}
     body: dict[str, Any] = {
         **request,
         "expected_revision": plan.get("revision"),
@@ -334,7 +383,7 @@ def operator_apply_body(request: Mapping[str, Any], plan: Mapping[str, Any], *, 
         "expires_at": plan.get("expires_at"),
         "record": record,
     }
-    if plan.get("signature_needed") is not False:
+    if plan.get("signature_needed") is not False or can_sign:
         body["signature"] = signer(record)
     return body
 

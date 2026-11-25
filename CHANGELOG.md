@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.40.5 (2026-11-24)
+
+### Feat
+
+- **hq**: signed admission and can_sign operator plans for hq-service v0.1.4
+
 ## v0.40.4 (2026-11-24)
 
 ### Fix

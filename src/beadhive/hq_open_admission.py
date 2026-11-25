@@ -22,6 +22,12 @@ registered with hq-service (``POST /incarnations``, operator-bound at the Gatewa
 open-admits itself (``POST /admissions/{frame}``, frame-bound); hq-service builds and signs the
 grant from the committed manifest. Each step a caller is not bound for is left to the seat that
 is (:func:`_join_api`).
+
+Over an operator-signed authority (hq-service v0.1.4, bh-j7pdz) the unsigned admission is
+refused, ``operator_signature_required``: the frame then plans its admission and hands the plan
+to the operator to sign (:mod:`beadhive.hq_admission_signing`), and a later join applies the
+signed plan. The frame stays bound to its own admission route throughout; the operator never
+calls it and the operator key never reaches the frame.
 """
 
 from __future__ import annotations
@@ -63,7 +69,7 @@ def _api(plane) -> bool:
     return getattr(plane, "config_backend", None) == "api"
 
 
-def _operator_state(plane) -> tuple[str, dict]:
+def operator_state(plane) -> tuple[str, dict]:
     """``(authority head, state)`` read with operator custody, on either plane (the verified
     ``GET /authority`` on an api plane)."""
     if _api(plane):
@@ -140,7 +146,7 @@ def request(plane, host_id: str, public_key: str) -> tuple:
         )
     if not public_key or not public_key.strip():
         raise ControlPlaneError("open admission needs the frame's runtime public key")
-    head, state = _operator_state(plane)
+    head, state = operator_state(plane)
     records = [record for _, record in guard.records(state or {"frames": {}})]
     audience = next(
         (record["authority"]["audience"] for record in records),
@@ -176,7 +182,7 @@ def request(plane, host_id: str, public_key: str) -> tuple:
 
 def admitted(plane, host_id: str) -> bool:
     """Whether `host_id` already holds a live (non-retired) incarnation."""
-    _head, state = _operator_state(plane)
+    _head, state = operator_state(plane)
     for _, record in guard.records(state or {"frames": {}}):
         if record["authority"]["holder_identity"] == host_id and record["state"] != "retired":
             return True
@@ -184,19 +190,38 @@ def admitted(plane, host_id: str) -> bool:
 
 
 def join(
-    plane, host_id: str, public_key: str, *, operator_key: str = "", operator: bool = False
+    plane,
+    host_id: str,
+    public_key: str,
+    *,
+    operator_key: str = "",
+    operator: bool = False,
+    handoff=None,
 ) -> dict:
     """Open-admit `host_id` (idempotent: an already-admitted holder is reported, not rewritten).
 
     ``operator`` says the caller is known to be the operator seat (it joins a host other than
     its own, which no frame credential may admit): on ``hq.route: api`` it then only registers
-    the incarnation. Refused unless this process has learned a trusted fleet default."""
+    the incarnation. ``handoff`` is the signed admission hand-off file of an ``hq.route: api``
+    frame (``bh hq authority join`` passes :func:`~beadhive.hq_admission_signing.default_path`
+    unless ``--record`` names one); without it an admission that needs the operator's signature
+    is refused, naming that command. Refused unless this process has learned a trusted fleet
+    default."""
     open_admission_guard({})
     if admitted(plane, host_id):
         return {"host_id": host_id, "admitted": True, "changed": False}
     authority, key, desired, expected = request(plane, host_id, public_key)
     if _api(plane):
-        return _join_api(plane, host_id, authority, key, desired, expected, operator=operator)
+        return _join_api(
+            plane,
+            host_id,
+            authority,
+            key,
+            desired,
+            expected,
+            operator=operator,
+            handoff=handoff,
+        )
     revision = plane.admit_open(
         authority, key, desired, expected=expected, operator_key=operator_key
     )
@@ -220,7 +245,9 @@ def _wrong_seat(exc: Exception, method: str) -> bool:
     return isinstance(cause, HqGatewayForbidden) and cause.reason in GATEWAY_WRONG_SEAT[method]
 
 
-def _join_api(plane, host_id, authority, key, desired, expected, *, operator=False) -> dict:
+def _join_api(
+    plane, host_id, authority, key, desired, expected, *, operator=False, handoff=None
+) -> dict:
     """Register the incarnation, then open-admit it, through the HQ port only.
 
     ``POST /incarnations`` is operator-bound and ``POST /admissions/{frame}`` frame-bound
@@ -231,7 +258,10 @@ def _join_api(plane, host_id, authority, key, desired, expected, *, operator=Fal
     skipped: a frame skips the registration (the operator registered it), an operator the
     admission (the frame admits itself). A caller bound for neither half is refused. Both
     principal and epoch are derived as hq-service derives them, so the two seats name the same
-    incarnation."""
+    incarnation.
+
+    The frame's admission over an operator-signed authority goes through the signed hand-off
+    at ``handoff`` (:func:`_signed_admission`)."""
     from .hq_sql_signatures import sql_principal
 
     principal = sql_principal(authority)
@@ -254,9 +284,22 @@ def _join_api(plane, host_id, authority, key, desired, expected, *, operator=Fal
     if operator:
         # The operator registered the incarnation; only the frame can admit itself.
         return {**result, "admitted": False, "changed": True}
+    signed = _signed_admission(plane, host_id, authority, key, expected, handoff, result)
+    if signed is not None:
+        return signed
     try:
         revision = plane.admit_open(authority, key, desired, expected=expected)
     except (HqPlaneRefused, HqPlaneUnavailable) as exc:
+        if _signature_required(exc):
+            if handoff is None:
+                raise ControlPlaneError(
+                    f"open admission of {host_id}: {exc}. The authority is operator-signed: run "
+                    "`bh hq authority join --confirm` on the frame to plan the signed admission "
+                    "for the operator to sign"
+                ) from None
+            return _plan_signed_admission(
+                plane, host_id, authority, key, desired, expected, handoff, result
+            )
         if _wrong_seat(exc, "admit"):
             if result["registered"]:
                 # An operator registered the incarnation; only the frame can admit itself.
@@ -278,6 +321,112 @@ def _join_api(plane, host_id, authority, key, desired, expected, *, operator=Fal
         **result,
         "admitted": True,
         "changed": True,
+        "revision": revision,
+        "mode": hq_authority_enforce.mode(),
+    }
+
+
+def _signature_required(exc: Exception) -> bool:
+    return isinstance(exc, HqPlaneRefused) and exc.code == "operator_signature_required"
+
+
+#: Why hq-service refuses even to PLAN an admission (``store/admission.go``): it admits a frame
+#: only when both its own mode and the committed fleet default are trusted.
+SIGNED_FLEET_ADMISSION = (
+    "hq-service admits a frame through POST /admissions only in a trusted fleet: it must run "
+    "-trusted and the committed fleet.yaml must set hq.default_authority_mode: trusted. A signed "
+    "fleet has no route=api join (docs/UPGRADING.md, bead-frame-03)"
+)
+
+
+def _pending(handoff_path, handoff, result) -> dict:
+    """The frame's join result while its admission awaits the operator's signature."""
+    from . import hq_admission_signing as signing
+
+    return {
+        **result,
+        **signing.facts(handoff, handoff_path),
+        "admitted": False,
+        "changed": False,
+        "signature_needed": True,
+        "next": (
+            "the authority is operator-signed, so this admission needs the operator's "
+            f"signature before plan_expires_at: copy {handoff_path} to the operator, who runs "
+            f"`{signing.sign_command('<file>')}`, copy the signed file back to {handoff_path} "
+            "and run `bh hq authority join --confirm` again"
+        ),
+    }
+
+
+def _plan_signed_admission(plane, host_id, authority, key, desired, expected, path, result):
+    """Plan this frame's admission and record the hand-off for the operator to sign."""
+    from . import hq_admission_signing as signing
+
+    try:
+        request, plan = plane.plan_admission(authority, key, desired, expected=expected)
+    except HqPlaneRefused as exc:
+        if _signature_required(exc):
+            raise ControlPlaneError(
+                f"open admission of {host_id}: {exc}. {SIGNED_FLEET_ADMISSION}"
+            ) from None
+        raise
+    handoff = signing.write_plan(
+        path,
+        host_id=host_id,
+        frame_id=authority.frame_id,
+        public_key=key,
+        request=request,
+        plan=plan,
+    )
+    return _pending(path, handoff, result)
+
+
+#: Refusals of a signed admission's apply that void the plan: the frame plans again.
+VOID_PLAN = ("stale_revision", "plan_expired", "plan_mismatch", "operator_state_invalid")
+
+
+def _signed_admission(plane, host_id, authority, key, expected, path, result):
+    """Apply the signed hand-off at ``path``, report one still awaiting its signature, or
+    ``None`` when there is none for this frame and key (plan or admit afresh)."""
+    from . import hq_admission_signing as signing
+
+    if path is None:
+        return None
+    handoff = signing.load(path)
+    if handoff is None or not signing.matches(
+        handoff, host_id=host_id, frame_id=authority.frame_id, public_key=key
+    ):
+        return None
+    if not handoff.get("signature"):
+        current = handoff["plan"].get("revision") == expected
+        if current and not signing.expired(handoff, signing.now()):
+            return _pending(path, handoff, result)
+        return None  # a stale or lapsed plan nobody signed: plan afresh
+    try:
+        revision = plane.apply_admission(authority.frame_id, signing.apply_body(handoff))
+    except (HqPlaneRefused, HqPlaneUnavailable) as exc:
+        code = getattr(exc, "code", None) or next((c for c in VOID_PLAN if c in str(exc)), None)
+        if code in VOID_PLAN:
+            signing.discard(path)
+            raise ControlPlaneError(
+                f"open admission of {host_id}: the signed admission plan is void ({exc}); run "
+                "`bh hq authority join --confirm` again to plan afresh, and the operator signs "
+                "the new plan"
+            ) from None
+        if code == "operator_signature_invalid":
+            signing.discard(path)
+            raise ControlPlaneError(
+                f"open admission of {host_id}: hq-service does not verify the operator's "
+                f"signature ({exc}); the operator signs with the key hq-service verifies "
+                "(its -operator-key). Run `bh hq authority join --confirm` again to plan afresh"
+            ) from None
+        raise
+    signing.discard(path)
+    return {
+        **result,
+        "admitted": True,
+        "changed": True,
+        "signed": True,
         "revision": revision,
         "mode": hq_authority_enforce.mode(),
     }

@@ -477,9 +477,10 @@ bh hq authority publish-manifest --manifest HOST_ID.yaml --confirm [--operator-k
   `config_published` (`false` when the config already holds this exact manifest, e.g. after the
   frame's `PUT`: only the rebind runs) and `signature_needed`.
 - `--confirm` plans again, signs the plan's `signing_input` with `--operator-key` (the same
-  signer as `rebind`; omit it in a trusted fleet) and applies. The answer has `outcome`
-  (`accepted`, or `replayed` for a publication already applied), the new authority `revision`
-  and `config_head`.
+  signer as `rebind`) and applies. A signed fleet requires the key. In a trusted fleet the key
+  keeps the authority operator-signed (below); omit it only in a key-less trusted fleet. The
+  answer has `outcome` (`accepted`, or `replayed` for a publication already applied), the new
+  authority `revision` and `config_head`.
 - **Not atomic, safe to repeat.** hq-service commits the config, then the authority. If the
   apply's outcome is unknown or it fails transiently, bh sends the same apply again (twice):
   that completes a publication that stopped between the two commits. If it still fails, run the
@@ -488,10 +489,18 @@ bh hq authority publish-manifest --manifest HOST_ID.yaml --confirm [--operator-k
   `plan_mismatch` and `committed_unreadable` mean run it again (a fresh plan);
   `operator_apply_disabled` means the service runs without `-operator-apply`;
   `operator_signature_required` / `operator_signature_invalid` mean a missing or wrong
-  `--operator-key`; `working_set_dirty` needs an HQ administrator; a 404 means the service is
-  older than v0.1.3.
+  `--operator-key` (the refusal says why the signature is required: a signed fleet, an
+  operator-signed authority, or `can_sign`); `working_set_dirty` needs an HQ administrator; a
+  404 means the service is older than v0.1.3.
 - The SQL and Git routes refuse it: there `bh host init` publishes and `bh hq authority rebind`
   moves the authority.
+
+**Keeping a trusted fleet signed (`bh-j7pdz`, hq-service v0.1.4).** With `--operator-key`,
+`publish-manifest`, `rebind` and `release-policy` send `can_sign: true` in the plan request (the
+plan then answers `signature_needed: true`) and always sign the apply, so the authority stays
+operator-signed and every host in the default signed authority mode keeps reading it. hq-service
+v0.1.4 refuses any unsigned publication over an operator-signed authority. Against an older
+service that refuses `can_sign` as an unknown field, bh plans again without it and still signs.
 
 ### Fleet-config edits and the bound head {#config-edit-tolerance}
 
@@ -628,6 +637,18 @@ registers and reports `registered: true, admitted: false`. Otherwise each half t
 (`caller_not_bound`) or the Gateway does (v0.1.1+, a bare 403 `principal is not bound to this
 route` or `the caller is not bound as …`). Any other refusal, or a credential bound for neither
 half, fails the join (bh-garne).
+
+*Signed admission on `hq.route: api`* (`bh-j7pdz`, hq-service v0.1.4). Over an operator-signed
+authority hq-service refuses the frame's unsigned admission (`operator_signature_required`). The
+frame's `join` then plans it (`POST /admissions/{frame}` with `"plan": true`) and writes the
+hand-off file `$BH_HOME/state/hq-admission-<host_id>.json` (`--record <file>` names another),
+reporting `admitted: false, signature_needed: true` and the command to run next. The operator
+reviews and signs that file with `bh hq authority sign-admission --record <file> --operator-key
+<key> --confirm` (without `--confirm` it only reviews). The review reads the current authority
+and refuses a plan that is stale, expired, or changes anything but this frame's grant. The
+frame's next `join` applies the signed plan. All three steps fit in the plan's 15-minute window.
+The admission route is frame-bound at the Gateway (`hqOwnFrame`), so the operator never calls
+it and the frame never holds the operator key (UPGRADING bead-frame-03, J10a-J10c).
 
 *Limit.* Open admission is an authority step only. A new SQL frame still needs its DB account,
 inbox and session tables provisioned (`hq_open_admission.request` computes the record that

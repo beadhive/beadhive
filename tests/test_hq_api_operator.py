@@ -113,15 +113,16 @@ def test_rebind_signs_the_plans_record_and_applies(fake, plane, key, monkeypatch
     assert head == fake.head
     plan, apply = fake.requests
     assert plan[:2] == ("POST", "/authority/rebind/plan")
-    assert plan[3] == {"frame": FRAME, "duration_s": 3600}
+    assert plan[3] == {"frame": FRAME, "duration_s": 3600, "can_sign": True}
     assert apply[1] == "/authority/rebind/apply" and apply[3]["signature"]
+    assert apply[3]["can_sign"] is True
     assert apply[3]["record"] == fake.operator_record
 
 
 def test_rebind_without_duration_or_frame_sends_an_empty_request(fake, plane, key, monkeypatch):
     _signed(monkeypatch, True)
     plane.renew(expected=fake.head, operator_key=key[0])
-    assert fake.requests[0][3] == {}
+    assert fake.requests[0][3] == {"can_sign": True}  # the key is offered (bh-j7pdz)
 
 
 def test_a_trusted_rebind_needs_no_key(fake, plane, monkeypatch):
@@ -288,7 +289,7 @@ def test_cli_rebind_uses_the_port(api_host, fake, key, monkeypatch):
     assert run.exit_code == 0, run.output
     assert json.loads(run.stdout) == {"revision": fake.head}
     plan = next(r for r in fake.requests if r[1] == "/authority/rebind/plan")
-    assert plan[3] == {"frame": FRAME, "duration_s": 3600}
+    assert plan[3] == {"frame": FRAME, "duration_s": 3600, "can_sign": True}
 
 
 def test_cli_release_policy_plan_then_apply_uses_the_port(api_host, fake, key, monkeypatch):
@@ -424,7 +425,7 @@ def test_manifest_publish_signs_the_plan_and_echoes_it_in_the_apply(fake, plane,
     )
     (plan_path, plan_body), (apply_path, apply_body) = _posts(fake)
     assert plan_path.endswith("/publish/plan") and apply_path.endswith("/publish/apply")
-    assert plan_body == {"manifest": MANIFEST, "duration_s": 3600}
+    assert plan_body == {"manifest": MANIFEST, "duration_s": 3600, "can_sign": True}
     (plan,) = plans
     assert apply_body == {
         **plan_body,
@@ -654,3 +655,138 @@ def test_cli_publish_manifest_needs_the_api_route(monkeypatch, tmp_path):
     assert run.exit_code == 1 and "needs hq.route api" in run.output
     rebind = _run("hq", "authority", "rebind", "--plan")
     assert rebind.exit_code == 1 and "needs hq.route api" in rebind.output
+
+
+# -- keeping a trusted fleet signed: can_sign (hq-service v0.1.4, bh-j7pdz) --------------------
+
+
+def _trusted(fake, monkeypatch, *, signed_authority=False):
+    _signed(monkeypatch, False)
+    fake.trusted = True
+    fake.authority_signed = signed_authority
+
+
+def test_a_trusted_rebind_with_a_key_offers_can_sign_and_leaves_the_authority_signed(
+    fake, plane, key, monkeypatch
+):
+    from beadhive.hq_sql_signatures import verify_authority
+
+    _trusted(fake, monkeypatch)
+    plane.renew(expected=fake.head, operator_key=key[0])
+    (plan_path, plan_body), (apply_path, apply_body) = _posts(fake)
+    assert plan_body == {"can_sign": True} and apply_body["can_sign"] is True
+    verify_authority(fake.operator_record, apply_body["signature"], granted_public_key=key[1])
+    assert fake.authority_signed is True
+
+
+def test_a_trusted_manifest_publish_with_a_key_is_planned_and_applied_signed(
+    fake, plane, key, monkeypatch
+):
+    _trusted(fake, monkeypatch)
+    plan = plane.operator_publish_manifest(MANIFEST, plan_only=True, operator_key=key[0])
+    assert plan["signature_needed"] is True  # can_sign makes the trusted plan ask for it
+    result = plane.operator_publish_manifest(MANIFEST, confirm=True, operator_key=key[0])
+    assert result["outcome"] == "accepted"
+    apply_body = _posts(fake)[-1][1]
+    assert apply_body["can_sign"] is True and apply_body["signature"]
+    assert fake.authority_signed is True
+
+
+def test_a_trusted_release_policy_apply_with_a_key_is_signed(fake, plane, key, monkeypatch):
+    _trusted(fake, monkeypatch)
+    digest = plane.release_policy(FRAME, "plan", spec="^0.29", operator_key=key[0])["plan_sha256"]
+    plane.release_policy(
+        FRAME, "apply", spec="^0.29", plan_sha256=digest, operator_key=key[0], confirm=True
+    )
+    applied = [body for path, body in _posts(fake) if path.endswith("/apply")]
+    assert [body.get("can_sign") for body in applied] == [True]
+    assert applied[0]["signature"] and fake.authority_signed is True
+
+
+def test_an_older_service_without_can_sign_is_planned_again_and_still_signed(
+    fake, plane, key, monkeypatch
+):
+    """hq-service v0.1.3 refuses ``can_sign`` as an unknown field: the plan is made again
+    without it, the apply leaves it out, and the key still signs (v0.1.3 verifies a present
+    signature in a trusted fleet too)."""
+    _trusted(fake, monkeypatch)
+    fake.can_sign_supported = False
+    plane.renew(expected=fake.head, operator_key=key[0], frame=FRAME)
+    posts = _posts(fake)
+    assert [path for path, _ in posts] == [
+        "/authority/rebind/plan",
+        "/authority/rebind/plan",
+        "/authority/rebind/apply",
+    ]
+    assert posts[0][1]["can_sign"] is True and "can_sign" not in posts[1][1]
+    assert "can_sign" not in posts[2][1] and posts[2][1]["signature"]
+    assert fake.authority_signed is True
+
+
+def test_an_older_service_refusing_another_field_is_not_planned_again(fake, plane, key):
+    fake.can_sign_supported = False
+    fake.refusals[("POST", "/authority/rebind/plan")] = ("rebind_invalid", 'unknown field "x"')
+    with pytest.raises(hq_control_plane.ControlPlaneError, match="rebind_invalid"):
+        plane.renew(expected=fake.head, operator_key=key[0])
+    assert len(_posts(fake)) == 1
+
+
+def test_a_keyless_trusted_plan_over_a_signed_authority_names_the_key(fake, plane, monkeypatch):
+    _trusted(fake, monkeypatch, signed_authority=True)
+    with pytest.raises(hq_control_plane.ControlPlaneError, match="pass --operator-key"):
+        plane.renew(expected=fake.head, operator_key="")
+    assert [path for path, _ in _posts(fake)] == ["/authority/rebind/plan"]  # nothing applied
+
+
+SIGNATURE_REASONS = [
+    (
+        "the current authority is operator-signed: an unsigned publication would unsign it and "
+        "break every signed-mode host; sign the plan's signing_input",
+        "the current authority is operator-signed",
+    ),
+    (
+        "this service publishes unsigned authority only in a trusted fleet (service mode and the "
+        "committed hq.default_authority_mode); sign the plan's signing_input",
+        "this fleet is signed",
+    ),
+    (
+        "the request offers the operator's signature (can_sign); sign the plan's signing_input",
+        "offered the operator's signature (can_sign)",
+    ),
+]
+
+
+@pytest.mark.parametrize(("reason", "why"), SIGNATURE_REASONS)
+def test_operator_signature_required_on_a_rebind_says_why_and_names_the_key(
+    fake, plane, monkeypatch, reason, why
+):
+    """The service refuses the apply (the plan said no signature was needed): the refusal is
+    mapped to what the operator does, by hq-service's reason."""
+    _trusted(fake, monkeypatch)
+    fake.refusals[("POST", "/authority/rebind/apply")] = ("operator_signature_required", reason)
+    with pytest.raises(hq_control_plane.ControlPlaneError) as caught:
+        plane.renew(expected=fake.head, operator_key="")
+    message = str(caught.value)
+    assert "operator_signature_required" in message and why in message
+    assert "--operator-key" in message and "-operator-key" in message
+
+
+@pytest.mark.parametrize(("reason", "why"), SIGNATURE_REASONS)
+def test_operator_signature_required_on_a_manifest_publish_says_why(
+    fake, plane, monkeypatch, reason, why
+):
+    _trusted(fake, monkeypatch)
+    route = f"/manifests/{HOST}/publish/apply"
+    fake.refusals[("POST", route)] = ("operator_signature_required", reason)
+    with pytest.raises(hq_control_plane.ControlPlaneError) as caught:
+        plane.operator_publish_manifest(MANIFEST, confirm=True)
+    assert why in str(caught.value) and "pass --operator-key" in str(caught.value)
+
+
+def test_cli_operator_signature_required_exits_one_naming_the_key(api_host, fake, monkeypatch):
+    _trusted(fake, monkeypatch)
+    reason = SIGNATURE_REASONS[0][0]
+    fake.refusals[("POST", "/authority/rebind/apply")] = ("operator_signature_required", reason)
+    run = _run("hq", "authority", "rebind", "--confirm", "--expected-revision", fake.head)
+    assert run.exit_code == 1
+    assert "operator-signed" in run.output and "pass --operator-key" in run.output

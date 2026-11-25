@@ -1,0 +1,190 @@
+{
+  "name": "rebind-can-sign-trusted",
+  "source": "normative HTTP; records from beadhive hq_control_plane.renew/_rebind_frame_grant, frame_release_policy.prepare, hq_sql_operator.publish, hq_hive_policy.project_hive_policies; docs/DESIGN.md Operator publication",
+  "kind": "operator",
+  "note": "in a trusted fleet a plan request that offers the operator's signature (can_sign) is told signature_needed, and the signed apply is verified and stored: the authority is signed",
+  "now": 1793000000,
+  "attested": {
+    "principal_sub": "operator",
+    "scope": "lifecycle:operator"
+  },
+  "given": {
+    "mode": "trusted",
+    "authority": "",
+    "frames": {
+      "frame-a": {
+        "active": {
+          "authority": {
+            "frame_id": "frame-a",
+            "holder_identity": "host-a",
+            "instance_ref": "inst-host-a",
+            "epoch": 3,
+            "key_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+            "audience": "hq",
+            "config_revision": "cfg-1",
+            "candidate_expires_at": null
+          },
+          "state": "active",
+          "cordoned": false,
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+          "desired": {
+            "release": {
+              "id": "rel-1",
+              "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "caps": {
+              "isolation": "container",
+              "trust_zone": "self-hosted",
+              "arch": "x86_64",
+              "harnesses": [
+                "claude"
+              ],
+              "max_sessions": 2
+            },
+            "profile": "reviewed",
+            "declared": true
+          },
+          "receipt": {
+            "sequence": 0,
+            "sha": "",
+            "first_seen": null,
+            "consecutive": 0,
+            "lease": null,
+            "registration": null
+          },
+          "drain_deadline": null
+        },
+        "candidate": null,
+        "retired": [],
+        "epoch_floor": 3
+      }
+    },
+    "config": {
+      "documents": [
+        {
+          "path": "fleet.yaml",
+          "content": "{\"managed_repos\": [{\"provider\": \"github\", \"org\": \"beadhive\", \"repo\": \"p1-repo\", \"prefix\": \"p1\", \"kind\": \"org-native\", \"frame_policy\": {\"config_revision\": \"cfg-2\", \"evict_after_s\": 600}}, {\"provider\": \"github\", \"org\": \"beadhive\", \"repo\": \"p2-repo\", \"prefix\": \"p2\", \"kind\": \"org-native\", \"frame_policy\": {\"config_revision\": \"cfg-2\", \"evict_after_s\": 900, \"requires\": {\"isolation\": \"container\"}}}], \"hq\": {\"default_authority_mode\": \"trusted\"}}"
+        }
+      ]
+    },
+    "registry": [],
+    "liveness": false,
+    "derive": [],
+    "provisioned": [],
+    "pairs": [],
+    "incarnations": [],
+    "inboxes": [],
+    "history": [],
+    "working": [],
+    "floors": [],
+    "receipts": [],
+    "registrations": [],
+    "observations": []
+  },
+  "op": "rebind",
+  "frame": "",
+  "plan": {
+    "body": "{\"can_sign\":true}",
+    "expect": {
+      "status": 200,
+      "outcome": "planned",
+      "record": {
+        "backend_identity": "$BACKEND",
+        "generation": "$GENERATION",
+        "revision": 2,
+        "config_backend": "sql:cfg-backend",
+        "config_generation": "cfg-gen",
+        "config_head": "$CONFIG_HEAD",
+        "state": {
+          "domain": "beadhive/git-authority/v1",
+          "generation": "gen-1",
+          "revision": 2,
+          "issued_at": 1793000000,
+          "expires_at": 4102444800,
+          "frames": {
+            "frame-a": {
+              "active": {
+                "authority": {
+                  "frame_id": "frame-a",
+                  "holder_identity": "host-a",
+                  "instance_ref": "inst-host-a",
+                  "epoch": 3,
+                  "key_fingerprint": "SHA256:1q5K4UDGff5thSkGT6jJnfmW/0F7wk3KvbPYlCIx8Nw",
+                  "audience": "hq",
+                  "config_revision": "cfg-1",
+                  "candidate_expires_at": null
+                },
+                "state": "active",
+                "cordoned": false,
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHj/j/YOvfch7uS6hONz0fFlIB+ekYf4wWuBWPRDasAA",
+                "desired": {
+                  "release": {
+                    "id": "rel-1",
+                    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  },
+                  "caps": {
+                    "isolation": "container",
+                    "trust_zone": "self-hosted",
+                    "arch": "x86_64",
+                    "harnesses": [
+                      "claude"
+                    ],
+                    "max_sessions": 2
+                  },
+                  "profile": "reviewed",
+                  "declared": true
+                },
+                "receipt": {
+                  "sequence": 0,
+                  "sha": "",
+                  "first_seen": null,
+                  "consecutive": 0,
+                  "lease": null,
+                  "registration": null
+                },
+                "drain_deadline": null
+              },
+              "candidate": null,
+              "retired": [],
+              "epoch_floor": 3
+            }
+          }
+        },
+        "hive_policies": {
+          "p1": {
+            "config_revision": "cfg-2",
+            "config_head": "$CONFIG_HEAD",
+            "valid_until": 4102444800,
+            "requires": {},
+            "evict_after_s": 600
+          },
+          "p2": {
+            "config_revision": "cfg-2",
+            "config_head": "$CONFIG_HEAD",
+            "valid_until": 4102444800,
+            "requires": {
+              "isolation": "container"
+            },
+            "evict_after_s": 900
+          }
+        }
+      },
+      "body": {
+        "expires_at": 4102444800,
+        "signature_needed": true
+      }
+    }
+  },
+  "apply": {
+    "sign": "operator",
+    "expect": {
+      "status": 200,
+      "outcome": "accepted",
+      "effects": {
+        "revision": 2,
+        "signature": "signed",
+        "readable": true
+      }
+    }
+  }
+}

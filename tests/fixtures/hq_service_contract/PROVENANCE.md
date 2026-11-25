@@ -14,6 +14,14 @@ Pinned to hq-service v0.1.0 (commit 4e0fc6b, which includes the bh-hq-91a molecu
   hq-service `conformance/operator/v1/cases` at v0.1.3 (commit 5723c1a, the signed manifest
   publication of bh-hq-0ci). The rest of `operator_v1/` stays at v0.1.0. Recopy to refresh, do
   not edit.
+- `admission_v1/admission-open-planned-over-signed-authority.json`,
+  `admission_v1/admission-open-planned-trusted.json`,
+  `admission_v1/admission-open-refused-unsigned-over-signed-authority.json`,
+  `operator_v1/rebind-can-sign-trusted.json` and
+  `operator_v1/manifest-publish-can-sign-trusted.json` (bh-j7pdz): copied verbatim from
+  hq-service `conformance/{admission,operator}/v1/cases` at v0.1.4 (tag v0.1.4 = 83c62c2, the
+  operator signature kept in trusted mode and the signed admission of bh-hq-gr9). The registries
+  stay at their earlier copies. Recopy to refresh, do not edit.
 - `reads_v0.1.0.json`: hand-built from hq-service `store/reads.go` (the JSON tags of
   `ConfigRead`, `HistoryRead`, `EligibilityRead`, `Liveness`, `ReleaseRead`, `HiveLeaseRead`) and
   `docs/DESIGN.md` "Reads"; the config document digest is `ordered_documents_digest` of the
