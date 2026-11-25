@@ -434,7 +434,7 @@ def _inventory_observations(hive: str = "") -> list[dict]:
         registered_cwd = False
         if ident is not None:
             registered_cwd = any(
-                (str(entry["provider"]), str(entry["org"]), str(entry["repo"])) == ident
+                registry.entry_triplet(entry) == ident
                 for entry in cfg.get("managed_repos", []) or []
             )
         elif under_worktrees:
@@ -884,7 +884,7 @@ def impl__status_scope(cfg, hive: str, all_rows: list) -> tuple:
     if ident is not None:
         provider, org, repo = ident
         for e in cfg.get("managed_repos", []) or []:
-            if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
+            if registry.entry_triplet(e) == (provider, org, repo):
                 entry_from_cwd = e
                 break
     elif under_wts:
@@ -1036,7 +1036,12 @@ def impl_status_cmd(hive: str = "", as_json: bool = False) -> None:
     # single-hive rendering remains byte-for-byte the same.
     cfg = config.load()
     all_rows = managed(cfg)
-    entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
+    try:
+        entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
+    except registry.FleetEntryError as exc:
+        # bh-n2gj1: refuse (never drop the entry from the scope) with a named, clean error.
+        typer.echo(f"\u2717 {exc}", err=True)
+        raise typer.Exit(1) from exc
     populated_entries = [
         entry for entry in entries if rows_by_prefix.get(str(entry.get("prefix", "")), [])
     ]

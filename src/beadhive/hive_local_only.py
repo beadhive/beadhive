@@ -100,7 +100,7 @@ def _unset_beads_remote(hive_dir: Path) -> None:
 
 
 def _key(entry) -> str:
-    return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+    return registry.hive_key(entry)
 
 
 def _refuse_unreplicable(entry) -> None:
@@ -175,7 +175,7 @@ def replicate(cfg, hive_id: str, *, already_published: bool = False) -> Replicat
                 "the local-only marker without publishing"
             )
         restore_beads_remote(cfg, hive_dir)
-        registry.set_local_only(entry["provider"], entry["org"], entry["repo"], None)
+        registry.set_local_only(*registry.entry_triplet(entry), None)
         typer.echo(f"✓ beads: origin of {key} already carries refs/dolt/data; nothing published")
         return ReplicateResult(key, prefix, published=False, cleared=True)
     # 3. restore the beads remote the push guard unset, then 4. publish through onboard's leg.
@@ -201,7 +201,7 @@ def replicate(cfg, hive_id: str, *, already_published: bool = False) -> Replicat
     typer.echo(f"✓ beads: published refs/dolt/data for {key}")
     if marker is None:
         return ReplicateResult(key, prefix, published=True, cleared=False)
-    registry.set_local_only(entry["provider"], entry["org"], entry["repo"], None)
+    registry.set_local_only(*registry.entry_triplet(entry), None)
     return ReplicateResult(key, prefix, published=True, cleared=True)
 
 
@@ -334,7 +334,7 @@ def repair_local_only(cfg, entry, *, yes: bool, dry_run: bool, allow_unknown_rea
         typer.echo(f"✗ {why}", err=True)
         raise typer.Exit(1)
     registry.set_local_only(
-        e["provider"], e["org"], e["repo"], {"owner_host": plan.owner, "reason": plan.reason}
+        *registry.entry_triplet(e), {"owner_host": plan.owner, "reason": plan.reason}
     )
     typer.echo(
         f"\n✓ recorded {_key(e)} as local-only to this host (reason: {plan.reason}); other hosts "

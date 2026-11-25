@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from . import operator_actions
+from . import operator_actions, registry
 from .modules.state import (
     AgentRunSnapshot,
     AgentRunSummary,
@@ -110,12 +110,13 @@ def _freshness(value: Freshness, generated_at: int) -> dict[str, object]:
 
 
 def hive_info(entry: Mapping[str, object], *, canonical_prefix: bool) -> dict[str, str]:
-    canonical = "/".join(str(entry[field]) for field in ("provider", "org", "repo"))
+    provider, org, repo = registry.entry_triplet(entry)  # named FleetEntryError (bh-n2gj1)
+    canonical = f"{provider}/{org}/{repo}"
     return {
         "prefix": canonical if canonical_prefix else str(entry["prefix"]),
-        "provider": str(entry["provider"]),
-        "org": str(entry["org"]),
-        "repo": str(entry["repo"]),
+        "provider": provider,
+        "org": org,
+        "repo": repo,
         "kind": str(entry.get("kind", "")),
     }
 
@@ -186,16 +187,17 @@ def factory_hive_summary(
     unavailable source observably different from an available hive with four zero counts.
     """
 
-    identity = "/".join(str(entry[field]) for field in ("provider", "org", "repo"))
+    provider, org, repo = registry.entry_triplet(entry)  # named FleetEntryError (bh-n2gj1)
+    identity = f"{provider}/{org}/{repo}"
     opaque_ref = hive_subscription_id(identity)
     base: dict[str, object] = {
         "id": identity,
-        "displayLabel": str(entry.get("label") or entry.get("display_name") or entry["repo"]),
+        "displayLabel": str(entry.get("label") or entry.get("display_name") or repo),
         "opaqueRef": opaque_ref,
         "prefix": str(entry["prefix"]),
-        "provider": str(entry["provider"]),
-        "org": str(entry["org"]),
-        "repo": str(entry["repo"]),
+        "provider": provider,
+        "org": org,
+        "repo": repo,
         "kind": str(entry.get("kind", "")),
     }
     observed_at = (

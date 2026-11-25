@@ -194,7 +194,11 @@ def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> 
         init_store()
         cfg = config.load()  # init_store just registered HQ — reload before remote wiring
     else:
-        triplet = f"{existing['provider']}/{existing['org']}/{existing['repo']}"
+        try:
+            triplet = registry.hive_key(existing)
+        except registry.FleetEntryError as exc:
+            typer.echo(f"error: the registered HQ entry is malformed: {exc}", err=True)
+            raise typer.Exit(1) from exc
         typer.echo(f"✓ Factory HQ already initialized: {triplet} → {config.hq_dir()} (no-op)")
 
     _wire_remote(cfg, dry_run=dry_run, auto=auto, create=create)
