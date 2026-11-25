@@ -248,7 +248,7 @@ def _bead_id_from_branch(branch: str) -> str | None:
 
 def wt_dir(entry, leaf: str) -> Path:
     """<root>/<provider>/<org>/<repo>/<leaf> — mirrors registry.hive_dir under the shadow root."""
-    rel = Path(str(entry["provider"]), str(entry["org"]), str(entry["repo"]), leaf)
+    rel = Path(*registry.entry_triplet(entry), leaf)
     roots = config.worktrees_roots()
     # An EXISTING worktree is found in whichever root holds it (the primary first); a new one is
     # always created under the primary root (bh-uwlsw: macOS keeps old $TMPDIR worktrees reachable).
@@ -287,7 +287,7 @@ def _entry_for_path(cfg, path: Path):
         raise typer.Exit(1)
     provider, org, repo = parts[0], parts[1], parts[2]
     for e in cfg.get("managed_repos", []) or []:
-        if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
+        if registry.entry_matches_triplet(e, provider, org, repo):
             return e
     return {"provider": provider, "org": org, "repo": repo, "prefix": repo}
 
@@ -920,9 +920,7 @@ def _refuse_if_codex_unreachable(cfg, entry, main: Path, target: Path) -> None:
     # provisioning from a Codex session, so load those existing helpers lazily at that boundary.
     hive = importlib.import_module(".hive", package=__package__)
 
-    cur = hive.codex_grant_is_current(
-        cfg, main, str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-    )
+    cur = hive.codex_grant_is_current(cfg, main, *registry.entry_triplet(entry))
     if cur is True:
         return
     # A project-local sandbox table shadows the ambient global table, including when its

@@ -93,13 +93,21 @@ def _resolve_entry(cfg, hive: str) -> dict:
     """The registered managed_repos entry to repair — `--hive` when given, else cwd's hive.
     Refuses an unregistered/synthesized entry (`current_hive` can synthesize a minimal one for
     an unregistered checkout): there is no registry prefix to reconcile against yet."""
-    entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
-    if entry is None:
-        raise RepairError(
-            "not in a registered hive — pass --hive <provider/org/repo> or run from a hive checkout"
-        )
-    key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
-    registered = {f"{e['provider']}/{e['org']}/{e['repo']}" for e in cfg.get("managed_repos", [])}
+    try:
+        entry = registry.resolve_hive(cfg, hive) if hive else registry.current_hive(cfg)
+        if entry is None:
+            raise RepairError(
+                "not in a registered hive — pass --hive <provider/org/repo> or run from a hive "
+                "checkout"
+            )
+        key = registry.hive_key(entry)
+    except registry.FleetEntryError as exc:
+        raise RepairError(f"refusing to repair a malformed fleet entry: {exc}") from None
+    # Membership only: a triplet-less OTHER entry cannot equal `key`, so leaving it out of the set
+    # can only make this check refuse, never admit (bh-s5721).
+    registered = {
+        registry.hive_key(e) for e in cfg.get("managed_repos", []) if registry._has_triplet(e)
+    }
     if key not in registered:
         raise RepairError(f"{key} is not a registered hive — nothing to repair")
     return entry
@@ -115,7 +123,7 @@ def detect(cfg, hive: str, target_prefix: str) -> RepairPlan:
     if not (cwd / ".beads").is_dir():
         raise RepairError(f"{cwd} has no .beads/ — clone/init the hive before repairing prefixes")
     target = normalize_prefix(target_prefix)
-    key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+    key = registry.hive_key(entry)
     if registry.prefix_taken(cfg, target, skip=key):
         raise RepairError(f"prefix '{target}' is already used by another registered hive")
     db = bd.json(["config", "get", "issue_prefix"], cwd)
@@ -132,7 +140,7 @@ def detect(cfg, hive: str, target_prefix: str) -> RepairPlan:
 
 def _print_preview(plan: RepairPlan) -> None:
     e = plan.entry
-    typer.echo(f"Hive: {e['provider']}/{e['org']}/{e['repo']}")
+    typer.echo(f"Hive: {registry.hive_key(e)}")
     typer.echo(f"Registry prefix: {plan.registry_prefix} -> {plan.target}")
     typer.echo(
         f"Database prefix: {rename_prefix_arg(plan.db_prefix)} -> {rename_prefix_arg(plan.target)}"
@@ -153,10 +161,11 @@ def apply(plan: RepairPlan, actor: str) -> list[str]:
         typer.echo("✓ Database migrated")
     if plan.registry_prefix != plan.target:
         e = plan.entry
+        provider, org, repo = registry.entry_triplet(e)
         registry.register(
-            e["provider"],
-            e["org"],
-            e["repo"],
+            provider,
+            org,
+            repo,
             plan.target,
             str(e.get("kind", "")),
             upstream=str(e.get("upstream", "")),
@@ -171,9 +180,7 @@ def verify(plan: RepairPlan) -> list[str]:
     """Re-read both sources after `apply` and report anything that failed to converge — a
     blocking problem (bd refused, a racing writer, an unpersisted config save), never swallowed."""
     problems: list[str] = []
-    entry = registry.find_entry(
-        config.load(), plan.entry["provider"], plan.entry["org"], plan.entry["repo"]
-    )
+    entry = registry.find_entry(config.load(), *registry.entry_triplet(plan.entry))
     if entry is None or normalize_prefix(str(entry["prefix"])) != plan.target:
         problems.append(f"registry prefix did not converge to '{plan.target}'")
     db = bd.json(["config", "get", "issue_prefix"], plan.cwd)
@@ -398,7 +405,7 @@ def _repair_role(cfg, hive: str, yes: bool, dry_run: bool) -> None:
         raise typer.Exit(1) from None
 
     e = plan.entry
-    typer.echo(f"Hive: {e['provider']}/{e['org']}/{e['repo']} (kind={e.get('kind', '')})")
+    typer.echo(f"Hive: {registry.hive_key(e)} (kind={e.get('kind', '')})")
     typer.echo(f"beads.role: '{plan.current}' -> '{plan.target}'")
     if plan.in_sync:
         typer.echo("\n✓ beads.role already correct — nothing to repair")
@@ -570,7 +577,7 @@ def _repair_server_database(cfg, hive: str, yes: bool, dry_run: bool) -> None:
         raise typer.Exit(1) from None
 
     e = plan.entry
-    typer.echo(f"Hive: {e['provider']}/{e['org']}/{e['repo']}")
+    typer.echo(f"Hive: {registry.hive_key(e)}")
     if plan.embedded:
         typer.echo("\n✓ embedded-mode hive — dolt_server_database does not apply, nothing to do")
         return

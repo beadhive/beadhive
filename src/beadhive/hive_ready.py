@@ -481,6 +481,10 @@ def _schema_version_check(entry, root: Path) -> Check:
     del root  # unused — see docstring: this check must not touch the hive's own checkout/store
     if entry is None:
         return Check("bd schema version", False, "na", "hive not registered")
+    try:
+        provider, org, repo = registry.entry_triplet(entry)
+    except registry.FleetEntryError as exc:
+        return Check("bd schema version", False, "warn", f"malformed fleet entry — {exc}")
     hq_dir = config.hq_dir()
     if not (hq_dir / ".beads").is_dir():
         return Check("bd schema version", False, "na", "no Factory HQ — `bh hq init`")
@@ -488,7 +492,7 @@ def _schema_version_check(entry, root: Path) -> Check:
     if local.version is None:
         return Check("bd schema version", False, "na", "bd unavailable — can't judge")
 
-    record = hive_schema.try_load(hq_dir, entry["provider"], entry["org"], entry["repo"])
+    record = hive_schema.try_load(hq_dir, provider, org, repo)
     if record is None:
         return Check(
             "bd schema version",

@@ -233,12 +233,13 @@ def _journal_observation(
 
 
 def _identity(entry: Mapping[str, object]) -> HiveIdentity:
+    provider, org, repo = registry.entry_triplet(entry)
     correlation = public_readers.HiveCorrelation.from_registry_entry(entry)
     return HiveIdentity(
         registered_identity=correlation.registered_identity,
-        provider=str(entry["provider"]),
-        org=str(entry["org"]),
-        repo=str(entry["repo"]),
+        provider=provider,
+        org=org,
+        repo=repo,
         repo_slug=correlation.repo_slug,
     )
 

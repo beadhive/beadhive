@@ -242,6 +242,10 @@ def _entry_for(cfg, wt_dir: Path) -> dict:
     ``config.observaloop_profile_name`` to name the hive profile."""
     provider, org, repo = wt_dir.parts[-4:-1]
     for e in config.managed_repos(cfg):
+        # Env derivation must never crash a command: a triplet-less entry is skipped and the
+        # synthesized entry below is used instead (bh-s5721).
+        if not all(e.get(k) for k in ("provider", "org", "repo")):
+            continue
         if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
             return e
     return {"provider": provider, "org": org, "repo": repo, "prefix": repo}

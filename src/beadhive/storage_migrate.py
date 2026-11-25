@@ -1175,7 +1175,7 @@ def fleet_order(cfg: dict) -> list[dict]:
     """Every registered hive, ordinary hives first (sorted for determinism), Factory HQ LAST —
     the hard case (1.6 GB; its backup gate has to already work, bh-areg.1) that this bead's own
     notes say should be the last one attempted, not the first."""
-    entries = sorted(registry.hives(cfg), key=lambda e: (str(e["org"]), str(e["repo"])))
+    entries = sorted(registry.hives(cfg), key=lambda e: registry.entry_triplet(e)[1:])
     hq = registry.hive_of_kind(cfg, registry.HQ_KIND)
     return [*entries, hq] if hq is not None else entries
 

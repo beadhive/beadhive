@@ -26,6 +26,9 @@ def affiliation_for_kind(registration_kind: str) -> str:
 
 
 def identity_record(entry: Mapping[str, object]) -> dict[str, str | None]:
+    missing = [k for k in ("provider", "org", "repo") if not entry.get(k)]
+    if missing:  # names the keys, like registry.entry_triplet (domain code cannot import it)
+        raise ValueError(f"hive identity fields must be non-empty: missing {'/'.join(missing)}")
     provider = str(entry["provider"]).strip()
     organization = str(entry["org"]).strip()
     repository = str(entry["repo"]).strip()

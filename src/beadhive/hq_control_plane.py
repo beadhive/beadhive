@@ -3245,6 +3245,12 @@ def _managed_hive_dir(entry) -> Path:
     """
     if str(entry.get("kind", "")) == "hq":  # registry.HQ_KIND: local HQ infra, not a triplet
         return config.hq_dir()
+    missing = [k for k in ("provider", "org", "repo") if not entry.get(k)]
+    if missing:  # mirrors registry.entry_triplet (not imported here, see above) (bh-s5721)
+        raise ControlPlaneError(
+            f"fleet entry missing {'/'.join(missing)} (provider/org/repo): "
+            f"prefix={entry.get('prefix')!r}"
+        )
     return (
         config._workspace_root_for_transition()
         / str(entry["provider"])

@@ -168,7 +168,7 @@ def store_scope(cfg: Mapping[str, Any], entry: Mapping[str, Any]) -> StoreScope:
     target = store_target.operational_store(entry)
     return StoreScope(
         operational_prefix=target.prefix,
-        hive=HiveTriplet(str(entry["provider"]), str(entry["org"]), str(entry["repo"])),
+        hive=HiveTriplet(*registry.entry_triplet(entry)),
         public_prefixes=registry.public_store_prefixes(cfg),
     )
 
