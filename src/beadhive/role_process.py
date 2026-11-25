@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import signal
 import sys
 from collections.abc import Callable, Sequence
@@ -23,6 +24,18 @@ _LOG = log.get_logger(__name__)
 #: ``(stdout, exit_code) -> ok`` — called once with the harvested stdout when the caller asked
 #: for a non-stdout outcome sink (``bh role --outcome-sink bead``). ``False`` fails the run.
 OutcomeWriter = Callable[[str, int | None], bool]
+
+
+def _terminated_stdout(session_id: str, sig: int) -> str:
+    """A killed-run envelope line (no ``outcome``) classifying ``failed`` for a signalled run."""
+    return json.dumps(
+        {
+            "session_id": session_id,
+            "cost_usd": 0.0,
+            "usage": {},
+            "terminal_reason": f"terminated by signal {sig}",
+        }
+    )
 
 
 def _forward(stream, chunk: bytes) -> None:
@@ -138,7 +151,12 @@ async def _run_foreground(
 
         if signal_wait in done and received_signal and not seat.finished:
             await _cancel_shielded(seat)
-            return 128 + received_signal[0]
+            code = 128 + received_signal[0]
+            if outcome_writer is not None:
+                # The seat never printed a SeatRun; leave a failed killed-run record through the
+                # same write-once writer so a runtime's observe() stops reading ``running``.
+                outcome_writer(_terminated_stdout(provider_continuation, received_signal[0]), code)
+            return code
 
         stdout = await seat.collect(timeout=3.0)
         reap = await localloop.reap_group(seat, grace=5.0)

@@ -400,3 +400,74 @@ def test_record_matches_local_runtime_observe(tmp_path, name, exit_code, stdout,
     assert via_pipe.status == via_record.status == status, name
     if status != "failed":
         assert (via_pipe.status, via_pipe.summary) == (via_record.status, via_record.summary)
+
+
+def test_signalled_foreground_writes_a_failed_record(tmp_path):
+    """A SIGTERM on the qualified path leaves a record that classifies failed (bh-fz6ee).
+
+    The signal is delivered by invoking the installed handler directly, not by racing a real
+    signal against the run."""
+    import asyncio
+    import os
+    import signal
+
+    from beadhive import role_process, run_journal
+
+    journal = run_journal.RunJournal.create(
+        run_journal.RunIdentity(
+            hive="github/acme/core",
+            bead=BEAD,
+            driver="baml",
+            provider="codex",
+            manifest_digest="sha256:" + "d" * 64,
+        ),
+        base=tmp_path,
+        writer=run_journal.WRITER_BAML,
+    )
+    handlers: dict[int, tuple] = {}
+
+    class _Loop:
+        def __init__(self, real):
+            self._real = real
+
+        def add_signal_handler(self, sig, cb, *args):
+            handlers[sig] = (cb, args)
+
+        def remove_signal_handler(self, sig):
+            return True
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_loop = asyncio.get_running_loop
+    real_spawn = role_process.localloop.spawn_seat
+
+    async def spawn_then_signal(*args, **kwargs):
+        seat = await real_spawn(*args, **kwargs)
+        cb, cb_args = handlers[signal.SIGTERM]
+        cb(*cb_args)
+        return seat
+
+    seen: list[tuple[str, int | None]] = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(role_process.asyncio, "get_running_loop", lambda: _Loop(real_loop()))
+        mp.setattr(role_process.localloop, "spawn_seat", spawn_then_signal)
+        code = role_process.run_foreground(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            journal=journal,
+            bead=BEAD,
+            role="developer",
+            seat_process_id="seat-x",
+            provider_continuation=SESSION,
+            outcome_writer=lambda stdout, rc: seen.append((stdout, rc)) or True,
+        )
+
+    assert code == 128 + signal.SIGTERM
+    assert len(seen) == 1
+    assert seen[0][1] == code
+    doc = outcome.record_document(seen[0][0], SESSION, exit_code=code)
+    found = outcome.from_metadata({outcome.metadata_key(SESSION): doc}, SESSION)
+    assert found is not None and found.status == "failed"
+    assert doc["terminal_reason"] == "terminated by signal 15"

@@ -167,6 +167,8 @@ def write(
     Append-only: an existing record for the session is left as it is."""
     key = metadata_key(session_id)
     document = record_document(stdout, session_id, exit_code=exit_code)
+    # Show-then-write, not atomic: safe because one seat owns one session_id, so no two writers
+    # race for the same key.
     existing = (bd.show(bead_id, cwd) or {}).get("metadata") or {}
     if key in existing:
         return WriteResult(key, False, document, "a record already exists for this session")
