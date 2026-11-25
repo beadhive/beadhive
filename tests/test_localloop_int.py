@@ -182,6 +182,12 @@ def _claimer(main: Path, actor: str):
     return claim
 
 
+def _seats(loop) -> tuple:
+    """The live processes behind the loop's in-flight entries. The loop holds only runtime
+    handles (bh-03rvd); the default LocalRuntime holds the processes."""
+    return tuple(loop.runtime._runs[bead] for bead in loop.in_flight)
+
+
 def _loop(main: Path, epic: str, *, actor="dev/int", briefs=None, **kw):
     briefs = briefs or {}
     kw.setdefault("caps", localloop.Caps(max_concurrency=1))
@@ -263,13 +269,18 @@ async def test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spen
     report = await loop_a.run_pass()
     assert len(report.dispatched) == 1
     claimed = report.dispatched[0]
-    orphan = loop_a.in_flight[claimed]
+    orphan = _seats(loop_a)[0]
     orphan_pgid = orphan.pgid
     assert _row(claimed, main)["status"] == "in_progress"
 
     # kill -9 of the LOOP: its own state evaporates, the seat it spawned does not (that is the
     # whole point of start_new_session — the seat has its own session and survives its parent).
+    # The runtime forgets the seat too. Its private event-loop thread keeps running only as
+    # this test process's child reaper — in a real kill -9 that is init's job, and a stopped
+    # loop here would leave the reaped orphan as an unreaped zombie still counted in its group.
+    dead_runtime = loop_a.runtime
     loop_a.in_flight.clear()
+    dead_runtime._runs.clear()
     del loop_a
     assert localloop.group_alive(orphan_pgid), "the seat must outlive the loop, as it would"
 
@@ -285,7 +296,7 @@ async def test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spen
     assert all(_row(b, main).get("assignee") == "dev/int" for b in restart.dispatched)
     # (3) the molecule still completes
     for _ in range(12):
-        seats = tuple(loop_b.in_flight.values())
+        seats = _seats(loop_b)
         if seats:
             exited = await asyncio.gather(*(seat.wait_exit(timeout=5.0) for seat in seats))
             assert all(exited), "the replacement seats should finish within the bounded wait"
@@ -296,6 +307,7 @@ async def test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spen
         if pass_report.decision and pass_report.decision.row in ("finish", "done"):
             break
     await loop_b.shutdown()
+    dead_runtime.close()  # nothing left in its run map: this only joins the reaper thread
     rows = bd_json("list", "--id", f"{first},{second},{claimed}", "--all", cwd=main) or []
     by_id = {row["id"]: row for row in rows}
     assert {by_id[bead]["status"] for bead in (first, second)} == {"closed"}, by_id
@@ -352,7 +364,7 @@ async def test_a_failure_cause_is_a_real_event_bead_and_a_label(tmp_path):
 
     loop = _loop(main, epic, briefs={bead: "STUB_STATUS=blocked"})
     await loop.run_pass()
-    for seat in list(loop.in_flight.values()):
+    for seat in _seats(loop):
         assert await seat.wait_exit(60), "the seat never exited"
     report = await loop.run_pass()
     assert report.harvested, "the exited seat was not harvested by the next pass"

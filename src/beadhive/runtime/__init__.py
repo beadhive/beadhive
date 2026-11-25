@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import importlib.metadata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from ..config_consumer_ports import work_settings as config
@@ -72,13 +72,15 @@ class RoleOutcome:
     status: str  # "running" | "done" | "blocked" | "handoff" | "failed"
     summary: str = ""
     routing: dict | None = None
-    # The fields below are ADDITIVE (bh-lhxy8): every one has a default, so a runtime that
-    # builds ``RoleOutcome(status=..., summary=...)`` keeps working, and positional construction
-    # of the first three is unchanged. They carry what the loop's own harvest reads off a
-    # ``seatrun.Classification`` (its cause mapping and cause reason), so a caller driving seats
-    # through this seam loses nothing the native spawn path had. :meth:`from_classification` is the
-    # one mapping that fills them; ``LocalRuntime.observe`` and ``outcome.role_outcome`` both go
-    # through it.
+    # The fields below are ADDITIVE (bh-lhxy8) and KEYWORD-ONLY (bh-03rvd): every one has a
+    # default, so a runtime that builds ``RoleOutcome(status=..., summary=...)`` keeps working,
+    # positional construction of the first three is unchanged, and adding another field later
+    # can never silently shift a positional argument. They carry what the loop's own harvest
+    # reads off a ``seatrun.Classification`` (its cause mapping and cause reason), so a caller
+    # driving seats through this seam loses nothing the native spawn path had.
+    # :meth:`from_classification` is the one mapping that fills them; ``LocalRuntime.observe``
+    # and ``outcome.role_outcome`` both go through it.
+    _: KW_ONLY
     #: The seat echoed a different ``bead_id`` than it was handed. A failure even when
     #: ``status`` says done: the seat advanced something other than its bead.
     bead_id_mismatch: bool = False
@@ -95,6 +97,15 @@ class RoleOutcome:
     session_id: str | None = None
     #: A killed run's machine-readable ``terminal_reason`` from its envelope, when one survived.
     terminal_reason: str | None = None
+    #: A killed run's priced envelope survived (and no ``SeatRun`` parsed). Distinct from
+    #: ``session_id is not None``: an envelope may carry ``"session_id": null``, and the loop's
+    #: cause reason quotes the envelope (``session None; terminal_reason ...``) either way.
+    envelope_present: bool = False
+    #: The CANCEL-ladder rung that stopped the run, set only on an outcome returned by
+    #: :meth:`CancellableRuntime.cancel` (``cooperative`` / ``hard`` / ``signal``, or ``exited``
+    #: when it finished on its own first). The loop records it in ``PassReport.cancelled`` and the
+    #: cause reason; ``None`` from a runtime that does not report one.
+    cancel_rung: str | None = None
 
     @classmethod
     def from_classification(
@@ -137,6 +148,7 @@ class RoleOutcome:
             cost_usd=cost,
             session_id=session_id,
             terminal_reason=terminal_reason,
+            envelope_present=seat_run is None and envelope is not None,
         )
 
 
@@ -214,7 +226,8 @@ class CancellableRuntime(Protocol):
     def cancel(self, handle: RoleHandle) -> RoleOutcome | None:
         """Stop the run ``handle`` names and return its terminal outcome, or ``None`` when the
         runtime holds no run for that handle (unknown bead, or a stale session id). Idempotent:
-        cancelling a run that already finished returns its outcome without acting again."""
+        cancelling a run that already finished returns its outcome without acting again. A
+        runtime with a graded stop reports the step that worked in ``RoleOutcome.cancel_rung``."""
         ...
 
 
@@ -257,6 +270,25 @@ def is_adoptable(runtime: object) -> bool:
     adopt a live handle instead of rescheduling (ADR Decision 4)? Opt-in: only a literal
     ``adoptable = True`` counts; absent or anything else means no."""
     return getattr(runtime, "adoptable", False) is True
+
+
+def schedule_accepts(runtime: object, keyword: str) -> bool:
+    """Does *runtime*'s ``schedule`` take the optional *keyword* (``decision``, or an extension
+    such as ``LocalRuntime``'s ``action``)? Read off the signature, so a caller passes an extra
+    only to a runtime that declares it (or takes ``**kwargs``) and never needs the concrete type.
+    ``False`` when the signature cannot be read."""
+    import inspect
+
+    try:
+        params = inspect.signature(runtime.schedule).parameters  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if keyword in params:
+        return params[keyword].kind in (
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 class ClaudeRuntime:

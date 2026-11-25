@@ -1,17 +1,23 @@
-"""LocalRuntime launches and harvests a seat exactly the way LocalLoop does (bh-lhxy8).
+"""The loop, driving seats through LocalRuntime, does exactly what its own spawn path did.
 
-B1 step 1: before the loop can drive every seat through ``runtime.schedule`` / ``observe``
-(bh-03rvd), the runtime has to be behaviour-identical to the loop's own spawn path. These tests
-run the SAME seat through both paths and compare what each one actually did:
+B1 step 1 (bh-lhxy8) proved LocalRuntime behaviour-identical to the loop's own spawn path; step 2
+(bh-03rvd) deleted that path — the loop now schedules every seat through the runtime. So the
+comparison here is no longer loop-vs-runtime (that would be the runtime compared with itself).
+It is the loop AS IT IS NOW against a FROZEN REFERENCE of the pre-change loop path —
+:func:`_reference_spawn_and_harvest`, a verbatim transcription of the old ``_spawn_for`` /
+``_harvest`` / ``_cause_for`` / ``_cause_reason`` built only from this module's process
+primitives (``seat_argv``, ``spawn_seat``, ``reap_group``, ``classify_run``). Both run the SAME
+seat, and these tests compare what each one actually did:
 
 - the ``asyncio.create_subprocess_exec`` call itself (argv, cwd, the child's full environment
   including ``BAML_PROFILE_DIR`` and the run-journal child env, ``start_new_session`` and the
   three pipes), recorded by a pass-through wrapper so the real process still runs;
 - the process group (its own session, reaped once harvested);
 - the run-journal records, byte-for-byte apart from wall-clock timestamps and pids;
-- the cause the loop's harvest writes and its reason, against :func:`localloop.cause_for_outcome`
-  and :func:`localloop.cause_reason_for_outcome` over the runtime's ``observe()`` answer;
-- ``observe()`` against :func:`beadhive.outcome.role_outcome`, field by field.
+- the cause the loop's harvest writes and its reason, byte for byte;
+- the pass report's fields (``dispatched``, ``harvested``, ``causes``, ``routing``);
+- the runtime's ``observe()`` answer against :func:`beadhive.outcome.role_outcome` over the
+  reference's own classification, field by field.
 
 The uuid minting both paths do is pinned to one value so the minted identities (provider
 continuation, seat process id, run id) line up and the comparison can be exact. Real processes
@@ -197,7 +203,109 @@ def _journal_records(path: Path) -> list[dict]:
     return records
 
 
+# ---- the frozen reference: the loop's own spawn path as it was before bh-03rvd ------------------
+
+
+def _legacy_cause_for(cls: seatrun.Classification) -> str:
+    """``LocalLoop._cause_for`` before bh-03rvd, verbatim (over a classification)."""
+    if cls.bead_id_mismatch:
+        return localloop.CAUSE_MISMATCH
+    return {
+        seatrun.RunOutcome.DONE: "",
+        seatrun.RunOutcome.BLOCKED: localloop.CAUSE_BLOCKED,
+        seatrun.RunOutcome.HANDOFF: localloop.CAUSE_HANDOFF,
+        seatrun.RunOutcome.INCOMPLETE: localloop.CAUSE_FAILED,
+    }[cls.outcome]
+
+
+def _legacy_cause_reason(cls: seatrun.Classification, exit_code, action: str) -> str:
+    """``LocalLoop._cause_reason`` before bh-03rvd, verbatim — it branched on the envelope
+    being PRESENT, not on its session id."""
+    parts = [f"exit {exit_code}", f"action {action}"]
+    if cls.seat_run:
+        parts.append(f"session {cls.seat_run.session_id}")
+        parts.append(f"cost {cls.seat_run.cost_usd}")
+        if cls.seat_run.outcome.summary:
+            parts.append(cls.seat_run.outcome.summary)
+    elif cls.envelope:
+        parts.append(f"session {cls.envelope.session_id}")
+        parts.append(f"terminal_reason {cls.envelope.terminal_reason}")
+    else:
+        parts.append(cls.detail)
+    return "; ".join(p for p in parts if p)
+
+
+def _reference_spawn_and_harvest(
+    *, command, bundle, launch, identity, decision, action, workspace, instructions, env, base
+):
+    """The pre-bh-03rvd ``LocalLoop._spawn_for`` + ``_harvest`` for one seat, transcribed from
+    the deleted code: the loop built the argv and the journal itself, called ``spawn_seat``
+    directly, then collected, reaped, classified and journaled the harvest itself. Returns
+    ``(seat, classification, report, causes)`` — the observable record that path left."""
+    report = localloop.PassReport()
+    causes: list[tuple[str, str, str]] = []
+    routing_payload = None
+    translated = None
+    if isinstance(decision, ModelSelection):
+        routing_payload = {"bead": BEAD, **decision.as_dict()}
+        report.routing += ((BEAD, routing_payload),)
+        translated = localloop.model_routing.translate_for_harness(
+            decision.selected_model, decision.harness
+        )
+    seat_process_id = f"seat-{uuid.uuid4()}"
+    provider_continuation = f"provider-{uuid.uuid4()}"
+    ctx = launch("developer") if launch is not None else None
+    argv = localloop.seat_argv(
+        ctx.command if ctx is not None else command,
+        "developer",
+        workspace=str(workspace),
+        bead=BEAD,
+        instructions=str(instructions),
+        session_id=provider_continuation,
+        model=translated,
+        bundle=ctx.bundle if ctx is not None else bundle,
+    )
+    journal = None
+    if ctx is not None:
+        journal = run_journal.RunJournal.create(ctx.run_identity(BEAD), base=base)
+    elif identity is not None:
+        found = identity(BEAD, action, "developer", decision)
+        if found is not None:
+            journal = run_journal.RunJournal.create(found, base=base)
+
+    async def go():
+        seat = await localloop.spawn_seat(
+            argv,
+            bead_id=BEAD,
+            role="developer",
+            action=action,
+            session_id=seat_process_id,
+            provider_continuation=provider_continuation,
+            cwd=str(workspace),
+            env=env,
+            routing=routing_payload,
+            journal=journal,
+        )
+        report.dispatched += (BEAD,)
+        assert seat.pgid == seat.pid != os.getpgrp(), "the reference seat leads its own group"
+        assert await seat.wait_exit(30), "reference seat never exited"
+        stdout = await seat.collect(timeout=3.0)
+        reap = await localloop.reap_group(seat, grace=5.0)
+        cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=BEAD)
+        report.harvested += ((BEAD, str(cls.outcome)),)
+        cause = _legacy_cause_for(cls)
+        if cause:
+            causes.append((BEAD, cause, _legacy_cause_reason(cls, seat.proc.returncode, action)))
+            report.causes += ((BEAD, cause),)
+        localloop._journal_harvest(seat, cls, reap)
+        return seat, cls
+
+    seat, cls = _run(go())
+    return seat, cls, report, causes
+
+
 def _drive_loop(tmp_path, workspace, instructions, *, name, decision, action, journal_base):
+    """The loop as it is now: one ``_spawn_for`` + harvest, every seat through LocalRuntime."""
     command, bundle, launch, identity, calls = _seams(name, tmp_path)
     env = dict(os.environ, BH_PARITY_MARKER="loop-and-runtime")
     loop = localloop.LocalLoop(
@@ -214,50 +322,26 @@ def _drive_loop(tmp_path, workspace, instructions, *, name, decision, action, jo
         journal_base=journal_base,
         env=env,
     )
+    report = localloop.PassReport()
 
     async def go():
-        report = localloop.PassReport()
         await loop._spawn_for(BEAD, action=action, role="developer", report=report)
-        seat = loop.in_flight[BEAD]
+        assert loop.in_flight[BEAD].action == action
+        seat = loop.runtime._runs[BEAD]
         assert seat.pgid == seat.pid != os.getpgrp(), "the loop seat leads its own group"
         assert await seat.wait_exit(30), "loop seat never exited"
-        await loop._harvest(localloop.PassReport())
+        await loop._harvest(report)
         assert BEAD not in loop.in_flight
-        return seat
+        observed = loop.runtime._terminal[BEAD][1]
+        await loop.shutdown()
+        return seat, observed
 
-    return _run(go()), calls
-
-
-def _drive_runtime(tmp_path, workspace, instructions, *, name, decision, action, journal_base):
-    command, bundle, launch, identity, calls = _seams(name, tmp_path)
-    env = dict(os.environ, BH_PARITY_MARKER="loop-and-runtime")
-    with localloop.LocalRuntime(
-        seat_command=command,
-        seat_bundle=bundle,
-        launch_context=launch,
-        run_identity=identity,
-        journal_base=journal_base,
-        env=env,
-    ) as rt:
-        handle = rt.schedule(
-            BEAD,
-            "developer",
-            workspace=str(workspace),
-            instructions=str(instructions),
-            session_id=PROVIDER,
-            decision=decision,
-            action=action,
-        )
-        seat = rt._runs[BEAD]
-        assert seat.pgid == seat.pid != os.getpgrp(), "the runtime seat leads its own group"
-        assert rt._submit(seat.wait_exit(30)), "runtime seat never exited"
-        observed = rt.observe(handle)
-        assert rt.observe(handle) is observed, "a second observe re-answers, it does not re-reap"
-    return seat, observed, calls
+    seat, observed = _run(go())
+    return seat, observed, report, calls
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
-def test_local_runtime_launches_and_harvests_like_the_loop(
+def test_the_loop_through_local_runtime_matches_its_pre_change_spawn_path(
     name, tmp_path, workspace, launches, causes
 ):
     directives = CASES[name][0]
@@ -267,20 +351,24 @@ def test_local_runtime_launches_and_harvests_like_the_loop(
     action = "resume"
     journal_base = tmp_path / "journals"
 
-    loop_seat, loop_identity_calls = _drive_loop(
-        tmp_path,
-        workspace,
-        instructions,
-        name=name,
+    command, bundle, launch, identity, ref_identity_calls = _seams(name, tmp_path)
+    ref_seat, ref_cls, ref_report, ref_causes = _reference_spawn_and_harvest(
+        command=command,
+        bundle=bundle,
+        launch=launch,
+        identity=identity,
         decision=decision,
         action=action,
-        journal_base=journal_base,
+        workspace=workspace,
+        instructions=instructions,
+        env=dict(os.environ, BH_PARITY_MARKER="loop-and-runtime"),
+        base=journal_base,
     )
-    loop_journal = journal_base.parent / "loop-journal.jsonl"
+    ref_journal = journal_base.parent / "reference-journal.jsonl"
     if any(journal_base.rglob("*.jsonl")):
         (journal,) = journal_base.rglob("*.jsonl")
-        journal.rename(loop_journal)
-    rt_seat, observed, rt_identity_calls = _drive_runtime(
+        journal.rename(ref_journal)
+    loop_seat, observed, loop_report, loop_identity_calls = _drive_loop(
         tmp_path,
         workspace,
         instructions,
@@ -292,54 +380,57 @@ def test_local_runtime_launches_and_harvests_like_the_loop(
 
     # 1. The launch: one exec per path, identical in every argument.
     assert len(launches) == 2
-    loop_launch, rt_launch = launches
-    assert rt_launch["argv"] == loop_launch["argv"]
-    assert rt_launch["env"] == loop_launch["env"]
-    assert rt_launch["env"]["BH_PARITY_MARKER"] == "loop-and-runtime"
-    assert rt_launch["env"]["BAML_PROFILE_DIR"].endswith(PROVIDER)
-    assert rt_launch == loop_launch
-    assert rt_launch["start_new_session"] is True
-    assert (rt_seat.session_id, rt_seat.provider_continuation, rt_seat.action) == (
-        loop_seat.session_id,
-        loop_seat.provider_continuation,
-        loop_seat.action,
+    ref_launch, loop_launch = launches
+    assert loop_launch["argv"] == ref_launch["argv"]
+    assert loop_launch["env"] == ref_launch["env"]
+    assert loop_launch["env"]["BH_PARITY_MARKER"] == "loop-and-runtime"
+    assert loop_launch["env"]["BAML_PROFILE_DIR"].endswith(PROVIDER)
+    assert loop_launch == ref_launch
+    assert loop_launch["start_new_session"] is True
+    assert (loop_seat.session_id, loop_seat.provider_continuation, loop_seat.action) == (
+        ref_seat.session_id,
+        ref_seat.provider_continuation,
+        ref_seat.action,
     )
-    assert rt_seat.routing == loop_seat.routing
+    assert loop_seat.routing == ref_seat.routing
 
     # 2. The process group: led by the seat, gone once harvested.
+    assert not localloop.group_alive(ref_seat.pgid)
     assert not localloop.group_alive(loop_seat.pgid)
-    assert not localloop.group_alive(rt_seat.pgid)
 
     # 3. The journal: same records, same order, same run identity.
-    assert rt_identity_calls == loop_identity_calls
+    assert loop_identity_calls == ref_identity_calls
     if CASES[name][1] == "plain":
-        assert not loop_journal.exists() and not any(journal_base.rglob("*.jsonl"))
-        assert "BH_RUN_ID" not in rt_launch["env"]
+        assert not ref_journal.exists() and not any(journal_base.rglob("*.jsonl"))
+        assert "BH_RUN_ID" not in loop_launch["env"]
     else:
-        (rt_journal,) = journal_base.rglob("*.jsonl")
-        assert rt_launch["env"]["BH_RUN_JOURNAL_PATH"] == str(rt_journal.resolve())
-        loop_records = _journal_records(loop_journal)
-        assert [r["activity"]["kind"] for r in loop_records] == [
+        (loop_journal,) = journal_base.rglob("*.jsonl")
+        assert loop_launch["env"]["BH_RUN_JOURNAL_PATH"] == str(loop_journal.resolve())
+        ref_records = _journal_records(ref_journal)
+        assert [r["activity"]["kind"] for r in ref_records] == [
             "run.created",
             "process.spawned",
             "process.harvested",
         ]
-        assert _journal_records(rt_journal) == loop_records
+        assert _journal_records(loop_journal) == ref_records
 
-    # 4. The cause mapping inputs: what the loop wrote is what the outcome maps to.
-    cause = localloop.cause_for_outcome(observed)
-    if cause:
-        assert causes == [
-            (BEAD, cause, localloop.cause_reason_for_outcome(observed, action=action))
-        ]
-    else:
-        assert causes == []
-    loop_cls = seatrun.classify_run(loop_seat.proc.returncode or 0, loop_seat.stdout, bead=BEAD)
-    assert localloop.LocalLoop._cause_for(loop_cls) == cause
+    # 4. The causes the loop wrote onto the bead: same cause, same reason text, byte for byte.
+    assert causes == ref_causes
+    assert (
+        localloop.cause_for_outcome(observed)
+        == _legacy_cause_for(ref_cls)
+        == (EXPECTED_CAUSES[name])
+    )
 
-    # 5. observe() is outcome.role_outcome over the loop's own classification, field by field.
+    # 5. The pass report's observable fields.
+    assert loop_report.dispatched == ref_report.dispatched == (BEAD,)
+    assert loop_report.harvested == ref_report.harvested
+    assert loop_report.causes == ref_report.causes
+    assert loop_report.as_dict()["routing"] == ref_report.as_dict()["routing"]
+
+    # 6. observe() is outcome.role_outcome over the reference's own classification.
     assert observed == outcome.role_outcome(
-        loop_cls, routing=loop_seat.routing, exit_code=loop_seat.proc.returncode
+        ref_cls, routing=ref_seat.routing, exit_code=ref_seat.proc.returncode
     )
 
 
@@ -351,6 +442,10 @@ EXPECTED_CAUSES = {
     "failed": localloop.CAUSE_FAILED,
     "envelope": localloop.CAUSE_FAILED,
 }
+
+#: The bh-lhxy8 review repro: a killed envelope whose session is JSON null. The old loop quoted
+#: the envelope; an outcome-side check on ``session_id is not None`` quoted the detail instead.
+NULL_SESSION_ENVELOPE = '{"session_id":null,"cost_usd":0.2,"usage":{},"terminal_reason":"sigterm"}'
 
 
 @pytest.mark.parametrize(
@@ -366,17 +461,28 @@ EXPECTED_CAUSES = {
         ),
         ("failed", "", 2),
         ("envelope", '{"session_id":"p","cost_usd":0.2,"usage":{}}', 143),
+        ("envelope", NULL_SESSION_ENVELOPE, 143),
     ],
 )
 def test_outcome_cause_mapping_matches_the_loops_classify_path(name, stdout, exit_code):
-    """Pure parity over the classify path: cause AND reason, without any process."""
+    """Pure parity over the classify path: cause AND reason, without any process, against the
+    frozen pre-change mapping."""
     cls = seatrun.classify_run(exit_code, stdout, bead=BEAD)
     mapped = outcome.role_outcome(cls, exit_code=exit_code)
-    seat = type("Seat", (), {"proc": type("P", (), {"returncode": exit_code})(), "action": "x"})
-    assert localloop.LocalLoop._cause_for(cls) == localloop.cause_for_outcome(mapped)
+    assert _legacy_cause_for(cls) == localloop.cause_for_outcome(mapped)
     assert localloop.cause_for_outcome(mapped) == EXPECTED_CAUSES[name]
-    assert localloop.LocalLoop._cause_reason(cls, seat) == localloop.cause_reason_for_outcome(
+    assert _legacy_cause_reason(cls, exit_code, "x") == localloop.cause_reason_for_outcome(
         mapped, action="x"
+    )
+
+
+def test_a_null_session_envelope_quotes_the_envelope_not_the_detail():
+    """The golden text for the divergence the bh-lhxy8 review found, spelled out."""
+    cls = seatrun.classify_run(143, NULL_SESSION_ENVELOPE, bead=BEAD)
+    mapped = outcome.role_outcome(cls, exit_code=143)
+    assert (mapped.session_id, mapped.envelope_present) == (None, True)
+    assert localloop.cause_reason_for_outcome(mapped, action="dispatch") == (
+        "exit 143; action dispatch; session None; terminal_reason sigterm"
     )
 
 
@@ -473,8 +579,10 @@ def _hanging(tmp_path, workspace, rt, *, session="provider-hang"):
 
 
 def test_cancel_by_handle_walks_the_ladder_and_settles_the_outcome(tmp_path, workspace):
+    # Generous graces (bh-lhxy8 review): they bound how long a loaded host may take to deliver
+    # the envelope and empty the group, and a tight one measures machine load, not behaviour.
     with localloop.LocalRuntime(
-        seat_command=STUB_COMMAND, terminate_grace=1.0, envelope_grace=1.0
+        seat_command=STUB_COMMAND, terminate_grace=5.0, envelope_grace=5.0
     ) as rt:
         handle = _hanging(tmp_path, workspace, rt)
         seat = rt._runs[BEAD]
@@ -487,10 +595,11 @@ def test_cancel_by_handle_walks_the_ladder_and_settles_the_outcome(tmp_path, wor
         result = rt.cancel(handle)
         assert result is not None
         # The cooperative rung: the stub wraps up with a handoff SeatRun and exits 0.
-        assert (result.status, result.exit_code, result.session_id) == (
+        assert (result.status, result.exit_code, result.session_id, result.cancel_rung) == (
             "handoff",
             0,
             "provider-hang",
+            localloop.RUNG_COOPERATIVE,
         )
         assert localloop.cause_for_outcome(result) == localloop.CAUSE_HANDOFF
         assert not localloop.group_alive(seat.pgid)
@@ -508,12 +617,15 @@ def test_cancel_of_a_finished_run_harvests_it_instead(tmp_path, workspace):
         assert rt._submit(rt._runs[BEAD].wait_exit(30))
         result = rt.cancel(handle)
         assert result is not None and result.status == "done"
+        assert result.cancel_rung == localloop.RUNG_EXITED, "the ladder's own 'exited' answer"
         assert rt.observe(handle) is result
 
 
 def test_notify_writes_to_the_live_runs_stdin_only(tmp_path, workspace):
+    # Generous graces (bh-lhxy8 review): they bound how long a loaded host may take to deliver
+    # the envelope and empty the group, and a tight one measures machine load, not behaviour.
     with localloop.LocalRuntime(
-        seat_command=STUB_COMMAND, terminate_grace=1.0, envelope_grace=1.0
+        seat_command=STUB_COMMAND, terminate_grace=5.0, envelope_grace=5.0
     ) as rt:
         assert rt.notify(RoleHandle(bead_id=BEAD, session_id="p"), "hello") is False
         handle = _hanging(tmp_path, workspace, rt)
@@ -538,5 +650,14 @@ def test_role_outcome_additions_are_defaulted_and_positional_construction_is_unc
         legacy.cost_usd,
         legacy.session_id,
         legacy.terminal_reason,
-    ) == (False, "", None, 0.0, None, None)
+        legacy.envelope_present,
+        legacy.cancel_rung,
+    ) == (False, "", None, 0.0, None, None, False, None)
     assert RoleOutcome(status="running") == RoleOutcome("running", "", None)
+
+
+def test_role_outcome_additions_are_keyword_only():
+    """A fourth positional argument can never land in an additive field by position."""
+    with pytest.raises(TypeError):
+        RoleOutcome("done", "summary", None, True)  # type: ignore[misc]
+    assert RoleOutcome("done", bead_id_mismatch=True).bead_id_mismatch is True
