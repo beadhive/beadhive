@@ -9,7 +9,10 @@ The whole tier is one pass, repeated:
 and everything it needs to run that pass is re-derived from `bd` each time. That is what makes
 a RESTART a no-op by construction (loop-ownership-and-execution-memory-adr.md Decision 1): the
 in-flight map dies with the process, and the beads it referred to come back through
-`bd reclaim` on the next pass.
+`bd reclaim` on the next pass. The one exception is a runtime whose sessions OUTLIVE the loop
+(``adoptable``, ADR Decision 4): for it alone the loop keeps each turn's handle in bead metadata
+(:mod:`beadhive.runtime_handle`) and a restarted loop adopts the live ones instead of reclaiming
+them. `work.runtime: local` is not adoptable and writes no handle.
 
 WHAT THIS MODULE OWNS, AND WHAT IT DELIBERATELY DOES NOT
 --------------------------------------------------------
@@ -101,6 +104,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -115,6 +119,7 @@ from . import (
     model_routing,
     otel,
     run_journal,
+    runtime_handle,
     schedule,
     seatrun,
     state,
@@ -1396,6 +1401,10 @@ class PassReport:
     denied: tuple[Admission, ...] = ()
     declined: tuple[str, ...] = ()  # `bh work next` decline codes this pass
     orphans_reaped: tuple[str, ...] = ()  # seats a previous, killed loop left running
+    #: Live sessions of an ADOPTABLE runtime a previous loop scheduled, taken back into the
+    #: in-flight map on this loop's first pass instead of being rescheduled (ADR Decision 4).
+    #: Reported only when non-empty, so a `local` hive's pass record is unchanged.
+    adopted: tuple[str, ...] = ()
     causes: tuple[tuple[str, str], ...] = ()  # (bead, cause)
     #: The beads whose SEATS are still running at the end of this pass. `bh host dispatch
     #: status` advertises "seats in flight?" and reads exactly this key off the sink, so it is
@@ -1441,6 +1450,7 @@ class PassReport:
             "denied": [{"reason": d.reason, "detail": d.detail} for d in self.denied],
             "declined": list(self.declined),
             "orphans_reaped": list(self.orphans_reaped),
+            **({"adopted": list(self.adopted)} if self.adopted else {}),
             "causes": [list(c) for c in self.causes],
             "in_flight": list(self.in_flight),
             "halted": self.halted,
@@ -1543,7 +1553,9 @@ class InFlight:
     runtime's opaque :class:`beadhive.runtime.RoleHandle` — never a process, a pipe or a pgid —
     plus the three facts that are the LOOP's, not the runtime's: which role and decision verb it
     scheduled, and when (on the loop's own monotonic clock, which the wall-time cap reads).
-    Volatile, like the map itself.
+    Volatile, like the map itself. An entry ADOPTED after a restart rebuilds ``started_at`` from
+    the persisted wall-clock ``scheduled_at`` (:mod:`beadhive.runtime_handle`), so the cap keeps
+    counting from the original schedule instead of resetting or firing at once.
     """
 
     handle: RoleHandle
@@ -1567,6 +1579,16 @@ RUNG_UNSUPPORTED = "unsupported"
 RUNG_NOT_HELD = "not_held"
 #: A runtime's ``cancel`` returned an outcome without naming a rung.
 RUNG_UNREPORTED = "unreported"
+#: A runtime's ``cancel`` RAISED. The loop cannot tell whether the session stopped.
+RUNG_ERROR = "error"
+
+#: How many CONSECUTIVE times a runtime's ``observe`` (or ``cancel``) for one bead may raise
+#: before the loop stops treating it as transient. See :meth:`LocalLoop._observe`.
+DEFAULT_RUNTIME_ERROR_LIMIT = 3
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def bind_local_launch(
@@ -1646,6 +1668,8 @@ class LocalLoop:
         on_gate_resolved: Callable[[GateResolution], None] | None = None,
         runtime=None,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = _utc_now,
+        runtime_error_limit: int = DEFAULT_RUNTIME_ERROR_LIMIT,
     ):
         self.hive_dir = Path(hive_dir)
         self.epic = epic
@@ -1714,6 +1738,18 @@ class LocalLoop:
         #: The wall-time cap's clock — monotonic in production, injectable so the cap is testable
         #: without waiting one out.
         self._clock = clock
+        #: The wall clock a persisted handle's ``scheduled_at`` is stamped and read with (ADR
+        #: Decision 4): the monotonic clock above means nothing across a restart. Injectable for
+        #: the same reason.
+        self._wall_clock = wall_clock
+        #: The transient-error budget for a runtime's ``observe`` / ``cancel`` (see
+        #: :meth:`_observe`): consecutive raises per bead, counted, never timed.
+        self.runtime_error_limit = max(int(runtime_error_limit), 1)
+        self._observe_errors: dict[str, int] = {}
+        self._cancel_errors: dict[str, int] = {}
+        #: Beads whose wall-time cap could not be enforced because the adoptable runtime cannot
+        #: stop the session: warned about once, then left to finish (see `_enforce_wall_time`).
+        self._cap_unenforceable: set[str] = set()
         #: The in-flight map. DELIBERATELY VOLATILE — see the module docstring.
         self.in_flight: dict[str, InFlight] = {}
         self.halted = False
@@ -1991,8 +2027,15 @@ class LocalLoop:
             #     which is exactly the opposite of "nothing claimed, no seat spawned". Only for a
             #     runtime whose sessions die with their scheduler (`is_adoptable` False, e.g.
             #     LocalRuntime): an adoptable runtime's live sessions are not orphans (ADR D4).
-            if self.passes == 1 and not self._adoptable():
-                report.orphans_reaped = await self.reap_orphan_seats()
+            #     They are ADOPTED instead — after reclaim on purpose, so a lease that already
+            #     expired has been reverted and is not resurrected by the heartbeat below
+            #     (Decision 4: the handle is live until observe() is terminal OR the lease
+            #     expires; expiry wins).
+            if self.passes == 1:
+                if self._adoptable():
+                    await self.adopt_live_sessions(report)
+                else:
+                    report.orphans_reaped = await self.reap_orphan_seats()
 
         # 3. The host lease — renewed (legacy hives only, best-effort liveness hint, bh-12hev)
         #    only while workers are active. A dry pass never has any (see below), so `active`
@@ -2131,6 +2174,7 @@ class LocalLoop:
         reports: list[PassReport] = []
         self._stop = asyncio.Event()
         installed = self._install_sigterm_handler()
+        raised = True
         try:
             while True:
                 report = await self.run_pass()
@@ -2142,14 +2186,28 @@ class LocalLoop:
                 if max_passes is not None and len(reports) >= max_passes:
                     break
                 await self._sleep_or_stop(self.poll_interval)
+            raised = False
         finally:
             if installed:
                 self._remove_sigterm_handler()
             self._stop = None
-            await self.shutdown()
+            try:
+                await self.shutdown()
+            except Exception as exc:
+                # A shutdown failure (a runtime's close() raising) must not MASK the error that
+                # brought the loop down; on a clean exit it is the error, and propagates.
+                if not raised:
+                    raise
+                _LOG.error("loop_shutdown_failed", epic=self.epic, error=str(exc))
         return reports
 
-    async def shutdown(self, *, cause: str = CAUSE_CANCELLED, reason: str = "loop shutting down"):
+    async def shutdown(
+        self,
+        *,
+        cause: str = CAUSE_CANCELLED,
+        reason: str = "loop shutting down",
+        keep_adoptable: bool = True,
+    ):
         """Stop every in-flight seat through the ladder and confirm each process GROUP is gone.
 
         SIGTERM to the loop itself lands here — really, not aspirationally: :meth:`run` installs
@@ -2164,29 +2222,115 @@ class LocalLoop:
         runtime itself is ``close()``-d when it offers that — for :class:`LocalRuntime` that stops
         its private event-loop thread and reaps any process group it still owns. Idempotent:
         a second call finds nothing in flight and closes an already-closed runtime.
+
+        AN ADOPTABLE RUNTIME'S SESSIONS ARE LEFT ALONE (ADR Decision 4). They outlive this
+        process by design, and the next loop adopts them from their persisted handle — so a
+        plain shutdown (``keep_adoptable``, the default: SIGTERM, a restart, the end of
+        :meth:`run`) neither cancels them, nor writes a cause, nor releases their claim; it only
+        drops them from the in-flight map. Cancelling them would turn every restart into lost
+        work, and releasing the claim without stopping the session would let the bead be
+        dispatched a second time while the first session still runs. A lease-loss shutdown
+        passes ``keep_adoptable=False`` and cancels them like any other seat — except a session
+        the runtime cannot stop (no ``cancel``, or ``cancel`` raised), whose claim is still left
+        to its lease for the same two-sessions reason.
+
+        One seat's failure never strands the others: each is handled on its own, the runtime
+        is closed in a ``finally``, and the first error is re-raised once everything ran.
         """
-        for bead, entry in list(self.in_flight.items()):
-            rung, session, _cost = await self._cancel(bead, entry)
-            self.in_flight.pop(bead, None)
-            record_cause(
-                self.hive_dir,
-                bead,
-                cause,
-                reason=f"{reason} (rung {rung}, session {session or 'unknown'})",
-                actor=self.actor,
+        errors: list[Exception] = []
+        try:
+            for bead, entry in list(self.in_flight.items()):
+                try:
+                    await self._shutdown_seat(
+                        bead, entry, cause=cause, reason=reason, keep_adoptable=keep_adoptable
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+                    _LOG.error("shutdown_seat_failed", bead=bead, error=str(exc))
+                finally:
+                    self.in_flight.pop(bead, None)
+        finally:
+            await self._close_runtime()
+        if errors:
+            raise errors[0]
+
+    async def _shutdown_seat(
+        self, bead: str, entry: InFlight, *, cause: str, reason: str, keep_adoptable: bool
+    ) -> None:
+        if self._adoptable() and (keep_adoptable or not can_cancel(self.runtime)):
+            _LOG.info(
+                "session_left_for_adoption",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
             )
-            self._release(bead)
-        await self._close_runtime()
+            return
+        rung, session, _cost = await self._cancel(bead, entry)
+        if rung == RUNG_ERROR and self._adoptable():
+            _LOG.warning(
+                "session_left_for_adoption",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
+                reason="cancel raised; the session may still be running, so its claim is left "
+                "to its lease",
+            )
+            return
+        record_cause(
+            self.hive_dir,
+            bead,
+            cause,
+            reason=f"{reason} (rung {rung}, session {session or 'unknown'})",
+            actor=self.actor,
+        )
+        self._forget_handle(bead)
+        self._release(bead)
 
     # ---- the runtime (bh-03rvd) ---------------------------------------------------------------
 
     def _adoptable(self) -> bool:
         return is_adoptable(self.runtime)
 
+    def _runtime_name(self) -> str:
+        return str(getattr(self.runtime, "name", "") or type(self.runtime).__name__)
+
     async def _observe(self, entry: InFlight) -> RoleOutcome:
         """``runtime.observe(handle)`` off the event loop: the protocol is synchronous, and a
-        runtime may do I/O (LocalRuntime reaps and journals on the first terminal answer)."""
-        return await asyncio.to_thread(self.runtime.observe, entry.handle)
+        runtime may do I/O (LocalRuntime reaps and journals on the first terminal answer).
+
+        THE TRANSIENT-ERROR POLICY. A runtime that hosts sessions elsewhere answers ``observe``
+        over a network, so a raise is first read as transient: logged, answered ``running`` (the
+        seat stays in flight and keeps its heartbeat), and asked again next pass. It is COUNTED,
+        never timed: after :attr:`runtime_error_limit` consecutive raises for one bead the loop
+        stops waiting and answers ``failed`` with the error as the detail, so the harvest writes
+        the bead's cause instead of heartbeating a claim forever on the strength of a runtime it
+        cannot read. One clean answer resets the count."""
+        bead = entry.handle.bead_id
+        try:
+            outcome = await asyncio.to_thread(self.runtime.observe, entry.handle)
+        except Exception as exc:
+            count = self._observe_errors.get(bead, 0) + 1
+            self._observe_errors[bead] = count
+            _LOG.warning(
+                "runtime_observe_failed",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
+                attempt=count,
+                limit=self.runtime_error_limit,
+                error=str(exc),
+            )
+            if count < self.runtime_error_limit:
+                return RoleOutcome(status="running", summary=f"observe() raised: {exc}")
+            self._observe_errors.pop(bead, None)
+            return RoleOutcome(
+                status="failed",
+                detail=(
+                    f"runtime {self._runtime_name()} observe() raised {count} times in a row: {exc}"
+                ),
+            )
+        self._observe_errors.pop(bead, None)
+        return outcome
 
     async def _cancel(self, bead: str, entry: InFlight) -> tuple[str, str | None, float]:
         """Stop one in-flight seat through the runtime: ``(rung, reported session, cost)``.
@@ -2195,19 +2339,36 @@ class LocalLoop:
         the rung on the outcome (``RoleOutcome.cancel_rung``), so the pass record and the cause
         reason read exactly as they did when the loop held the process. Without it the loop
         DEGRADES as designed rather than pretending: it cannot stop the session, so it says so
-        (rung ``unsupported``, a warning naming the runtime), and the caller still writes the
-        cause and releases the claim — the session is the runtime's to wind down."""
+        (rung ``unsupported``, a warning naming the runtime), and the caller decides what that
+        means for the claim — the session is the runtime's to wind down. A ``cancel`` that
+        raises is rung ``error``: logged, never propagated, and the caller treats it as "may
+        still be running"."""
         if not can_cancel(self.runtime):
             _LOG.warning(
                 "runtime_cannot_cancel",
                 bead=bead,
-                runtime=getattr(self.runtime, "name", type(self.runtime).__name__),
+                runtime=self._runtime_name(),
                 session_id=entry.handle.session_id,
-                reason="the runtime offers no cancel capability; cause written and claim "
-                "released, the session itself is left to the runtime",
+                reason=(
+                    "the runtime offers no cancel capability; its session outlives this loop, "
+                    "so its claim is left to its lease"
+                    if self._adoptable()
+                    else "the runtime offers no cancel capability; cause written and claim "
+                    "released, the session itself is left to the runtime"
+                ),
             )
             return RUNG_UNSUPPORTED, None, 0.0
-        outcome = await asyncio.to_thread(self.runtime.cancel, entry.handle)
+        try:
+            outcome = await asyncio.to_thread(self.runtime.cancel, entry.handle)
+        except Exception as exc:
+            _LOG.warning(
+                "runtime_cancel_failed",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
+                error=str(exc),
+            )
+            return RUNG_ERROR, None, 0.0
         if outcome is None:
             _LOG.warning("runtime_cancel_not_held", bead=bead, session_id=entry.handle.session_id)
             return RUNG_NOT_HELD, None, 0.0
@@ -2216,6 +2377,88 @@ class LocalLoop:
     async def _close_runtime(self) -> None:
         if can_close(self.runtime):
             await asyncio.to_thread(self.runtime.close)
+
+    # ---- persisted runtime handles (ADR Decision 4; adoptable runtimes only) -------------------
+
+    def _persist_handle(self, bead: str, entry: InFlight) -> None:
+        """Record the turn just scheduled as the bead's ``bh.runtime.handle`` — the LOOP's write,
+        never the runtime's. Adoptable runtimes only; a failed write is logged, not fatal: the
+        session runs, it simply cannot be adopted if this loop dies before harvesting it."""
+        if not self._adoptable():
+            return
+        persisted = runtime_handle.PersistedHandle(
+            bead_id=bead,
+            runtime=self._runtime_name(),
+            session_id=entry.handle.session_id,
+            role=entry.role,
+            action=entry.action,
+            scheduled_at=self._wall_clock(),
+        )
+        try:
+            runtime_handle.write(self.hive_dir, persisted, actor=self.actor)
+        except Exception as exc:
+            _LOG.error("runtime_handle_write_failed", bead=bead, error=str(exc))
+
+    def _forget_handle(self, bead: str) -> None:
+        """The turn is over (harvested or cancelled): drop its persisted handle so no later loop
+        adopts or re-harvests it. Adoptable runtimes only; best-effort."""
+        if not self._adoptable():
+            return
+        try:
+            runtime_handle.clear(self.hive_dir, bead, actor=self.actor)
+        except Exception as exc:
+            _LOG.warning("runtime_handle_clear_failed", bead=bead, error=str(exc))
+
+    async def adopt_live_sessions(self, report: PassReport) -> None:
+        """Take back the sessions a previous loop scheduled through this ADOPTABLE runtime.
+
+        Called on the first pass, after reclaim, in place of the orphan reap (ADR Decision 4).
+        Candidates are this molecule's beads that are still ``in_progress``, claimed by this
+        loop's actor, and carry a persisted handle naming THIS runtime: a bead ``bd reclaim``
+        reverted (its lease expired) is no longer ``in_progress``, so lease expiry wins. Each
+        candidate's handle is observed once: ``running`` puts it back in the in-flight map — no
+        second ``schedule()``, no reap, no release; the heartbeat step later in this same pass
+        renews its claim — with its age rebuilt from the persisted wall-clock ``scheduled_at``;
+        a terminal answer (it finished while no loop was running) is harvested exactly as a
+        harvest pass would."""
+        molecule = self.load_molecule(self.caps.max_concurrency)
+        name = self._runtime_name()
+        adopted = []
+        for row in molecule.beads:
+            bead = str(row.get("id") or "")
+            if not bead or bead in self.in_flight or str(row.get("status") or "") != "in_progress":
+                continue
+            data = bd_mod.show(bead, self.hive_dir) or {}
+            if str(data.get("status") or "") != "in_progress":
+                continue
+            if str(data.get("assignee") or "") != self.actor:
+                continue
+            persisted = runtime_handle.from_row({**data, "id": bead})
+            if persisted is None or persisted.runtime != name:
+                continue
+            age = persisted.age_seconds(self._wall_clock())
+            entry = InFlight(
+                handle=persisted.handle,
+                role=persisted.role,
+                action=persisted.action,
+                started_at=self._clock() - age,
+            )
+            outcome = await self._observe(entry)
+            if outcome.status == "running":
+                self.in_flight[bead] = entry
+                adopted.append(bead)
+                _LOG.info(
+                    "session_adopted",
+                    bead=bead,
+                    runtime=name,
+                    session_id=persisted.session_id,
+                    role=persisted.role,
+                    action=persisted.action,
+                    age_seconds=age,
+                )
+                continue
+            self._settle(bead, entry, outcome, report)
+        report.adopted = tuple(adopted)
 
     # ---- pass steps --------------------------------------------------------------------------
 
@@ -2283,18 +2526,48 @@ class LocalLoop:
         )
         report.causes += ((self.epic, CAUSE_LEASE_LOST),)
         await self.shutdown(
-            cause=CAUSE_LEASE_LOST, reason="host lease lost mid-flight — wrapping up"
+            cause=CAUSE_LEASE_LOST,
+            reason="host lease lost mid-flight — wrapping up",
+            keep_adoptable=False,
         )
 
     async def _enforce_wall_time(self, report: PassReport) -> None:
+        """Cancel every in-flight seat past the per-run wall-time cap.
+
+        Two ways the cap cannot be enforced, both handled without a second session for the bead:
+        ``cancel`` RAISED (rung ``error``) — retried on the next pass, counted against
+        :attr:`runtime_error_limit`, then treated as below; or the session cannot be stopped at
+        all. For a non-adoptable runtime the latter degrades as it always has (cause written,
+        claim released). For an ADOPTABLE runtime the session outlives this loop, so releasing
+        its claim would let the bead be dispatched again while it still runs: the loop warns
+        once, keeps it in flight, and lets the harvest record whatever it ends with."""
         now = self._clock()
         for bead, entry in list(self.in_flight.items()):
-            if not over_wall_time(self.caps, entry.age(now)):
+            if bead in self._cap_unenforceable or not over_wall_time(self.caps, entry.age(now)):
                 continue
             # A run that already finished is the harvest's, not the cap's — the runtime says so.
             if (await self._observe(entry)).status != "running":
                 continue
             rung, session, cost = await self._cancel(bead, entry)
+            if rung == RUNG_ERROR:
+                count = self._cancel_errors.get(bead, 0) + 1
+                self._cancel_errors[bead] = count
+                if count < self.runtime_error_limit:
+                    continue
+            self._cancel_errors.pop(bead, None)
+            if self._adoptable() and rung in (RUNG_UNSUPPORTED, RUNG_ERROR):
+                self._cap_unenforceable.add(bead)
+                _LOG.warning(
+                    "wall_time_cap_unenforceable",
+                    bead=bead,
+                    runtime=self._runtime_name(),
+                    session_id=entry.handle.session_id,
+                    rung=rung,
+                    max_run_seconds=self.caps.max_run_seconds,
+                    reason="the runtime cannot stop this session; it stays in flight so the "
+                    "bead is not dispatched a second time",
+                )
+                continue
             self.in_flight.pop(bead, None)
             report.cancelled += ((bead, rung),)
             record_cause(
@@ -2310,6 +2583,7 @@ class LocalLoop:
             )
             report.causes += ((bead, CAUSE_CANCELLED),)
             await self.notify_siblings(bead, f"sibling {bead} was cancelled (wall-time cap)")
+            self._forget_handle(bead)
             self._release(bead)
 
     async def _harvest(self, report: PassReport) -> None:
@@ -2321,18 +2595,26 @@ class LocalLoop:
             outcome = await self._observe(entry)
             if outcome.status == "running":
                 continue
-            self.in_flight.pop(bead, None)
-            report.harvested += ((bead, _HARVEST_LABELS.get(outcome.status, outcome.status)),)
-            cause = self._cause_for(outcome)
-            if cause:
-                record_cause(
-                    self.hive_dir,
-                    bead,
-                    cause,
-                    reason=cause_reason_for_outcome(outcome, action=entry.action),
-                    actor=self.actor,
-                )
-                report.causes += ((bead, cause),)
+            self._settle(bead, entry, outcome, report)
+
+    def _settle(self, bead: str, entry: InFlight, outcome: RoleOutcome, report: PassReport) -> None:
+        """Record one TERMINAL outcome: out of the in-flight map, onto the pass record, its cause
+        written (if any), and — for an adoptable runtime — its persisted handle dropped, after
+        the cause, so a crash between the two re-harvests rather than losing the cause."""
+        self.in_flight.pop(bead, None)
+        self._cap_unenforceable.discard(bead)
+        report.harvested += ((bead, _HARVEST_LABELS.get(outcome.status, outcome.status)),)
+        cause = self._cause_for(outcome)
+        if cause:
+            record_cause(
+                self.hive_dir,
+                bead,
+                cause,
+                reason=cause_reason_for_outcome(outcome, action=entry.action),
+                actor=self.actor,
+            )
+            report.causes += ((bead, cause),)
+        self._forget_handle(bead)
 
     @staticmethod
     def _cause_for(outcome: RoleOutcome) -> str:
@@ -2643,9 +2925,9 @@ class LocalLoop:
         except ValueError as exc:
             self._schedule_refused(bead, exc, report)
             return
-        self.in_flight[bead] = InFlight(
-            handle=handle, role=role, action=action, started_at=self._clock()
-        )
+        entry = InFlight(handle=handle, role=role, action=action, started_at=self._clock())
+        self.in_flight[bead] = entry
+        self._persist_handle(bead, entry)
         report.dispatched += (bead,)
 
     def _schedule_refused(self, bead: str, exc: ValueError, report: PassReport) -> None:
@@ -2655,12 +2937,13 @@ class LocalLoop:
         unusable workspace, ``blocked`` for a strict routing block), the reason text and any
         evidence payload, which lands in ``report.routing`` beside the loop's own routing record.
         A bare ``ValueError`` from a third-party runtime is a failure quoting its message."""
-        status = getattr(exc, "status", "failed")
-        reason = getattr(exc, "reason", "") or (
+        typed = isinstance(exc, seatrun.ScheduleRefused)
+        status = exc.status if typed else "failed"
+        reason = (exc.reason if typed else "") or (
             f"runtime {getattr(self.runtime, 'name', '?')} refused to schedule {bead}: {exc}"
         )
-        payload = getattr(exc, "payload", None)
-        if payload:
+        payload = exc.payload if typed else None
+        if isinstance(payload, dict) and payload:
             report.routing += ((bead, payload),)
             _LOG.error("model_routing_blocked", **payload)
         cause = self._cause_for(RoleOutcome(status=status))
@@ -3084,6 +3367,14 @@ class LocalRuntime:
         seat = self._runs.get(handle.bead_id)
         if seat is None:
             return RoleOutcome(status="failed", summary=f"no run scheduled for {handle.bead_id}")
+        if seat.provider_continuation != handle.session_id:
+            # A handle from an EARLIER turn of this bead names a run this runtime no longer
+            # holds; it must never be answered with the current run's state (the same rule
+            # `cancel` / `notify` apply through `_live_for`).
+            return RoleOutcome(
+                status="failed",
+                summary=f"no run for session {handle.session_id} of {handle.bead_id}",
+            )
         settled = self._settled(handle.bead_id, seat)
         if settled is not None:
             return settled
