@@ -71,7 +71,7 @@ last_verified_commit = "bh-3qkmk.5"
 expiry_trigger = "Move the released Development Frame Bridge runtime behind adapters/frame_bridge after its compatibility consumers reach zero."
 
 [cycle_snapshot]
-sha256 = "59e1680e3c878a1567220ab379ee6ddeffb258edd5be251616b1dc78d41e8b4e"
+sha256 = "8cefa74285ef36425ea397a28605011f0bc33435d2c2dfc231365508017762c7"
 components = 7
 modules = 56
 edges = 145
@@ -506,7 +506,7 @@ expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migratio
 id = "cycle-edge-026"
 status = "active"
 importer = "beadhive.runtime"
-importer_path = "src/beadhive/runtime.py"
+importer_path = "src/beadhive/runtime/__init__.py"
 imported_module = "beadhive.localloop"
 symbols = ["beadhive.localloop"]
 target_owner_package = "src/beadhive (legacy flat package)"

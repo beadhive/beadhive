@@ -85,6 +85,11 @@ RAW_BD_INFRASTRUCTURE_SCOPES = {
         # routing through the bd adapter would close that cycle. Scoped to the one runner.
         "_bd",
     },
+    # The runtime conformance kit (bh-m4vd5) drives a REAL scratch bd store with the standard
+    # library only, so a third-party package can run it without beadhive's own bd routes (the
+    # code under test) and the stand-in seat script has no beadhive import at all.
+    "runtime/conformance/bdhive.py": {"__init__", "bd"},
+    "runtime/conformance/seat.py": {"write_outcome_bd"},
     "cli_root.py": {
         # Passthrough command-name vocabulary of the root callback (moved from cli.py, bh-lwz8a),
         # not a spawned argv; keeping it scoped prevents a new literal ``bd`` process command
