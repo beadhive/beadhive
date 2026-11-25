@@ -305,6 +305,10 @@ def _derived_hive(cfg, triplet) -> str:
         return ""
     provider, org, repo = (str(x) for x in triplet)
     for e in config.managed_repos(cfg):
+        # Telemetry must never crash a command: a triplet-less entry cannot be the match, so
+        # it is omitted from the derivation (falls back to the repo name) (bh-s5721).
+        if not all(e.get(k) for k in ("provider", "org", "repo")):
+            continue
         if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
             return str(e.get("prefix", "") or repo)
     return repo

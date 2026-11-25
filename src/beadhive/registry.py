@@ -78,7 +78,8 @@ def hive_dir(entry) -> Path:
     # identity is synthetic, so the derived $GIT_WORKSPACE path would not exist).
     if str(entry.get("kind", "")) == HQ_KIND:
         return config.hq_dir()
-    return Path(workspace_root()) / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"])
+    provider, org, repo = entry_triplet(entry)
+    return Path(workspace_root()) / provider / org / repo
 
 
 def hive_dir_for(cfg, hive: str) -> Path:
@@ -258,26 +259,69 @@ def all_hive_targets(cfg):
     return [(str(e["prefix"]), hive_dir(e)) for e in cfg.get("managed_repos", [])]
 
 
+def _has_triplet(entry) -> bool:
+    return all(entry.get(k) for k in ("provider", "org", "repo"))
+
+
+def _partial_match(entry, segments: tuple[str, ...], keys: tuple[str, ...]) -> bool:
+    """Whether a triplet-less *entry* could be the intended target of a `/`-split hive id: every
+    identity field it does carry agrees with the id's segment, and it carries at least one."""
+    present = [(entry.get(k), seg) for k, seg in zip(keys, segments, strict=True) if entry.get(k)]
+    return bool(present) and all(str(v) == seg for v, seg in present)
+
+
 def _hive_matches(hives, hive_id, mode):
-    """The candidate managed_repos entries for hive_id under `mode` (flexible|prefix|triplet)."""
+    """The candidate managed_repos entries for hive_id under `mode` (flexible|prefix|triplet).
+
+    A triplet-less entry (bh-s5721) never poisons the resolution of a different hive: it is
+    skipped with a warning. But when it could itself be the intended target (its prefix equals
+    the id, or the identity fields it does carry agree with the id), resolution REFUSES with the
+    named `FleetEntryError` instead of silently resolving to some other hive."""
+    segs = tuple(hive_id.split("/"))
 
     def by_prefix():
-        return [e for e in hives if str(e["prefix"]) == hive_id]
+        return [e for e in hives if e.get("prefix") is not None and str(e["prefix"]) == hive_id]
 
     def by_triplet():
-        return [e for e in hives if f"{e['provider']}/{e['org']}/{e['repo']}" == hive_id]
+        return [
+            e
+            for e in hives
+            if (
+                f"{e['provider']}/{e['org']}/{e['repo']}" == hive_id
+                if _has_triplet(e)
+                else len(segs) == 3 and _partial_match(e, segs, ("provider", "org", "repo"))
+            )
+        ]
 
     def by_orgrepo():
-        return [e for e in hives if f"{e['org']}/{e['repo']}" == hive_id]
+        return [
+            e
+            for e in hives
+            if (
+                f"{e['org']}/{e['repo']}" == hive_id
+                if e.get("org") and e.get("repo")
+                else len(segs) == 2 and _partial_match(e, segs, ("org", "repo"))
+            )
+        ]
 
     def by_repo():
-        return [e for e in hives if str(e["repo"]) == hive_id]
+        return [e for e in hives if e.get("repo") and str(e["repo"]) == hive_id]
 
     if mode == "prefix":
-        return by_prefix()
-    if mode == "triplet":
-        return by_triplet()
-    return by_prefix() or by_triplet() or by_orgrepo() or by_repo()  # flexible
+        matches = by_prefix()
+    elif mode == "triplet":
+        matches = by_triplet()
+    else:
+        matches = by_prefix() or by_triplet() or by_orgrepo() or by_repo()  # flexible
+    for e in matches:
+        entry_triplet(e)  # the target itself is malformed -> refuse, named
+    for e in hives:
+        if not _has_triplet(e):
+            try:
+                entry_triplet(e)
+            except FleetEntryError as exc:
+                typer.echo(f"warning: skipping malformed fleet entry: {exc}", err=True)
+    return matches
 
 
 def hive_matches(cfg, hive_id):
@@ -400,6 +444,36 @@ def entry_triplet(entry) -> tuple[str, str, str]:
     return str(entry["provider"]), str(entry["org"]), str(entry["repo"])
 
 
+def entry_matches_triplet(entry, provider: str, org: str, repo: str) -> bool:
+    """Whether *entry* is the registered hive `provider/org/repo`. A triplet-less entry that
+    could itself be that hive (the identity fields it carries agree with the triplet) REFUSES
+    with the named `FleetEntryError` rather than reading as "not registered"; one that cannot
+    be it is simply not a match (bh-s5721)."""
+    if _has_triplet(entry):
+        return (str(entry["provider"]), str(entry["org"]), str(entry["repo"])) == (
+            provider,
+            org,
+            repo,
+        )
+    if _partial_match(entry, (provider, org, repo), ("provider", "org", "repo")):
+        entry_triplet(entry)
+    return False
+
+
+def _tripletful_warn(entries) -> list:
+    """`entries` minus triplet-less ones, each warned about on stderr. Read-only listings only
+    (`allowed`, generated docs): nothing deletes or migrates from what they print (bh-s5721)."""
+    kept = []
+    for e in entries or []:
+        try:
+            entry_triplet(e)
+        except FleetEntryError as exc:
+            typer.echo(f"warning: skipping malformed fleet entry: {exc}", err=True)
+            continue
+        kept.append(e)
+    return kept
+
+
 def _key(e) -> str:
     return hive_key(e)
 
@@ -439,7 +513,11 @@ def prefix_collisions(cfg):
     the `hive_status` MCP tool so the two never drift."""
     by_prefix: dict[str, list[str]] = {}
     for e in cfg.get("managed_repos", []):
-        by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
+        # org/repo only label the row, so a provider-less entry still collides honestly; a
+        # missing key shows as `?` rather than aborting the whole report (bh-s5721).
+        by_prefix.setdefault(str(e["prefix"]), []).append(
+            f"{e.get('org') or '?'}/{e.get('repo') or '?'}"
+        )
     return [{"prefix": pref, "hives": hives} for pref, hives in by_prefix.items() if len(hives) > 1]
 
 
@@ -455,11 +533,15 @@ def required_violations(cfg):
     """Required-org repos whose prefix doesn't start with '<code>-'."""
     out = []
     for e in cfg.get("managed_repos", []):
-        org = str(e["org"])
+        if not (e.get("org") and e.get("repo")):
+            # Cannot be judged, and a skip would read as "no violation": report it instead.
+            out.append(f"malformed fleet entry (missing org/repo): {dict(e)}")
+            continue
+        org, repo = str(e["org"]), str(e["repo"])
         if org_policy(cfg, org) == "required":
             code = org_code(cfg, org)
-            if not required_prefix_ok(code, org, str(e["repo"]), str(e["prefix"])):
-                out.append(f"{org}/{e['repo']}: {e['prefix']} != {code}-*")
+            if not required_prefix_ok(code, org, repo, str(e["prefix"])):
+                out.append(f"{org}/{repo}: {e['prefix']} != {code}-*")
     return out
 
 
@@ -867,7 +949,7 @@ def register(
                 local_only["owner_host"], local_only["reason"]
             )
         kept.append(_carry_unowned(fresh, prior))
-        kept.sort(key=lambda e: (str(e["org"]), str(e["repo"])))
+        kept.sort(key=lambda e: entry_triplet(e)[1:])
         _save_managed_repos(kept)
     from . import metadata  # lazy: metadata imports registry (avoid an import cycle)
 
@@ -980,7 +1062,7 @@ def allowed():
     vals = set()
     vals.update(f"provider:{p}" for p in effective_providers(cfg))
     vals.update(f"org:{o}" for o in cfg.get("orgs", {}))
-    vals.update(f"repo:{e['repo']}" for e in cfg.get("managed_repos", []))
+    vals.update(f"repo:{e['repo']}" for e in _tripletful_warn(cfg.get("managed_repos", [])))
     for dim, allowed_vals in closed_dimensions(cfg).items():
         vals.update(f"{dim}:{v}" for v in allowed_vals)
     for v in sorted(vals):
@@ -1045,6 +1127,7 @@ def _docs_dimensions(cfg) -> list[str]:
 
 def _docs_managed_hives(cfg) -> list[str]:
     hives = cfg.get("managed_repos", [])
+    hives = _tripletful_warn(hives)
     out = [f"## Managed hives ({len(hives)})", ""]
     for e in hives:
         extra = str(e["kind"])

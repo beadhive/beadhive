@@ -532,7 +532,7 @@ def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path, d
             if entry not in real_hives:
                 typer.echo("  (skipping HQ — local-only by design)")
                 continue
-            provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+            provider, org, repo = registry.entry_triplet(entry)
             targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry), entry))
         return targets
 
@@ -542,7 +542,7 @@ def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path, d
         if entry not in real_hives:
             typer.echo("✗ HQ is local-only by design — it has no remote to sync", err=True)
             raise typer.Exit(1)
-        provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+        provider, org, repo = registry.entry_triplet(entry)
         targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry), entry))
     return targets
 
@@ -591,7 +591,11 @@ def sync_remote(
     tag = "DRY-RUN " if dry_run else ""
     typer.echo(f"{tag}sync-remote --all" if not hive_ids else f"{tag}sync-remote {hive_ids}")
 
-    targets = _resolve_targets(cfg, hive_ids)
+    try:
+        targets = _resolve_targets(cfg, hive_ids)
+    except registry.FleetEntryError as exc:
+        typer.echo(f"✗ refusing to sync: {exc}", err=True)
+        raise typer.Exit(1) from None
 
     # Parallel read-only pre-assessment.  Do not set ``fetch=True`` here: that is a
     # federation-peer probe, whereas this command operates on ``bd dolt`` remotes. SHAPE B

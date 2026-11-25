@@ -229,7 +229,7 @@ def comparison_payload(
 
 
 def _hive_id(entry) -> str:
-    return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+    return "/".join(registry.entry_triplet(entry))
 
 
 def _targets(cfg, hive_id: str | None, hive_ids: list[str] | None = None) -> list[dict]:
@@ -253,6 +253,8 @@ def _targets(cfg, hive_id: str | None, hive_ids: list[str] | None = None) -> lis
                 raise typer.Exit(1)
             entries.append(entry)
         return entries
+    for entry in real_hives:  # refuse the whole run before any hive is touched (bh-s5721)
+        registry.entry_triplet(entry)
     return real_hives
 
 
@@ -415,7 +417,11 @@ def hive_sync(
     if as_json and not dry_run:
         raise ValueError("JSON comparison is read-only and requires dry_run=True")
     cfg = config.load()
-    entries = _targets(cfg, hive_id, hive_ids)
+    try:
+        entries = _targets(cfg, hive_id, hive_ids)
+    except registry.FleetEntryError as exc:
+        typer.echo(f"✗ refusing to sync: {exc}", err=True)
+        raise typer.Exit(1) from None
     if not entries:
         if as_json:
             jsonout.emit(comparison_payload([], []))
