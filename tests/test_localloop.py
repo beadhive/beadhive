@@ -36,6 +36,7 @@ from beadhive import (
     config,
     localloop,
     run_journal,
+    runtime_handle,
     seatrun,
     state,
     work_next,
@@ -1405,6 +1406,68 @@ def test_local_runtime_reschedules_a_finished_run_with_a_new_identity(tmp_path):
         )
 
         assert second.session_id == "s2", "a finished run is eligible to be scheduled again"
+
+
+def test_local_runtime_observe_answers_only_for_the_session_it_holds(tmp_path):
+    """A handle from an EARLIER turn of the same bead must not read the current run's state
+    (bh-fwm82, carried from the bh-lhxy8 review): observe checks the session id exactly as
+    cancel / notify do, so an adopted or stale handle can never report a newer session."""
+    finished = _instructions(tmp_path, "finished", "STUB_STATUS=done")
+    hanging = _instructions(tmp_path, "hanging", "STUB_HANG=true")
+    with localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}") as rt:
+        first = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(finished), session_id="s1"
+        )
+        assert rt._submit(rt._runs["b1"].wait_exit(15)), "control the completion boundary"
+        assert rt.observe(first).status == "done"
+        second = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(hanging), session_id="s2"
+        )
+
+        stale = rt.observe(first)
+        assert stale.status == "failed"
+        assert stale.summary == "no run for session s1 of b1"
+        assert rt.observe(second).status == "running", "the current turn still answers"
+        assert rt.cancel(first) is None and rt.notify(first, "hi") is False
+
+
+@async_test
+async def test_a_local_runtime_loop_writes_no_runtime_handle_metadata(tmp_path, fakebd):
+    """LocalRuntime is not adoptable, so the loop persists no handle for it (bh-fwm82, ADR
+    Decision 4): no `bd update --metadata` / `--unset-metadata` on schedule, harvest, the
+    wall-time cap, or shutdown — the default path is unchanged."""
+    fake = fakebd(FakeBd(children=[_child("b1", status="in_progress"), _child("b2")]))
+    clock = [1000.0]
+    loop = _loop(
+        tmp_path,
+        caps=localloop.Caps(max_concurrency=3, max_run_seconds=60.0),
+        clock=lambda: clock[0],
+        instructions=lambda a, b, r: str(
+            _instructions(tmp_path, b, "STUB_STATUS=done" if b == "b1" else "STUB_HANG=true")
+        ),
+    )
+    assert localloop.LocalRuntime.adoptable is False
+    report = localloop.PassReport()
+    await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
+    await loop._spawn_for("b2", action="dispatch", role="developer", report=report)
+    await loop._spawn_for("b3", action="dispatch", role="developer", report=report)
+    await _finish(_seat(loop, "b1"))
+    await loop._harvest(localloop.PassReport())
+    await loop._spawn_for("b1", action="resume", role="developer", report=report)
+    await _finish(_seat(loop, "b1"))
+    await loop._harvest(localloop.PassReport())
+    clock[0] += 61.0
+    capped = localloop.PassReport()
+    await loop._enforce_wall_time(capped)
+    assert [b for b, _ in capped.cancelled] == ["b2", "b3"]
+    await loop.shutdown()
+
+    assert report.dispatched == ("b1", "b2", "b3", "b1")
+    metadata_writes = [
+        c for c in fake.calls if any(a in ("--metadata", "--unset-metadata") for a in c)
+    ]
+    assert metadata_writes == []
+    assert not any(runtime_handle.METADATA_KEY in json.dumps(c) for c in fake.calls)
 
 
 @pytest.mark.parametrize(

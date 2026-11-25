@@ -729,6 +729,48 @@ ready-made `observe()` for a non-child runtime: the classified record when prese
 when absent. Like every `observe()`, it is never authoritative about bead lifecycle. Bead state
 still wins.
 
+#### Persisted runtime handles and restart adoption — `bh.runtime.handle`
+
+A runtime whose sessions outlive the loop that scheduled them declares `adoptable = True`
+([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 4). For such a
+runtime only, the loop (never the runtime) writes one metadata document per bead after each
+`schedule()`, through the same `bd update --metadata` merge the outcome sink uses:
+
+```text
+bh.runtime.handle  { runtime, session_id, role, action, scheduled_at }  # scheduled_at: UTC ISO-8601
+```
+
+Each schedule replaces it, and harvesting or cancelling the turn removes it, so a handle on a
+bead means the turn has not been harvested yet. `LocalRuntime` is not adoptable and gets no
+handle. A `local` hive's restart still reaps orphaned seats and leaves their beads to
+`bd reclaim`.
+
+On its first pass, after `bd reclaim`, a loop over an adoptable runtime looks at the molecule's
+`in_progress` beads claimed by its own actor whose handle names the same runtime, and calls
+`observe()` once on each. `running` puts the bead back in flight with no second `schedule()`.
+Its wall-time age is rebuilt from `scheduled_at`, and the heartbeat later in the same pass renews
+its claim. A terminal answer is harvested like any finished run. The startup orphan scan does
+not run. Lease expiry still wins. A claim whose lease ran out is reverted by `bd reclaim` before
+adoption runs, so it is re-dispatched with a fresh session id, and the old session's late
+`bh.outcome.<session_id>` record never answers for the new turn.
+
+A plain shutdown (SIGTERM, a restart) leaves an adoptable runtime's sessions alone. It does not
+cancel them, write a cause or release their claims. A lease-loss shutdown cancels the sessions
+the runtime can stop. When a session cannot be stopped (no `cancel`, or `cancel` raised), the
+loop leaves its claim to the lease, during a lease-loss shutdown or under the wall-time cap,
+because releasing it would let the bead start a second session. A runtime's `observe()` or
+`cancel()` that raises counts as transient: it is logged and retried on the next pass. After
+three consecutive raises for one bead (`LocalLoop(runtime_error_limit=...)`), `observe` answers
+`failed` and the cap stops retrying `cancel`.
+
+`beadhive.runtime_handle.reclaim_refusal(row, now=...)` is the guard for an operator-driven
+reclaim. It returns a message naming the runtime and session when the bead is `in_progress`,
+has a handle, its session has no outcome record, and its lease has not expired. Otherwise it
+returns `None`. No CLI verb calls it yet: there is no operator-facing reclaim that refuses a
+live handle. Until one lands, lease expiry is the protection. `bd reclaim` reverts a claim
+only after its lease has expired, and a loop heartbeats the claims of the sessions it has
+adopted.
+
 #### The conformance kit — `beadhive.runtime.conformance`
 
 Passing the kit is the GO condition for documenting a runtime as supported, and a failure is
