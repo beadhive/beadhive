@@ -41,7 +41,9 @@ not interchangeable. The useful framing is **complementary systems with meaningf
     Orders, and runs formula graphs across agents outside the operator's session.
   - **Beadhive** separates work lifecycle and governance from a swappable role scheduler. The local
     process loop is implemented; Claude Task-tool fanout is documented, and Temporal is not yet
-    implemented. Gas City is not currently a Beadhive runtime option. Beadhive still owns the
+    implemented. Gas City can be a Beadhive runtime: it registers a `work.runtime` through
+    `register_runtime` (Mode 1) or takes a delegated molecule (Mode 2), as set out in the
+    [runtime integration guide](../RUNTIME-INTEGRATION.md). Beadhive still owns the
     bead lifecycle, gates, review, merge, and host setup around whichever runtime executes work.
 - **Seats are entity-agnostic** — a defining Beadhive idea. A *role* is the archetype; a *seat* is a
   role instance a **human *or* an agent** can occupy. You can *be* the dispatcher, drop into the

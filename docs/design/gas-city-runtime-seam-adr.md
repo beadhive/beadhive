@@ -71,6 +71,14 @@ Invariants carried over unchanged:
 - A bare exit 0 is still never "success".
 - The record is append-only per session and read-only to BH.
 
+Implementation notes (bh-im4dm):
+
+- The flag is on the `bh role <seat> --bead <id> --outcome-sink bead --session-id <sid>` wrapper.
+  The `bh-<seat>` binaries do not gain it, so GC launches seats through `bh role`.
+- Records are write-once per session id. A retry or restart uses a fresh session id, or the
+  first record stays final.
+- The role wire operation gained optional `outcome_sink` and `session_id` in wire release 2.36.0.
+
 ### 3. `on_gate_resolved` gets a real caller and carries bounce and feedback
 
 The protocol changes from `on_gate_resolved(gate_id: str)` to
