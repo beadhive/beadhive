@@ -30,6 +30,7 @@ This bead (bh-c6dk.1) lands the seam only:
 
 from __future__ import annotations
 
+import importlib.metadata
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -159,9 +160,11 @@ class ClaudeRuntime:
 # `modules.config.domain.runtime_names` (so the config schema can validate against it without
 # importing this seam); this module is its public face. Mirrors `claim_authority`'s authority
 # registry (`register_authority` / `available_authorities` / `get_authority`): lookup is by name,
-# nothing is auto-discovered, and a plugin that wants to be selectable calls `register_runtime`
-# itself. A factory takes `(cfg, entry)` — the loaded config and the hive entry, either of which
-# may be `None` — and returns a :class:`Runtime`.
+# and a plugin that wants to be selectable either calls `register_runtime` itself or declares a
+# `beadhive.runtimes` entry point, which `get_runtime` imports lazily — only the one named by
+# `work.runtime` (`runtime_names.load_entry_point` documents the declaration format). A factory
+# takes `(cfg, entry)` — the loaded config and the hive entry, either of which may be `None` —
+# and returns a :class:`Runtime`.
 RuntimeFactory = Callable[[Any, Any], Runtime]
 
 _RUNTIMES = runtime_names.RUNTIMES
@@ -193,13 +196,16 @@ register_runtime("local", _local_factory, replace=True)
 register_runtime("temporal", _temporal_factory, replace=True)
 
 
-def get_runtime(cfg=None) -> Runtime:
+def get_runtime(cfg=None, entry=None, *, entry_points=importlib.metadata.entry_points) -> Runtime:
     """The configured runtime (`work.runtime`, default `local`) for `cfg` (loads config when
     omitted, falling back to `local`'s config-value resolution when none is loadable yet —
     e.g. before `bh config init` — matching `engine.get_engine`'s same-shaped fallback).
 
-    Resolution is by registered name (:func:`register_runtime`); an unregistered name raises
-    `ValueError` listing the available ones (fails closed).
+    `entry` is the hive's managed-repo entry: its `work.runtime` takes precedence over the host
+    value, so each hive selects its own runtime. Resolution is by registered name
+    (:func:`register_runtime`); on a miss the `beadhive.runtimes` entry point of that name — and
+    only that one — is imported (`entry_points` is injectable for tests). An unregistered name
+    raises `ValueError` listing the registered ones (fails closed).
 
     `local` is the real, running default (bh-c6dk.5, `beadhive.localloop.LocalRuntime`).
     `claude` is documented, not developed — its anchor exists to name the tier and raises on
@@ -211,9 +217,5 @@ def get_runtime(cfg=None) -> Runtime:
             cfg = config.load()
         except FileNotFoundError:
             cfg = None
-    entry = None
     name = config.work_runtime(cfg, entry) if cfg is not None else "local"
-    factory = _RUNTIMES.get(name)
-    if factory is None:
-        raise runtime_names.unknown_runtime(name)
-    return factory(cfg, entry)
+    return runtime_names.resolve_factory(name, entry_points=entry_points)(cfg, entry)

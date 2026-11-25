@@ -145,10 +145,10 @@ def work_runtime(cfg, entry):
     fanout, documented not developed) | local (poll loop, harness-agnostic default) |
     temporal (Temporal workers) | any name a plugin registered through
     `beadhive.runtime.register_runtime`. Config key `work.runtime`, default `local`. The name is
-    returned as configured (blank falls back to `local`); validating it against the registry is
-    the config schema's job at load and `get_runtime`'s at resolution, which raises loudly for an
-    unregistered name — this getter stays registry-free so reading config never imports the
-    runtime seam."""
+    returned as configured (blank falls back to `local`); config load checks only its syntax;
+    the registry check happens where the value is used (`get_runtime`, `bh config set` /
+    `validate`, hive-ready, doctor) — this getter stays registry-free so reading config never
+    imports the runtime seam."""
     return str(work_value(cfg, entry, "runtime", "local")).strip() or "local"
 
 

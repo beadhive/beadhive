@@ -1974,7 +1974,7 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 210,
+        "line": 211,
         "path": "tests/test_runtime.py",
         "target": "beadhive.config.load"
       },
