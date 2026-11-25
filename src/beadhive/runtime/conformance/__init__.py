@@ -28,6 +28,8 @@ prints ``GO (FileHive: bd-level lifecycle writes NOT exercised)``. See docs/WORK
 checks and what each invariant means.
 """
 
+from typing import TYPE_CHECKING, Any
+
 from .bdhive import BdHive, BdHiveUnavailable, default_hive
 from .checks import (
     CHECKS,
@@ -42,7 +44,9 @@ from .checks import (
 from .hive import DisposableHive, FileHive
 from .runner import CheckResult, run_conformance, verdict
 from .state import BeadState
-from .suite import RuntimeConformanceSuite
+
+if TYPE_CHECKING:
+    from .suite import RuntimeConformanceSuite
 
 __all__ = [
     "CHECKS",
@@ -64,3 +68,12 @@ __all__ = [
     "run_conformance",
     "verdict",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Import the pytest-bound suite on first access (PEP 562), so the kit runs without pytest."""
+    if name == "RuntimeConformanceSuite":
+        from .suite import RuntimeConformanceSuite
+
+        return RuntimeConformanceSuite
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
