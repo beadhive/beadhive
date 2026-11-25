@@ -55,7 +55,7 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 from ...complexity import ComplexityTier, tier_names
 from ...kernel.daemon.contracts.config import HostDaemonConfig
 from ..tracker.contracts import MAX_REQUEST_TIMEOUT_SECONDS
-from .domain.runtime_names import validate_runtime_name
+from .domain.runtime_names import check_runtime_name_syntax
 
 #: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
@@ -1466,7 +1466,10 @@ class WorkConfig(_Section):
         ),
         # Same-major compatibility (contract_release `closed-union members changed`): dropping
         # the enum is a major-cut decision, so the published schema still lists the built-ins
-        # while the model accepts any registered name.
+        # while the model accepts any well-formed name. NOTE: the `description` above is part of
+        # the published artifact and still describes the pre-bh-igvro behaviour (registry
+        # validated at load); rewording it needs a contract-release regeneration, so it is left
+        # for the operator's call.
         json_schema_extra={"enum": ["claude", "local", "temporal"]},
     )
     landing: Literal["local", "pr"] = Field(
@@ -1533,10 +1536,11 @@ class WorkConfig(_Section):
     @field_validator("runtime")
     @classmethod
     def _registered_runtime(cls, v):
-        """`work.runtime` must name a registered runtime (gas-city-runtime-seam-adr.md Decision
-        1). The name table is config-domain owned so this needs no import of the runtime seam,
-        which reads config."""
-        return validate_runtime_name(v)
+        """`work.runtime` must be a well-formed runtime name — SYNTAX only at load
+        (gas-city-runtime-seam-adr.md Decision 1). Whether a package provides it is checked
+        where the value is used, so one hive's choice cannot break config load on a host that
+        lacks the package."""
+        return check_runtime_name_syntax(v)
 
     @field_validator("validate_subset")
     @classmethod

@@ -82,6 +82,10 @@ def _settings_validator() -> Draft202012Validator:
     ].info.fields
     for field in legacy_engine_fields:
         beads[field]["anyOf"].append({"const": ""})
+    # `work.runtime` is syntax-only at load (names plugins register are checked where the value
+    # is used), so the private raw gate drops the published built-in enum for every scope that
+    # embeds WorkConfig (host, and per-hive ManagedRepoEntry.work).
+    schema["$defs"]["WorkConfig"]["properties"]["runtime"] = {"type": "string", "minLength": 1}
     return Draft202012Validator(schema)
 
 

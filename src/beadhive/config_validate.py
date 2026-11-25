@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from .config import _problem
 from .modules.config.contracts import SCHEMA_VERSION, BeadhiveConfig
+from .modules.config.domain.runtime_names import validate_runtime_name
 
 # Structurally-renamed config keys pydantic now rejects (extra="forbid" → extra_forbidden):
 # old dotted key -> current dotted key. Source: docs/design/rig-to-hive-rename.md.
@@ -154,6 +155,26 @@ def _schema_version_problem(cfg: Mapping) -> dict | None:
     return None
 
 
+def runtime_problems(validated: BeadhiveConfig) -> list[dict]:
+    """Strict "at use" findings for `work.runtime`, at host and per-hive scope.
+
+    Config load checks the name's syntax only; this is where an unregistered name (with no
+    installed `beadhive.runtimes` entry point) becomes an error naming the registered runtimes."""
+    scopes = [("work.runtime", validated.work.runtime)]
+    scopes.extend(
+        (f"managed_repos[{i}].work.runtime", entry.work.runtime)
+        for i, entry in enumerate(validated.managed_repos)
+        if entry.work is not None and "runtime" in entry.work.model_fields_set
+    )
+    problems: list[dict] = []
+    for scope, name in scopes:
+        try:
+            validate_runtime_name(name)
+        except ValueError as exc:
+            problems.append(_problem("error", f"`{scope}`: {exc}"))
+    return problems
+
+
 def validate_config(cfg) -> list[dict]:
     """Validate ``cfg`` (a loaded config dict) against :class:`BeadhiveConfig`.
 
@@ -206,6 +227,7 @@ def validate_config(cfg) -> list[dict]:
 
     if validated is not None:
         problems.extend(_attest_disable_problems(validated))
+        problems.extend(runtime_problems(validated))
 
     for dotted, value in _string_leaves(raw):
         if any(marker in value for marker in OLD_HOME_MARKERS):

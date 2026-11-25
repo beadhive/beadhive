@@ -61,6 +61,7 @@ from .bootstrap.build_verify import collect_build_verify_diagnostics
 from .config_work_settings import attest_config
 from .identity import workspace_mode, workspace_root
 from .kernel.plugins import DiagnosticSeverity
+from .modules.config.domain.runtime_names import validate_runtime_name
 from .run import run
 
 
@@ -2995,6 +2996,10 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     "intentional (a compile-only default silently lets test regressions "
                     "merge clean)"
                 )
+        try:
+            validate_runtime_name(config.work_runtime(cfg, e))
+        except ValueError as exc:
+            warns.append(f"hive '{e['prefix']}' work.runtime: {exc}")
         if not path.exists():
             warns.append(f"hive '{e['prefix']}' has no local checkout at {path}")
         elif not (path / ".beads").is_dir():
