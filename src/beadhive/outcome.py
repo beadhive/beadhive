@@ -59,17 +59,18 @@ def metadata_key(session_id: str) -> str:
     return f"{METADATA_PREFIX}{session_id}"
 
 
-def role_outcome(cls: seatrun.Classification, *, routing: dict | None = None) -> RoleOutcome:
+def role_outcome(
+    cls: seatrun.Classification,
+    *,
+    routing: dict | None = None,
+    exit_code: int | None = None,
+) -> RoleOutcome:
     """Map a ``classify_run`` verdict to the runtime protocol's :class:`RoleOutcome`.
 
-    The same mapping ``LocalRuntime.observe`` applies to a held pipe (a parity test pins the two
-    together; ``localloop`` does not import this module, which would close an import cycle
-    through ``runtime``): a run that produced no parseable ``SeatRun`` is ``failed``; otherwise
-    the seat's own ``status`` and ``summary`` stand."""
-    if cls.outcome is seatrun.RunOutcome.INCOMPLETE:
-        return RoleOutcome(status="failed", summary=cls.detail, routing=routing)
-    summary = cls.seat_run.outcome.summary if cls.seat_run else ""
-    return RoleOutcome(status=str(cls.outcome), summary=summary, routing=routing)
+    Delegates to :meth:`beadhive.runtime.RoleOutcome.from_classification`, the one mapping that
+    ``LocalRuntime.observe`` (the held-pipe path) also uses; a parity test pins the two together
+    field by field. *exit_code* is ``None`` here for a metadata record, which has none."""
+    return RoleOutcome.from_classification(cls, routing=routing, exit_code=exit_code)
 
 
 def _recorded_session(cls: seatrun.Classification) -> str | None:

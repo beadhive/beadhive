@@ -282,6 +282,39 @@ def validate_workspace(path: str) -> WorkspaceValidation:
     return WorkspaceValidation(ok=True, path=path, is_git_worktree=is_worktree)
 
 
+class ScheduleRefused(ValueError):
+    """``schedule()`` refused BEFORE starting anything — the typed form of the ``ValueError``
+    contract for workspace and routing failures (bh-lhxy8).
+
+    A runtime that cannot start a seat because its inputs are unusable raises this instead of
+    recording anything itself: lifecycle writes (cause events included) are the loop's, never
+    the runtime's (gas-city-runtime-seam-adr.md Decision 4). ``status`` uses the
+    ``beadhive.runtime.RoleOutcome`` vocabulary — ``failed`` for an invalid workspace,
+    ``blocked`` for a strict model-routing block — so the caller maps it through the same cause
+    table it uses for a finished run, and ``reason`` is the text it records. ``payload`` carries
+    any safe control-plane facts the caller reports alongside (the routing block's evidence).
+
+    It IS a ``ValueError``, so a caller that only knows the plain contract keeps working; a
+    third-party runtime may raise a bare ``ValueError`` and a caller treats that as ``failed``.
+    Defined here, beside :func:`validate_workspace` (the pre-spawn check it reports), and
+    re-exported as ``beadhive.runtime.ScheduleRefused``, the name runtimes import: this module is
+    a leaf every tier already imports, so raising it adds no import edge into the runtime seam.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: str,
+        reason: str,
+        payload: dict | None = None,
+    ):
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+        self.payload = payload
+
+
 #: Bead states past which re-dispatching a role binary against the same bead is a no-op — the
 #: ADR's INVARIANT row, made mechanical. A fresh `claim` only makes sense against `open` (not yet
 #: started) or `in_progress` (still being worked); anything past that has already advanced and a

@@ -150,6 +150,19 @@ def test_well_behaved_fake_passes(tmp_path):
     assert _failures(_FakeRuntime, tmp_path) == {}
 
 
+def test_a_runtime_without_the_optional_capabilities_is_still_a_conforming_runtime(tmp_path):
+    """cancel / notify / close / adoptable are optional (bh-lhxy8): a third-party runtime that
+    implements only the three protocol verbs is still a `Runtime` and still passes the kit."""
+    from beadhive.runtime import Runtime, can_cancel, can_close, can_notify, is_adoptable
+
+    runtime = _FakeRuntime(_env(FileHive(tmp_path / "probe"), tmp_path))
+    assert isinstance(runtime, Runtime)
+    assert not any(hasattr(runtime, attr) for attr in ("cancel", "notify", "close", "adoptable"))
+    assert (can_cancel(runtime), can_notify(runtime), can_close(runtime)) == (False,) * 3
+    assert is_adoptable(runtime) is False
+    assert _failures(_FakeRuntime, tmp_path) == {}
+
+
 def test_go_on_a_filehive_carries_the_caveat(tmp_path):
     text = verdict(_run(_FakeRuntime, tmp_path))
     assert text.startswith("GO (FileHive: bd-level lifecycle writes NOT exercised)")
