@@ -53,9 +53,13 @@ def _all_repo_keys(cfg: dict) -> dict[str, bool]:
     Always reads the lock file directly — git-workspace is a required dep (bh-hsus.4), not a
     config toggle, so every on-disk tracked repo appears regardless of config state.
     """
-    registered: dict[str, bool] = {
-        f"{e['provider']}/{e['org']}/{e['repo']}": True for e in cfg.get("managed_repos", []) or []
-    }
+    registered: dict[str, bool] = {}
+    for e in cfg.get("managed_repos", []) or []:
+        try:
+            registered[registry.hive_key(e)] = True
+        except registry.FleetEntryError as exc:
+            # Read-only report: one malformed entry must not abort the survey (bh-n2gj1).
+            typer.echo(f"warning: survey skipping malformed fleet entry: {exc}", err=True)
     all_keys: dict[str, bool] = dict(registered)
     for group, org, repo in gitworkspace.tracked_repos(cfg):
         key = f"{group}/{org}/{repo}"

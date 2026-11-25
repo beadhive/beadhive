@@ -247,8 +247,9 @@ def assess(
 
     hives: list[HiveFold] = []
     for entry in registry.hives(cfg):
-        provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-        triplet = f"{provider}/{org}/{repo}"
+        # A triplet-less entry REFUSES (FleetEntryError): skipping it would drop a hive from the
+        # fold and let the host be judged SAFE to retire without it (bh-n2gj1).
+        triplet = registry.hive_key(entry)
         clone_path = registry.hive_dir(entry)
         if not clone_path.exists():
             # Registered fleet-wide, but this host never cloned it — not this host's problem;
@@ -456,10 +457,9 @@ def _step_sync_hives(assessment: HostAssessment, *, dry_run: bool) -> StepResult
 def _step_reclaim_hives(
     cfg, *, dry_run: bool, backup: bool, confirm: bool, purge: bool
 ) -> StepResult:
-    present = [
-        (f"{e['provider']}/{e['org']}/{e['repo']}", registry.hive_dir(e))
-        for e in registry.hives(cfg)
-    ]
+    # Raises FleetEntryError on a triplet-less entry (never skipped: it would shrink the reclaim
+    # set unseen); `retire()` records it as a failed step (bh-n2gj1).
+    present = [(registry.hive_key(e), registry.hive_dir(e)) for e in registry.hives(cfg)]
     present = [(triplet, path) for triplet, path in present if path.exists()]
     if not present:
         return StepResult(
@@ -586,7 +586,13 @@ def retire(
 
     _refuse_owned_local_only(cfg, host_id)
 
-    assessment = assess(cfg=cfg, hq_dir=hq_dir, host_id=host_id)
+    try:
+        assessment = assess(cfg=cfg, hq_dir=hq_dir, host_id=host_id)
+    except registry.FleetEntryError as exc:
+        # bh-n2gj1: refuse before any mutation — a malformed entry must never be silently dropped
+        # from the retire assessment.
+        typer.echo(f"✗ host retire refused — {exc}", err=True)
+        return [StepResult("assess hives", "failed", str(exc))]
     _print_assessment(assessment)
 
     _gate(assessment, backup=backup, confirm=confirm)

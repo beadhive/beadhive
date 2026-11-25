@@ -13,6 +13,7 @@ the SAME builders, so the human text output is unchanged.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib.metadata
 import json
@@ -61,6 +62,33 @@ from .config_work_settings import attest_config
 from .identity import workspace_mode, workspace_root
 from .kernel.plugins import DiagnosticSeverity
 from .run import run
+
+
+def _tripletful(entries) -> list:
+    """`entries` minus provider/org/repo-less ones (bh-n2gj1). Silent: the report-level entry
+    points (`_collect`, `warning_messages`, `show`) already warn per dropped entry via
+    `_skip_tripletless`; this keeps every per-section collector safe when called directly."""
+    kept = []
+    for e in entries or []:
+        try:
+            registry.entry_triplet(e)
+        except registry.FleetEntryError:
+            continue
+        kept.append(e)
+    return kept
+
+
+def _fleet_safe(fn):
+    """Decorate a `cfg`-first section collector so a triplet-less `managed_repos` entry is
+    dropped (read-only diagnostics) instead of raising a bare `KeyError` (bh-n2gj1)."""
+
+    @functools.wraps(fn)
+    def wrapper(cfg, *args, **kwargs):
+        if isinstance(cfg, dict) and cfg.get("managed_repos"):
+            cfg = {**cfg, "managed_repos": _tripletful(cfg["managed_repos"])}
+        return fn(cfg, *args, **kwargs)
+
+    return wrapper
 
 
 def _tracked(root: Path):
@@ -206,6 +234,7 @@ def _render_orgs(items: list[dict]) -> None:
         )
 
 
+@_fleet_safe
 def _data_hives(cfg) -> list[dict]:
     """Hives section: the registered hives as prefix + provider/org/repo + kind."""
     hives = cfg.get("managed_repos", []) or []
@@ -552,6 +581,7 @@ def _orphan_safety_ref_warnings(cfg) -> list[str]:
 # with the exact `hive repair` remediation command, per hive, so it can't get lost.
 
 
+@_fleet_safe
 def _data_prefix_mismatches(cfg) -> list[dict]:
     """Registered hives whose registry prefix disagrees with their beads-DB issue_prefix.
 
@@ -707,6 +737,7 @@ def _render_hq_remotes(rows: list[dict]) -> None:
 # the Store Engine section's "no new noise for a fleet that never needed this" bar.
 
 
+@_fleet_safe
 def _data_node_id(cfg) -> dict:
     """This host's resolved node_id (env override first, then the persisted config value —
     mirroring how bd itself resolves it) plus every registered hive whose store has a Dolt
@@ -771,6 +802,7 @@ def _section_node_id(cfg):
 # Prefix Mismatches section above.
 
 
+@_fleet_safe
 def _data_beads_role(cfg) -> list[dict]:
     """Registered hives whose `beads.role` is unset or disagrees with what their registry
     `kind` maps to. A hive with no local checkout/`.beads` is reported UNRESOLVABLE
@@ -856,6 +888,7 @@ def _origin_dolt_data_state(path: Path) -> bool | None:
     return bool((getattr(res, "stdout", "") or "").strip())
 
 
+@_fleet_safe
 def _data_unpublished(cfg) -> list[dict]:
     """Registered hives that are unpublished and not local-only: not ``kind: hq``; no
     ``local_only``, ``dolt_remote`` or ``stores``; a local store on this host; and origin
@@ -904,6 +937,7 @@ def _render_unpublished(findings: list[dict]) -> None:
 # that never enables the key sees byte-identical doctor output. Only drift is listed.
 
 
+@_fleet_safe
 def _data_beads_routing(cfg) -> list[dict]:
     """Opted-in hives whose `.beads/config.yaml` leaves `routing.mode` / `routing.default` unset
     or different from `hive_repair.EXPECTED_ROUTING`. Reads the file directly (no bd process).
@@ -969,6 +1003,7 @@ def _hold_remediation(hive_id: str, finding) -> str:
     return f"{bd_cmd} show {finding.gate} — resolve it by hand if nothing needs the hold"
 
 
+@_fleet_safe
 def _data_intake_holds(cfg) -> list[dict]:
     """One row per finding across the hives whose public store binds a tracker adapter and that
     have a local checkout (an uncloned hive is skipped).
@@ -1111,6 +1146,7 @@ def _outbox_end_state_rows(cfg, e, hive_id: str, path) -> list[dict]:
     return rows
 
 
+@_fleet_safe
 def _data_intake_reports(cfg) -> list[dict]:
     """One row per finding across the hives whose public store binds a tracker adapter and that
     have a local checkout. Reads on the ``bd`` CLI whatever ``work.beads.route`` says (bh-9o12j)."""
@@ -2173,6 +2209,7 @@ def _render_inventory(d: dict) -> None:
 
 def _data_disk_usage(hives, root: Path, records) -> dict:
     """Disk-usage section: per-hive disk_bytes (or missing) + the total across present hives."""
+    hives = _tripletful(hives)
     entries = []
     total_bytes = 0
     for e in hives:
@@ -2548,6 +2585,7 @@ def _writer_fence_warnings(status: dict | None) -> list[str]:
     ]
 
 
+@_fleet_safe
 def _data_writer_fence(cfg) -> list[dict]:
     """Writer-fence section: one :func:`_writer_fence_status` per hive cut over on this host."""
     root = Path(workspace_root())
@@ -2635,6 +2673,7 @@ def _forward_warnings(status: dict | None) -> list[str]:
     ]
 
 
+@_fleet_safe
 def _data_forward(cfg) -> list[dict]:
     """Forward-path section: one :func:`_forward_status` per hive it applies to."""
     root = Path(workspace_root())
@@ -2857,13 +2896,14 @@ def _disabled_attest_key_warnings(cfg, hives) -> list[str]:
     return warnings
 
 
+@_fleet_safe
 def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
     # Factory HQ is a control-plane store, not a hive checkout.  Callers historically
     # passed raw managed_repos here, so make that boundary explicit before applying
     # hive diagnostics.
-    hives = [e for e in hives if str(e.get("kind", "")) != registry.HQ_KIND]
+    hives = [e for e in _tripletful(hives) if str(e.get("kind", "")) != registry.HQ_KIND]
     manifest = _this_host_manifest()
     declared_remote_only = list(manifest.remote_only_hives) if manifest is not None else []
     known_prefixes = {str(e["prefix"]) for e in hives}
@@ -3403,6 +3443,7 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     if not (hq_dir / ".beads").is_dir():
         return []
 
+    hives = _tripletful(hives)
     _paths = [(e, root / e["provider"] / e["org"] / e["repo"]) for e in hives]
     entries = [(e, path) for e, path in _paths if (path / ".beads").is_dir()]
     if not entries:

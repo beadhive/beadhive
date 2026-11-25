@@ -1331,6 +1331,20 @@ def add(hive_id, prefix="", kind="", upstream=""):
     registry.register(provider, org, repo, prefix, kind, upstream)
 
 
+def _tripletful(entries) -> list:
+    """`entries` minus provider/org/repo-less ones, each dropped with a stderr warning (bh-n2gj1).
+    For READ-ONLY reports only (`available`, `status`); a destructive verb must refuse instead."""
+    kept = []
+    for e in entries or []:
+        try:
+            registry.entry_triplet(e)
+        except registry.FleetEntryError as exc:
+            typer.echo(f"warning: skipping malformed fleet entry: {exc}", err=True)
+            continue
+        kept.append(e)
+    return kept
+
+
 def _restore_cmd(entry) -> str:
     """The `bh hive add` invocation that re-registers `entry`.
 
@@ -1340,7 +1354,7 @@ def _restore_cmd(entry) -> str:
     exists turns the gate into something useful rather than merely obstructive."""
     parts = [
         f"{config.BINARY_ALIAS} hive add",
-        f"{entry['provider']}/{entry['org']}/{entry['repo']}",
+        registry.hive_key(entry),
     ]
     if entry.get("prefix"):
         parts.append(f"--prefix {entry['prefix']}")
@@ -1365,7 +1379,7 @@ def rm(hive_id, *, dry_run: bool = False, confirm: bool = False) -> None:
     below used to print on the line before the mutation, announcing the consequence at the
     moment the operator could no longer prevent it."""
     entry = registry.resolve_hive(config.load(), hive_id)
-    provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+    provider, org, repo = registry.entry_triplet(entry)  # FleetEntryError: refuse (bh-n2gj1)
     typer.echo(f"  FLEET-WIDE: unregistering {org}/{repo} — EVERY host loses this hive")
     typer.echo(f"  restore with: {_restore_cmd(entry)}")
     if dry_run:
@@ -1593,7 +1607,7 @@ def available(cfg=None) -> dict:
     from . import gitworkspace
 
     cfg = cfg if cfg is not None else config.load()
-    registered = {f"{e['provider']}/{e['org']}/{e['repo']}" for e in cfg.get("managed_repos", [])}
+    registered = {registry.hive_key(e) for e in _tripletful(cfg.get("managed_repos", []))}
     tracked = {f"{group}/{org}/{repo}" for (group, org, repo) in gitworkspace.tracked_repos(cfg)}
     return {
         "candidates": sorted(tracked - registered),
@@ -1655,11 +1669,11 @@ def _local_only_notes(cfg) -> dict[str, str]:
     """``provider/org/repo`` -> ``local-only (owner <label>)`` for every local-only hive
     (bh-sj2bf): text only — the JSON contracts carry no local_only property in this version."""
     notes = {}
-    for e in cfg.get("managed_repos", []) or []:
+    for e in _tripletful(cfg.get("managed_repos", []) or []):
         marker = registry.local_only_of(e)
         if marker is not None:
             owner = registry.host_label(marker["owner_host"])
-            notes[f"{e['provider']}/{e['org']}/{e['repo']}"] = f"local-only (owner {owner})"
+            notes[registry.hive_key(e)] = f"local-only (owner {owner})"
     return notes
 
 
@@ -1674,14 +1688,14 @@ def status_payload(cfg=None) -> dict:
     cfg = cfg if cfg is not None else config.load()
     hives = [
         {
-            "provider": str(e["provider"]),
+            "provider": registry.entry_triplet(e)[0],
             "org": str(e["org"]),
             "repo": str(e["repo"]),
             "prefix": str(e["prefix"]),
             "kind": str(e.get("kind", "")),
             **({"upstream": str(e["upstream"])} if e.get("upstream") else {}),
         }
-        for e in cfg.get("managed_repos", [])
+        for e in _tripletful(cfg.get("managed_repos", []))
     ]
     return {
         "candidates": available(cfg)["candidates"],
@@ -1699,7 +1713,7 @@ def status(hive_id: str = "", as_json: bool = False) -> None:
     payload = status_payload(cfg)
     if hive_id:
         entry = registry.resolve_hive(cfg, hive_id)
-        key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
+        key = registry.hive_key(entry)
         payload = {
             **payload,
             "hives": [

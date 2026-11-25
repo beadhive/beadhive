@@ -56,7 +56,11 @@ def _hive_slug(cfg: dict, hive: str) -> str:
             err=True,
         )
         raise typer.Exit(1)
-    return str(entry["repo"])
+    try:
+        return registry.entry_triplet(entry)[2]
+    except registry.FleetEntryError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 def _silence_closed_stdout() -> None:

@@ -334,6 +334,9 @@ def retire_hive(
         )
     except _RetireRefused as exc:
         raise typer.Exit(1) from exc
+    except registry.FleetEntryError as exc:
+        typer.echo(f"✗ refusing to retire {hive}: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 def execute_retire_hive(
@@ -391,6 +394,9 @@ def reclaim_hive(
         )
     except _RetireRefused as exc:
         raise typer.Exit(1) from exc
+    except registry.FleetEntryError as exc:
+        typer.echo(f"✗ refusing to reclaim {hive}: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 def execute_reclaim_hive(
@@ -430,7 +436,7 @@ def _teardown_and_dispose(
     """
     cfg = config.load()
     entry = registry.resolve_hive(cfg, hive)
-    provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+    provider, org, repo = registry.entry_triplet(entry)  # FleetEntryError: refuse (bh-n2gj1)
     clone_path = Path(workspace_root()) / provider / org / repo
 
     plan = RetirePlan(
