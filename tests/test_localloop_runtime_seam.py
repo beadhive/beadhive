@@ -217,7 +217,7 @@ def _loop(tmp_path, rt, **kw):
 def _registered(clean_registry, rt, name="fake-loop"):
     """Resolve *rt* the way `bh work loop` does: register it, then `loop_runtime(cfg, entry)`."""
     runtime.register_runtime(name, lambda cfg, entry: rt)
-    resolved = localloop.loop_runtime({"work": {"runtime": name}}, None)
+    resolved = work_dispatch.loop_runtime({"work": {"runtime": name}}, None)
     assert resolved is rt
     return resolved
 
@@ -603,14 +603,14 @@ def test_the_default_runtime_is_a_local_runtime_built_from_the_loops_launch_argu
     ],
 )
 def test_a_runtime_that_cannot_drive_the_loop_fails_at_start(value, needle):
-    with pytest.raises(localloop.LoopRuntimeError, match=needle):
-        localloop.loop_runtime({"work": {"runtime": value}}, None)
+    with pytest.raises(work_dispatch.LoopRuntimeError, match=needle):
+        work_dispatch.loop_runtime({"work": {"runtime": value}}, None)
 
 
 def test_a_factory_returning_a_non_runtime_fails_at_start(clean_registry):
     runtime.register_runtime("half-done", lambda cfg, entry: object())
-    with pytest.raises(localloop.LoopRuntimeError, match="does not implement the Runtime"):
-        localloop.loop_runtime({"work": {"runtime": "half-done"}}, None)
+    with pytest.raises(work_dispatch.LoopRuntimeError, match="does not implement the Runtime"):
+        work_dispatch.loop_runtime({"work": {"runtime": "half-done"}}, None)
 
 
 def test_the_hive_entry_selects_the_loop_runtime(clean_registry):
@@ -618,8 +618,8 @@ def test_the_hive_entry_selects_the_loop_runtime(clean_registry):
     runtime.register_runtime("host-rt", lambda cfg, entry: host)
     runtime.register_runtime("hive-rt", lambda cfg, entry: hive)
     cfg = {"work": {"runtime": "host-rt"}}
-    assert localloop.loop_runtime(cfg, {"work": {"runtime": "hive-rt"}}) is hive
-    assert localloop.loop_runtime(cfg, {}) is host
+    assert work_dispatch.loop_runtime(cfg, {"work": {"runtime": "hive-rt"}}) is hive
+    assert work_dispatch.loop_runtime(cfg, {}) is host
 
 
 # ---- `bh work loop`: one instance for the gate hook and every seat -------------------------------
@@ -816,3 +816,32 @@ def test_local_runtime_reports_no_system_without_a_routing_decision(tmp_path, mo
         ("", ""),
         ("claude", "anthropic/claude-sonnet-4-5"),
     ]
+
+
+# ---- the protocol is a leaf (no localloop <-> runtime cycle) -------------------------------------
+
+
+def test_the_runtime_protocol_module_imports_no_beadhive_module_at_run_time():
+    """``beadhive.runtime.protocol`` is what ``localloop`` imports, so it must never import
+    ``localloop`` or the registry in ``beadhive.runtime`` — or anything else from bh at run time
+    (type-only imports under ``TYPE_CHECKING`` are fine). This is what keeps the runtime
+    registry's lazy ``local`` factory from closing an import cycle."""
+    path = SRC / "runtime" / "protocol.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    type_only = {
+        id(node)
+        for block in tree.body
+        if isinstance(block, ast.If) and getattr(block.test, "id", "") == "TYPE_CHECKING"
+        for node in ast.walk(block)
+    }
+    bh_imports = [
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if id(node) not in type_only
+        and (
+            (isinstance(node, ast.ImportFrom) and (node.level or "beadhive" in (node.module or "")))
+            or (isinstance(node, ast.Import) and any("beadhive" in a.name for a in node.names))
+        )
+    ]
+    assert bh_imports == []
+    assert runtime.RoleOutcome is runtime.protocol.RoleOutcome, "re-exported, not copied"

@@ -120,10 +120,18 @@ from . import (
     state,
     work_next,
 )
+from .runtime.protocol import (
+    RoleHandle,
+    RoleOutcome,
+    can_cancel,
+    can_close,
+    can_notify,
+    is_adoptable,
+    schedule_accepts,
+)
 
 if TYPE_CHECKING:
     from .gate_resolution import GateResolution
-    from .runtime import RoleHandle, RoleOutcome
 
 _LOG = log.get_logger(__name__)
 
@@ -1560,45 +1568,6 @@ RUNG_NOT_HELD = "not_held"
 #: A runtime's ``cancel`` returned an outcome without naming a rung.
 RUNG_UNREPORTED = "unreported"
 
-#: `work.runtime` values the loop refuses at start: they name a tier, not a scheduler the loop
-#: can hand a seat to. `temporal` already fails inside its factory (unimplemented, bh-c6dk.4).
-_UNSCHEDULABLE_RUNTIMES = {
-    "claude": (
-        "work.runtime=claude is the Task-tool sub-agent fanout a harness session drives itself; "
-        "`bh work loop` has nothing to schedule seats on. Use work.runtime=local (the default) "
-        "or a registered runtime."
-    ),
-}
-
-
-class LoopRuntimeError(ValueError):
-    """The hive's `work.runtime` cannot drive `bh work loop`. Raised at loop start only."""
-
-
-def loop_runtime(cfg, entry):
-    """The ONE runtime instance a `bh work loop` drives: `runtime.get_runtime(cfg, entry)`, or a
-    :class:`LoopRuntimeError` naming why it cannot be used — an unregistered name, an
-    unimplemented tier (`temporal`), a tier that schedules nothing (`claude`), or a factory that
-    returned something that is not a :class:`beadhive.runtime.Runtime`. Fails loudly at start;
-    the loop never falls back to a different runtime than the one configured."""
-    from . import runtime
-
-    name = config.work_runtime(cfg, entry) if cfg is not None else "local"
-    if name in _UNSCHEDULABLE_RUNTIMES:
-        raise LoopRuntimeError(_UNSCHEDULABLE_RUNTIMES[name])
-    try:
-        rt = runtime.get_runtime(cfg, entry)
-    except NotImplementedError as exc:
-        raise LoopRuntimeError(f"work.runtime={name} cannot run the loop: {exc}") from exc
-    except ValueError as exc:
-        raise LoopRuntimeError(f"work.runtime={name} is not usable: {exc}") from exc
-    if not isinstance(rt, runtime.Runtime):
-        raise LoopRuntimeError(
-            f"work.runtime={name} resolved to {type(rt).__name__}, which does not implement the "
-            "Runtime protocol (name, schedule, observe, on_gate_resolved)"
-        )
-    return rt
-
 
 def bind_local_launch(
     rt,
@@ -1737,12 +1706,10 @@ class LocalLoop:
                 env=env,
             )
         )
-        from . import runtime as runtime_seam
-
         #: Optional ``schedule`` keywords this runtime declares, read once off its signature so the
         #: loop passes ``decision`` / ``action`` without knowing its concrete type.
         self._schedule_extras = frozenset(
-            kw for kw in ("decision", "action") if runtime_seam.schedule_accepts(self.runtime, kw)
+            kw for kw in ("decision", "action") if schedule_accepts(self.runtime, kw)
         )
         #: The wall-time cap's clock — monotonic in production, injectable so the cap is testable
         #: without waiting one out.
@@ -2214,8 +2181,6 @@ class LocalLoop:
     # ---- the runtime (bh-03rvd) ---------------------------------------------------------------
 
     def _adoptable(self) -> bool:
-        from .runtime import is_adoptable
-
         return is_adoptable(self.runtime)
 
     async def _observe(self, entry: InFlight) -> RoleOutcome:
@@ -2232,8 +2197,6 @@ class LocalLoop:
         DEGRADES as designed rather than pretending: it cannot stop the session, so it says so
         (rung ``unsupported``, a warning naming the runtime), and the caller still writes the
         cause and releases the claim — the session is the runtime's to wind down."""
-        from .runtime import can_cancel
-
         if not can_cancel(self.runtime):
             _LOG.warning(
                 "runtime_cannot_cancel",
@@ -2251,8 +2214,6 @@ class LocalLoop:
         return outcome.cancel_rung or RUNG_UNREPORTED, outcome.session_id, outcome.cost_usd
 
     async def _close_runtime(self) -> None:
-        from .runtime import can_close
-
         if can_close(self.runtime):
             await asyncio.to_thread(self.runtime.close)
 
@@ -2694,8 +2655,6 @@ class LocalLoop:
         unusable workspace, ``blocked`` for a strict routing block), the reason text and any
         evidence payload, which lands in ``report.routing`` beside the loop's own routing record.
         A bare ``ValueError`` from a third-party runtime is a failure quoting its message."""
-        from .runtime import RoleOutcome
-
         status = getattr(exc, "status", "failed")
         reason = getattr(exc, "reason", "") or (
             f"runtime {getattr(self.runtime, 'name', '?')} refused to schedule {bead}: {exc}"
@@ -2721,8 +2680,6 @@ class LocalLoop:
         delivers through the runtime's optional ``notify(handle, message)`` (LocalRuntime writes
         the seat's stdin pipe). A runtime without that capability notifies nobody.
         """
-        from .runtime import can_notify
-
         if not can_notify(self.runtime):
             return ()
         notified = []
@@ -2999,8 +2956,6 @@ class LocalRuntime:
         block (``status="blocked"``) or an invalid workspace (``status="failed"``), with the
         reason the loop records for the same failure. Nothing is spawned and nothing is written.
         """
-        from .runtime import RoleHandle
-
         live = self._runs.get(bead_id)
         if live is not None and not live.finished:
             return RoleHandle(bead_id=bead_id, session_id=live.provider_continuation)
@@ -3126,8 +3081,6 @@ class LocalRuntime:
         ``process.harvested`` journal record) and maps it through
         :meth:`beadhive.runtime.RoleOutcome.from_classification` with the child's exit code; later
         calls return that same outcome without reaping or journaling again."""
-        from .runtime import RoleOutcome
-
         seat = self._runs.get(handle.bead_id)
         if seat is None:
             return RoleOutcome(status="failed", summary=f"no run scheduled for {handle.bead_id}")
@@ -3178,8 +3131,6 @@ class LocalRuntime:
         journals ``process.cancelled``; the outcome is mapped by
         :meth:`beadhive.runtime.RoleOutcome.from_classification` and is what a later
         :meth:`observe` answers."""
-        from .runtime import RoleOutcome
-
         seat = self._live_for(handle)
         if seat is None:
             return None

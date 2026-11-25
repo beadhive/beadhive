@@ -242,6 +242,50 @@ def impl_next_(api, as_, hive, as_json, epic):
         raise api.typer.Exit(api.NEXT_DECLINE_EXIT)
 
 
+#: `work.runtime` values the loop refuses at start: they name a tier, not a scheduler the loop
+#: can hand a seat to. `temporal` already fails inside its factory (unimplemented, bh-c6dk.4).
+_UNSCHEDULABLE_RUNTIMES = {
+    "claude": (
+        "work.runtime=claude is the Task-tool sub-agent fanout a harness session drives itself; "
+        "`bh work loop` has nothing to schedule seats on. Use work.runtime=local (the default) "
+        "or a registered runtime."
+    ),
+}
+
+
+class LoopRuntimeError(ValueError):
+    """The hive's `work.runtime` cannot drive `bh work loop`. Raised at loop start only."""
+
+
+def loop_runtime(cfg, entry):
+    """The ONE runtime instance a `bh work loop` drives: `runtime.get_runtime(cfg, entry)`, or a
+    :class:`LoopRuntimeError` naming why it cannot be used — an unregistered name, an
+    unimplemented tier (`temporal`), a tier that schedules nothing (`claude`), or a factory that
+    returned something that is not a :class:`beadhive.runtime.Runtime`. Fails loudly at start;
+    the loop never falls back to a different runtime than the one configured. Lives here, beside
+    `impl_loop`, not in `localloop`: resolution goes through the runtime REGISTRY, whose `local`
+    factory imports `localloop`, so `localloop` itself only ever imports the leaf
+    `beadhive.runtime.protocol` (bh-03rvd)."""
+    from . import runtime
+    from .config_consumer_ports import work_settings as config
+
+    name = config.work_runtime(cfg, entry) if cfg is not None else "local"
+    if name in _UNSCHEDULABLE_RUNTIMES:
+        raise LoopRuntimeError(_UNSCHEDULABLE_RUNTIMES[name])
+    try:
+        rt = runtime.get_runtime(cfg, entry)
+    except NotImplementedError as exc:
+        raise LoopRuntimeError(f"work.runtime={name} cannot run the loop: {exc}") from exc
+    except ValueError as exc:
+        raise LoopRuntimeError(f"work.runtime={name} is not usable: {exc}") from exc
+    if not isinstance(rt, runtime.Runtime):
+        raise LoopRuntimeError(
+            f"work.runtime={name} resolved to {type(rt).__name__}, which does not implement the "
+            "Runtime protocol (name, schedule, observe, on_gate_resolved)"
+        )
+    return rt
+
+
 def _loop_runtime(api, cfg, entry, *, seat_binary, launch_contexts):
     """The ONE runtime instance `bh work loop` drives (bh-03rvd): the hive's
     `get_runtime(cfg, entry)`, carrying this invocation's launch overrides. Seat scheduling AND
@@ -254,8 +298,8 @@ def _loop_runtime(api, cfg, entry, *, seat_binary, launch_contexts):
     from . import localloop
 
     try:
-        rt = localloop.loop_runtime(cfg, entry)
-    except localloop.LoopRuntimeError as exc:
+        rt = loop_runtime(cfg, entry)
+    except LoopRuntimeError as exc:
         api.typer.echo(f"✗ runtime_unavailable: {exc}", err=True)
         raise api.typer.Exit(1) from None
     overrides = {}
