@@ -479,3 +479,40 @@ def test_sink_check_passes_through_bh_role_outcome_sink(monkeypatch, tmp_path):
     env = RuntimeEnv(hive, hive.seat_command(), tmp_path, tmp_path / "i.md")
 
     _sink_round_trip(env)
+
+
+_BLOCK_PYTEST = """
+import runpy, sys
+from importlib.abc import MetaPathFinder
+
+class _Block(MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == "pytest" or name.startswith(("pytest.", "_pytest")):
+            raise ImportError("pytest is blocked")
+
+sys.meta_path.insert(0, _Block())
+import beadhive.runtime.conformance as kit
+assert "pytest" not in sys.modules
+sys.argv = ["beadhive.runtime.conformance", "--help"]
+try:
+    runpy.run_module("beadhive.runtime.conformance", run_name="__main__")
+except SystemExit as exc:
+    assert exc.code in (0, None), exc.code
+assert "pytest" not in sys.modules
+print("ok")
+"""
+
+
+def test_kit_runs_without_pytest() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", _BLOCK_PYTEST], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().endswith("ok")
+
+
+def test_suite_still_importable_lazily() -> None:
+    from beadhive.runtime import conformance
+
+    assert issubclass(conformance.RuntimeConformanceSuite, object)
+    assert "RuntimeConformanceSuite" in conformance.__all__
