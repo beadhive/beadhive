@@ -173,3 +173,29 @@ def test_error_row_is_reported_and_rendered_not_skipped(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "<invalid entry: orphan>" in out
     assert "ERROR" in out
+
+
+def test_delegated_row_renders_delegated_not_healthy_and_warns_on_installed_service(
+    monkeypatch, capsys
+):
+    """bh-045jx: a `loop: gc` hive with a stale bh service must not read as healthy."""
+    delegated = _status(state=dispatch_status.STATE_DELEGATED)
+    monkeypatch.setattr(dispatch_status, "compute_status_all", lambda cfg: [delegated])
+
+    data = doctor._data_dispatch({})
+    assert data["hives"][0]["state"] == "delegated"
+    doctor._render_dispatch(data)
+    out = capsys.readouterr().out
+    assert "delegated (loop: gc)" in out
+    assert "healthy" not in out
+    assert "bh host dispatch disable --hive acme/widgets" in out
+
+
+def test_delegated_hive_without_installed_service_stays_silent(monkeypatch, capsys):
+    delegated = _status(installed=False, running=False, state=dispatch_status.STATE_DELEGATED)
+    monkeypatch.setattr(dispatch_status, "compute_status_all", lambda cfg: [delegated])
+
+    data = doctor._data_dispatch({})
+    assert data["relevant"] is False
+    doctor._render_dispatch(data)
+    assert capsys.readouterr().out == ""

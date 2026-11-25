@@ -1404,6 +1404,13 @@ def _render_dispatch(d: dict) -> None:
         if row.get("state") == "error":
             typer.echo(f"  ✗ {row['hive']}: ERROR — {row['detail']}")
             continue
+        if row.get("state") == "delegated":
+            typer.echo(f"  ✓ {row['hive']}: delegated (loop: gc)")
+            typer.echo(
+                f"  ⚠ {row['hive']}: a bh dispatch service is still installed but the loop is "
+                f"delegated — `bh host dispatch disable --hive {row['hive']}` to remove it"
+            )
+            continue
         if row["dead"]:
             typer.echo(
                 f"  ✗ {row['hive']}: DEAD — supervised but not running "
