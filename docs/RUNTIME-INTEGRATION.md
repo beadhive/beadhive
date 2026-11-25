@@ -154,10 +154,12 @@ The runner prints a PASS or FAIL line per check, then one verdict:
 | `NOT YET` | One or more checks failed, and every failure is GC-fixable. | Fix the runtime and re-run. |
 | `NO-GO` | At least one structural check failed (`same-session-id` or `no-lifecycle-writes`). | **This routes GC to Mode 2.** |
 
-Each failure names the ADR invariant it broke and its fix class. The seven checks and their
-classes are tabulated in [WORK.md](WORK.md#the-conformance-kit--beadhiveruntimeconformance). A
-crash inside the runtime or its factory is reported as a GC-fixable failure, so it reads as
-`NOT YET`, never `NO-GO`.
+Each failure names the ADR invariant it broke and its fix class. The six checks and their
+classes are tabulated in [WORK.md](WORK.md#the-conformance-kit--beadhiveruntimeconformance). The
+outcome sink round trip is not one of them: it exercises BH's own writer and reader, never the
+runtime, so it is tested in BH's suite and does not affect the verdict. A crash inside
+the runtime or its factory is reported as a GC-fixable failure, so it reads as `NOT YET`, never
+`NO-GO`.
 
 ### Which hive the verdict came from
 
