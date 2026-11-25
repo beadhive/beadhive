@@ -30,7 +30,7 @@ The GC team has since asked for the seam that removes those blockers. They asked
 for `work.runtime` that works like the claim-authority registry, plus agreement on the
 `schedule` / `observe` / `on_gate_resolved` semantics. They also asked for an outcome channel
 for long-lived sessions that are not child processes, and for defined bounce and feedback points.
-`src/beadhive/runtime.py` already defines exactly that protocol. What's missing is the
+`src/beadhive/runtime/` already defines exactly that protocol. What's missing is the
 registration mechanism, an outcome path that doesn't depend on a child process, and a real caller
 for `on_gate_resolved`, which nothing invokes today.
 
@@ -41,7 +41,7 @@ location, and start-refused recovery. Decision 5 covers them.
 
 ### 1. `work.runtime` becomes a name-keyed registry
 
-`runtime.py` gains `_RUNTIMES: dict[str, RuntimeFactory]`, `register_runtime(name, factory)`,
+`runtime/` gains `_RUNTIMES: dict[str, RuntimeFactory]`, `register_runtime(name, factory)`,
 `available_runtimes()` and `get_runtime(cfg)`. It mirrors `claim_authority.py:455-490` exactly.
 Lookup is by name. An unknown name raises `ValueError` listing the available names. Nothing is
 auto-discovered: a plugin calls `register_runtime` itself. The built-ins `local`, `claude` and

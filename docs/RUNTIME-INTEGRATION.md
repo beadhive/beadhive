@@ -27,9 +27,12 @@ GC runtime passes beadhive.runtime.conformance?
 | Hive loop mode | `work.dispatch.loop: bh` | `work.dispatch.loop: gc` |
 
 Mode 1 is the default target. Mode 2 is the fallback when the kit reports a structural failure.
-Its BH-side stand-down work (the `dispatch-owner:gc` label in poll, claim and reclaim, and the
-`work.dispatch.loop` key) is not built yet: it is planned on demand if a GC runtime lands on the
-Mode 2 side of the tree, so a Mode 1 success leaves nothing speculative behind.
+BH's side of the stand-down is built: `work.dispatch.loop: bh | gc` and the `dispatch-owner:gc`
+member label are read by one predicate (see
+[`work.dispatch.loop`](CONFIGURATION.md#workdispatchloop--who-owns-the-dispatcher-loop)). The rest
+of the Mode 2 BH-side work, the `bh plugin gc` integration, is not filed. It is planned on demand
+if a GC runtime lands on the Mode 2 side of the tree, so a Mode 1 success leaves nothing
+speculative behind.
 
 ## Mode 1: register a runtime
 
@@ -174,7 +177,8 @@ Mode 1 from Mode 2 cannot fail there. Do not treat that verdict as the Mode 1 GO
 On a `NO-GO`, GC works the hive's molecule as a formula controller instead (ADR Decision 6):
 
 - BH hands a whole molecule's ready members to GC. A `dispatch-owner:gc` label on a member makes
-  BH stand down: its poll, claim and reclaim skip that member.
+  BH stand down: the picker, `bh work next` and the loop's reclaim skip that member. Lifecycle
+  verbs (`bh work claim`, `submit`, `review`, `merge`, gate resolution) still work on it.
 - GC runs exactly one BH command per member, a `bh role` item wrapper, as a one-shot session. The
   wrapper holds the pipes and emits `SeatRun` on stdout, so no outcome sink is needed.
 - GC works the hive's beads directly in the shared store, or `tracks` them from its own city. The
