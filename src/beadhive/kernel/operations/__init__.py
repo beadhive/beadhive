@@ -260,7 +260,7 @@ release preview|rev:string:o,gate:string:o,hive:string:o,tag:string:o,remote:str
 release recover|rev:string:o,tag:string:o,remote:string:o,branch:string:o,hive:string:o,apply:boolean:o,dry_run:boolean:o
 report|hive:string:r,title:string:r,report_type:string:o,as_actor:string:o,description:string:o
 report-target|as_json:boolean:o
-role|name:string:o,harness:string:o,no_hitch:boolean:o,baml_required:boolean:o,seats:boolean:o,bead:string:o,hive:string:o,task:string:o,detached:boolean:o,explain:boolean:o,available_seat:array:o,current_seat:string:o,model:string:o,effort:string:o
+role|name:string:o,harness:string:o,no_hitch:boolean:o,baml_required:boolean:o,seats:boolean:o,bead:string:o,hive:string:o,task:string:o,detached:boolean:o,explain:boolean:o,available_seat:array:o,current_seat:string:o,model:string:o,effort:string:o,outcome_sink:string:o,session_id:string:o
 setup check|as_json:boolean:o
 setup guide|wizard:boolean:o,handoff:boolean:o,force:boolean:o,dry_run:boolean:o
 setup show|
