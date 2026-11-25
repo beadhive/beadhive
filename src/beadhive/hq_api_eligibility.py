@@ -321,12 +321,43 @@ def eligibility(
 LEASE_FIELDS = frozenset({"host_id", "label", "epoch", "adopted_at", "expires_at"})
 
 
+def _unheld_empty(prefix: str, body: Any) -> bool:
+    """``body`` is the service's empty, unheld lease for ``prefix``: ``held`` is ``False``, the
+    lease is the five fields zero-valued (epoch ``0``, every string empty), and any prefix and
+    revision it carries are well formed. Anything else is judged as a held record."""
+    if not isinstance(body, Mapping) or body.get("held") is not False:
+        return False
+    raw = body.get("lease")
+    revision = body.get("revision", "")
+    return (
+        body.get("prefix", prefix) == prefix
+        and isinstance(revision, str)
+        and isinstance(raw, Mapping)
+        and set(raw) == LEASE_FIELDS
+        and type(raw["epoch"]) is int
+        and raw["epoch"] == 0
+        and all(
+            type(raw[key]) is str and not raw[key]
+            for key in ("host_id", "label", "adopted_at", "expires_at")
+        )
+    )
+
+
 def hive_lease(prefix: str, body: Any) -> tuple[str, Any]:
     """``(revision, HostLease)`` from ``GET /hive-leases`` (``HiveLeaseRead``), validated as the
     SQL reader validates its carrier. Expiry is a failover hint on this carrier (session
-    liveness): ``advisory_expiry`` is set, as the SQL session reader sets it."""
+    liveness): ``advisory_expiry`` is set, as the SQL session reader sets it.
+
+    An unheld empty record (``held: false``, epoch ``0``, no holder; bh-5i27m) is the
+    service's "no lease" for a known prefix, e.g. one whose holder's incarnation was retired:
+    ``(revision, None)``, as an ``unknown_prefix`` refusal is ``("", None)``, so the frame may
+    adopt it. A HELD record is still validated in full: epoch ``< 1`` or an unparseable stamp
+    there is malformed."""
     from .host_lease_contracts import HostLease, _parse_stamp
 
+    if _unheld_empty(prefix, body):
+        revision = body.get("revision", "")
+        return revision, None
     try:
         raw = body["lease"]
         revision = body["revision"]

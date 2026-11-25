@@ -617,3 +617,169 @@ def test_both_adapters_serve_the_hive_lease_read():
     adapter = object.__new__(hq_sql_adapter.SqlHqAdapter)
     adapter._plane = Plane()
     assert adapter.read_hive_lease("bh", deadline=0.0) == ("rev", "lease-of-bh")
+
+
+# ---- an unheld, empty lease after a re-join (bh-5i27m) ---------------------------------------
+
+
+def empty_lease_body(**changes) -> dict:
+    """hq-service's answer for a known prefix no live incarnation holds (e.g. its holder's
+    incarnation was retired): a 200 with an epoch-0, empty lease and ``held: false``."""
+    return {
+        "head": HEAD,
+        "prefix": "bh",
+        "revision": "",
+        "lease": {"host_id": "", "label": "", "epoch": 0, "adopted_at": "", "expires_at": ""},
+        "held": False,
+        **changes,
+    }
+
+
+def _cli_eligible() -> tuple[int, dict]:
+    from beadhive.cli import app
+
+    result = CliRunner().invoke(app, ["host", "eligible", "--hive", "bh", "--json"])
+    payload = next(
+        json.loads(line)
+        for line in result.output.splitlines()
+        if line.startswith("{") and '"eligible"' in line
+    )
+    return result.exit_code, payload
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        empty_lease_body(),
+        empty_lease_body(revision="q" * 64),
+        {key: value for key, value in empty_lease_body().items() if key in ("lease", "held")},
+    ],
+)
+def test_an_unheld_empty_lease_body_is_no_lease(body):
+    from beadhive import hq_api_eligibility as api_reads
+
+    assert api_reads.hive_lease("bh", body) == (body.get("revision", ""), None)
+
+
+def _held(**lease) -> dict:
+    body = lease_body()
+    return {**body, "lease": {**body["lease"], **lease}}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _held(epoch=0),  # a HELD lease must carry an epoch >= 1
+        _held(adopted_at="not-a-stamp"),
+        _held(expires_at=""),
+        empty_lease_body(held=True),  # empty but claims to be held
+        empty_lease_body(lease={**empty_lease_body()["lease"], "host_id": "host-9"}),
+        empty_lease_body(prefix="zz"),  # another hive's answer
+        empty_lease_body(revision=None),
+        empty_lease_body(lease={**empty_lease_body()["lease"], "epoch": "0"}),
+    ],
+)
+def test_a_malformed_lease_record_is_still_refused(body):
+    from beadhive import hq_api_eligibility as api_reads
+
+    with pytest.raises(api_reads.ApiReadError, match="protected hive lease record invalid"):
+        api_reads.hive_lease("bh", body)
+
+
+def test_an_unheld_empty_lease_reads_as_absent_and_fails_only_the_holder(
+    api_frame, service, no_sql
+):
+    service.hive_leases["bh"] = empty_lease_body()
+    assert host_lease.read_record("origin", "bh", cwd=config.hq_dir()) == ("", None)
+    decision = frame_eligibility.decision_for("host-1", {"prefix": "bh"})
+    assert decision is not None and decision.allowed, decision.reason
+    observation = _plane().read_eligibility(manifest(), prefix="bh")[2]
+    assert observation.current_hive_lease_holder is False and observation.reason == ""
+    code, payload = _cli_eligible()
+    assert code == 1
+    assert [name for name, ok in payload["predicates"].items() if not ok] == [
+        "current_hive_lease_holder"
+    ]
+    assert payload["candidate_eligible"] is True
+    assert no_sql == []
+
+
+def test_a_lease_read_failure_fails_only_the_lease_predicates(api_frame, service, no_sql):
+    """A malformed lease row is not an authority read failure: the frame's other predicates
+    are still judged on the signed eligibility read, and the holder predicate fails closed."""
+    service.hive_leases["bh"] = _held(epoch=0)
+    decision = frame_eligibility.decision_for("host-1", {"prefix": "bh"})
+    assert decision is not None and decision.allowed, decision.reason
+    assert dict(decision.predicates)["authority_available"] is True
+    assert dict(decision.admission)["predicates"]["current_hive_lease_holder"] is False
+    observation = _plane().read_eligibility(manifest(), prefix="bh")[2]
+    assert observation.current_hive_lease_holder is False
+    assert "hive lease unavailable for bh" in observation.reason
+    code, payload = _cli_eligible()
+    assert code == 1
+    assert [name for name, ok in payload["predicates"].items() if not ok] == [
+        "current_hive_lease_holder"
+    ]
+    # The lease's own reads still refuse it rather than reading it as absent.
+    with pytest.raises(hq_control_plane.ControlPlaneError, match="hive lease record invalid"):
+        host_lease.read_record("origin", "bh", cwd=config.hq_dir())
+    assert no_sql == []
+
+
+def test_an_authority_read_failure_is_still_authority_unavailable(api_frame, service):
+    """Isolation is for the lease row only: an eligibility read failure fails closed whole."""
+    service.hive_leases["bh"] = empty_lease_body()
+    del service.reads["/eligibility/frame-1"]
+    decision = frame_eligibility.decision_for("host-1", {"prefix": "bh"})
+    assert decision is not None and not decision.allowed
+    assert dict(decision.predicates)["authority_available"] is False
+
+
+def _bare_and_clone(tmp_path, name):
+    import subprocess
+
+    def git(*args, cwd):
+        subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, check=True)
+
+    remote = tmp_path / f"{name}.git"
+    git("init", "--bare", "-q", str(remote), cwd=tmp_path)
+    clone = tmp_path / name
+    clone.mkdir()
+    git("init", "-q", cwd=clone)
+    git("config", "user.email", "t@example.invalid", cwd=clone)
+    git("config", "user.name", "t", cwd=clone)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=clone)
+    return str(remote), clone
+
+
+@pytest.mark.parametrize("revision", ["", "q" * 64])
+def test_a_rejoined_frame_adopts_an_unheld_hive_then_is_eligible(
+    api_frame, service, no_sql, tmp_path, revision
+):
+    """After a re-join the service serves the hive's lease as unheld and empty: adopt passes
+    eligibility, moves the fence, publishes the lease CAS on the served revision, and the
+    frame is then the hive's eligible holder."""
+    from beadhive import host_adopt, host_fence
+
+    service.hive_leases["bh"] = empty_lease_body(revision=revision)
+    hive_remote, hive_cwd = _bare_and_clone(tmp_path, "hive")
+    outcome = host_adopt.adopt(
+        prefix="bh",
+        hive_remote=hive_remote,
+        hq_remote="origin",
+        hive_cwd=hive_cwd,
+        hq_cwd=config.hq_dir(),
+        host_id="host-1",
+        label="frame",
+        at=1_800_000_000.0,  # a fixed adopt clock: the lease stamps must parse as real times
+    )
+    assert outcome.epoch == 1
+    assert host_fence.read_fence(hive_remote, cwd=hive_cwd)[1].epoch == 1
+    (request,) = [body["request"] for body in _submitted(service)]
+    assert request["operation"] == "adopt" and request["expected_revision"] == revision
+    assert service.hive_leases["bh"]["held"] is True
+    assert service.hive_leases["bh"]["lease"]["host_id"] == "host-1"
+    code, payload = _cli_eligible()
+    assert code == 0, payload
+    assert payload["eligible"] is True and payload["predicates"]["current_hive_lease_holder"]
+    assert no_sql == []
