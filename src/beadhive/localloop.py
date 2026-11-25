@@ -114,6 +114,7 @@ from . import (
 
 if TYPE_CHECKING:
     from .gate_resolution import GateResolution
+    from .runtime import RoleHandle, RoleOutcome
 
 _LOG = log.get_logger(__name__)
 
@@ -757,6 +758,31 @@ async def _collect_with_timeout(seat: SeatProcess, timeout: float) -> str:
     return await seat.collect(timeout=timeout)
 
 
+def _journal_harvest(seat: SeatProcess, cls: seatrun.Classification, reap: ReapResult) -> None:
+    """Append the ``process.harvested`` activity for a finished, reaped seat — the one writer
+    both harvest paths share (:meth:`LocalLoop._harvest` and :meth:`LocalRuntime.observe`), so
+    the record a run leaves does not depend on which of them noticed it finished."""
+    if seat.journal is None:
+        return
+    outcome, usage, cost = run_journal.activity_outcome(cls)
+    activity: dict[str, object] = {
+        "kind": "process.harvested",
+        "phase": "finished" if reap.group_gone else "failed",
+        "outcome_code": outcome,
+        "process": {
+            "exit_code": seat.proc.returncode,
+            "group_gone": reap.group_gone,
+        },
+    }
+    if usage:
+        activity["usage"] = usage
+    if cost:
+        activity["cost_usd"] = cost
+    if seat.journal.degraded:
+        activity["journal_degraded"] = True
+    seat.journal.append(activity, operation="harvest")
+
+
 # --------------------------------------------------------------------------------------------
 # In-process caps — the pure decision core (and the seam a budget governor plugs into)
 # --------------------------------------------------------------------------------------------
@@ -1098,6 +1124,49 @@ CAUSE_ESCALATED = state.CAUSE_ESCALATED  # the decision table escalated; a human
 CAUSE_PROVISIONING_FAILED = state.CAUSE_PROVISIONING_FAILED  # infra failure on the dispatch path
 #: CLOSED set — the SAME object `state` registers for the `dispatch` dimension, not a copy.
 DISPATCH_CAUSES: frozenset[str] = state.DISPATCH_CAUSES
+
+#: A terminal :class:`beadhive.runtime.RoleOutcome` status -> the cause the loop's harvest writes.
+#: The same table :meth:`LocalLoop._cause_for` applies to a ``seatrun.RunOutcome`` (``failed`` is
+#: the protocol's spelling of ``INCOMPLETE``); a parity test pins the two together.
+_OUTCOME_CAUSES = {
+    "done": "",
+    "blocked": CAUSE_BLOCKED,
+    "handoff": CAUSE_HANDOFF,
+    "failed": CAUSE_FAILED,
+}
+
+
+def cause_for_outcome(outcome: RoleOutcome) -> str:
+    """The cause a terminal *outcome* writes, or ``""`` for a ``done`` run (write on failure,
+    not on attempt). :meth:`LocalLoop._cause_for` over a runtime's ``observe()`` answer: a
+    bead-id mismatch is a failure even when the status says done. ``running`` is not terminal
+    and has no cause; asking for one is a caller bug, so it raises."""
+    if outcome.bead_id_mismatch:
+        return CAUSE_MISMATCH
+    try:
+        return _OUTCOME_CAUSES[outcome.status]
+    except KeyError:
+        raise ValueError(f"no cause for a non-terminal outcome status {outcome.status!r}") from None
+
+
+def cause_reason_for_outcome(outcome: RoleOutcome, *, action: str) -> str:
+    """The reason text the loop records with :func:`cause_for_outcome`'s cause: byte-for-byte
+    what :meth:`LocalLoop._cause_reason` builds from the classification and the held process,
+    rebuilt from the outcome's additive fields (pinned by a parity test). A ``done`` /
+    ``blocked`` / ``handoff`` status means a ``SeatRun`` parsed; a ``failed`` one that still
+    reports a session came from a killed run's envelope; anything else quotes the detail."""
+    parts = [f"exit {outcome.exit_code}", f"action {action}"]
+    if outcome.status in ("done", "blocked", "handoff"):
+        parts.append(f"session {outcome.session_id}")
+        parts.append(f"cost {outcome.cost_usd}")
+        if outcome.summary:
+            parts.append(outcome.summary)
+    elif outcome.session_id is not None:
+        parts.append(f"session {outcome.session_id}")
+        parts.append(f"terminal_reason {outcome.terminal_reason}")
+    else:
+        parts.append(outcome.detail)
+    return "; ".join(p for p in parts if p)
 
 
 def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") -> bool:
@@ -2139,24 +2208,7 @@ class LocalLoop:
                     else ""
                 ),
             )
-            if seat.journal is not None:
-                outcome, usage, cost = run_journal.activity_outcome(cls)
-                activity: dict[str, object] = {
-                    "kind": "process.harvested",
-                    "phase": "finished" if reap.group_gone else "failed",
-                    "outcome_code": outcome,
-                    "process": {
-                        "exit_code": seat.proc.returncode,
-                        "group_gone": reap.group_gone,
-                    },
-                }
-                if usage:
-                    activity["usage"] = usage
-                if cost:
-                    activity["cost_usd"] = cost
-                if seat.journal.degraded:
-                    activity["journal_degraded"] = True
-                seat.journal.append(activity, operation="harvest")
+            _journal_harvest(seat, cls, reap)
 
     @staticmethod
     def _cause_for(cls: seatrun.Classification) -> str:
@@ -2565,9 +2617,27 @@ class LocalRuntime:
 
     The thread starts lazily on the first :meth:`schedule` so merely *resolving* the runtime
     (``get_runtime()``) costs nothing.
+
+    LOOP PARITY (bh-lhxy8). Given the same bead, role, routing decision and launch inputs,
+    :meth:`schedule` launches exactly what :meth:`LocalLoop._spawn_for` launches: the same argv
+    (``launch_context`` command + bundle, or ``seat_command`` + ``seat_bundle``), the same child
+    environment (``env``, then the run journal's child env, then ``BAML_PROFILE_DIR``), the same
+    process group, and the same journal records (``run.created``, ``process.spawned``, and the
+    ``process.harvested`` that :meth:`observe` appends once it reaps the run). :meth:`observe`
+    returns the rich :class:`beadhive.runtime.RoleOutcome` the loop's cause mapping needs
+    (:func:`cause_for_outcome`, :func:`cause_reason_for_outcome`). Workspace and routing
+    failures raise :class:`beadhive.runtime.ScheduleRefused` carrying the cause inputs the loop
+    records, because writing a cause is a lifecycle write and a runtime makes none.
+
+    Optional capabilities: ``cancel(handle)``, ``notify(handle, message)`` and ``close()`` are
+    offered; ``adoptable`` is ``False`` because a seat here is a child of this process and dies
+    with it, so there is never a live session for a restarted loop to adopt.
     """
 
     name = "local"
+    #: Sessions do not outlive this process (see the class docstring). Read through
+    #: :func:`beadhive.runtime.is_adoptable`.
+    adoptable = False
 
     def __init__(
         self,
@@ -2578,7 +2648,9 @@ class LocalRuntime:
         terminate_grace: float = 5.0,
         envelope_grace: float = 3.0,
         run_identity: Callable[..., run_journal.RunIdentity | None] | None = None,
+        launch_context: Callable[[str], SeatLaunchContext] | None = None,
         journal_base: Path | None = None,
+        env: dict | None = None,
     ):
         self.seat_command = seat_command
         self.seat_bundle = seat_bundle
@@ -2586,10 +2658,20 @@ class LocalRuntime:
         self.terminate_grace = terminate_grace
         self.envelope_grace = envelope_grace
         self._run_identity = run_identity
+        #: The same launch seam :class:`LocalLoop` takes: a validated per-role command, bundle
+        #: and run identity. When set it wins over ``seat_command`` / ``seat_bundle`` /
+        #: ``run_identity``, exactly as it does on the loop's spawn path.
+        self._launch_context = launch_context
         self._journal_base = journal_base
+        #: The child's base environment (``None`` inherits this process's), as on the loop.
+        self.env = env
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread = None
         self._runs: dict[str, SeatProcess] = {}
+        #: The terminal outcome of each run already harvested (or cancelled), keyed by bead and
+        #: held against the exact :class:`SeatProcess` it describes, so a repeated ``observe``
+        #: answers the same verdict without reaping or journaling a second time.
+        self._terminal: dict[str, tuple[SeatProcess, RoleOutcome]] = {}
 
     # ---- the private loop thread -----------------------------------------------------------
 
@@ -2635,6 +2717,7 @@ class LocalRuntime:
             if reap is not None and not reap.group_gone:
                 failures.append(f"{seat.bead_id}: process group {seat.pgid} survived cleanup")
         self._runs.clear()
+        self._terminal.clear()
         if failures:
             raise RuntimeError("; ".join(failures))
 
@@ -2658,6 +2741,7 @@ class LocalRuntime:
                     f"{seat.bead_id}: process group {seat.pgid} survived last-resort reap"
                 )
         self._runs.clear()
+        self._terminal.clear()
         return failures
 
     def close(self) -> None:
@@ -2730,6 +2814,7 @@ class LocalRuntime:
         session_id: str,
         model: str | None = None,
         decision: model_routing.ModelDecision | None = None,
+        action: str = "schedule",
     ):
         """Spawn the role binary for *bead_id* and return a handle to observe it by.
 
@@ -2737,6 +2822,17 @@ class LocalRuntime:
         the SAME handle rather than a second process. "The loop never spawns two processes for
         one bead" is a property of the map, so it has to hold on this path too — a caller
         driving the protocol directly gets the same guarantee the poll loop gets.
+
+        *session_id* is the provider continuation handed to the seat as ``--session_id`` (the
+        loop's ``provider-<uuid>``); the process-owner id that joins the dispatch logs is minted
+        here, as the loop mints it. *action* is this runtime's extension of the protocol
+        signature (a caller that only knows the protocol leaves it at ``schedule``): the loop's
+        decision verb (``dispatch``, ``resume``, ...), recorded on the run and passed to the
+        ``run_identity`` hook exactly as :meth:`LocalLoop._spawn_for` passes it.
+
+        Raises :class:`beadhive.runtime.ScheduleRefused` (a ``ValueError``) for a strict routing
+        block (``status="blocked"``) or an invalid workspace (``status="failed"``), with the
+        reason the loop records for the same failure. Nothing is spawned and nothing is written.
         """
         from .runtime import RoleHandle
 
@@ -2744,11 +2840,18 @@ class LocalRuntime:
         if live is not None and not live.finished:
             return RoleHandle(bead_id=bead_id, session_id=live.provider_continuation)
 
+        launch = self._launch_context(role) if self._launch_context is not None else None
         if isinstance(decision, model_routing.ModelBlockedVerdict):
-            raise ValueError(
+            raise seatrun.ScheduleRefused(
                 f"cannot schedule {bead_id}: {decision.reason}; required "
                 f"{decision.required_tier.name}, preferred {decision.preferred_model or '(none)'}, "
-                f"availability {decision.availability_source}; {decision.remediation}"
+                f"availability {decision.availability_source}; {decision.remediation}",
+                status="blocked",
+                reason=(
+                    f"model routing blocked {bead_id}: {decision.reason}; "
+                    f"remediation: {decision.remediation}"
+                ),
+                payload={"bead": bead_id, **decision.as_dict()},
             )
         canonical_model = decision.selected_model if decision else model
         harness = decision.harness if decision else self.harness
@@ -2766,23 +2869,31 @@ class LocalRuntime:
 
         validation = seatrun.validate_workspace(str(workspace))
         if not validation.ok:
-            raise ValueError(f"cannot schedule {bead_id}: {validation.reason}")
+            raise seatrun.ScheduleRefused(
+                f"cannot schedule {bead_id}: {validation.reason}",
+                status="failed",
+                reason=f"workspace invalid before spawn: {validation.reason}",
+            )
         provider_continuation = session_id
         seat_process_id = f"seat-{uuid.uuid4()}"
         argv = seat_argv(
-            self.seat_command,
+            launch.command if launch is not None else self.seat_command,
             role,
             workspace=str(workspace),
             bead=bead_id,
             instructions=str(instructions),
             session_id=provider_continuation,
             model=translated_model,
-            bundle=self.seat_bundle,
+            bundle=launch.bundle if launch is not None else self.seat_bundle,
         )
         attributes = LocalLoop._routing_attributes(decision) if decision else None
         journal = None
-        if self._run_identity is not None:
-            identity = self._run_identity(bead_id, "schedule", role, decision)
+        if launch is not None:
+            journal = run_journal.RunJournal.create(
+                launch.run_identity(bead_id), base=self._journal_base
+            )
+        elif self._run_identity is not None:
+            identity = self._run_identity(bead_id, action, role, decision)
             if identity is not None:
                 journal = run_journal.RunJournal.create(identity, base=self._journal_base)
         with otel.record_agent_dispatch(
@@ -2796,38 +2907,76 @@ class LocalRuntime:
                     argv,
                     bead_id=bead_id,
                     role=role,
-                    action="schedule",
+                    action=action,
                     session_id=seat_process_id,
                     provider_continuation=provider_continuation,
                     cwd=str(workspace),
+                    env=self.env,
                     routing=routing_payload,
                     journal=journal,
                 )
             )
         self._runs[bead_id] = seat
+        self._terminal.pop(bead_id, None)
         return RoleHandle(bead_id=bead_id, session_id=provider_continuation)
+
+    def _settled(self, bead_id: str, seat: SeatProcess) -> RoleOutcome | None:
+        done = self._terminal.get(bead_id)
+        return done[1] if done is not None and done[0] is seat else None
+
+    async def _harvest_run(self, seat: SeatProcess) -> seatrun.Classification:
+        """:meth:`LocalLoop._harvest` for one finished seat: read the held pipe, reap the group,
+        classify stdout-first, and journal ``process.harvested`` through the shared writer."""
+        stdout = await _collect_with_timeout(seat, self.envelope_grace)
+        reap = await reap_group(seat, grace=self.terminate_grace)
+        if not reap.group_gone:
+            _LOG.error("seat_group_orphaned", bead=seat.bead_id, pgid=seat.pgid)
+        cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=seat.bead_id)
+        _LOG.info(
+            "seat_harvested",
+            bead=seat.bead_id,
+            outcome=str(cls.outcome),
+            exit_code=seat.proc.returncode,
+            session_id=seat.session_id,
+            provider_continuation_observed=(
+                cls.seat_run.session_id
+                if cls.seat_run
+                else cls.envelope.session_id
+                if cls.envelope
+                else ""
+            ),
+        )
+        _journal_harvest(seat, cls, reap)
+        return cls
 
     def observe(self, handle):
         """A status READ, never a blocking wait. ``running`` while the process is alive; once it
         exits, the verdict comes from :func:`beadhive.seatrun.classify_run` — stdout-first, never
         trusting a bare exit 0 — and the group is reaped so a finished run can never leave an
-        orphan behind."""
+        orphan behind.
+
+        The first terminal answer harvests the run exactly as the loop's harvest does (one
+        ``process.harvested`` journal record) and maps it through
+        :meth:`beadhive.runtime.RoleOutcome.from_classification` with the child's exit code; later
+        calls return that same outcome without reaping or journaling again."""
         from .runtime import RoleOutcome
 
         seat = self._runs.get(handle.bead_id)
         if seat is None:
             return RoleOutcome(status="failed", summary=f"no run scheduled for {handle.bead_id}")
+        settled = self._settled(handle.bead_id, seat)
+        if settled is not None:
+            return settled
         if not seat.finished:
             return RoleOutcome(
                 status="running", summary=f"pid {seat.pid}, pgid {seat.pgid}", routing=seat.routing
             )
-        stdout = self._submit(_collect_with_timeout(seat, self.envelope_grace))
-        self._submit(reap_group(seat, grace=self.terminate_grace))
-        cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=handle.bead_id)
-        if cls.outcome is seatrun.RunOutcome.INCOMPLETE:
-            return RoleOutcome(status="failed", summary=cls.detail, routing=seat.routing)
-        summary = cls.seat_run.outcome.summary if cls.seat_run else ""
-        return RoleOutcome(status=str(cls.outcome), summary=summary, routing=seat.routing)
+        cls = self._submit(self._harvest_run(seat))
+        result = RoleOutcome.from_classification(
+            cls, routing=seat.routing, exit_code=seat.proc.returncode
+        )
+        self._terminal[handle.bead_id] = (seat, result)
+        return result
 
     def on_gate_resolved(self, resolution: GateResolution) -> None:
         """A no-op with a reason, not an oversight. This tier notices a resolved gate on its next
@@ -2843,20 +2992,60 @@ class LocalRuntime:
             runtime=self.name,
         )
 
-    def cancel(self, bead_id: str) -> CancelResult | None:
-        """Walk the CANCEL ladder against a scheduled run. Not part of the `Runtime` protocol —
-        the protocol has no cancel verb — but the capability belongs to whatever holds the pipes,
-        so it is exposed here rather than left reachable only through :class:`LocalLoop`."""
-        seat = self._runs.get(bead_id)
+    # ---- optional capabilities (beadhive.runtime.CancellableRuntime / NotifiableRuntime) ----
+
+    def _live_for(self, handle: RoleHandle) -> SeatProcess | None:
+        """The run *handle* names — and only that run: a handle whose session id is not the
+        current run's (an earlier, finished turn of the same bead) names nothing."""
+        seat = self._runs.get(handle.bead_id)
+        if seat is None or seat.provider_continuation != handle.session_id:
+            return None
+        return seat
+
+    def cancel(self, handle: RoleHandle) -> RoleOutcome | None:
+        """Walk the CANCEL ladder against the run *handle* names and return its terminal outcome
+        (:class:`beadhive.runtime.CancellableRuntime`). ``None`` when this runtime holds no run
+        for the handle. A run that already finished is harvested, not cancelled — the same
+        choice the loop's wall-time cap makes by skipping finished seats — and a settled run
+        returns its outcome again without acting. The ladder journals ``process.cancelled``;
+        the outcome is mapped by :meth:`beadhive.runtime.RoleOutcome.from_classification` and is
+        what a later :meth:`observe` answers."""
+        from .runtime import RoleOutcome
+
+        seat = self._live_for(handle)
         if seat is None:
             return None
-        return self._submit(
+        settled = self._settled(handle.bead_id, seat)
+        if settled is not None:
+            return settled
+        if seat.finished:
+            return self.observe(handle)
+        result = self._submit(
             cancel(
                 seat,
                 envelope_grace=self.envelope_grace,
                 terminate_grace=self.terminate_grace,
             )
         )
+        outcome = RoleOutcome.from_classification(
+            result.classification, routing=seat.routing, exit_code=result.exit_code
+        )
+        self._terminal[handle.bead_id] = (seat, outcome)
+        return outcome
+
+    def notify(self, handle: RoleHandle, message: str) -> bool:
+        """Write one line to the live run's stdin — the channel :meth:`LocalLoop.notify_siblings`
+        uses (:class:`beadhive.runtime.NotifiableRuntime`). ``False`` when there is no live run
+        for the handle or its pipe is already gone."""
+        seat = self._live_for(handle)
+        if seat is None or seat.finished:
+            return False
+        return self._submit(_write_stdin(seat, message))
+
+
+async def _write_stdin(seat: SeatProcess, message: str) -> bool:
+    # The stdin transport belongs to the loop that spawned the seat; write from that loop.
+    return seat.write_stdin(message)
 
 
 def runtime_from_config(cfg=None, entry=None) -> LocalRuntime:

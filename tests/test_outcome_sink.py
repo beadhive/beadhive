@@ -85,7 +85,10 @@ def test_seat_run_record_is_stored_as_printed():
 
 def test_record_string_value_is_read_too():
     md = {outcome.metadata_key(SESSION): _seat_run("blocked", "why")}
-    assert outcome.from_metadata(md, SESSION) == RoleOutcome(status="blocked", summary="why")
+    found = outcome.from_metadata(md, SESSION)
+    assert found is not None
+    assert (found.status, found.summary, found.session_id) == ("blocked", "why", SESSION)
+    assert found.exit_code is None, "a metadata record has no process, so no exit code"
 
 
 def test_absent_record_is_none_and_observe_reports_running(monkeypatch):
@@ -111,7 +114,9 @@ def test_stale_session_record_is_ignored(monkeypatch):
     monkeypatch.setattr(bd, "show", lambda bead, cwd, **_kw: {"metadata": md})
 
     assert outcome.read(BEAD, SESSION) is None
-    assert outcome.read(BEAD, "provider-old") == RoleOutcome(status="done", summary="old run")
+    old = outcome.read(BEAD, "provider-old")
+    assert old is not None
+    assert (old.status, old.summary, old.session_id) == ("done", "old run", "provider-old")
     assert outcome.observe(RoleHandle(bead_id=BEAD, session_id=SESSION)).status == "running"
 
 
@@ -364,7 +369,8 @@ def test_qualified_foreground_hands_the_harvest_to_the_writer(tmp_path):
         {outcome.metadata_key(SESSION): outcome.record_document(seen[0][0], SESSION, exit_code=0)},
         SESSION,
     )
-    assert found == RoleOutcome(status="handoff", summary="to review")
+    assert found is not None
+    assert (found.status, found.summary, found.session_id) == ("handoff", "to review", SESSION)
 
 
 @pytest.mark.parametrize(("name", "exit_code", "stdout", "status"), FIXTURES)
