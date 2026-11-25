@@ -8,9 +8,11 @@ preservation of comments + flow-style managed_repos when set/unset rewrite confi
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import time_machine
 from typer.testing import CliRunner
 
 from beadhive import config
@@ -330,15 +332,31 @@ def test_cli_set_bad_enum_exits_nonzero(cfg_path):
     assert r.exit_code == 1
 
 
-@pytest.mark.parametrize("value", ["301", "1000000000"])
-def test_cli_set_refuses_a_tracker_github_timeout_above_the_cap_and_writes_nothing(cfg_path, value):
+def _assert_timeout_cap_refused(cfg_path: Path, value: str) -> None:
     before = cfg_path.read_text()
     r = CliRunner().invoke(app, ["config", "set", "plugins.tracker-github.timeout_seconds", value])
     assert r.exit_code == 1
     assert cfg_path.read_text() == before
     out = r.stdout + (r.stderr if r.stderr_bytes else "")
     assert "timeout_seconds" in out and "300" in out
-    assert value not in out.replace("plugins.tracker-github.timeout_seconds", "")
+    # Only the refusal line may be searched: structlog warnings (the fixture sets the deprecated
+    # $WS_CONFIG) carry microsecond timestamps that can contain the value by chance (hq-ixov).
+    refusal = "\n".join(ln for ln in out.splitlines() if ln.startswith("\u2717"))
+    assert refusal
+    assert value not in refusal.replace("plugins.tracker-github.timeout_seconds", "")
+
+
+# 2001-01-01T00:00:00.000000Z can never render "301" or "1000000000" in its timestamp.
+@pytest.mark.parametrize("value", ["301", "1000000000"])
+@time_machine.travel(datetime(2001, 1, 1, tzinfo=UTC), tick=False)
+def test_cli_set_refuses_a_tracker_github_timeout_above_the_cap_and_writes_nothing(cfg_path, value):
+    _assert_timeout_cap_refused(cfg_path, value)
+
+
+def test_timeout_cap_refusal_ignores_a_log_timestamp_containing_the_value(cfg_path):
+    """Regression (hq-ixov): a clock whose microseconds are 416301 must not fail the test."""
+    with time_machine.travel(datetime(2026, 11, 25, 22, 11, 53, 416301, tzinfo=UTC), tick=False):
+        _assert_timeout_cap_refused(cfg_path, "301")
 
 
 def test_cli_set_accepts_a_tracker_github_timeout_at_the_cap(cfg_path):
