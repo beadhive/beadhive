@@ -1373,6 +1373,17 @@ See [ATTEST-KEYS.md](ATTEST-KEYS.md#runtime-catalog-drift-check).
 |---|---|---|---|
 | `work.gate.push.accept_attested_green` | `false` | bool, per hive or global | Opt in: the `push-main` pre-push hook also accepts the exact pushed tree when every active attest key is current or carried (`selective_validation.attested_green`), printing each key's state. Under `model: keys` a miss runs only the absent keys. An absent or red key, drift or any error falls through to the aggregate lookup and then the full gate; off is byte-identical to before. Rollback: `false`. See [ATTEST-KEYS.md](ATTEST-KEYS.md#accepting-per-key-proof-at-the-push-hook). |
 
+## `work.runtime` — what wakes the lifecycle
+
+| Key | Default | Values | Meaning |
+|---|---|---|---|
+| `work.runtime` | `local` | `claude`, `local`, `temporal`, or any name a plugin registered | Selects the runtime from the name-keyed registry. bh validates the name against the registry when the config loads and in `bh config set`; an unregistered name is rejected, listing the available ones. |
+
+The published config schema (contract v1 line) still lists only the built-in runtimes for
+`work.runtime`, so an external validator of that schema rejects a plugin name such as `gascity`
+until the next contract major (bh-esnpc). See the
+[runtime integration guide](RUNTIME-INTEGRATION.md) and [Runtime tiers](WORK.md#runtime-tiers--workruntime).
+
 ## `work.dispatch` — collapsed dispatch
 
 `work.dispatch.*` tunes how the root dispatcher dispatches a ready epic's beads: the default
