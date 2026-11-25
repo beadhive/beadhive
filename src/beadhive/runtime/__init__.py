@@ -34,9 +34,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from .config_consumer_ports import work_settings as config
-from .gate_resolution import GateResolution
-from .modules.config.domain import runtime_names
+from ..config_consumer_ports import work_settings as config
+from ..gate_resolution import GateResolution
+from ..modules.config.domain import runtime_names
 
 # The bead's own no-runtime-only-state invariant (ADR Decision 1) means nothing in this module
 # may persist scheduling state anywhere but beads. `RoleHandle`/`RoleOutcome` below are transient
@@ -177,7 +177,7 @@ def _claude_factory(cfg, entry) -> Runtime:
 def _local_factory(cfg, entry) -> Runtime:
     # Imported lazily: `localloop` pulls in asyncio + the coordination surface, and
     # `get_runtime` is reached from config-reading paths that must stay import-light.
-    from . import localloop
+    from .. import localloop
 
     return localloop.runtime_from_config(cfg, entry)
 
