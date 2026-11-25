@@ -1974,7 +1974,7 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 225,
+        "line": 210,
         "path": "tests/test_runtime.py",
         "target": "beadhive.config.load"
       },
@@ -3053,7 +3053,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 185,
+    "test_config_importer_count": 186,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -3169,6 +3169,7 @@
       "tests/test_hq_clone.py",
       "tests/test_hq_dolt_remotes_e2e.py",
       "tests/test_hq_local_bootstrap_int.py",
+      "tests/test_hq_path_config.py",
       "tests/test_hq_push.py",
       "tests/test_hq_remote.py",
       "tests/test_hq_seed_roundtrip_int.py",

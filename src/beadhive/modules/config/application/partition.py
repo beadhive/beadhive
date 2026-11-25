@@ -21,6 +21,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "work.dispatch.max_beads_per_session",
         "work.dispatch.auto_budget",
         "beads",
+        "hq.path",
         "hq.remote",
         "hq.beadyard_id",
         "hq.authority_anchor",

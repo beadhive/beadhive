@@ -43,6 +43,7 @@ from beadhive import (
 from beadhive import bd as bd_mod
 from beadhive.complexity import ComplexityTier
 from beadhive.model_routing import ModelBlockedVerdict, ModelSelection
+from beadhive.runtime import GateResolution
 from harness.readiness import ReadyFifo, wait_pid_gone
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
@@ -462,11 +463,12 @@ def test_admit_is_the_seam_a_caps_module_plugs_into():
 class FakeBd:
     """Records `bd` invocations and answers the handful of reads the loop performs."""
 
-    def __init__(self, *, epic_status="in_progress", children=(), events=None, ready=()):
+    def __init__(self, *, epic_status="in_progress", children=(), events=None, ready=(), gates=()):
         self.epic_status = epic_status
         self.children = [dict(c) for c in children]
         self.events = {k: list(v) for k, v in (events or {}).items()}
         self.ready = list(ready)
+        self.gates = [dict(g) for g in gates]
         self.calls: list[list[str]] = []
         self.list_args: list[list[str]] = []
 
@@ -480,6 +482,8 @@ class FakeBd:
 
     def _dispatch(self, args):
         sub = args[0] if args else ""
+        if sub == "gate" and args[1:2] == ["list"]:
+            return _CP(0, json.dumps(self.gates))
         if sub == "gate":
             return _CP(0, json.dumps({"checked": 0, "resolved": 0, "escalated": 0, "errors": 0}))
         if sub == "reclaim":
@@ -1627,7 +1631,9 @@ def test_local_runtime_rejects_a_bad_workspace_with_a_typed_error(tmp_path):
 
 def test_local_runtime_gate_hook_is_a_documented_noop():
     """Every tier gets asked; a poll loop that will notice anyway may legitimately do nothing."""
-    localloop.LocalRuntime().on_gate_resolved("gate-1")
+    localloop.LocalRuntime().on_gate_resolved(
+        GateResolution(gate_id="gate-1", bead_id="b1", verdict="approved")
+    )
 
 
 # ---- argv shape --------------------------------------------------------------------------------
@@ -2598,6 +2604,133 @@ async def test_spawn_sets_baml_profile_dir_and_keeps_the_env(tmp_path, monkeypat
     assert Path(seen["BAML_PROFILE_DIR"]).is_dir(), "the profile dir is created before the spawn"
 
 
+# ---- on_gate_resolved from the gate_check pass (bh-6z2cj) ------------------------------------
+
+
+def _review_gate(gate_id, bead, close_reason, *, closed_at="2999-01-01T00:00:00Z", status="closed"):
+    return {
+        "id": gate_id,
+        "status": status,
+        "description": f"Ad-hoc gate blocking {bead}\n\nReason: bh:review abc1234",
+        "close_reason": close_reason,
+        "closed_at": closed_at,
+    }
+
+
+@pytest.mark.parametrize(
+    ("close_reason", "verdict", "feedback_ref"),
+    [
+        ("approved by rev/one", "approved", None),
+        ("changes requested by rev/one: tighten it", "changes_requested", "g-1"),
+    ],
+)
+@async_test
+async def test_a_resolved_review_gate_reaches_the_runtime_once_per_pass(
+    tmp_path, fakebd, close_reason, verdict, feedback_ref
+):
+    fakebd(FakeBd(children=[], gates=[_review_gate("g-1", "b1", close_reason)]))
+    seen = []
+    loop = _loop(tmp_path, on_gate_resolved=seen.append)
+
+    first = await loop.run_pass()
+    second = await loop.run_pass()
+
+    assert seen == [
+        GateResolution(gate_id="g-1", bead_id="b1", verdict=verdict, feedback_ref=feedback_ref)
+    ]
+    assert first.gate_notified == 1
+    assert second.gate_notified == 0, "delivered once, not re-announced every pass"
+
+
+@async_test
+async def test_a_raising_hook_is_logged_not_fatal_and_is_retried(tmp_path, fakebd):
+    fakebd(FakeBd(children=[], gates=[_review_gate("g-1", "b1", "approved by rev/one")]))
+    calls = []
+
+    def hook(resolution):
+        calls.append(resolution)
+        if len(calls) == 1:
+            raise RuntimeError("hook exploded")
+
+    loop = _loop(tmp_path, on_gate_resolved=hook)
+    first = await loop.run_pass()  # must not raise
+    assert first.number == 1 and first.gate_notified == 0
+    second = await loop.run_pass()
+    assert second.gate_notified == 1 and len(calls) == 2, "at-least-once: retried until it sticks"
+
+
+@async_test
+async def test_a_permanently_raising_hook_is_dropped_after_bounded_attempts(tmp_path, fakebd):
+    from beadhive import gate_watch
+
+    fakebd(FakeBd(children=[], gates=[_review_gate("g-1", "b1", "approved by rev/one")]))
+    calls = []
+
+    def hook(resolution):
+        calls.append(resolution)
+        raise RuntimeError("always")
+
+    loop = _loop(tmp_path, on_gate_resolved=hook)
+    for _ in range(gate_watch.MAX_ATTEMPTS + 2):
+        await loop.run_pass()
+    assert len(calls) == gate_watch.MAX_ATTEMPTS
+
+
+@async_test
+async def test_gates_closed_before_the_loop_started_or_not_review_gates_are_ignored(
+    tmp_path, fakebd
+):
+    stale = _review_gate("g-old", "b1", "approved by x", closed_at="2000-01-01T00:00:00Z")
+    human = {
+        "id": "g-h",
+        "status": "closed",
+        "description": "Ad-hoc gate blocking b2\n\nReason: review the rollout plan",
+        "closed_at": "2999-01-01T00:00:00Z",
+    }
+    still_open = _review_gate("g-open", "b3", "", status="open")
+    fakebd(FakeBd(children=[], gates=[stale, human, still_open]))
+    seen = []
+    await _loop(tmp_path, on_gate_resolved=seen.append).run_pass()
+    assert seen == []
+
+
+@async_test
+async def test_a_batch_gate_notifies_every_member(tmp_path, fakebd):
+    row = _review_gate("g-b", "b1", "approved by rev/one")
+    row["description"] = "Ad-hoc gate blocking b1\n\nReason: bh:review abc1234 batch grp: b1, b2"
+    fakebd(FakeBd(children=[], gates=[row]))
+    seen = []
+    await _loop(tmp_path, on_gate_resolved=seen.append).run_pass()
+    assert [r.bead_id for r in seen] == ["b1", "b2"]
+
+
+@async_test
+async def test_a_dry_pass_never_notifies_the_runtime(tmp_path, fakebd):
+    fakebd(FakeBd(children=[], gates=[_review_gate("g-1", "b1", "approved by rev/one")]))
+    seen = []
+    await _loop(tmp_path, dry_run=True, on_gate_resolved=seen.append).run_pass()
+    assert seen == []
+
+
+@async_test
+async def test_a_bounce_is_rescheduled_by_the_loop_not_the_runtime(tmp_path, fakebd):
+    """No runtime-initiated re-dispatch: the hook only observes. The bounced bead comes back
+    through the loop's own `resume-changes-requested` decision."""
+    bounced = _child("b1")
+    bounced["labels"] = ["review:changes-requested"]
+    fakebd(
+        FakeBd(
+            children=[bounced],
+            gates=[_review_gate("g-1", "b1", "changes requested by rev/one: redo")],
+        )
+    )
+    scheduled = []
+    loop = _loop(tmp_path, on_gate_resolved=lambda r: scheduled.append(("hook", r.bead_id)))
+    report = await loop.run_pass()
+    assert scheduled == [("hook", "b1")]
+    assert report.decision.row == "resume-changes-requested"
+
+
 # ---- work.dispatch.loop: gc (bh-njarn, ADR Decision 7) --------------------------------------
 
 
@@ -2638,3 +2771,16 @@ async def test_a_bh_pass_reclaims_but_excludes_gc_owned_members(tmp_path, fakebd
     reclaim_calls = [c for c in fake.calls if c and c[0] == "reclaim"]
     assert reclaim_calls and "--exclude-label" in reclaim_calls[0]
     assert "dispatch-owner:gc" in reclaim_calls[0]
+
+
+@async_test
+async def test_a_delegated_pass_still_delivers_resolved_gates(tmp_path, fakebd):
+    """ADR Decision 7: bh still runs the gate verbs under `loop: gc`, so the gate sweep and its
+    `on_gate_resolved` delivery (bh-6z2cj) run before the delegated early return."""
+    fakebd(FakeBd(children=[], gates=[_review_gate("g-1", "b1", "approved by rev/one")]))
+    seen = []
+    loop = _loop(tmp_path, on_gate_resolved=seen.append)
+    loop._loop_delegated = lambda: True
+    report = await loop.run_pass()
+    assert report.delegated and report.gate_notified == 1
+    assert [r.bead_id for r in seen] == ["b1"]

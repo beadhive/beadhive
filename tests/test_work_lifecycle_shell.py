@@ -242,6 +242,23 @@ def test_bh_work_claim_refusal_renders_to_stderr_and_exits_1(hive, fakebd, serve
     assert not _wt(hive, "mr-1").exists()
 
 
+def test_bh_work_claim_on_an_old_bd_is_a_clean_refusal(hive, fakebd, served, monkeypatch):
+    from beadhive import dolt_health
+
+    fakebd.seed("mr-1", title="t")
+    monkeypatch.setattr(dolt_health, "_local_bd_version_string", lambda: "bd version 1.2.0")
+
+    result = CliRunner().invoke(
+        cli.app, ["work", "claim", "mr-1", "--as", "dev/a", "--hive", "myrepo"]
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)  # a refusal, not a raw traceback
+    assert "✗ bd 1.2.0 is too old to claim beads safely" in result.stderr
+    assert "1.3.0" in result.stderr
+    assert not _wt(hive, "mr-1").exists()
+
+
 def test_claim_provisioning_failure_releases_through_the_bd_routes(
     hive, fakebd, served, monkeypatch
 ):

@@ -285,20 +285,26 @@ class AuthorityModeConflict(ValueError):
 
 
 def _fleet_state_path() -> str | None:
-    """``$BH_HOME/state/hq-fleet-authority-mode.json``, memoized on the home variables."""
+    """``<hq_home>/state/hq-fleet-authority-mode.json`` (``$BH_HOME`` unless HQ is relocated by
+    ``hq.path`` with ``$BH_HQ`` unset), memoized on the home variables and the host config file."""
     global _fleet_path_cache
     try:
         config = importlib.import_module("beadhive.config")
     except Exception:  # noqa: BLE001 - no config: nothing learned, signed
         return None
+    try:
+        host_sig = os.stat(config.config_path()).st_mtime_ns  # hq.path lives in the host file
+    except Exception:  # noqa: BLE001 - no host file: the default location
+        host_sig = None
     key = (
-        tuple(os.environ.get(name) for name in ("BH_HOME", "WS_HOME", "HOME")),
+        tuple(os.environ.get(name) for name in ("BH_HOME", "WS_HOME", "HOME", "BH_HQ", "WS_HQ")),
         config.home,
+        host_sig,
     )
     if _fleet_path_cache is not None and _fleet_path_cache[0] == key:
         return _fleet_path_cache[1]
     try:
-        path = str(config.home() / "state" / FLEET_STATE)
+        path = str(config.hq_home() / "state" / FLEET_STATE)
     except Exception:  # noqa: BLE001 - no home: nothing learned, signed
         path = None
     _fleet_path_cache = (key, path)

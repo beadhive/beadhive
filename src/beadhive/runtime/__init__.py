@@ -23,17 +23,20 @@ This bead (bh-c6dk.1) lands the seam only:
   (the default). It is kept in its own module because the tier is process supervision, which is
   a great deal more than a protocol implementation; this file stays the seam.
 - The `temporal` tier (`DeveloperWorkflow` + `run_role` activity) is bh-c6dk.4, a separate bead,
-  and still raises `NotImplementedError` here — an honest gap, not a silent no-op, exactly as
-  `engine.get_engine` raises for any `beads.engine` value besides `bd` until its sibling beads
-  land theirs.
+  and its registered factory still raises `NotImplementedError` — an honest gap, not a silent
+  no-op, exactly as `engine.get_engine` raises for any `beads.engine` value besides `bd` until
+  its sibling beads land theirs.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-from .config_consumer_ports import work_settings as config
+from ..config_consumer_ports import work_settings as config
+from ..gate_resolution import GateResolution
+from ..modules.config.domain import runtime_names
 
 # The bead's own no-runtime-only-state invariant (ADR Decision 1) means nothing in this module
 # may persist scheduling state anywhere but beads. `RoleHandle`/`RoleOutcome` below are transient
@@ -109,12 +112,16 @@ class Runtime(Protocol):
         know whether the bead itself is claimed/blocked/approved/done asks `bd`, not this."""
         ...
 
-    def on_gate_resolved(self, gate_id: str) -> None:
-        """React to a `bd gate` this runtime's scheduling decisions depend on having resolved
-        — e.g. wake a sleeping poll loop early, or signal a parked Temporal workflow. A tier
-        that has no such optimization (a loop that will notice on its next poll regardless) may
-        implement this as a no-op; the point of naming it in the protocol is that EVERY tier
-        gets asked, not that every tier must act."""
+    def on_gate_resolved(self, resolution: GateResolution) -> None:
+        """React to a review gate having resolved (approved or bounced) — e.g. wake a sleeping
+        poll loop early, wind a session down, or keep a long-lived one warm and attach
+        `resolution.feedback_ref`. The loop's `gate_check` pass calls this for each gate it
+        observes resolving: delivery is AT-LEAST-ONCE (an implementation must be idempotent) and
+        latency is bounded by `work.dispatch.poll_interval` — there is no push doorbell. A hook
+        that raises is logged and never breaks the pass. Implementations must not re-dispatch:
+        re-scheduling bounced work is the loop's decision, never the runtime's. A tier that has
+        no use for the signal may implement this as a no-op; the point of naming it in the
+        protocol is that EVERY tier gets asked, not that every tier must act."""
         ...
 
 
@@ -144,8 +151,46 @@ class ClaudeRuntime:
     def observe(self, handle):
         raise NotImplementedError(self._MSG)
 
-    def on_gate_resolved(self, gate_id):
+    def on_gate_resolved(self, resolution):
         raise NotImplementedError(self._MSG)
+
+
+# The runtime registry: named factories, resolved by `work.runtime`. The name table lives in
+# `modules.config.domain.runtime_names` (so the config schema can validate against it without
+# importing this seam); this module is its public face. Mirrors `claim_authority`'s authority
+# registry (`register_authority` / `available_authorities` / `get_authority`): lookup is by name,
+# nothing is auto-discovered, and a plugin that wants to be selectable calls `register_runtime`
+# itself. A factory takes `(cfg, entry)` — the loaded config and the hive entry, either of which
+# may be `None` — and returns a :class:`Runtime`.
+RuntimeFactory = Callable[[Any, Any], Runtime]
+
+_RUNTIMES = runtime_names.RUNTIMES
+register_runtime = runtime_names.register_runtime
+available_runtimes = runtime_names.available_runtimes
+validate_runtime_name = runtime_names.validate_runtime_name
+
+
+def _claude_factory(cfg, entry) -> Runtime:
+    return ClaudeRuntime()
+
+
+def _local_factory(cfg, entry) -> Runtime:
+    # Imported lazily: `localloop` pulls in asyncio + the coordination surface, and
+    # `get_runtime` is reached from config-reading paths that must stay import-light.
+    from .. import localloop
+
+    return localloop.runtime_from_config(cfg, entry)
+
+
+def _temporal_factory(cfg, entry) -> Runtime:
+    raise NotImplementedError(
+        "work.runtime=temporal has no implementation yet — it ships in bh-c6dk.4"
+    )
+
+
+register_runtime("claude", _claude_factory, replace=True)
+register_runtime("local", _local_factory, replace=True)
+register_runtime("temporal", _temporal_factory, replace=True)
 
 
 def get_runtime(cfg=None) -> Runtime:
@@ -153,10 +198,13 @@ def get_runtime(cfg=None) -> Runtime:
     omitted, falling back to `local`'s config-value resolution when none is loadable yet —
     e.g. before `bh config init` — matching `engine.get_engine`'s same-shaped fallback).
 
+    Resolution is by registered name (:func:`register_runtime`); an unregistered name raises
+    `ValueError` listing the available ones (fails closed).
+
     `local` is the real, running default (bh-c6dk.5, `beadhive.localloop.LocalRuntime`).
     `claude` is documented, not developed — its anchor exists to name the tier and raises on
     every method (see `ClaudeRuntime`). `temporal` is still a load-bearing gap: it ships in
-    bh-c6dk.4 and this function raises `NotImplementedError` naming it until it does, the same
+    bh-c6dk.4 and its factory raises `NotImplementedError` naming it until it does, the same
     shape `engine.get_engine` uses for any `beads.engine` value besides `bd`."""
     if cfg is None:
         try:
@@ -165,16 +213,7 @@ def get_runtime(cfg=None) -> Runtime:
             cfg = None
     entry = None
     name = config.work_runtime(cfg, entry) if cfg is not None else "local"
-    if name == "claude":
-        return ClaudeRuntime()
-    if name == "local":
-        # Imported lazily: `localloop` pulls in asyncio + the coordination surface, and
-        # `get_runtime` is reached from config-reading paths that must stay import-light.
-        from . import localloop
-
-        return localloop.runtime_from_config(cfg, entry)
-    if name == "temporal":
-        raise NotImplementedError(
-            "work.runtime=temporal has no implementation yet — it ships in bh-c6dk.4"
-        )
-    raise ValueError(f"unknown work runtime {name!r} — expected claude | local | temporal")
+    factory = _RUNTIMES.get(name)
+    if factory is None:
+        raise runtime_names.unknown_runtime(name)
+    return factory(cfg, entry)

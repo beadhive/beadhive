@@ -242,6 +242,18 @@ def impl_next_(api, as_, hive, as_json, epic):
         raise api.typer.Exit(api.NEXT_DECLINE_EXIT)
 
 
+def _runtime_gate_hook(cfg):
+    """The configured runtime's `on_gate_resolved`, or None when no runtime can be resolved
+    (an unregistered or not-yet-implemented `work.runtime`). The loop owns lifecycle either way;
+    the hook is only the bounce / feedback signal (gas-city-runtime-seam-adr.md Decision 3)."""
+    from . import runtime
+
+    try:
+        return runtime.get_runtime(cfg).on_gate_resolved
+    except (ValueError, NotImplementedError):
+        return None
+
+
 def _refuse_if_loop_delegated(api, verb, cfg, entry, hive):
     """Loop-owning verbs refuse under `work.dispatch.loop: gc`, naming gc as the owner (bh-njarn,
     ADR Decision 7). Lifecycle verbs (claim, submit, review, merge, gate resolve) never call
@@ -333,6 +345,7 @@ def impl_loop(
         max_action_retries=api.config.dispatch_max_action_retries(cfg, entry),
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
         dry_run=dry_run,
+        on_gate_resolved=_runtime_gate_hook(cfg),
         launch_context=(
             (lambda role: launch_contexts[role]) if launch_contexts is not None else None
         ),

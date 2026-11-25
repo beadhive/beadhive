@@ -8,8 +8,9 @@ Two halves compose in one verb (bh-qczj.1, which absorbed bh-bh2h.2.2):
    minimal judgement instead of improvising.
 2. **How to take it safely** — the optimistic pick/verify predicates (:func:`eligible`,
    :func:`claim_won`, :func:`decline`) the `bh work next` claim loop drives: `bd update --claim`
-   is NOT a hard compare-and-swap, so the caller re-reads the bead and re-verifies the holder,
-   retrying the next candidate when it lost the race.
+   is an atomic, actor-idempotent claim (bd >= 1.3.0), so a non-zero exit is a clean lost
+   race and the caller moves to the next candidate; the re-read that follows only confirms the
+   holder (idempotence check), it is not what makes the claim exclusive.
 
 Purity is the point (mirrors `schedule.py` / `molecule.py`): no typer, no `bd`, no git. Inputs are
 plain `bd` JSON dicts, outputs are dataclasses. The impure edges — reading `bd ready`, running the
@@ -499,11 +500,12 @@ def eligible(rows: Sequence[Mapping], actor: str) -> tuple[str, ...]:
 def claim_won(data: Mapping | None, actor: str) -> bool:
     """Did `actor` actually end up holding this bead? The RE-VERIFY half of pick-claim-verify.
 
-    `bd update --claim` is not a hard compare-and-swap: two drivers can both get exit 0 for the
-    same bead, and the last writer wins. So the claim is not believed on its return code — the
-    caller re-reads the bead and asks this. Requires BOTH that the assignee is us and that the
-    bead actually left `open`; a row that still reads open didn't transition, and treating that as
-    a win would hand the caller a bead nothing is holding.
+    `bd update --claim` is atomic (bd >= 1.3.0: exactly one of two racing claimers gets exit 0,
+    the loser exits non-zero), so the exit code already decides the race. This is the idempotence
+    and sanity check on top: the caller re-reads the bead and asks this, which also covers a
+    re-claim by the same actor and a write whose outcome is unknown. Requires BOTH that the
+    assignee is us and that the bead actually left `open`; a row that still reads open didn't
+    transition, and treating that as a win would hand the caller a bead nothing is holding.
     """
     if not isinstance(data, Mapping):
         return False

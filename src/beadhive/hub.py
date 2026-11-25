@@ -173,9 +173,25 @@ def _managed_repo_paths(cfg, managed) -> set[str]:
     and its blobless cache — so a registration matching neither is genuinely stale."""
     desired: set[str] = set()
     for e in managed:
+        try:
+            registry.entry_triplet(e)
+        except registry.FleetEntryError as exc:
+            # A batch reconcile: one malformed entry must not abort it (bh-n2gj1).
+            typer.echo(f"  ! skipping malformed fleet entry: {exc}", err=True)
+            continue
         desired.add(str(registry.hive_dir(e)))
         desired.add(str(cache_path(e)))
     return desired
+
+
+def _malformed_entry_count(managed) -> int:
+    n = 0
+    for e in managed:
+        try:
+            registry.entry_triplet(e)
+        except registry.FleetEntryError:
+            n += 1
+    return n
 
 
 def _is_cache_path(cfg, src) -> bool:
@@ -205,7 +221,12 @@ def _reconcile_removed(hub, cfg, managed, marks: dict[str, str] | None = None) -
     silently outlive its registration — if the prefix were ever reused, a leftover mark
     could be misread as "unchanged" for beads it never actually saw."""
     desired = _managed_repo_paths(cfg, managed)
-    for path in _registered_repo_paths(hub):
+    malformed = _malformed_entry_count(managed)
+    if malformed:
+        # A malformed entry is absent from `desired`, so pruning would de-register a real hive
+        # over a config typo: reconcile only adds in that case, never removes.
+        typer.echo(f"  ! not pruning hub entries: {malformed} malformed fleet entries", err=True)
+    for path in [] if malformed else _registered_repo_paths(hub):
         if path in desired:
             continue
         rm = bd.run(["repo", "remove", path], hub, capture=True)
@@ -390,11 +411,10 @@ def _hive_url(cfg, entry):
     `entry['provider']` is the stored triplet's first segment (the repo-group path — see
     gitworkspace.RepoGroup); the derive-fallback below treats it as the provider TYPE directly
     (no group->type resolution), matching this hive's existing entries where the two coincide."""
-    key = f"{entry['provider']}/{entry['org']}/{entry['repo']}"
-    url = gitworkspace.repo_urls(cfg).get(key)
+    group_path, org, repo = registry.entry_triplet(entry)
+    url = gitworkspace.repo_urls(cfg).get(f"{group_path}/{org}/{repo}")
     if url:
         return url
-    group_path, org, repo = entry["provider"], entry["org"], entry["repo"]
     if group_path == "github":
         return f"git@github.com:{org}/{repo}.git"
     if group_path == "gitlab":
@@ -577,8 +597,12 @@ def _fetch_cache(cfg, entry):
     `bd bootstrap` declines outright on a store that already exists ("Database already exists.
     Nothing to do", measured), and the repair path only runs when the store is not usable as it
     stands."""
-    cache = cache_path(entry)
     prefix = str(entry.get("prefix") or "?")
+    try:
+        cache = cache_path(entry)
+    except registry.FleetEntryError as exc:
+        typer.echo(f"  ✗ {prefix}: cannot hydrate — {exc}", err=True)
+        return None
     database = cache_database(entry)
     from . import hub_bulk
 

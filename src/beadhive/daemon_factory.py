@@ -473,7 +473,7 @@ class FactoryDirectory:
             upstream = hive.entry.get("upstream")
             if not isinstance(upstream, str) or not upstream:
                 continue
-            candidate = f"{hive.entry['provider']}/{upstream}"
+            candidate = f"{registry.entry_triplet(hive.entry)[0]}/{upstream}"
             result.append(
                 FactoryRelationship(
                     from_hive_id=hive.identity,
@@ -582,9 +582,9 @@ class FactoryDirectory:
                 HiveDescriptor(
                     hive_id=hive.identity,
                     encoded_hive_id=encode_hive_id(hive.identity),
-                    provider=str(hive.entry["provider"]),
-                    org=str(hive.entry["org"]),
-                    repo=str(hive.entry["repo"]),
+                    provider=registry.entry_triplet(hive.entry)[0],
+                    org=registry.entry_triplet(hive.entry)[1],
+                    repo=registry.entry_triplet(hive.entry)[2],
                     prefix=str(hive.entry["prefix"]),
                     kind=str(hive.entry.get("kind", "")),
                     readiness=observation.readiness,

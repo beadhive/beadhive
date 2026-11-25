@@ -193,3 +193,34 @@ def test_lease_far_from_expiry_is_not_flagged(monkeypatch, tmp_path):
     status = dstat.compute_status("acme/widgets", cfg={}, backend=backend)
 
     assert status.lease_expiring_soon is False
+
+
+def test_status_all_renders_error_row_for_tripletless_entry(monkeypatch, tmp_path):
+    """bh-p2ptn: a managed_repos entry without provider/org/repo used to KeyError out of
+    `compute_status_all`; it must now be an error row naming the entry, beside healthy rows."""
+    monkeypatch.setattr(guard, "primary_state", lambda *a, **k: None)
+    monkeypatch.setattr(dstat.dispatch_log, "tail_records", lambda *a, **k: [])
+    backend = _FixedBackend(ds.SupervisorState(installed=True, running=True, persisted=True))
+    monkeypatch.setattr(ds, "get_supervisor_backend", lambda cfg: backend)
+    monkeypatch.setattr(registry, "hive_dir_for", lambda cfg, hive: tmp_path)
+    monkeypatch.setattr(registry, "entry_for_dir", lambda cfg, cwd: _ENTRY)
+    broken = {"prefix": "orphan", "org": "acme"}
+    cfg = {"managed_repos": [_ENTRY, broken]}
+
+    rows = dstat.compute_status_all(cfg)
+
+    assert len(rows) == 2
+    assert rows[0].hive == "github/acme/widgets"
+    assert rows[0].state == dstat.STATE_RUNNING_HEALTHY
+    assert rows[1].state == dstat.STATE_ERROR
+    assert "orphan" in rows[1].hive
+    assert "provider" in rows[1].detail and "repo" in rows[1].detail
+    assert rows[1].as_dict()["state"] == "error"
+
+
+def test_entry_triplet_names_missing_keys():
+    import pytest
+
+    assert registry.entry_triplet(_ENTRY) == ("github", "acme", "widgets")
+    with pytest.raises(registry.FleetEntryError, match="missing provider/repo"):
+        registry.entry_triplet({"org": "acme", "prefix": "x"})

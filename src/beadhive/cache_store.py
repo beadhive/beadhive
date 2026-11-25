@@ -13,7 +13,9 @@ from pathlib import Path
 
 def cache_path(cache_root: Path, entry: Mapping[str, object]) -> Path:
     """Return one hive's canonical cache path below an explicit cache root."""
-    return cache_root / str(entry["provider"]) / str(entry["org"]) / str(entry["repo"])
+    from .registry import entry_triplet  # lazy: registry is heavier than this pure-policy module
+
+    return cache_root.joinpath(*entry_triplet(entry))
 
 
 def local_checkout_source(checkout: Path) -> Path | None:

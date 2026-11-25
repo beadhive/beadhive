@@ -30,6 +30,9 @@ STATE_ENABLED_STOPPED = "enabled_stopped"
 #: (and `lease_detail`) is what tells the two apart for a human.
 STATE_RUNNING_WITHOUT_LEASE = "running_without_lease"
 STATE_RUNNING_HEALTHY = "running_healthy"
+#: The hive's status could not be computed (e.g. a fleet entry without its provider/org/repo
+#: triplet). Rendered as an error row naming the entry instead of dropping it (bh-p2ptn).
+STATE_ERROR = "error"
 #: `work.dispatch.loop: gc` (bh-njarn, ADR Decision 7): Gas City owns the dispatcher loop, so bh
 #: is not managing dispatch, the lease, or reclaim for this hive. Distinct from `not_enabled`
 #: (bh could run a loop but none is installed) and from `running_*` (a bh loop is up).
@@ -40,6 +43,7 @@ DISPATCH_STATES: tuple[str, ...] = (
     STATE_ENABLED_STOPPED,
     STATE_RUNNING_WITHOUT_LEASE,
     STATE_RUNNING_HEALTHY,
+    STATE_ERROR,
     STATE_DELEGATED,
 )
 
@@ -147,7 +151,7 @@ def compute_status(
     cfg = cfg if cfg is not None else config.load()
     main = registry.hive_dir_for(cfg, hive)
     entry = registry.entry_for_dir(cfg, main) or {}
-    slug = dispatch_log.hive_slug(entry)
+    slug = dispatch_log.hive_slug(entry)  # FleetEntryError on a triplet-less/unresolved entry
 
     sup = backend or dispatch_supervisor.get_supervisor_backend(cfg)
     sup_state = sup.status(slug)
@@ -224,14 +228,36 @@ def compute_status(
     )
 
 
+def error_status(name: str, exc: Exception) -> DispatchStatus:
+    return DispatchStatus(
+        hive=name,
+        hive_slug="",
+        backend="",
+        installed=False,
+        running=False,
+        persisted=False,
+        lease_in_force=False,
+        lease_held=False,
+        lease_expires_at="",
+        lease_detail="",
+        last_pass_at="",
+        seats_in_flight=0,
+        last_escalation=None,
+        state=STATE_ERROR,
+        detail=f"{type(exc).__name__}: {exc}",
+    )
+
+
 def compute_status_all(cfg: dict | None = None) -> list[DispatchStatus]:
-    """Every registered hive's status, for `bh host dispatch status --all`."""
+    """Every registered hive's status, for `bh host dispatch status --all`. A hive whose status
+    cannot be computed becomes an error row naming it — one broken entry must not blank the whole
+    table, and must not vanish from it either."""
     cfg = cfg if cfg is not None else config.load()
     out = []
-    for entry in cfg.get("managed_repos", []) or []:
-        hive = registry.hive_key(entry)
+    for index, entry in enumerate(cfg.get("managed_repos", []) or []):
         try:
-            out.append(compute_status(hive, cfg=cfg))
-        except Exception:  # noqa: BLE001 - one broken hive must not blank the whole table
-            continue
+            out.append(compute_status(registry.hive_key(entry), cfg=cfg))
+        except Exception as exc:  # noqa: BLE001 - reported as an error row below
+            label = str(entry.get("prefix") or entry.get("repo") or f"managed_repos[{index}]")
+            out.append(error_status(f"<invalid entry: {label}>", exc))
     return out

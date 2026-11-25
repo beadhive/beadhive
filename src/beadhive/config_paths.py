@@ -82,6 +82,54 @@ def home(api) -> Path:
     return Path(value).expanduser() if value else api._DEFAULT_HOME_NEW
 
 
+_HQ_PATH_MEMO: dict[Path, tuple[tuple[int, int], str | None]] = {}
+
+
+def _host_hq_path(path: Path) -> str | None:
+    """``hq.path`` from the host file, or ``None``. A lightweight ``(mtime, size)``-keyed read
+    that deliberately bypasses the layered loader: ``hq_dir`` is called from the loader's own
+    neighbours, so it must never recurse into (or add parses to) a full load, and a missing,
+    unreadable or malformed file simply means the key is unset."""
+    try:
+        info = path.stat()
+        signature = (info.st_mtime_ns, info.st_size)
+        cached = _HQ_PATH_MEMO.get(path)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        from ruamel.yaml import YAML
+
+        document = YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
+        value = (document.get("hq") or {}).get("path")
+        result = str(value).strip() if isinstance(value, str) and value.strip() else None
+    except Exception:  # noqa: BLE001 - config unreadable: behave as if hq.path were unset
+        return None
+    _HQ_PATH_MEMO[path] = (signature, result)
+    return result
+
+
+def hq_dir(api) -> Path:
+    """The HQ checkout. Precedence: ``$BH_HQ`` (legacy ``$WS_HQ``) > host config ``hq.path`` >
+    ``<home>/hq``. The config read is best-effort and never raises: a missing, unreadable or
+    malformed host file falls through to the default, exactly as a host without the key."""
+    value = api._env("hq")
+    if value:
+        return Path(value).expanduser()
+    configured = _host_hq_path(api.config_path())
+    if configured:
+        return Path(configured).expanduser()
+    return api.home() / "hq"
+
+
+def hq_home(api) -> Path:
+    """Parent of the HQ checkout: where HQ-adjacent state (HQ backups, fleet state, beadyard
+    adoption journals) lives. ``<home>`` by default, so an unconfigured host is unchanged.
+    Only a host-config ``hq.path`` (with ``$BH_HQ`` unset) relocates it: ``$BH_HQ`` hosts keep
+    their pre-existing state under ``<home>`` so an upgrade never strands it."""
+    if not api._env("hq") and _host_hq_path(api.config_path()):
+        return api.hq_dir().parent
+    return api.home()
+
+
 def config_path(api) -> Path:
     value = api._env("config")
     return Path(value).expanduser() if value else api.home() / "config.yaml"

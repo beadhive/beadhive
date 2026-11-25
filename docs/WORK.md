@@ -238,19 +238,20 @@ of several, with a mutation test showing the guard is load-bearing (below).
 
 **What is NOT guaranteed — and why:**
 
-- `bd update --claim` is **optimistic, not a hard compare-and-swap**. Its exit code alone proves
-  nothing: two callers racing the same bead can both get exit 0, with the last physical write
-  winning the store. The guarantee above comes ENTIRELY from the re-verify step
-  (`work_next.claim_won`) that runs after every claim attempt — it re-reads the bead and requires
-  BOTH that the assignee is us AND that the bead actually left `open`. Skip that step (trust the
-  exit code instead) and the SAME race produces two callers who both believe they won — this is
-  not hypothetical, it is exactly what `test_claim_won_reverify_is_load_bearing_without_it_both_drivers_win`
-  demonstrates by monkeypatching `claim_won` back to "always true" and re-running the identical
-  race.
+- `bd update --claim` is an **atomic, actor-idempotent claim** from bd 1.3.0 (a conditional
+  write on the row: exactly one of two racing claimers succeeds, the loser exits non-zero). A
+  non-zero exit is therefore a clean lost race — a decline, never surfaced as an error. A bd
+  older than 1.3.0 is refused by name (`bd_floor.require_atomic_claim`). What stays optimistic is
+  WHICH bead a driver picks off `bd ready`: the pick-then-claim loop moves to the next candidate
+  on a lost race. The re-verify step (`work_next.claim_won`) after every claim attempt is the
+  idempotence check on top — it re-reads the bead and requires BOTH that the assignee is us AND
+  that the bead actually left `open`, which covers an idempotent re-claim by the same actor and a
+  write whose outcome is unknown. Two real concurrent claimers are proven exclusive against a
+  real service by `test_real_service_two_concurrent_claimers_exactly_one_wins`.
 - There is a real, if small, window between a claim committing and this driver's re-read of it.
   `bh work next` closes that window for **this driver's own belief** (it never reports success
-  falsely), but it does not make the underlying claim atomic — a losing driver can still have
-  spent real work (a `bd update --claim` round trip) on a bead it never gets.
+  falsely); a losing driver can still have spent a `bd update --claim` round trip on a bead it
+  never gets.
 
 **What an external scheduler must therefore do**, because this verb's contract is "optimistic
 claim + honest re-verify", not "atomic reservation":
@@ -262,7 +263,8 @@ claim + honest re-verify", not "atomic reservation":
    response for THAT call. In particular, do not build a scheduler that first reads `bd ready`
    itself and separately calls `bd update --claim` — that reimplements the exact race this verb
    exists to survive, without the re-verify step that makes it safe.
-3. Poll, don't assume ordering: because the underlying store has no true CAS, two schedulers
+3. Poll, don't assume ordering: because which candidate is "next" is read before it is claimed,
+   two schedulers
    started at the same instant may both see the same candidate as "the" next one; only their
    respective `bh work next` calls, not their own `bd ready` reads, decide who actually gets it.
 
@@ -590,12 +592,14 @@ implements this and none of them can forget it.
 AGF's lifecycle advances only while something wakes up and runs `bh work` verbs against a
 ready bead. `work.runtime` picks **what does that waking up** — three tiers behind one config
 key, mirroring the `beads.engine` seam in `engine.py` (a config key selects a thin
-implementation, not a plugin framework). Full rationale, evidence, and the role-binary
-contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
+implementation from a name-keyed registry, not a plugin framework). Full rationale, evidence,
+and the role-binary contract every tier schedules the same way: `docs/design/work-runtime-tiers-adr.md`.
+A third-party host such as Gas City registers its own tier; see the
+[runtime integration guide](RUNTIME-INTEGRATION.md).
 
 ```yaml
 work:
-  runtime: local    # claude | local | temporal, default local
+  runtime: local    # claude | local | temporal | any registered name, default local
 ```
 
 | Tier | Wake-up mechanism | Infra | Target | Status |
@@ -651,12 +655,25 @@ than silently assumed away.
 
 ### The `Runtime` seam
 
-`src/beadhive/runtime.py` names the `Runtime` protocol: three operations, nothing else —
+`src/beadhive/runtime/__init__.py` names the `Runtime` protocol: three operations, nothing else —
 `schedule` a role binary for a bead, `observe` whether it finished, and `on_gate_resolved`
-react to a `bd gate` the scheduler was waiting on. `config.work_runtime()` reads the config key
-(tolerant getter, falls back to `local`); `runtime.get_runtime()` resolves it to a concrete
-implementation, raising `NotImplementedError` naming the sibling bead for any tier not yet
-built (today: `temporal`, bh-c6dk.4).
+react to a review gate resolving. `runtime.get_runtime()` resolves `work.runtime` through a
+name-keyed registry that mirrors `claim_authority`'s: `register_runtime(name, factory)`,
+`available_runtimes()`. The built-ins `local`, `claude` and `temporal` register at import
+(`temporal` still raises `NotImplementedError` naming bh-c6dk.4); nothing is auto-discovered,
+so a plugin such as Gas City calls `register_runtime` itself. A second registration of a name
+raises unless `replace=True`. `work.runtime` is a string validated against the registry when the
+config loads (and by `bh config set`); an unregistered name is rejected listing the available
+ones, and `get_runtime` raises the same `ValueError`
+([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 1).
+
+`on_gate_resolved(resolution: GateResolution)` is called from the loop's gate pass for each
+review gate it observes resolving, with `GateResolution(gate_id, bead_id, verdict, feedback_ref)`
+where `verdict` is `approved` or `changes_requested` and `feedback_ref` (the gate id) is set only
+for a bounce. Delivery is at-least-once (hooks must be idempotent), bounded by
+`work.dispatch.poll_interval` with no push doorbell; a raising hook is logged and retried a few
+passes, never fatal. A runtime must not re-dispatch: bounced work is re-scheduled by the loop's
+own `resume-changes-requested` decision (Decision 3).
 
 Every manual/Task launch and local-runtime launch consumes the same canonical routing decision
 shown by `bh work schedule`: required complexity, optional preferred model, selected
@@ -666,6 +683,100 @@ runtime/pass envelope and GenAI telemetry. Only the final harness adapter transl
 blocked verdict never spawns; a loose fallback spawns and remains visible in the envelope.
 The public fields and availability caveats are specified in
 [Complexity-first routing](COMPLEXITY-ROUTING.md).
+
+#### Outcome sink in bead metadata — `bh role --outcome-sink bead`
+
+A runtime that spawns the seat itself reads the `SeatRun` off the pipe it holds. A process host
+that discards stdout or fires and forgets cannot, so `bh role` (the BH-side seat entry point that
+wraps `bh-<seat>`) gains `--outcome-sink {stdout,bead}`
+([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 2):
+
+```sh
+bh role developer --bead <id> --outcome-sink bead --session-id <session_id>
+```
+
+- **`stdout`** (the default) is today's behavior, byte for byte.
+- **`bead`** runs the seat headless in the foreground, still forwards its stdout, and once it
+  exits writes the same JSON line to the bead's metadata key `bh.outcome.<session_id>`.
+  `--session-id` is the id passed to the seat's `--session_id`. It is minted when unset, and the
+  written key is named on stderr. The write is one `bd update --metadata` merge of that single
+  key, attributed to the workspace's stamped seat identity (`--actor`). No other metadata key and
+  no label is written.
+  The flag needs `--bead` and refuses `-d` and the hitch backend, which emit no `SeatRun`.
+
+**Record schema.** The value of `bh.outcome.<session_id>` is one JSON object, either:
+
+```text
+SeatRun   { outcome: { status: "done"|"blocked"|"handoff", summary, bead_id?, next_action? },
+            session_id, cost_usd, usage, packs }        # as the seat printed it
+Envelope  { session_id, cost_usd, usage, terminal_reason } # no outcome: killed or crashed
+```
+
+A seat that printed a `SeatRun` or a killed-run envelope has that line stored as it was printed.
+A seat that printed neither gets an envelope synthesized by the wrapper, with `terminal_reason`
+`no SeatRun on stdout (exit <code>)`, so a crashed run answers `failed` and not `running`
+forever. The record is append-only per session: an existing key is never overwritten, and BH
+only reads it.
+
+**Reading it.** `beadhive.outcome.read(bead_id, session_id) -> RoleOutcome | None` classifies the
+record through `seatrun.classify_run`, the same rules as the stdout path, and maps the verdict
+the way `LocalRuntime.observe` does (a parity test pins the two): `done` / `blocked` /
+`handoff` carry the seat's summary, and no parseable `SeatRun` is `failed`. A record has no
+exit code and none is consulted, so a bare exit 0 is never success here either. `None` means no
+answer yet: the key is absent, or the record's own `session_id` differs from the requested one
+(a stale session can never answer for a new one). `beadhive.outcome.observe(handle)` is the
+ready-made `observe()` for a non-child runtime: the classified record when present, `running`
+when absent. Like every `observe()`, it is never authoritative about bead lifecycle. Bead state
+still wins.
+
+#### The conformance kit — `beadhive.runtime.conformance`
+
+Passing the kit is the GO condition for documenting a runtime as supported, and a failure is
+the mode-selection signal ([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md)
+Decisions 4 and 6). Every failure names the ADR invariant it broke and a fix class:
+**GC-fixable** (fix the runtime and re-run) or **structural** (Mode 2).
+
+| Check | Invariant | Class |
+|---|---|---|
+| `schedule()` returns a `RoleHandle` for the bead | `handle-shape` | GC-fixable |
+| `observe()` runs `running` to a terminal outcome | `observe-transitions` | GC-fixable |
+| outcome sink round trip (`bh role --outcome-sink bead --session-id`) | `sink-round-trip` | GC-fixable |
+| a finished earlier session never answers for a new session on the same bead | `stale-session-rejected` | GC-fixable (outcome sink, ADR Decision 6) |
+| `on_gate_resolved` is idempotent and never re-dispatches | `gate-idempotent` | GC-fixable |
+| a restarted session answers for the same `session_id` | `same-session-id` | structural |
+| no claim, status, label, gate or other metadata write over a full turn (diffed in the bead store) | `no-lifecycle-writes` | structural |
+
+Run it from any package that depends on `beadhive`; no BeadHive fixture is needed. With pytest:
+
+```python
+from beadhive.runtime.conformance import RuntimeConformanceSuite, RuntimeEnv
+
+class TestMyRuntime(RuntimeConformanceSuite):
+    def make_runtime(self, env: RuntimeEnv):
+        return MyRuntime(seat_command=env.seat_command)
+```
+
+Or from the command line, with a factory `package.module:callable` that takes a `RuntimeEnv`:
+`python -m beadhive.runtime.conformance my_pkg.runtime:make_runtime` (exit 0 only on GO).
+`env.seat_command` is a `work.dispatch.seat_command` template for a stand-in seat that the
+runtime must launch with the settled `bh-<role>` argv.
+
+`env.hive` is a disposable hive. **By default, when `bd` is on `PATH`, it is a `BdHive`: a real
+scratch beads store (`bd init --server`) whose snapshot reads status, assignee, labels, metadata
+and gates from `bd` itself**, so a runtime that runs `bd update --claim`, `bd label add` or
+`bd gate resolve` is caught by `no-lifecycle-writes` (the Mode 1 versus Mode 2 split of ADR
+Decision 4). The JSON `FileHive` is for hermetic unit use only: a runtime never touches its
+files, so it cannot see bd-level writes, and a verdict obtained on one prints `GO (FileHive:
+bd-level lifecycle writes NOT exercised)` rather than a plain `GO`. Do not treat that caveated
+verdict as the Mode 1 GO; re-run where `bd` is available. Implement the `DisposableHive`
+protocol to run over your own store.
+
+Two things the kit does not do, stated plainly. The restart check
+(`same-session-id`) re-schedules a *finished* session under the same `session_id`; it does not
+restart a live one. And the runner maps any exception a check raises (a crash in the runtime,
+a factory error) to a GC-fixable failure, so a crash reads as NOT YET, never NO-GO. Polling uses
+`RuntimeEnv.clock` / `RuntimeEnv.sleep`, which a test can replace. Each attempt uses a fresh
+session id, because session ids are write-once.
 
 ### The `local` tier — `bh work loop <epic>`
 

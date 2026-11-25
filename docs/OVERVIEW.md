@@ -64,6 +64,8 @@ summarising each other; [ADOPTION](ADOPTION.md#see-also) carries the table.
 - **[PASSTHROUGH](PASSTHROUGH.md)** — `bh bd` / `bh git` and hive routing.
 - **[HUB](HUB.md)** — `bh sync` / `bh hq` and the cross-hive aggregate.
 - **[WORK](WORK.md)** — `bh work`, the bead lifecycle driver (assigned → merged).
+- **[RUNTIME-INTEGRATION](RUNTIME-INTEGRATION.md)** — registering a `work.runtime` (Gas City),
+  the conformance kit, Mode 1 vs Mode 2.
 - **[BEADS-SYNC](BEADS-SYNC.md)** — distributing issue state to agents over Dolt git refs.
 - **[INTEGRATIONS](INTEGRATIONS.md)** — the optional git-workspace integration.
 - **[DIAGNOSTICS](DIAGNOSTICS.md)** — `bh doctor` (status + warnings).

@@ -13,12 +13,16 @@ import asyncio
 import contextlib
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from . import localloop, log, run_journal
 
 _LOG = log.get_logger(__name__)
+
+#: ``(stdout, exit_code) -> ok`` — called once with the harvested stdout when the caller asked
+#: for a non-stdout outcome sink (``bh role --outcome-sink bead``). ``False`` fails the run.
+OutcomeWriter = Callable[[str, int | None], bool]
 
 
 def _forward(stream, chunk: bytes) -> None:
@@ -88,6 +92,7 @@ async def _run_foreground(
     role: str,
     seat_process_id: str,
     provider_continuation: str,
+    outcome_writer: OutcomeWriter | None = None,
 ) -> int:
     stop = asyncio.Event()
     received_signal: list[int] = []
@@ -158,6 +163,8 @@ async def _run_foreground(
             ),
             group_gone=reap.group_gone,
         )
+        if outcome_writer is not None and not outcome_writer(stdout, seat.proc.returncode):
+            return 1
         if classification.seat_run is None or not reap.group_gone:
             return 1
         return seat.proc.returncode or 0
@@ -185,8 +192,12 @@ def run_foreground(
     role: str,
     seat_process_id: str,
     provider_continuation: str,
+    outcome_writer: OutcomeWriter | None = None,
 ) -> int:
-    """Run one qualified packed seat with live forwarding and descendant ownership."""
+    """Run one qualified packed seat with live forwarding and descendant ownership.
+
+    ``outcome_writer``, when given, also receives the harvested stdout once the seat exits, so an
+    outcome sink sees the very bytes the stdout path classified."""
 
     return asyncio.run(
         _run_foreground(
@@ -198,5 +209,6 @@ def run_foreground(
             role=role,
             seat_process_id=seat_process_id,
             provider_continuation=provider_continuation,
+            outcome_writer=outcome_writer,
         )
     )

@@ -1371,7 +1371,7 @@ def _data_dispatch(cfg) -> dict:
     stale_after = config.dispatch_stale_after_seconds(cfg)
     rows = []
     for status in dispatch_status.compute_status_all(cfg):
-        if not status.installed:
+        if not status.installed and status.state != dispatch_status.STATE_ERROR:
             continue
         stale_seconds = status.stale_since_seconds()
         stalled = (
@@ -1401,6 +1401,9 @@ def _render_dispatch(d: dict) -> None:
         return
     typer.echo("\n# Unattended Dispatch")
     for row in d["hives"]:
+        if row.get("state") == "error":
+            typer.echo(f"  ✗ {row['hive']}: ERROR — {row['detail']}")
+            continue
         if row["dead"]:
             typer.echo(
                 f"  ✗ {row['hive']}: DEAD — supervised but not running "
@@ -3059,19 +3062,35 @@ def _legacy_validation_warnings(entry: dict, path: Path) -> list[str]:
     return warnings
 
 
+def _skip_tripletless(cfg) -> tuple[dict, list[str]]:
+    """`cfg` with provider/org/repo-less `managed_repos` entries dropped, plus one doctor warning
+    per dropped entry. A report spanning the whole fleet must not die on one malformed entry:
+    the raw `e['provider']` indexing below would KeyError the entire run (bh-n2gj1)."""
+    kept: list = []
+    warns: list[str] = []
+    for e in cfg.get("managed_repos", []) or []:
+        try:
+            registry.entry_triplet(e)
+        except registry.FleetEntryError as exc:
+            warns.append(f"skipped malformed fleet entry: {exc}")
+            continue
+        kept.append(e)
+    return {**cfg, "managed_repos": kept}, warns
+
+
 def warning_messages(cfg: dict | None = None) -> list[str]:
     """Return active doctor warnings without rendering the complete report.
 
     This is the source boundary for agent-facing alerts.  It reuses
     ``_data_warnings`` so the two surfaces cannot grow divergent warning rules.
     """
-    cfg = config.load() if cfg is None else cfg
+    cfg, skipped = _skip_tripletless(config.load() if cfg is None else cfg)
     root = Path(workspace_root())
     hives = cfg.get("managed_repos", []) or []
     git_repos, nonrepo, unknown_top = _scan(root, registry.effective_providers(cfg))
     tracked = _tracked(root)
     untracked = (git_repos - tracked) if tracked is not None else set()
-    return _data_warnings(cfg, root, hives, git_repos, nonrepo, unknown_top, untracked)
+    return skipped + _data_warnings(cfg, root, hives, git_repos, nonrepo, unknown_top, untracked)
 
 
 _ADR = "docs/design/release-channel-branches-adr.md"
@@ -3574,6 +3593,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
     makes no ``typer.echo`` calls, returns a JSON-able dict keyed by section, plus a
     ``timings`` key (section name -> milliseconds, plus ``total``) from a monotonic clock.
     """
+    cfg, skipped = _skip_tripletless(cfg)
     root = Path(workspace_root())
     hives = cfg.get("managed_repos", []) or []
     timings: dict[str, float] = {}
@@ -3669,6 +3689,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
             untracked,
         ),
     }
+    data["warnings"] = skipped + data["warnings"]
     timings["total"] = round((time.monotonic() - t_start) * 1000, 3)
     data["timings"] = timings
     return data
@@ -3810,7 +3831,9 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
 
 def show():
     """Pretty-print the resolved config: the doctor overview + config-only sections."""
-    cfg = config.load()
+    cfg, skipped = _skip_tripletless(config.load())
+    for msg in skipped:
+        typer.echo(f"warning: {msg}", err=True)
     root = Path(workspace_root())
     _overview(cfg, root)
     _section_dimensions(cfg)

@@ -158,3 +158,18 @@ def test_render_dispatch_prints_a_line_per_flagged_hive(capsys):
     out = capsys.readouterr().out
     assert "acme/widgets" in out
     assert "DEAD" in out
+
+
+def test_error_row_is_reported_and_rendered_not_skipped(monkeypatch, capsys):
+    """bh-p2ptn: a triplet-less entry's error row is not `installed`, but must still surface."""
+    err = dispatch_status.error_status("<invalid entry: orphan>", ValueError("no triplet"))
+    monkeypatch.setattr(dispatch_status, "compute_status_all", lambda cfg: [err, _status()])
+
+    data = doctor._data_dispatch({})
+
+    rows = {r["hive"]: r for r in data["hives"]}
+    assert rows["<invalid entry: orphan>"]["state"] == "error"
+    doctor._render_dispatch(data)
+    out = capsys.readouterr().out
+    assert "<invalid entry: orphan>" in out
+    assert "ERROR" in out

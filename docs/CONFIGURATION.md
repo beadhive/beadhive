@@ -8,7 +8,8 @@ Everything `bh` owns on a machine lives under **`~/.beadhive/`** (module: `confi
 |---|---|---|---|
 | home | `~/.beadhive/` | `BH_HOME` (legacy alias `WS_HOME`) | base for everything below |
 | config | `~/.beadhive/config.yaml` | `BH_CONFIG` (legacy alias `WS_CONFIG`) | host-local config (this file) |
-| Git-mode fleet config | `~/.beadhive/hq/fleet.yaml` | via `BH_HQ` (legacy alias `WS_HQ`) | Git compatibility source; SQL mode reads the selected committed central snapshot |
+| HQ directory | `~/.beadhive/hq/` | `BH_HQ` (legacy alias `WS_HQ`) > host config `hq.path` > `<BH_HOME>/hq` | Precedence is env, then config, then default. HQ-adjacent state (HQ backups in `backups/hq`, `hq-backups`, `state/hq-fleet-authority-mode.json`, `hq-beadyard-adoptions`) lives beside the resolved HQ directory (its parent) only when `hq.path` is the source of the HQ location (use an absolute path; a relative value is taken as-is). With `BH_HQ` set, or with neither set, it stays under `BH_HOME` exactly as before, so an upgrade never strands existing state |
+| Git-mode fleet config | `~/.beadhive/hq/fleet.yaml` | via `BH_HQ` (legacy alias `WS_HQ`) / `hq.path` | Git compatibility source; SQL mode reads the selected committed central snapshot |
 | hub | `~/.beadhive/hub/` | `BH_HUB` (legacy alias `WS_HUB`) | cross-hive aggregation hub (built by `bh sync`) — [HUB](HUB.md) |
 | cache | `~/.beadhive/cache/` | `BH_CACHE` (legacy alias `WS_CACHE`) | minimal-clone caches for uncloned hives |
 | generated docs | `~/.beadhive/labels.md` | — | `bh label docs` output |
@@ -115,6 +116,7 @@ boundaries.
 | Config key | Purpose |
 |---|---|
 | `hq.mode` | `git` compatibility mode or `dolt-server`; selects fleet config only. `api` is accepted as a HOST bootstrap meaning `hq.route: api` (it needs `hq.api`; `hq.route: sql` alongside it is refused). |
+| `hq.path` | HOST-only. Location of the HQ checkout, for a runtime (such as Gas City) that keeps HQ outside `BH_HOME`. `BH_HQ` still wins; unset falls back to `<BH_HOME>/hq`. HQ backups, fleet authority state and beadyard adoption journals follow it only when `BH_HQ` is unset; a `BH_HQ` host keeps them under `BH_HOME`. Use an absolute path. |
 | `hq.remote` | Git HQ repository remote. It is not the SQL server address. |
 | `hq.beadyard_id` | HOST-local canonical HQ UUID pin; normal reads never create it. |
 | `hq.authority_anchor` | HOST-local path to the protected operator authority-anchor file. |
@@ -1370,6 +1372,17 @@ See [ATTEST-KEYS.md](ATTEST-KEYS.md#runtime-catalog-drift-check).
 | Key | Default | Values | Effect |
 |---|---|---|---|
 | `work.gate.push.accept_attested_green` | `false` | bool, per hive or global | Opt in: the `push-main` pre-push hook also accepts the exact pushed tree when every active attest key is current or carried (`selective_validation.attested_green`), printing each key's state. Under `model: keys` a miss runs only the absent keys. An absent or red key, drift or any error falls through to the aggregate lookup and then the full gate; off is byte-identical to before. Rollback: `false`. See [ATTEST-KEYS.md](ATTEST-KEYS.md#accepting-per-key-proof-at-the-push-hook). |
+
+## `work.runtime` — what wakes the lifecycle
+
+| Key | Default | Values | Meaning |
+|---|---|---|---|
+| `work.runtime` | `local` | `claude`, `local`, `temporal`, or any name a plugin registered | Selects the runtime from the name-keyed registry. bh validates the name against the registry when the config loads and in `bh config set`; an unregistered name is rejected, listing the available ones. |
+
+The published config schema (contract v1 line) still lists only the built-in runtimes for
+`work.runtime`, so an external validator of that schema rejects a plugin name such as `gascity`
+until the next contract major (bh-esnpc). See the
+[runtime integration guide](RUNTIME-INTEGRATION.md) and [Runtime tiers](WORK.md#runtime-tiers--workruntime).
 
 ## `work.dispatch` — collapsed dispatch
 

@@ -388,6 +388,22 @@ def _beads_fail(exc: Exception) -> typer.Exit:
     return typer.Exit(1)
 
 
+def _echo_ladder(hive: str, spec, service, exc: Exception) -> None:
+    """Print the recovery ladder after a refused start, naming the failed check."""
+    from . import host_beads
+
+    try:
+        current = service.status(spec)
+        state, detail = current.state, current.detail
+    except Exception:  # noqa: BLE001 — diagnosis must never mask the refusal itself
+        state, detail = "", ""
+    if state == "running":
+        return
+    typer.echo("recover with:", err=True)
+    for line in host_beads.remediation_ladder(hive, state, detail):
+        typer.echo(line, err=True)
+
+
 def _beads_record_line(record) -> str:
     return (
         f"{record.url} (pid {record.pid}, bd {record.bd_version or '?'}, "
@@ -408,7 +424,9 @@ def beads_start_cmd(hive: str = _BEADS_HIVE, as_json: bool = _AS_JSON) -> None:
     try:
         outcome = service.start(spec)
     except (service.ServiceError, OSError, ValueError) as exc:
-        raise _beads_fail(exc) from None
+        failed = _beads_fail(exc)
+        _echo_ladder(spec.workspace, spec, service, exc)
+        raise failed from None
     if as_json:
         jsonout.emit(
             {
@@ -522,6 +540,11 @@ def beads_status_cmd(
             typer.echo(f"{row['hive']:40} {row['state']:10} {row['detail']}{supervised}")
             if row["state"] != "running" and row["state"] != "unservable":
                 typer.echo(f"  start it with `{host_beads.start_command(row['hive'])}`")
+                if row["state"] in ("stale", "mismatch", "unready"):
+                    for line in host_beads.remediation_ladder(
+                        row["hive"], row["state"], row["detail"]
+                    ):
+                        typer.echo(line)
     if not healthy:
         raise typer.Exit(1)
 
@@ -1635,11 +1658,23 @@ def _refuse_if_loop_delegated(verb: str, hive: str, cfg: dict, entry: dict) -> N
         raise typer.Exit(1)
 
 
-def _dispatch_entry(hive: str, cfg: dict):
+def _dispatch_entry_raw(hive: str, cfg: dict):
     main = registry.hive_dir_for(cfg, hive)
     entry = registry.entry_for_dir(cfg, main) or {}
-    resolved = hive or registry.hive_key(entry)
+    resolved = hive or registry.hive_key(entry)  # FleetEntryError on a triplet-less entry
     return entry, resolved
+
+
+def _dispatch_entry(hive: str, cfg: dict):
+    """As `_dispatch_entry_raw`, but a triplet-less / unresolved entry is a clean exit 1, not a
+    traceback (bh-p2ptn)."""
+    try:
+        entry, resolved = _dispatch_entry_raw(hive, cfg)
+        dispatch_log.hive_slug(entry)  # every caller derives the slug; fail clean up front
+        return entry, resolved
+    except registry.FleetEntryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 @dispatch_app.command(
@@ -1793,8 +1828,18 @@ def dispatch_status_cmd(
             typer.echo(_render_dispatch_status_row(row))
         return
 
-    _entry, resolved_hive = _dispatch_entry(hive, cfg)
-    status = dispatch_status.compute_status(resolved_hive, cfg=cfg)
+    try:
+        _entry, resolved_hive = _dispatch_entry_raw(hive, cfg)
+        status = dispatch_status.compute_status(resolved_hive, cfg=cfg)
+    except registry.FleetEntryError as exc:
+        # bh-p2ptn: a triplet-less entry / unresolved cwd is an error ROW, not a traceback.
+        err_row = dispatch_status.error_status(hive or "<unresolved hive>", exc)
+        if as_json:
+            jsonout.emit(err_row.as_dict())
+        else:
+            typer.echo(_render_dispatch_status_row(err_row))
+            typer.echo(f"  {err_row.detail}")
+        raise typer.Exit(1) from exc
     if as_json:
         jsonout.emit(status.as_dict())
         return

@@ -31,37 +31,22 @@ def test_work_runtime_layers_per_hive_over_global():
     assert config.work_runtime(cfg, entry) == "temporal"
 
 
-def test_work_runtime_falls_back_to_local_for_unknown_value():
-    # Tolerant-getter shape (matches `work_landing`/`review_gate`): a hand-edited bad value
-    # never crashes an unrelated `bh` invocation that only reads config. Real rejection is the
-    # schema/write-path checks below (bh-aidze) and `get_runtime`'s own ValueError.
-    assert config.work_runtime({"work": {"runtime": "bogus"}}, None) == "local"
+def test_work_runtime_getter_returns_the_name_unvalidated():
+    # The getter stays registry-free; rejection is the schema's job at load and `get_runtime`'s
+    # at resolution (below).
+    assert config.work_runtime({"work": {"runtime": "bogus"}}, None) == "bogus"
+    assert config.work_runtime({"work": {"runtime": " "}}, None) == "local"
 
 
 # ---- schema: work.runtime is a real, validated Literal field -----------------
 
 
-def test_literal_choices_finds_work_runtime():
-    assert config_schema.literal_choices("work.runtime") == ("claude", "local", "temporal")
+def test_work_runtime_is_a_registry_validated_string_not_a_closed_literal():
+    assert config_schema.literal_choices("work.runtime") is None
 
 
 def test_field_default_work_runtime_is_local():
     assert config_schema.field_default("work.runtime") == "local"
-
-
-def test_literal_violations_catches_bad_work_runtime():
-    cfg = {"work": {"runtime": "bogus"}}
-    violations = config.literal_violations(cfg)
-    assert len(violations) == 1
-    v = violations[0]
-    assert v["key"] == "work.runtime"
-    assert v["value"] == "bogus"
-    assert v["choices"] == ("claude", "local", "temporal")
-    assert v["default"] == "local"
-
-
-def test_literal_violations_clean_work_runtime_is_empty():
-    assert config.literal_violations({"work": {"runtime": "temporal"}}) == []
 
 
 # ---- write path: `bh config set` refuses an invalid work.runtime -------------
@@ -150,7 +135,7 @@ class _FakeRuntime:
     def observe(self, handle):
         return runtime.RoleOutcome(status="running")
 
-    def on_gate_resolved(self, gate_id):
+    def on_gate_resolved(self, resolution):
         return None
 
 
@@ -162,7 +147,7 @@ class _MissingObserve:
     def schedule(self, bead_id, role, *, workspace, instructions, session_id, model=None):
         return runtime.RoleHandle(bead_id=bead_id, session_id=session_id)
 
-    def on_gate_resolved(self, gate_id):
+    def on_gate_resolved(self, resolution):
         return None
 
 
@@ -245,4 +230,73 @@ def test_claude_runtime_observe_raises():
 
 def test_claude_runtime_on_gate_resolved_raises():
     with pytest.raises(NotImplementedError):
-        runtime.ClaudeRuntime().on_gate_resolved("gate-1")
+        runtime.ClaudeRuntime().on_gate_resolved(
+            runtime.GateResolution(gate_id="g", bead_id="b", verdict="approved")
+        )
+
+
+# ---- the registry (bh-ubmts) ----------------------------------------------------------------
+
+
+@pytest.fixture
+def clean_registry():
+    saved = dict(runtime._RUNTIMES)
+    yield
+    runtime._RUNTIMES.clear()
+    runtime._RUNTIMES.update(saved)
+
+
+def test_builtins_are_registered():
+    assert {"claude", "local", "temporal"} <= set(runtime.available_runtimes())
+    assert runtime.available_runtimes() == sorted(runtime.available_runtimes())
+
+
+def test_registered_runtime_resolves_from_work_runtime(clean_registry):
+    marker = _FakeRuntime()
+    runtime.register_runtime("gascity", lambda cfg, entry: marker)
+    assert runtime.get_runtime({"work": {"runtime": "gascity"}}) is marker
+
+
+def test_factory_receives_cfg_and_entry(clean_registry):
+    got = []
+    runtime.register_runtime("spy", lambda cfg, entry: got.append((cfg, entry)) or _FakeRuntime())
+    cfg = {"work": {"runtime": "spy"}}
+    runtime.get_runtime(cfg)
+    assert got == [(cfg, None)]
+
+
+def test_duplicate_name_is_refused_unless_replace(clean_registry):
+    runtime.register_runtime("dup", lambda cfg, entry: _FakeRuntime())
+    with pytest.raises(ValueError, match="already registered"):
+        runtime.register_runtime("dup", lambda cfg, entry: _FakeRuntime())
+    with pytest.raises(ValueError, match="already registered"):
+        runtime.register_runtime("local", lambda cfg, entry: _FakeRuntime())
+    other = _FakeRuntime()
+    runtime.register_runtime("dup", lambda cfg, entry: other, replace=True)
+    assert runtime.get_runtime({"work": {"runtime": "dup"}}) is other
+
+
+def test_empty_name_is_refused(clean_registry):
+    with pytest.raises(ValueError):
+        runtime.register_runtime("", lambda cfg, entry: _FakeRuntime())
+
+
+def test_unknown_name_fails_closed_listing_available_names():
+    with pytest.raises(ValueError, match=r"unknown work runtime 'nope'.*claude, local, temporal"):
+        runtime.get_runtime({"work": {"runtime": "nope"}})
+
+
+def test_config_load_validates_against_the_registry(clean_registry):
+    def problems(name):
+        return config_validate.validate_config(
+            {
+                "schema_version": config_schema.SCHEMA_VERSION,
+                "providers": ["github"],
+                "managed_repos": [],
+                "work": {"runtime": name},
+            }
+        )
+
+    assert any("unknown work runtime 'gascity'" in p["message"] for p in problems("gascity"))
+    runtime.register_runtime("gascity", lambda cfg, entry: _FakeRuntime())
+    assert not any("runtime" in p["message"] for p in problems("gascity"))

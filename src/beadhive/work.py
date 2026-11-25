@@ -848,11 +848,12 @@ def _batch_worktree(cfg, hive, bead, main):
 
 # ---- next: the optimistic pick → claim → re-verify loop ----------------------
 #
-# `bd update --claim` is NOT a hard compare-and-swap: two drivers racing for the same bead can
-# both see exit 0, and the last write wins. Every external driver that picks a bead off
-# `bd ready` and then claims it therefore reimplements the same race — badly, and separately.
-# This verb is the ONE safe entry point: pick optimistically, claim, then RE-READ the bead and
-# verify we are the holder, moving to the next candidate when we lost. Losing a race is the
+# `bd update --claim` is an atomic, actor-idempotent claim (bd >= 1.3.0): two drivers racing for
+# the same bead cannot both win, the loser exits non-zero. Picking a bead off `bd ready` and then
+# claiming it is still a pick-then-claim race on WHICH bead, so every external driver would
+# reimplement it. This verb is the ONE safe entry point: pick optimistically, claim (a non-zero
+# exit is a lost race), then RE-READ the bead to confirm we hold it, moving to the next
+# candidate when we lost. Losing a race is the
 # normal case under an unattended dispatcher, not an error, so it is never surfaced as a failure.
 #
 # bh-qczj.2: once a claim is won, the worktree is provisioned through the SAME `worktree.ensure`
@@ -953,9 +954,9 @@ def _try_claim(bead, actor, main) -> bool:
     """Claim `bead` for `actor`, then RE-VERIFY by re-reading it. True only when we hold it.
 
     The re-read is the whole point (see the block comment above): a non-zero claim means we lost
-    outright, but a ZERO claim proves nothing — `bd` will happily hand the same bead to a second
-    caller. `work_next.claim_won` decides from the re-read row, so the verdict is a pure function
-    of what the store actually says rather than of an exit code."""
+    outright (a clean decline, not an error), and a ZERO claim is confirmed rather than trusted:
+    `work_next.claim_won` decides from the re-read row, so the verdict is a pure function of what
+    the store actually says (this also covers an idempotent re-claim by the same actor)."""
     return work_lifecycle.try_claim(bead, actor, main)
 
 
