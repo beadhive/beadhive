@@ -621,6 +621,26 @@ def test_cancel_of_a_finished_run_harvests_it_instead(tmp_path, workspace):
         assert rt.observe(handle) is result
 
 
+def test_run_for_reads_the_handles_process_record_without_acting(tmp_path, workspace):
+    """bh-udk65: the read the operator demos use for pid / pgid / journal now that the loop's
+    in-flight map holds only an opaque handle. Same session rule as cancel/notify; no harvest."""
+    inst = tmp_path / "done.md"
+    inst.write_text("STUB_STATUS=done\n", encoding="utf-8")
+    with localloop.LocalRuntime(seat_command=STUB_COMMAND) as rt:
+        assert rt.run_for(RoleHandle(bead_id=BEAD, session_id="p1")) is None
+        handle = rt.schedule(
+            BEAD, "developer", workspace=str(workspace), instructions=str(inst), session_id="p1"
+        )
+        seat = rt.run_for(handle)
+        assert seat is rt._runs[BEAD]
+        assert (seat.provider_continuation, seat.pgid) == ("p1", seat.pid)
+        assert rt.run_for(RoleHandle(bead_id=BEAD, session_id="provider-earlier-turn")) is None
+        assert rt._submit(seat.wait_exit(30))
+        assert rt._settled(BEAD, seat) is None, "run_for never harvests"
+        assert rt.observe(handle).status == "done"
+        assert rt.run_for(handle) is seat, "still readable after the harvest"
+
+
 def test_notify_writes_to_the_live_runs_stdin_only(tmp_path, workspace):
     # Generous graces (bh-lhxy8 review): they bound how long a loaded host may take to deliver
     # the envelope and empty the group, and a tight one measures machine load, not behaviour.

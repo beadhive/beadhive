@@ -2866,3 +2866,42 @@ async def test_a_delegated_pass_still_delivers_resolved_gates(tmp_path, fakebd):
     report = await loop.run_pass()
     assert report.delegated and report.gate_notified == 1
     assert [r.bead_id for r in seen] == ["b1"]
+
+
+def test_the_demo_reads_spawn_facts_from_the_runtime_not_the_in_flight_handle(tmp_path):
+    """bh-udk65 guard. bh-03rvd turned `in_flight` values into opaque `InFlight` handles and the
+    demo's spawn trace (`seat.pid`) broke unnoticed, because the per-bead gate never runs the
+    ~1-minute demos key. This drives the SHIPPED `spawn_facts` against a real loop and its real
+    `local` runtime, so a future reshape of either seam fails here, in the ordinary suite."""
+    demo = _demo_module()
+    workspace = tmp_path / "wt"
+    workspace.mkdir()
+    instructions = tmp_path / "done.md"
+    instructions.write_text("STUB_STATUS=done\n", encoding="utf-8")
+    loop = localloop.LocalLoop(
+        hive_dir=tmp_path,
+        epic="bh-demo",
+        actor="dev/demo",
+        seat_command=f"{sys.executable} {STUB_SEAT}",
+    )
+    try:
+        assert demo.spawn_facts(loop, "bh-demo.1") == ("?", "?", "?")
+        handle = loop.runtime.schedule(
+            "bh-demo.1",
+            "developer",
+            workspace=str(workspace),
+            instructions=str(instructions),
+            session_id="provider-demo",
+        )
+        loop.in_flight["bh-demo.1"] = localloop.InFlight(
+            handle=handle, role="developer", action="dispatch", started_at=0.0
+        )
+        seat = loop.runtime.run_for(handle)
+        assert demo.spawn_facts(loop, "bh-demo.1") == (
+            str(seat.pid),
+            str(seat.pgid),
+            seat.session_id,
+        )
+        assert seat.session_id.startswith("seat-"), "the trace shows the process-owner id"
+    finally:
+        loop.runtime.close()

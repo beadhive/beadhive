@@ -3492,6 +3492,20 @@ class LocalRuntime:
             return None
         return seat
 
+    def run_for(self, handle: RoleHandle) -> SeatProcess | None:
+        """The process record behind *handle* — a READ for operator tooling, not the protocol.
+
+        :class:`LocalLoop` holds only the opaque handle (:class:`InFlight`), by design. Tooling
+        that runs on THIS tier and needs its process facts — the operator demos print each
+        spawn's pid, pgid and process-owner id and read its run journal — asks the runtime that
+        owns them here instead of reaching into ``_runs``. ``None`` when this runtime holds no
+        run for the handle, under the same session rule ``cancel`` / ``notify`` apply. Pure: no
+        reap and no journal write, and the record stays readable after its run is harvested.
+        Never await the record's methods from another event loop — its pipes belong to this
+        runtime's private one.
+        """
+        return self._live_for(handle)
+
     def cancel(self, handle: RoleHandle) -> RoleOutcome | None:
         """Walk the CANCEL ladder against the run *handle* names and return its terminal outcome
         (:class:`beadhive.runtime.CancellableRuntime`), with the rung that stopped it on

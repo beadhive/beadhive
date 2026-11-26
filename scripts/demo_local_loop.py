@@ -918,6 +918,22 @@ async def await_timer_gate(main: Path, ids: dict, loop, deadline: float) -> None
     await asyncio.sleep(remaining)
 
 
+def spawn_facts(loop, bead: str) -> tuple[str, str, str]:
+    """``(pid, pgid, session)`` of the seat *bead* has in flight, or ``"?"`` for each it lacks.
+
+    Since bh-03rvd the loop's in-flight map holds an opaque :class:`beadhive.localloop.InFlight`
+    handle, never the process; the process facts belong to the `local` runtime that spawned it,
+    so they are read there (``LocalRuntime.run_for``, bh-udk65). ``session`` is the seat's
+    process-owner id (``seat-<uuid>``), as it always was in this trace. A runtime without
+    ``run_for`` raises rather than printing ``?``: this demo builds the loop on the `local` tier,
+    so a missing accessor is a break to surface, not a fact to paper over."""
+    entry = loop.in_flight.get(bead)
+    seat = loop.runtime.run_for(entry.handle) if entry is not None else None
+    if seat is None:
+        return ("?", "?", "?")
+    return (str(seat.pid), str(seat.pgid), seat.session_id)
+
+
 async def run_demo(root: Path, main: Path, ids: dict, timer_deadline: float) -> list[str]:
     """Drive the molecule to its terminal state. Returns a list of assertion failures (empty
     means the run is good) — the caller turns a non-empty list into a non-zero exit."""
@@ -1058,17 +1074,13 @@ async def run_demo(root: Path, main: Path, ids: dict, timer_deadline: float) -> 
             print(f"  claim  → nothing takeable ({reason})")
         print(f"  decide → row={decision.row!r} action={decision.action!r} — {decision.detail}")
         for bead in report.dispatched:
-            seat = loop.in_flight.get(bead)
+            pid, pgid, session = spawn_facts(loop, bead)
             how = (
                 "container action — the epic resolves to a DISPATCHER seat"
                 if bead == ids["epic"]
                 else "claimed through `bh work next`"
             )
-            print(
-                f"  spawn  → {bead} pid={seat.pid if seat else '?'} "
-                f"pgid={seat.pgid if seat else '?'} session={seat.session_id if seat else '?'} "
-                f"({how})"
-            )
+            print(f"  spawn  → {bead} pid={pid} pgid={pgid} session={session} ({how})")
             if bead == ids["human"] and human_gate_open:
                 violations.append(
                     f"{bead} was dispatched on pass {n} while human gate "
