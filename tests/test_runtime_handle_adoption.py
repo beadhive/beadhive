@@ -59,6 +59,9 @@ class FakeHive:
 
     def __init__(self, beads=()):
         self.now = T0
+        #: `bd reclaim --older-than`: how long past expiry a claim stays before reclaim reverts
+        #: it. Zero unless a test models real bd's grace window (10m by default).
+        self.grace = timedelta(0)
         self.beads: dict[str, dict] = {}
         for bead in beads:
             self.add(bead)
@@ -132,7 +135,8 @@ class FakeHive:
         reclaimed = []
         for row in self.beads.values():
             expires = row.get("lease_expires_at")
-            if row["status"] == "in_progress" and expires and expires <= _iso(self.now):
+            cutoff = _iso(self.now - self.grace)
+            if row["status"] == "in_progress" and expires and expires <= cutoff:
                 reclaimed.append({"id": row["id"], "previous_owner": row["assignee"]})
                 row.update(status="open", assignee="")
                 row.pop("lease_expires_at", None)
@@ -530,6 +534,30 @@ def test_cause_already_recorded_matches_the_turns_own_reason_only():
     assert not localloop.cause_already_recorded([event], localloop.CAUSE_BLOCKED, other_turn)
     assert not localloop.cause_already_recorded([], localloop.CAUSE_BLOCKED, reason)
 
+    # Scoped to the persisted handle's session: a match names THAT session, or it is not this
+    # turn's (`s-1` is not a prefix match for `s-10`).
+    assert localloop.cause_already_recorded(
+        [event], localloop.CAUSE_BLOCKED, reason, session_id="s-1"
+    )
+    assert not localloop.cause_already_recorded(
+        [event], localloop.CAUSE_BLOCKED, reason, session_id="s-10"
+    )
+
+
+def test_a_reason_naming_no_session_never_suppresses_the_handles_turn_cause():
+    """A failure with no envelope quotes only its detail, so two turns can fail with the same
+    reason; an earlier turn's event must not swallow the new turn's cause."""
+    reason = "exit None; action dispatch; runtime gascity observe() raised 3 times in a row: boom"
+    event = {
+        "issue_type": "event",
+        "title": f"State change: dispatch → {localloop.CAUSE_FAILED}",
+        "description": f"Set dispatch to {localloop.CAUSE_FAILED}\n\nReason: {reason}",
+    }
+    assert localloop.cause_already_recorded([event], localloop.CAUSE_FAILED, reason)
+    assert not localloop.cause_already_recorded(
+        [event], localloop.CAUSE_FAILED, reason, session_id="s-2"
+    )
+
 
 # ---- acceptance 2: lease expiry wins -----------------------------------------------------------
 
@@ -566,6 +594,91 @@ async def test_lease_expiry_wins_and_the_old_sessions_late_record_is_ignored(
     assert later.harvested == () and later.causes == ()
     assert set(second.in_flight) == {"b1"}
     assert rt.observed[-1] == RoleHandle("b1", new_sid)
+
+
+@async_test
+async def test_an_expired_lease_inside_reclaims_grace_window_is_not_adopted(
+    tmp_path, hive, no_orphan_scan
+):
+    """Lease expiry wins by `lease_expires_at` (operator decision 2026-11-26), not by what
+    `bd reclaim` has reverted: inside the grace window the claim is still `in_progress` and
+    still this actor's, and the restarted loop leaves it alone for reclaim."""
+    from structlog.testing import capture_logs
+
+    from beadhive import log
+
+    hive.grace = timedelta(minutes=10)
+    hive.add("b1")
+    hive.add("b2")
+    sessions: dict[str, str] = {}
+    first = _loop(
+        tmp_path,
+        hive,
+        CancellableRemote(tmp_path, sessions),
+        claim=_claimer(hive, tmp_path, ["b1", "b2"]),
+    )
+    assert (await first.run_pass()).dispatched == ("b1", "b2")
+    sid = {bead: s for s, bead in sessions.items()}
+    await first.shutdown()
+
+    # One minute past expiry: b1's session is still running, b2's finished while no loop ran.
+    hive.now += LEASE + timedelta(minutes=1)
+    hive.record("b2", sid["b2"], status="blocked", summary="needs a human")
+    expired = {bead: hive.beads[bead]["lease_expires_at"] for bead in ("b1", "b2")}
+
+    rt = CancellableRemote(tmp_path, sessions)
+    second = _loop(tmp_path, hive, rt)
+    calls_before = len(hive.calls)
+    log.get_logger("warmup")
+    with capture_logs() as captured:
+        report = await second.run_pass()
+
+    assert report.reclaimed == (), "inside the grace window bd reclaim reverts nothing"
+    assert report.adopted == (), "an expired lease is not adopted"
+    assert rt.observed == [] and rt.scheduled == [] and rt.cancelled == []
+    assert second.in_flight == {}
+    assert report.heartbeats == (), "an expired lease is not heartbeated back to life"
+    assert report.harvested == () and report.causes == ()
+    assert hive.written_states() == [], "no cause is written"
+    new_calls = hive.calls[calls_before:]
+    assert not any(c[:1] == ["heartbeat"] for c in new_calls)
+    assert not any(c[:1] == ["update"] for c in new_calls), "no release, no handle write"
+    for bead in ("b1", "b2"):
+        row = hive.beads[bead]
+        assert (row["status"], row["assignee"]) == ("in_progress", ACTOR), "left for reclaim"
+        assert row["lease_expires_at"] == expired[bead], "the lease is not renewed"
+        assert hive.handle(bead).session_id == sid[bead], "the handle is left as it is"
+    refused = [e for e in captured if e["event"] == "session_not_adopted_lease_expired"]
+    assert [(e["bead"], e["runtime"], e["session_id"]) for e in refused] == [
+        ("b1", "gascity", sid["b1"]),
+        ("b2", "gascity", sid["b2"]),
+    ]
+
+    # Past the grace window, the same loop's per-pass reclaim reverts both claims.
+    hive.now += hive.grace
+    assert (await second.run_pass()).reclaimed == ("b1", "b2")
+
+
+@async_test
+async def test_a_live_lease_is_still_adopted_when_reclaim_models_a_grace_window(
+    tmp_path, hive, no_orphan_scan
+):
+    hive.grace = timedelta(minutes=10)
+    hive.add("b1")
+    sessions: dict[str, str] = {}
+    first = _loop(
+        tmp_path, hive, RemoteRuntime(tmp_path, sessions), claim=_claimer(hive, tmp_path, ["b1"])
+    )
+    await first.run_pass()
+    (sid,) = sessions
+    await first.shutdown()
+
+    hive.now += LEASE - timedelta(seconds=1)  # one second of lease left
+    report = await _loop(tmp_path, hive, RemoteRuntime(tmp_path, sessions)).run_pass()
+
+    assert report.adopted == ("b1",)
+    assert "b1" in report.heartbeats
+    assert hive.handle("b1").session_id == sid
 
 
 # ---- shutdown -----------------------------------------------------------------------------------
