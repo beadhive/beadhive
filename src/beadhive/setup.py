@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import platform
-import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -45,7 +44,7 @@ from typing import Any
 
 import typer
 
-from . import config, deps, dolt_health, jsonout, store_locator
+from . import bd_version, config, deps, dolt_health, jsonout, store_locator
 from .run import run
 
 # ---- probe table ---------------------------------------------------------------
@@ -91,41 +90,16 @@ BD_LAST_RELEASE_WITHOUT_DOLT_FIX = (1, 1, 2)
 DOLT_FIX_VERSION = "2.2.0"
 
 
-# Markers meaning "a build BETWEEN tags", matched as whole words so a commit hash that happens to
-# contain the letters (`1.1.0 (abc123rc)`) is not read as a release candidate — a false match here
-# SILENCES a real warning, which is the costlier direction to be wrong in.
-_NOT_A_TAGGED_RELEASE = re.compile(r"\b(dev|head|dirty|snapshot|pre|rc\d*|alpha|beta)\b", re.I)
-
-
 def _bd_release_tuple(version_line: str | None) -> tuple[int, ...] | None:
     """The ``(major, minor, patch)`` of a TAGGED bd release, or ``None`` when the version is
     not a plain tag — a HEAD build, a dev build, or unparseable.
 
-    ``None`` deliberately means "cannot judge", never "bad". A HEAD build is how an operator
-    picks the fix up ahead of a release (that is exactly what this hive's Brewfile pins), so
-    treating unparseable as suspect would warn the very people who already worked around it.
-
-    THE SUFFIX IS PART OF THE VERSION (bh-1drz). This used to match the numeric core and discard
-    whatever followed, so the nixpkgs HEAD build — which reports ``bd version 1.1.0 (dev)`` — was
-    judged a tagged 1.1.0 and warned. The Homebrew HEAD build escaped only by an accident of
-    formatting: it prints ``HEAD-af076b6``, which has no leading digits, so the regex missed it
-    and this returned ``None`` for the right reason by luck. Since ADR Decision 5 makes the Nix
-    flake the supported local-install toolchain, and ``flake.nix``'s ``beadsHead`` override
-    exists precisely to supply a HEAD bd that CARRIES the fix, the old behaviour warned on every
-    provisioned Linux host — the exact case the paragraph above forbids.
-
-    A parenthetical commit hash (``1.1.0 (abc123)``) is still a tagged release and still judged;
-    only a between-tags marker disqualifies."""
-    if not version_line:
-        return None
-    match = re.search(r"\bbd version (\d+)\.(\d+)\.(\d+)(\S*)", version_line)
-    if not match:
-        return None
-    if match.group(4):
-        return None  # a suffix welded to the number: 1.1.0.dev0, 1.1.0-rc1, 1.1.0+build
-    if _NOT_A_TAGGED_RELEASE.search(version_line[match.end() :]):
-        return None  # a marker word after it: `1.1.0 (dev)`
-    return tuple(int(g) for g in match.groups()[:3])
+    ``None`` deliberately means "cannot judge", never "bad". The one parsing rule lives in
+    :func:`beadhive.bd_version.tagged_release` (shared with :mod:`beadhive.bd_floor`; bh-1drz,
+    bh-5traf), so the two callers cannot drift. A HEAD build is how an operator picks the fix up
+    ahead of a release (that is exactly what this hive's Brewfile pins), so treating unparseable
+    as suspect would warn the very people who already worked around it."""
+    return bd_version.tagged_release(version_line)
 
 
 def dolt_fix_advisory(bd_version: str | None) -> str | None:
