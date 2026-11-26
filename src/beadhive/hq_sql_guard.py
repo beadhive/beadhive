@@ -10,14 +10,15 @@ The guard is a diagnostic, never a fallback: it does not select a route, change 
 exit code or stdout. ``hq.sql_guard`` says what a *non*-service host gets:
 
 * ``warn``: one stderr line per process per opener and call site;
-* ``refuse`` (with ``warn`` the 0.41.0 default): :class:`SqlPlaneRetired`, before connecting;
+* ``refuse``: :class:`SqlPlaneRetired`, before connecting;
 * ``off``: silent.
 
 The hq-service host is marked explicitly (``hq.service_host: true``, HOST-only, default off);
 nothing infers it. In 0.40.0 the guard acts only on ``hq.route: api`` hosts and on hosts that
 set ``hq.sql_guard`` explicitly; an ``hq.route: sql`` host that sets nothing is untouched and
-silent until it is cut over. 0.41.0 makes ``warn`` plus refuse the default for every unmarked
-host. ``BH_HQ_SQL_GUARD`` / ``BH_HQ_SERVICE_HOST`` override the two keys for one process.
+silent until it is cut over. A later release will make ``warn`` plus refuse the default for every
+unmarked host; nothing in 0.41.0 does. ``BH_HQ_SQL_GUARD`` / ``BH_HQ_SERVICE_HOST`` override the
+two keys for one process.
 """
 
 from __future__ import annotations
@@ -116,7 +117,7 @@ def guard_sql_open(opener: str, *, host_only: bool = False, refuse_only: bool = 
     if is_service_host(state) or state["mode"] == "off":
         return
     if state["route"] != "api" and not state["explicit"]:
-        return  # a route=sql host that has not opted in is untouched until 0.41.0
+        return  # a route=sql host that has not opted in is untouched; the default is unchanged
     if refuse_only and state["mode"] != "refuse":
         return
     site = _call_site(opener)
@@ -129,7 +130,7 @@ def guard_sql_open(opener: str, *, host_only: bool = False, refuse_only: bool = 
     message = (
         f"HQ SQL opener {opener} {what} ({why}; called from {site}). "
         "Reach HQ through hq-service (hq.route: api); "
-        "bh 0.41.0 refuses this. Silence: hq.sql_guard: off."
+        "a later bh release will refuse this. Silence: hq.sql_guard: off."
     )
     if state["mode"] == "refuse":
         raise SqlPlaneRetired(message)
@@ -152,7 +153,7 @@ def doctor_data() -> dict[str, Any]:
         level = "warn"
         detail = (
             "hq.route is sql on a host not marked hq.service_host: the HQ SQL warning defaults "
-            "on in 0.41.0 alongside refuse; cut this host over to hq.route: api"
+            "on in a later release alongside refuse; cut this host over to hq.route: api"
         )
     elif lingering:
         level = "warn"

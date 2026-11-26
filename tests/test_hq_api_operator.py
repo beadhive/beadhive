@@ -251,7 +251,7 @@ def test_a_second_active_digest_for_a_version_is_a_conflict_before_the_service(f
 
 
 def test_revoke_is_not_routed(store):
-    with pytest.raises(hq_release_catalog.CatalogError, match="0.41.0"):
+    with pytest.raises(hq_release_catalog.CatalogError, match="a later release"):
         store.revoke("0.29.1", "bad")
 
 
@@ -349,7 +349,7 @@ def test_cli_catalog_import_and_verify_use_the_port(api_host, fake, key, monkeyp
 
 def test_cli_catalog_revoke_and_provision_are_refused_on_api(api_host):
     revoke = _run("hq", "release-catalog", "revoke", "0.29.1", "--reason", "bad")
-    assert revoke.exit_code == 1 and "0.41.0" in revoke.output
+    assert revoke.exit_code == 1 and "a later release" in revoke.output
     provision = _run("hq", "release-catalog", "provision")
     assert provision.exit_code == 1 and "server-local" in provision.output
 

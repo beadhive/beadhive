@@ -13,7 +13,7 @@ incarnations, manifests (PUT and DELETE), admissions, the rebind and release-pol
 pairs, and session renew and evidence. The write routes are caller-bound at v0.1.0 (the Gateway
 mints the principal kind, frame and host, and a mismatch is ``caller_not_bound``); the adapter
 sends nothing extra for that. The release-catalog import plan/apply pair is routed (bh-lejfy);
-revoke is served but stays unrouted until 0.41.0. The signed manifest publication pair
+revoke is served but stays unrouted until a later release. The signed manifest publication pair
 ``POST /manifests/{host_id}/publish/{plan,apply}`` (publish and rebind in one operator
 operation) is pinned to hq-service v0.1.3 (bh-hq-0ci; bh-hb75g). The operator plans'
 ``can_sign`` flag and the signed admission (``POST /admissions/{frame}`` with ``"plan": true``,
