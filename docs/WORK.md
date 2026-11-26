@@ -755,13 +755,21 @@ adoption runs, so it is re-dispatched with a fresh session id, and the old sessi
 `bh.outcome.<session_id>` record never answers for the new turn.
 
 A plain shutdown (SIGTERM, a restart) leaves an adoptable runtime's sessions alone. It does not
-cancel them, write a cause or release their claims. A lease-loss shutdown cancels the sessions
-the runtime can stop. When a session cannot be stopped (no `cancel`, or `cancel` raised), the
-loop leaves its claim to the lease, during a lease-loss shutdown or under the wall-time cap,
-because releasing it would let the bead start a second session. A runtime's `observe()` or
-`cancel()` that raises counts as transient: it is logged and retried on the next pass. After
-three consecutive raises for one bead (`LocalLoop(runtime_error_limit=...)`), `observe` answers
-`failed` and the cap stops retrying `cancel`.
+cancel them, write a cause or release their claims. It still calls the runtime's `close()`, so an
+adoptable runtime's `close()` must not end its sessions. A lease-loss shutdown cancels the
+sessions the runtime can stop. When a session cannot be stopped (no `cancel`, or `cancel`
+raised), the loop leaves its claim to the lease, during a lease-loss shutdown or under the
+wall-time cap, because releasing it would let the bead start a second session. A runtime's
+`observe()` or `cancel()` that raises counts as transient: it is logged and retried. The limit
+counts calls, not passes. After three consecutive raising `observe()` calls for one bead
+(`LocalLoop(runtime_error_limit=...)`), the third answers `failed` and the bead is harvested
+with that failure. A run past the wall-time cap is observed by the cap and by the harvest, so it
+can reach the limit in two passes. After three consecutive raising `cancel()` calls, the cap
+stops retrying `cancel`.
+
+A restart never writes a turn's cause twice. Removing a harvested turn's handle is best-effort.
+If it fails, the bead keeps a handle and a terminal record. When the bead's events already hold
+that turn's cause, which names its session, the restarted loop only drops the handle.
 
 `beadhive.runtime_handle.reclaim_refusal(row, now=...)` is the guard for an operator-driven
 reclaim. It returns a message naming the runtime and session when the bead is `in_progress`,

@@ -223,7 +223,14 @@ class ClosableRuntime(Protocol):
     """Owns resources (processes, threads, connections) its caller must release."""
 
     def close(self) -> None:
-        """Release everything the runtime owns. Idempotent."""
+        """Release everything the runtime owns. Idempotent.
+
+        An :func:`is_adoptable` runtime's ``close()`` MUST NOT end its sessions. The loop calls
+        it on every shutdown, including the plain stop before a restart, and leaves adoptable
+        sessions running so the next loop can adopt them. Stopping a session is ``cancel``'s
+        job, which the loop calls only when it means to (the wall-time cap, a lease loss). So
+        ``close()`` releases the runtime's own resources (connections, threads) and nothing
+        else."""
         ...
 
 
