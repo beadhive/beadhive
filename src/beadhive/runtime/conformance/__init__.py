@@ -26,12 +26,18 @@ is on PATH, so a runtime that writes lifecycle state through ``bd`` is caught by
 ``no-lifecycle-writes``. A :class:`FileHive` cannot see such writes; a verdict obtained on one
 prints ``GO (FileHive: bd-level lifecycle writes NOT exercised)``. See docs/WORK.md for the
 checks and what each invariant means.
+
+The opt-in loop probe (:mod:`.loop`; ``--loop``, ``run_conformance(..., loop=True)`` or
+``loop_probe = True`` on the suite) also drives one turn through BeadHive's real dispatcher loop
+over the runtime, in a real scratch bd store. A fault it finds in BeadHive's own loop is classed
+``bh-side`` (:data:`BH_SIDE`), never GC-fixable.
 """
 
 from typing import TYPE_CHECKING, Any
 
 from .bdhive import BdHive, BdHiveUnavailable, default_hive
 from .checks import (
+    BH_SIDE,
     CHECKS,
     GC_FIXABLE,
     INVARIANTS,
@@ -42,6 +48,7 @@ from .checks import (
     RuntimeFactory,
 )
 from .hive import DisposableHive, FileHive
+from .loop import LOOP_CHECKS
 from .runner import CheckResult, run_conformance, verdict
 from .state import BeadState
 
@@ -49,9 +56,11 @@ if TYPE_CHECKING:
     from .suite import RuntimeConformanceSuite
 
 __all__ = [
+    "BH_SIDE",
     "CHECKS",
     "GC_FIXABLE",
     "INVARIANTS",
+    "LOOP_CHECKS",
     "STRUCTURAL",
     "BdHive",
     "BdHiveUnavailable",

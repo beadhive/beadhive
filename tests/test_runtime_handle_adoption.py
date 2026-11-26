@@ -432,6 +432,105 @@ async def test_adoption_skips_another_runtime_another_actor_and_unhandled_beads(
     assert report.adopted == () and rt.observed == []
 
 
+class EventHive(FakeHive):
+    """FakeHive whose `set-state` also leaves the event child `bd set-state` creates, listed by
+    `bd list --parent <bead>` the way a real store lists it (title, and the reason in the
+    description)."""
+
+    def __init__(self, beads=()):
+        super().__init__(beads)
+        self.events: dict[str, list[dict]] = {}
+
+    def __call__(self, cmd, **kw):
+        args = list(cmd[1:])
+        while args and args[0] in ("-C", "--actor"):
+            args = args[2:]
+        args = [a for a in args if a != "--json"]
+        if args[:1] == ["list"] and "--parent" in args:
+            parent = args[args.index("--parent") + 1]
+            if parent != "epic-1":
+                self.calls.append(args)
+                return _CP(0, json.dumps(self.events.get(parent, [])))
+        if args[:1] == ["set-state"]:
+            bead, (dim, value) = args[1], args[2].split("=", 1)
+            reason = args[args.index("--reason") + 1]
+            rows = self.events.setdefault(bead, [])
+            rows.append(
+                {
+                    "id": f"{bead}.{len(rows) + 1}",
+                    "issue_type": "event",
+                    "status": "closed",
+                    "title": f"State change: {dim} → {value}",
+                    "description": f"Set {dim} to {value}\n\nReason: {reason}",
+                    "created_at": _iso(self.now),
+                }
+            )
+        return super().__call__(cmd, **kw)
+
+
+@async_test
+async def test_a_restart_never_writes_a_harvested_turns_cause_twice(
+    tmp_path, monkeypatch, no_orphan_scan
+):
+    """Carry-forward from the bh-fwm82 review: `_forget_handle` is best-effort. When dropping the
+    handle fails after the cause was written, the bead stays `in_progress` with a handle and a
+    terminal record, and a restart must not write that permanent cause event a second time. A
+    turn that finished while no loop ran is still harvested, once."""
+    hive = EventHive()
+    monkeypatch.setattr(bd_mod, "_run", hive)
+    hive.add("b1")
+    hive.add("b2")
+    sessions: dict[str, str] = {}
+    first = _loop(
+        tmp_path,
+        hive,
+        RemoteRuntime(tmp_path, sessions),
+        claim=_claimer(hive, tmp_path, ["b1", "b2"]),
+    )
+    assert (await first.run_pass()).dispatched == ("b1", "b2")
+    sid = {bead: s for s, bead in sessions.items()}
+    hive.record("b1", sid["b1"], status="blocked", summary="needs a human")
+
+    real_clear = runtime_handle.clear
+
+    def failing_clear(*_a, **_kw):
+        raise runtime_handle.HandleWriteError("bd update --unset-metadata failed")
+
+    monkeypatch.setattr(runtime_handle, "clear", failing_clear)
+    report = await first.run_pass()
+    assert report.causes == (("b1", localloop.CAUSE_BLOCKED),)
+    assert hive.handle("b1") is not None, "the removal failed; the handle is still there"
+    monkeypatch.setattr(runtime_handle, "clear", real_clear)
+    await first.shutdown()
+    hive.record("b2", sid["b2"], status="handoff", summary="over to review")
+
+    second = _loop(tmp_path, hive, RemoteRuntime(tmp_path, sessions))
+    restart = await second.run_pass()
+
+    assert restart.harvested == (("b2", "handoff"),), "only the unharvested turn is harvested"
+    assert restart.causes == (("b2", localloop.CAUSE_HANDOFF),)
+    assert hive.written_states() == [
+        ("b1", f"{localloop.DISPATCH_DIMENSION}={localloop.CAUSE_BLOCKED}"),
+        ("b2", f"{localloop.DISPATCH_DIMENSION}={localloop.CAUSE_HANDOFF}"),
+    ], "one permanent cause event per turn"
+    assert hive.handle("b1") is None and hive.handle("b2") is None
+    assert second.in_flight == {}
+
+
+def test_cause_already_recorded_matches_the_turns_own_reason_only():
+    reason = "exit None; action dispatch; session s-1; cost 0.25; needs a human"
+    event = {
+        "issue_type": "event",
+        "title": f"State change: dispatch → {localloop.CAUSE_BLOCKED}",
+        "description": f"Set dispatch to {localloop.CAUSE_BLOCKED}\n\nReason: {reason}",
+    }
+    assert localloop.cause_already_recorded([event], localloop.CAUSE_BLOCKED, reason)
+    assert not localloop.cause_already_recorded([event], localloop.CAUSE_HANDOFF, reason)
+    other_turn = reason.replace("s-1", "s-2")
+    assert not localloop.cause_already_recorded([event], localloop.CAUSE_BLOCKED, other_turn)
+    assert not localloop.cause_already_recorded([], localloop.CAUSE_BLOCKED, reason)
+
+
 # ---- acceptance 2: lease expiry wins -----------------------------------------------------------
 
 
@@ -652,6 +751,61 @@ async def test_observe_failing_past_the_limit_fails_the_bead(tmp_path, hive):
         "exit None; action dispatch; runtime gascity observe() raised 3 times in a row: down"
     )
     assert loop.in_flight == {} and hive.handle("b1") is None
+
+
+class _FlakyEverything(CancellableRemote):
+    """observe() always raises (until the list runs out), and so does cancel()."""
+
+    def __init__(self, hive_dir, failures):
+        super().__init__(hive_dir, {})
+        self.failures = list(failures)
+        self.cancel_error = ConnectionError("unreachable")
+
+    def observe(self, handle):
+        self.observed.append(handle)
+        if self.failures:
+            raise self.failures.pop(0)
+        return outcome.observe(handle, cwd=self.hive_dir)
+
+
+@async_test
+async def test_the_cap_keeps_the_failed_answer_that_reaches_the_error_limit(tmp_path, hive):
+    """Carry-forward from the bh-fwm82 review: the wall-time cap observes before it cancels. When
+    ITS observe() is the raise that reaches the limit, the `failed` answer is settled there, not
+    dropped for the harvest to observe again (which also reset the count, so the bead failed
+    only after twice the budget). The limit counts raises, wherever they come from."""
+    hive.add("b1")
+    hive.claim("b1")
+    clock = Clock()
+    rt = _FlakyEverything(tmp_path, [ConnectionError("down")] * 6)
+    loop = _loop(
+        tmp_path,
+        hive,
+        rt,
+        clock=clock,
+        caps=localloop.Caps(max_run_seconds=10.0),
+        runtime_error_limit=3,
+    )
+    await loop._spawn_for("b1", action="dispatch", role="developer", report=localloop.PassReport())
+    clock.now += 11
+
+    first = localloop.PassReport()
+    await loop._enforce_wall_time(first)  # raise 1 (running), then cancel raises: retried later
+    await loop._harvest(first)  # raise 2
+    assert first.harvested == () and "b1" in loop.in_flight
+
+    second = localloop.PassReport()
+    await loop._enforce_wall_time(second)  # raise 3: the limit, answered failed, settled here
+    await loop._harvest(second)
+
+    assert len(rt.observed) == 3, "failed after exactly three consecutive raises"
+    assert second.harvested == (("b1", "incomplete"),)
+    assert second.causes == (("b1", localloop.CAUSE_FAILED),)
+    assert hive.set_state_reason("b1") == (
+        "exit None; action dispatch; runtime gascity observe() raised 3 times in a row: down"
+    )
+    assert loop.in_flight == {} and hive.handle("b1") is None
+    assert second.cancelled == ()
 
 
 @async_test

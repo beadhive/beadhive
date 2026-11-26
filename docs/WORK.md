@@ -755,13 +755,21 @@ adoption runs, so it is re-dispatched with a fresh session id, and the old sessi
 `bh.outcome.<session_id>` record never answers for the new turn.
 
 A plain shutdown (SIGTERM, a restart) leaves an adoptable runtime's sessions alone. It does not
-cancel them, write a cause or release their claims. A lease-loss shutdown cancels the sessions
-the runtime can stop. When a session cannot be stopped (no `cancel`, or `cancel` raised), the
-loop leaves its claim to the lease, during a lease-loss shutdown or under the wall-time cap,
-because releasing it would let the bead start a second session. A runtime's `observe()` or
-`cancel()` that raises counts as transient: it is logged and retried on the next pass. After
-three consecutive raises for one bead (`LocalLoop(runtime_error_limit=...)`), `observe` answers
-`failed` and the cap stops retrying `cancel`.
+cancel them, write a cause or release their claims. It still calls the runtime's `close()`, so an
+adoptable runtime's `close()` must not end its sessions. A lease-loss shutdown cancels the
+sessions the runtime can stop. When a session cannot be stopped (no `cancel`, or `cancel`
+raised), the loop leaves its claim to the lease, during a lease-loss shutdown or under the
+wall-time cap, because releasing it would let the bead start a second session. A runtime's
+`observe()` or `cancel()` that raises counts as transient: it is logged and retried. The limit
+counts calls, not passes. After three consecutive raising `observe()` calls for one bead
+(`LocalLoop(runtime_error_limit=...)`), the third answers `failed` and the bead is harvested
+with that failure. A run past the wall-time cap is observed by the cap and by the harvest, so it
+can reach the limit in two passes. After three consecutive raising `cancel()` calls, the cap
+stops retrying `cancel`.
+
+A restart never writes a turn's cause twice. Removing a harvested turn's handle is best-effort.
+If it fails, the bead keeps a handle and a terminal record. When the bead's events already hold
+that turn's cause, which names its session, the restarted loop only drops the handle.
 
 `beadhive.runtime_handle.reclaim_refusal(row, now=...)` is the guard for an operator-driven
 reclaim. It returns a message naming the runtime and session when the bead is `in_progress`,
@@ -822,6 +830,41 @@ restart a live one. And the runner maps any exception a check raises (a crash in
 a factory error) to a GC-fixable failure, so a crash reads as NOT YET, never NO-GO. Polling uses
 `RuntimeEnv.clock` / `RuntimeEnv.sleep`, which a test can replace. Each attempt uses a fresh
 session id, because session ids are write-once.
+
+##### The loop probe (opt-in)
+
+The checks above call the runtime directly. The loop probe drives it through BeadHive's real
+dispatcher loop, `LocalLoop`, wired the way `bh work loop` wires it (`runtime=` plus its
+`on_gate_resolved`). In the scratch bd store it seeds one in-progress epic with one ready child,
+then runs passes over one turn:
+
+1. The loop claims the child and calls `schedule()` once.
+2. While the turn is held, `observe()` answers `running`. The bead stays in flight, its claim is
+   heartbeated, and `bd reclaim` leaves it alone.
+3. Once the turn is released, the loop harvests `done` and writes no cause. The stand-in seat
+   started exactly once, under the session id the loop passed.
+
+Around the turn the bead is diffed as in `no-lifecycle-writes`. The loop's own writes are the
+loop's: the claim, the heartbeat, and, for an adoptable runtime, the `bh.runtime.handle`
+document. A non-adoptable runtime gets no handle from the loop, so a handle on its bead is the
+runtime's write.
+
+| Check | Invariant | Class |
+|---|---|---|
+| `loop_drives_one_turn` | `loop-session-started`: the loop's `schedule()` starts exactly one seat session, under the loop's `session_id` | GC-fixable |
+| | `observe-transitions`, `no-lifecycle-writes` (as above, seen through the loop) | as above |
+| | `bh-loop`: BeadHive's loop did not dispatch, heartbeat, harvest or clean up a turn the runtime ran correctly | **BH-side** |
+
+A BH-side failure is a fault in BeadHive, not the runtime's, so it is never reported as
+GC-fixable. A run with one reads `INCONCLUSIVE` (unless a structural failure makes it NO-GO):
+report it to BeadHive. An exception raised inside one of the runtime's own methods is still the
+runtime's crash.
+
+Opt in with `--loop` on the command line, `run_conformance(factory, loop=True)`, or
+`loop_probe = True` on a `RuntimeConformanceSuite` subclass. The probe needs a real scratch bd
+store (`bd` on `PATH`). On a `FileHive` it fails as `bh-loop`, and the pytest suite skips it.
+While it runs, `BH_HOME` and `BH_CONFIG` point at a throwaway config that reads beads over the
+`cli` route, and the shared-server variables are unset. All are restored afterwards.
 
 ### The `local` tier — `bh work loop <epic>`
 

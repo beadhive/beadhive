@@ -10,6 +10,10 @@
 Pytest collects the inherited ``test_*`` methods under your ``Test*`` class, one per ADR
 invariant. Override :meth:`make_hive` to run against your own :class:`DisposableHive`. The default
 hive is a real scratch beads store when ``bd`` is on PATH.
+
+Set ``loop_probe = True`` to also run the loop probe (:mod:`.loop`, ``test_loop_drives_one_turn``):
+BeadHive's real dispatcher loop drives one turn through your runtime. It is skipped otherwise,
+and skipped on a hive that is not a real scratch bd store.
 """
 
 from __future__ import annotations
@@ -19,9 +23,10 @@ from pathlib import Path
 
 import pytest
 
-from .bdhive import default_hive
+from .bdhive import BdHive, default_hive
 from .checks import CHECKS, RuntimeEnv
 from .hive import DisposableHive
+from .loop import LOOP_CHECKS
 
 
 class RuntimeConformanceSuite:
@@ -35,6 +40,9 @@ class RuntimeConformanceSuite:
 
     #: Close the hive after each test (set False when :meth:`make_hive` shares one).
     close_hive: bool = True
+
+    #: Opt in to the loop probe: BeadHive's real loop drives one turn through the runtime.
+    loop_probe: bool = False
 
     def make_hive(self, root: Path) -> DisposableHive:
         """A real scratch beads store when ``bd`` is available (so a runtime's writes through
@@ -69,5 +77,20 @@ def _bind(name: str, check):
     return test
 
 
+def _bind_loop(name: str, check):
+    def test(self: RuntimeConformanceSuite, conformance_env: RuntimeEnv) -> None:
+        if not self.loop_probe:
+            pytest.skip("the loop probe is opt-in: set loop_probe = True")
+        if not isinstance(conformance_env.hive, BdHive):
+            pytest.skip("the loop probe needs a real scratch bd store (bd on PATH)")
+        check(conformance_env, self.make_runtime)
+
+    test.__name__ = f"test_{name}"
+    test.__doc__ = (check.__doc__ or "").strip() or None
+    return test
+
+
 for _name, _check in CHECKS.items():
     setattr(RuntimeConformanceSuite, f"test_{_name}", _bind(_name, _check))
+for _name, _check in LOOP_CHECKS.items():
+    setattr(RuntimeConformanceSuite, f"test_{_name}", _bind_loop(_name, _check))

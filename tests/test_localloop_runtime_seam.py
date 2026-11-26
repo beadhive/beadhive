@@ -457,7 +457,9 @@ async def test_without_cancel_the_wall_time_cap_degrades_as_designed(tmp_path, f
 
 
 @async_test
-async def test_a_finished_run_past_the_cap_is_left_to_the_harvest(tmp_path, fakebd):
+async def test_a_finished_run_past_the_cap_is_harvested_not_cancelled(tmp_path, fakebd):
+    """The cap observes before it cancels; a run that already finished is settled on that
+    answer (bh-lxv3v), not cancelled and not observed a second time by the harvest."""
     fakebd(FakeBd(children=[_child("b1", status="in_progress")]))
     clock = Clock()
     rt = CancellableFake(RoleOutcome(status="handoff", cancel_rung="cooperative"))
@@ -470,7 +472,8 @@ async def test_a_finished_run_past_the_cap_is_left_to_the_harvest(tmp_path, fake
     await loop._enforce_wall_time(report)
 
     assert report.cancelled == () and rt.cancelled == []
-    assert "b1" in loop.in_flight
+    assert report.harvested == (("b1", "done"),) and report.causes == ()
+    assert loop.in_flight == {}
 
 
 @async_test

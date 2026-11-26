@@ -1193,6 +1193,22 @@ def cause_reason_for_outcome(outcome: RoleOutcome, *, action: str) -> str:
     return "; ".join(p for p in parts if p)
 
 
+def cause_already_recorded(events, cause: str, reason: str) -> bool:
+    """Does one of *events* (a bead's event rows, as :meth:`LocalLoop.load_molecule` reads them)
+    already record ``dispatch=<cause>`` with exactly *reason*?
+
+    :func:`cause_reason_for_outcome` names the session (``session <id>``) for every outcome a
+    seat or the outcome sink reported, so a match means THIS turn's cause was already written,
+    not an earlier turn's. ``bd set-state`` stores the reason in the event description."""
+    wanted = cause.replace("_", "-")
+    for row in events:
+        if not isinstance(row, dict) or reason not in str(row.get("description") or ""):
+            continue
+        if work_next.transition_destination(row, DISPATCH_DIMENSION) == wanted:
+            return True
+    return False
+
+
 def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") -> bool:
     """Write a failure cause onto *bead* as a closed state-dimension value.
 
@@ -2420,7 +2436,10 @@ class LocalLoop:
         second ``schedule()``, no reap, no release; the heartbeat step later in this same pass
         renews its claim — with its age rebuilt from the persisted wall-clock ``scheduled_at``;
         a terminal answer (it finished while no loop was running) is harvested exactly as a
-        harvest pass would."""
+        harvest pass would — unless the bead's events already carry that turn's cause
+        (:func:`cause_already_recorded`: harvested by an earlier loop whose handle removal
+        failed), when only the handle is dropped, so a permanent cause event is never written
+        twice."""
         molecule = self.load_molecule(self.caps.max_concurrency)
         name = self._runtime_name()
         adopted = []
@@ -2456,6 +2475,22 @@ class LocalLoop:
                     action=persisted.action,
                     age_seconds=age,
                 )
+                continue
+            cause = self._cause_for(outcome)
+            reason = cause_reason_for_outcome(outcome, action=entry.action)
+            if cause and cause_already_recorded(molecule.events.get(bead) or (), cause, reason):
+                # Harvested already: an earlier loop wrote this cause and then failed to drop the
+                # handle (`_forget_handle` is best-effort), so the bead is still `in_progress` with
+                # a handle and a terminal record. The cause event is permanent, so it is not
+                # written twice; only the stale handle is dropped.
+                _LOG.info(
+                    "session_already_harvested",
+                    bead=bead,
+                    runtime=name,
+                    session_id=persisted.session_id,
+                    cause=cause,
+                )
+                self._forget_handle(bead)
                 continue
             self._settle(bead, entry, outcome, report)
         report.adopted = tuple(adopted)
@@ -2545,8 +2580,13 @@ class LocalLoop:
         for bead, entry in list(self.in_flight.items()):
             if bead in self._cap_unenforceable or not over_wall_time(self.caps, entry.age(now)):
                 continue
-            # A run that already finished is the harvest's, not the cap's — the runtime says so.
-            if (await self._observe(entry)).status != "running":
+            # A run that already finished is settled HERE, on the answer the cap just read. Left
+            # for the harvest, it would be observed a second time and this answer dropped; when
+            # it is the transient-error limit's `failed` (which also reset the count), the bead
+            # would then need another full budget of raises before it failed.
+            observed = await self._observe(entry)
+            if observed.status != "running":
+                self._settle(bead, entry, observed, report)
                 continue
             rung, session, cost = await self._cancel(bead, entry)
             if rung == RUNG_ERROR:

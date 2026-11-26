@@ -10,7 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .bdhive import default_hive
-from .checks import CHECKS, GC_FIXABLE, STRUCTURAL, ConformanceFailure, RuntimeEnv, RuntimeFactory
+from .checks import (
+    BH_SIDE,
+    CHECKS,
+    GC_FIXABLE,
+    STRUCTURAL,
+    ConformanceFailure,
+    RuntimeEnv,
+    RuntimeFactory,
+)
 from .hive import DisposableHive
 
 
@@ -29,8 +37,13 @@ def run_conformance(
     hive: DisposableHive | None = None,
     workdir: Path | None = None,
     timeout: float = 60.0,
+    loop: bool = False,
 ) -> list[CheckResult]:
-    """Run every check against *factory* and return one result per check."""
+    """Run every check against *factory* and return one result per check.
+
+    ``loop=True`` adds the opt-in loop probe (:mod:`.loop`): BeadHive's real dispatcher loop
+    drives one turn through the runtime. It needs a real scratch bd store (the default hive when
+    ``bd`` is on ``PATH``); on another hive it fails as ``bh-loop``."""
     with tempfile.TemporaryDirectory(prefix="bh-conformance-") as tmp:
         root = Path(workdir) if workdir else Path(tmp)
         the_hive = hive if hive is not None else default_hive(root)
@@ -41,8 +54,13 @@ def run_conformance(
         env = RuntimeEnv(the_hive, the_hive.seat_command(), workspace, instructions, timeout)
         kind = env.hive_kind
         results = []
+        checks = dict(CHECKS)
+        if loop:
+            from .loop import LOOP_CHECKS
+
+            checks.update(LOOP_CHECKS)
         try:
-            for name, check in CHECKS.items():
+            for name, check in checks.items():
                 try:
                     check(env, factory)
                 except ConformanceFailure as exc:
@@ -75,6 +93,11 @@ def verdict(results: list[CheckResult]) -> str:
         return "GO: the runtime passes the kit (Mode 1)"
     if any(r.fix_class == STRUCTURAL for r in failed):
         return "NO-GO: a structural failure, so Mode 2 (delegated molecule), ADR Decision 6"
+    if any(r.fix_class == BH_SIDE for r in failed):
+        return (
+            "INCONCLUSIVE: the loop probe found a BH-side failure in BeadHive's own loop; it is "
+            "not the runtime's to fix, so report it to beadhive and re-run"
+        )
     return "NOT YET: every failure is GC-fixable; fix the runtime and re-run the kit"
 
 
@@ -93,8 +116,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("factory", help="package.module:callable")
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="also run the loop probe: BeadHive's real dispatcher loop drives one turn through "
+        "the runtime (needs bd on PATH)",
+    )
     args = parser.parse_args(argv)
-    results = run_conformance(_load_factory(args.factory), timeout=args.timeout)
+    results = run_conformance(_load_factory(args.factory), timeout=args.timeout, loop=args.loop)
     for r in results:
         print(f"{'PASS' if r.passed else 'FAIL'} {r.check}")
         if not r.passed:
