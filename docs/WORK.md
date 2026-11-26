@@ -831,6 +831,41 @@ a factory error) to a GC-fixable failure, so a crash reads as NOT YET, never NO-
 `RuntimeEnv.clock` / `RuntimeEnv.sleep`, which a test can replace. Each attempt uses a fresh
 session id, because session ids are write-once.
 
+##### The loop probe (opt-in)
+
+The checks above call the runtime directly. The loop probe drives it through BeadHive's real
+dispatcher loop, `LocalLoop`, wired the way `bh work loop` wires it (`runtime=` plus its
+`on_gate_resolved`). In the scratch bd store it seeds one in-progress epic with one ready child,
+then runs passes over one turn:
+
+1. The loop claims the child and calls `schedule()` once.
+2. While the turn is held, `observe()` answers `running`. The bead stays in flight, its claim is
+   heartbeated, and `bd reclaim` leaves it alone.
+3. Once the turn is released, the loop harvests `done` and writes no cause. The stand-in seat
+   started exactly once, under the session id the loop passed.
+
+Around the turn the bead is diffed as in `no-lifecycle-writes`. The loop's own writes are the
+loop's: the claim, the heartbeat, and, for an adoptable runtime, the `bh.runtime.handle`
+document. A non-adoptable runtime gets no handle from the loop, so a handle on its bead is the
+runtime's write.
+
+| Check | Invariant | Class |
+|---|---|---|
+| `loop_drives_one_turn` | `loop-session-started`: the loop's `schedule()` starts exactly one seat session, under the loop's `session_id` | GC-fixable |
+| | `observe-transitions`, `no-lifecycle-writes` (as above, seen through the loop) | as above |
+| | `bh-loop`: BeadHive's loop did not dispatch, heartbeat, harvest or clean up a turn the runtime ran correctly | **BH-side** |
+
+A BH-side failure is a fault in BeadHive, not the runtime's, so it is never reported as
+GC-fixable. A run with one reads `INCONCLUSIVE` (unless a structural failure makes it NO-GO):
+report it to BeadHive. An exception raised inside one of the runtime's own methods is still the
+runtime's crash.
+
+Opt in with `--loop` on the command line, `run_conformance(factory, loop=True)`, or
+`loop_probe = True` on a `RuntimeConformanceSuite` subclass. The probe needs a real scratch bd
+store (`bd` on `PATH`). On a `FileHive` it fails as `bh-loop`, and the pytest suite skips it.
+While it runs, `BH_HOME` and `BH_CONFIG` point at a throwaway config that reads beads over the
+`cli` route, and the shared-server variables are unset. All are restored afterwards.
+
 ### The `local` tier — `bh work loop <epic>`
 
 `bh work loop <epic>` drives one molecule to completion with **no human present and no server

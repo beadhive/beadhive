@@ -13,7 +13,9 @@ import pytest
 from beadhive.localloop import LocalRuntime
 from beadhive.runtime import RoleHandle, RoleOutcome
 from beadhive.runtime.conformance import (
+    BH_SIDE,
     GC_FIXABLE,
+    LOOP_CHECKS,
     STRUCTURAL,
     BdHive,
     ConformanceFailure,
@@ -30,7 +32,10 @@ from beadhive.runtime.conformance.checks import (
     check_observe_running_to_terminal,
     new_session_id,
 )
+from beadhive.runtime.conformance.loop import check_loop_drives_one_turn
 from beadhive.runtime.conformance.seat import scrubbed_env
+from beadhive.runtime.conformance.state import BeadState
+from harness.clock import FakeClock
 
 needs_bd = pytest.mark.skipif(shutil.which("bd") is None, reason="bd not installed")
 
@@ -68,9 +73,11 @@ class TestLocalRuntimeConformance(RuntimeConformanceSuite):
 @pytest.mark.integration
 @needs_bd
 class TestLocalRuntimeConformanceOnBd(RuntimeConformanceSuite):
-    """The default hive: a real scratch beads store, where the seat records through bd."""
+    """The default hive: a real scratch beads store, where the seat records through bd. Opts in
+    to the loop probe, as a third-party suite would."""
 
     close_hive = False
+    loop_probe = True
 
     @pytest.fixture(autouse=True)
     def _shared(self, bd_hive):
@@ -529,3 +536,149 @@ def test_suite_still_importable_lazily() -> None:
 
     assert issubclass(conformance.RuntimeConformanceSuite, object)
     assert "RuntimeConformanceSuite" in conformance.__all__
+
+
+# ---- the loop probe (bh-lxv3v): BeadHive's real loop drives the candidate ------------------------
+
+
+class _NeverStarts(_FakeRuntime):
+    """schedule() hands back a handle and launches nothing; observe() reads the outcome sink,
+    which therefore never answers."""
+
+    def schedule(self, bead_id, role, *, workspace, instructions, session_id, **_kw):
+        return RoleHandle(bead_id=bead_id, session_id=session_id)
+
+    def observe(self, handle):
+        return RoleOutcome(status="running", summary="no record yet")
+
+
+class _AdoptableFake(_FakeRuntime):
+    """Sessions outlive the loop, so the loop writes (and drops) a bh.runtime.handle itself."""
+
+    adoptable = True
+
+
+class _BdHandleWriter(_BdDirectWriter):
+    """NOT adoptable, yet writes a bh.runtime.handle document through bd on schedule."""
+
+    def write(self, bead_id):
+        self.bd("update", bead_id, "--metadata", '{"bh.runtime.handle": {"runtime": "fake"}}')
+
+
+def _fake_clock_env(hive, tmp_path) -> RuntimeEnv:
+    """The probe's waits run on a FakeClock: a turn that never finishes gives up after a couple
+    of passes instead of a real timeout."""
+    clock = FakeClock()
+    base = _env(hive, tmp_path)
+    return RuntimeEnv(
+        hive,
+        base.seat_command,
+        base.workspace,
+        base.instructions,
+        timeout=1.0,
+        clock=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+
+@pytest.mark.integration
+@needs_bd
+def test_loop_probe_passes_for_local_runtime_through_the_runner(bd_hive):
+    results = run_conformance(_local, hive=bd_hive, timeout=30.0, loop=True)
+    assert [r.check for r in results] == [*CHECKS, *LOOP_CHECKS]
+    assert [r.check for r in results if not r.passed] == []
+    assert verdict(results).startswith("GO: ")
+
+
+@pytest.mark.integration
+@needs_bd
+def test_loop_probe_fails_naming_the_check_when_schedule_never_starts_a_session(bd_hive, tmp_path):
+    with pytest.raises(ConformanceFailure) as caught:
+        check_loop_drives_one_turn(_fake_clock_env(bd_hive, tmp_path), _NeverStarts)
+    message = str(caught.value)
+    assert message.startswith("[loop-session-started]"), message
+    assert "no seat session ever started" in message
+    assert caught.value.invariant.fix_class == GC_FIXABLE
+
+    # Through the runner: the result names the check and the invariant, and reads NOT YET.
+    # timeout=0 makes every wait on the never-finishing turn give up after one look.
+    results = run_conformance(_NeverStarts, hive=bd_hive, timeout=0.0, loop=True)
+    (loop_result,) = [r for r in results if r.check == "loop_drives_one_turn"]
+    assert not loop_result.passed and loop_result.fix_class == GC_FIXABLE
+    assert "[loop-session-started]" in loop_result.message
+    assert verdict(results).startswith("NOT YET")
+
+
+@pytest.mark.integration
+@needs_bd
+def test_loop_probe_attributes_the_loops_handle_to_the_loop_for_an_adoptable_runtime(
+    bd_hive, tmp_path
+):
+    """Carry-forward from the bh-fwm82 review: an adoptable candidate's bead carries the loop's
+    bh.runtime.handle mid-turn; that write is the loop's, so the candidate passes."""
+    check_loop_drives_one_turn(_fake_clock_env(bd_hive, tmp_path), _AdoptableFake)
+
+
+@pytest.mark.integration
+@needs_bd
+def test_loop_probe_blames_a_non_adoptable_runtime_that_writes_the_handle_key(bd_hive, tmp_path):
+    with pytest.raises(ConformanceFailure) as caught:
+        check_loop_drives_one_turn(_fake_clock_env(bd_hive, tmp_path), _BdHandleWriter)
+    assert str(caught.value).startswith("[no-lifecycle-writes]")
+    assert "bh.runtime.handle" in str(caught.value)
+    assert caught.value.invariant.fix_class == STRUCTURAL
+
+
+def test_the_loop_probe_on_a_file_hive_is_bh_side_never_gc_fixable(tmp_path):
+    results = run_conformance(_FakeRuntime, hive=FileHive(tmp_path / "h"), timeout=10.0, loop=True)
+    (loop_result,) = [r for r in results if r.check == "loop_drives_one_turn"]
+    assert not loop_result.passed
+    assert loop_result.fix_class == BH_SIDE
+    assert "[bh-loop]" in loop_result.message and "BH-side" in loop_result.message
+    assert verdict(results).startswith("INCONCLUSIVE")
+
+
+def test_a_bh_side_failure_never_outranks_a_structural_one():
+    from beadhive.runtime.conformance import CheckResult
+
+    bh = CheckResult("loop_drives_one_turn", False, "x", BH_SIDE, "bd")
+    structural = CheckResult("no_lifecycle_writes", False, "x", STRUCTURAL, "bd")
+    fixable = CheckResult("stale_session_rejected", False, "x", GC_FIXABLE, "bd")
+    assert verdict([bh, structural]).startswith("NO-GO")
+    assert verdict([bh, fixable]).startswith("INCONCLUSIVE")
+    assert verdict([fixable]).startswith("NOT YET")
+
+
+def test_lifecycle_diff_attributes_loop_keys_to_the_loop_only():
+    from beadhive.runtime.conformance.checks import _lifecycle_diff
+
+    before = BeadState("in_progress", "dev/conformance", frozenset(), {})
+    after = BeadState(
+        "in_progress", "dev/conformance", frozenset(), {"bh.runtime.handle": {"runtime": "gc"}}
+    )
+    assert _lifecycle_diff(before, after, set()) == ["metadata key 'bh.runtime.handle' changed"]
+    assert _lifecycle_diff(before, after, set(), loop_keys=frozenset({"bh.runtime.handle"})) == []
+
+
+def test_an_exception_inside_the_runtime_is_the_runtimes_and_outside_is_bh_side():
+    from beadhive.runtime.conformance.loop import _raised_in
+
+    class Crashy:
+        def schedule(self):
+            raise TypeError("runtime bug")
+
+    rt = Crashy()
+    try:
+        rt.schedule()
+    except TypeError as exc:
+        assert _raised_in(rt, exc)
+    try:
+        raise KeyError("loop bug")
+    except KeyError as exc:
+        assert not _raised_in(rt, exc)
+
+
+def test_suite_runs_the_loop_probe_only_when_opted_in():
+    assert RuntimeConformanceSuite.loop_probe is False
+    assert hasattr(RuntimeConformanceSuite, "test_loop_drives_one_turn")
+    assert TestLocalRuntimeConformanceOnBd.loop_probe is True

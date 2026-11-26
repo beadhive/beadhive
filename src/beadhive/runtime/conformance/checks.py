@@ -20,6 +20,9 @@ from .state import BeadState
 
 GC_FIXABLE = "gc-fixable"
 STRUCTURAL = "structural"
+#: A loop-probe failure in BeadHive's own loop (claim, decide, heartbeat, reclaim, harvest
+#: bookkeeping) rather than in the runtime: never the runtime author's to fix (bh-lxv3v).
+BH_SIDE = "bh-side"
 
 TERMINAL = frozenset({"done", "blocked", "handoff", "failed"})
 ROLE = "developer"
@@ -32,7 +35,9 @@ class Invariant:
     id: str
     adr: str
     rule: str
-    fix_class: str  # GC_FIXABLE: fix the runtime and re-run; STRUCTURAL: Mode 2 (ADR Decision 6)
+    # GC_FIXABLE: fix the runtime and re-run; STRUCTURAL: Mode 2 (ADR Decision 6); BH_SIDE: a
+    # fault in BeadHive's loop, found by the loop probe, that the runtime cannot fix.
+    fix_class: str
 
 
 INVARIANTS: dict[str, Invariant] = {
@@ -77,7 +82,28 @@ INVARIANTS: dict[str, Invariant] = {
             "other than the outcome sink's, or resolves a gate",
             STRUCTURAL,
         ),
+        # The loop probe's own invariants (bh-lxv3v): see :mod:`.loop`.
+        Invariant(
+            "loop-session-started",
+            "Decision 4: shape of schedule(), driven by the loop",
+            "the loop's one schedule() for a bead starts exactly one seat session, under the "
+            "session_id the loop passed",
+            GC_FIXABLE,
+        ),
+        Invariant(
+            "bh-loop",
+            "Decision 4: BH owns lifecycle",
+            "BeadHive's loop claims, schedules, heartbeats, harvests and cleans up its own "
+            "bookkeeping for a turn the runtime ran correctly",
+            BH_SIDE,
+        ),
     )
+}
+
+_FIX_CLASS_VERDICTS = {
+    GC_FIXABLE: "GC-fixable: fix the runtime and re-run the kit",
+    STRUCTURAL: "structural: Mode 2 (delegated molecule) per ADR Decision 6",
+    BH_SIDE: "BH-side: a fault in BeadHive's loop, not the runtime's to fix; report it to beadhive",
 }
 
 
@@ -88,11 +114,7 @@ class ConformanceFailure(AssertionError):
         self.invariant = INVARIANTS[invariant_id]
         self.detail = detail
         inv = self.invariant
-        verdict = (
-            "GC-fixable: fix the runtime and re-run the kit"
-            if inv.fix_class == GC_FIXABLE
-            else "structural: Mode 2 (delegated molecule) per ADR Decision 6"
-        )
+        verdict = _FIX_CLASS_VERDICTS[inv.fix_class]
         super().__init__(
             f"[{inv.id}] violates {inv.adr}. Rule: {inv.rule}. {verdict}. Detail: {detail}"
         )
@@ -173,9 +195,19 @@ def _check_handle(handle: object, bead: str, session_id: str) -> None:
         )
 
 
-def _lifecycle_diff(before: BeadState, after: BeadState, sessions: set[str]) -> list[str]:
-    """What changed on the bead other than the outcome sink's own key for a known session."""
-    allowed = {OUTCOME_PREFIX + s for s in sessions}
+def _lifecycle_diff(
+    before: BeadState,
+    after: BeadState,
+    sessions: set[str],
+    *,
+    loop_keys: frozenset[str] = frozenset(),
+) -> list[str]:
+    """What changed on the bead other than the outcome sink's own key for a known session.
+
+    *loop_keys* are metadata keys BH's loop writes itself (the loop probe passes
+    ``bh.runtime.handle`` for an adoptable runtime): their changes are the loop's, so they are
+    never attributed to the runtime."""
+    allowed = {OUTCOME_PREFIX + s for s in sessions} | set(loop_keys)
     changes: list[str] = []
     for name in ("status", "assignee"):
         if getattr(before, name) != getattr(after, name):
