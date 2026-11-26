@@ -1193,13 +1193,20 @@ def cause_reason_for_outcome(outcome: RoleOutcome, *, action: str) -> str:
     return "; ".join(p for p in parts if p)
 
 
-def cause_already_recorded(events, cause: str, reason: str) -> bool:
+def cause_already_recorded(events, cause: str, reason: str, *, session_id: str = "") -> bool:
     """Does one of *events* (a bead's event rows, as :meth:`LocalLoop.load_molecule` reads them)
     already record ``dispatch=<cause>`` with exactly *reason*?
 
     :func:`cause_reason_for_outcome` names the session (``session <id>``) for every outcome a
     seat or the outcome sink reported, so a match means THIS turn's cause was already written,
-    not an earlier turn's. ``bd set-state`` stores the reason in the event description."""
+    not an earlier turn's. ``bd set-state`` stores the reason in the event description.
+
+    Not every reason names a session (a failure with no envelope quotes only its detail), and
+    two turns can then fail with the same text. With *session_id* (the persisted handle's), a
+    reason that does not name that session proves nothing about which turn wrote the event, so
+    it never counts as recorded: a second cause event is recoverable, a suppressed one is not."""
+    if session_id and f"session {session_id}" not in reason.split("; "):
+        return False
     wanted = cause.replace("_", "-")
     for row in events:
         if not isinstance(row, dict) or reason not in str(row.get("description") or ""):
@@ -2043,10 +2050,12 @@ class LocalLoop:
             #     which is exactly the opposite of "nothing claimed, no seat spawned". Only for a
             #     runtime whose sessions die with their scheduler (`is_adoptable` False, e.g.
             #     LocalRuntime): an adoptable runtime's live sessions are not orphans (ADR D4).
-            #     They are ADOPTED instead — after reclaim on purpose, so a lease that already
-            #     expired has been reverted and is not resurrected by the heartbeat below
-            #     (Decision 4: the handle is live until observe() is terminal OR the lease
-            #     expires; expiry wins).
+            #     They are ADOPTED instead — after reclaim on purpose, so a claim reclaim has
+            #     already reverted is not resurrected by the heartbeat below. Decision 4: the
+            #     handle is live until observe() is terminal OR the lease expires, and expiry
+            #     wins by the claim's `lease_expires_at` (operator decision 2026-11-26), not by
+            #     what reclaim has reverted: inside `bd reclaim`'s grace window an expired claim
+            #     is still `in_progress`, so `adopt_live_sessions` refuses it on the timestamp.
             if self.passes == 1:
                 if self._adoptable():
                     await self.adopt_live_sessions(report)
@@ -2430,14 +2439,26 @@ class LocalLoop:
 
         Called on the first pass, after reclaim, in place of the orphan reap (ADR Decision 4).
         Candidates are this molecule's beads that are still ``in_progress``, claimed by this
-        loop's actor, and carry a persisted handle naming THIS runtime: a bead ``bd reclaim``
-        reverted (its lease expired) is no longer ``in_progress``, so lease expiry wins. Each
-        candidate's handle is observed once: ``running`` puts it back in the in-flight map — no
-        second ``schedule()``, no reap, no release; the heartbeat step later in this same pass
-        renews its claim — with its age rebuilt from the persisted wall-clock ``scheduled_at``;
-        a terminal answer (it finished while no loop was running) is harvested exactly as a
-        harvest pass would — unless the bead's events already carry that turn's cause
-        (:func:`cause_already_recorded`: harvested by an earlier loop whose handle removal
+        loop's actor, and carry a persisted handle naming THIS runtime.
+
+        LEASE EXPIRY WINS, and it means the claim's ``lease_expires_at`` timestamp read against
+        the injected wall clock (operator decision 2026-11-26), not "whatever ``bd reclaim`` has
+        reverted". A reverted bead is no longer ``in_progress`` and is never a candidate; but
+        ``bd reclaim`` reverts only after a grace window past expiry (``--older-than``, 10m by
+        default), and inside it an expired claim is still ``in_progress`` and still ours. Such a
+        bead is NOT adopted: not observed, not put in flight (so not heartbeated), not harvested,
+        not released and no cause written. It is logged (``session_not_adopted_lease_expired``)
+        and left exactly as it is for reclaim, which this loop runs every pass; once reverted it
+        is re-dispatched as a fresh turn, whose new session id means the old session's late
+        record never answers for it. A row with no readable lease time is not expired
+        (:func:`runtime_handle.lease_expired`).
+
+        Each remaining candidate's handle is observed once: ``running`` puts it back in the
+        in-flight map — no second ``schedule()``, no reap, no release; the heartbeat step later
+        in this same pass renews its claim — with its age rebuilt from the persisted wall-clock
+        ``scheduled_at``; a terminal answer (it finished while no loop was running) is harvested
+        exactly as a harvest pass would — unless the bead's events already carry that turn's
+        cause (:func:`cause_already_recorded`: harvested by an earlier loop whose handle removal
         failed), when only the handle is dropped, so a permanent cause event is never written
         twice."""
         molecule = self.load_molecule(self.caps.max_concurrency)
@@ -2455,7 +2476,23 @@ class LocalLoop:
             persisted = runtime_handle.from_row({**data, "id": bead})
             if persisted is None or persisted.runtime != name:
                 continue
-            age = persisted.age_seconds(self._wall_clock())
+            now = self._wall_clock()
+            if runtime_handle.lease_expired(data, now):
+                _LOG.warning(
+                    "session_not_adopted_lease_expired",
+                    bead=bead,
+                    runtime=name,
+                    session_id=persisted.session_id,
+                    role=persisted.role,
+                    action=persisted.action,
+                    lease_expires_at=str(data.get("lease_expires_at") or ""),
+                    reason=(
+                        "the claim's lease has expired; it is left to bd reclaim and "
+                        "re-dispatched as a fresh turn once reverted"
+                    ),
+                )
+                continue
+            age = persisted.age_seconds(now)
             entry = InFlight(
                 handle=persisted.handle,
                 role=persisted.role,
@@ -2478,7 +2515,9 @@ class LocalLoop:
                 continue
             cause = self._cause_for(outcome)
             reason = cause_reason_for_outcome(outcome, action=entry.action)
-            if cause and cause_already_recorded(molecule.events.get(bead) or (), cause, reason):
+            if cause and cause_already_recorded(
+                molecule.events.get(bead) or (), cause, reason, session_id=persisted.session_id
+            ):
                 # Harvested already: an earlier loop wrote this cause and then failed to drop the
                 # handle (`_forget_handle` is best-effort), so the bead is still `in_progress` with
                 # a handle and a terminal record. The cause event is permanent, so it is not

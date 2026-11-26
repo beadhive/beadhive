@@ -25,8 +25,10 @@ Rules:
 - **``scheduled_at`` is wall-clock.** The loop's wall-time cap runs on its monotonic clock, which
   means nothing across a restart; an adopting loop rebuilds the run's age from this timestamp.
 - **Never authoritative about the bead.** The claim, its lease and the outcome record win: a
-  bead that is no longer ``in_progress`` (``bd reclaim`` reverted it once its lease expired) is
-  not adopted, and a fresh session id on re-dispatch means the old session's late
+  bead whose claim's ``lease_expires_at`` has passed (:func:`lease_expired`) is not adopted,
+  even while it is still ``in_progress`` inside ``bd reclaim``'s grace window (operator decision
+  2026-11-26); a bead reclaim has reverted is no longer ``in_progress`` and is not adopted
+  either; and a fresh session id on re-dispatch means the old session's late
   ``bh.outcome.<sid>`` record can never answer for the new turn.
 """
 
