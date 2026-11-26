@@ -63,7 +63,7 @@ def fixture(root: Path, provider: str) -> role_execution.QualifiedArtifact:
     binary = root / f"bh-developer-{provider}"
     binary.write_text(
         "#!" + sys.executable + "\n"
-        "import json,os,pathlib,subprocess,sys,time\n"
+        "import json,os,pathlib,subprocess,sys,threading,time\n"
         "def arg(name): return sys.argv[sys.argv.index(name)+1]\n"
         "continuation=arg('--session_id'); bead=arg('--bead')\n"
         "progress=pathlib.Path(os.environ['LIVE_PROGRESS_PATH'])\n"
@@ -74,6 +74,12 @@ def fixture(root: Path, provider: str) -> role_execution.QualifiedArtifact:
         + repr(provider)
         + ",'session_id':continuation}))\n"
         "print('provider.progress',file=sys.stderr,flush=True)\n"
+        # Any stdin line is the cancel ladder's first rung reaching the seat. The double drops
+        # out at once WITHOUT stopping its descendant, so only the runtime's group reap can keep
+        # the tripwire from surviving cancellation. EOF (a closed or null stdin) is not a rung.
+        "def wrap_up():\n"
+        "    if sys.stdin.readline(): os._exit(0)\n"
+        "threading.Thread(target=wrap_up,daemon=True).start()\n"
         "while not release.exists(): time.sleep(.01)\n"
         "child.terminate(); child.wait(5)\n"
         "print(json.dumps({'outcome':{'status':'done','summary':'fixture','bead_id':bead},"
@@ -180,20 +186,53 @@ async def work_attempt(
         terminate_grace=1.0,
         envelope_grace=0.2,
     )
+    try:
+        return await _drive_work_attempt(
+            loop, name, progress, release, descendant, cancel=cancel, degraded=degraded
+        )
+    finally:
+        # The loop's runtime owns a private event-loop thread and every process group it
+        # spawned; close it so no attempt leaks either into the next one.
+        await asyncio.to_thread(loop.runtime.close)
+
+
+async def _drive_work_attempt(
+    loop,
+    name: str,
+    progress: Path,
+    release: Path,
+    descendant: Path,
+    *,
+    cancel: bool,
+    degraded: bool,
+) -> dict:
+    """One seat through the loop's runtime seam (bh-03rvd, ported by bh-udk65).
+
+    The loop's in-flight map holds an opaque handle, never the process; the process facts
+    (``finished``, the run journal, the process-owner id) are read from the `local` runtime that
+    owns the run (``LocalRuntime.run_for``), and cancellation goes through its public
+    ``cancel(handle)``, the same call the loop's wall-time cap and shutdown make."""
     report = localloop.PassReport(number=1)
     await loop._spawn_for("bh-matrix.1", action="dispatch", role="developer", report=report)
-    seat = require(loop.in_flight.get("bh-matrix.1"), f"{name}: no spawn")
+    entry = require(loop.in_flight.get("bh-matrix.1"), f"{name}: no spawn")
+    seat = require(loop.runtime.run_for(entry.handle), f"{name}: runtime holds no run")
     await async_wait_for(progress.exists, f"{name}: no live progress")
     require(not seat.finished, f"{name}: progress arrived only after outer exit")
     require(descendant.exists(), f"{name}: descendant tripwire missing")
     if cancel:
-        result = await localloop.cancel(
-            seat,
-            rungs=(localloop.RUNG_SIGNAL,),
-            envelope_grace=0.2,
-            terminate_grace=1.0,
+        result = require(
+            await asyncio.to_thread(loop.runtime.cancel, entry.handle),
+            f"{name}: runtime did not cancel its own run",
         )
-        require(result.reap.group_gone, f"{name}: descendant survived cancellation")
+        require(result.cancel_rung, f"{name}: cancellation reported no rung")
+        rows = [json.loads(line) for line in seat.journal.path.read_text().splitlines()]
+        cancelled = [row for row in rows if row["activity"]["kind"] == "process.cancelled"]
+        require(cancelled, f"{name}: cancellation was not journaled")
+        require(
+            cancelled[-1]["activity"]["process"]["group_gone"]
+            and not localloop.group_alive(seat.pgid),
+            f"{name}: descendant survived cancellation",
+        )
         return {"run_id": seat.journal.run_id, "cancelled": True}
     release.touch()
     await async_wait_for(lambda: seat.finished, f"{name}: fixture did not exit")
@@ -208,6 +247,10 @@ async def work_attempt(
             rows[-1]["activity"]["kind"] == "process.harvested",
             f"{name}: no harvest record",
         )
+    require(
+        entry.handle.session_id == seat.provider_continuation,
+        f"{name}: handle names a different run",
+    )
     require(
         len({seat.journal.run_id, seat.session_id, seat.provider_continuation}) == 3,
         f"{name}: identities collapsed",

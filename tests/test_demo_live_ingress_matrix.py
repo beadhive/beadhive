@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import shlex
 import subprocess
@@ -63,3 +64,28 @@ def test_wheel_packages_cover_backfill_libraries_and_the_vendored_plugin_extras(
     # bh-lrs9v: the github/xtdb plugin packages ship in the wheel (the extras add only psycopg /
     # githubkit), so the installed-parity site must carry them too.
     assert {"beadhive_tracker_github", "beadhive_beadlog_xtdb", "beadlog_xtdb"} <= names
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [{}, {"cancel": True}, {"degraded": True}],
+    ids=["harvest", "cancel", "degraded-journal"],
+)
+def test_work_attempt_drives_one_seat_through_the_loops_runtime_seam(tmp_path, variant) -> None:
+    """bh-udk65 guard. bh-03rvd reshaped `loop.in_flight` (opaque `InFlight` handles) and this
+    demo broke unnoticed: the per-bead gate never runs the ~1-minute demos key. Running the
+    SHIPPED `work_attempt` cells here — each a few hundred milliseconds against a fixture seat —
+    puts every seam the demo reads (`in_flight`, `runtime.run_for`, `runtime.cancel`, the run
+    journal) in the ordinary suite, with the demo's own assertions as the oracle."""
+    (tmp_path / "instructions.md").write_text("fixture")
+    artifact = demo_live_ingress_matrix.fixture(tmp_path, "codex")
+
+    result = asyncio.run(
+        demo_live_ingress_matrix.work_attempt(tmp_path, artifact, "guard", **variant)
+    )
+
+    assert result["run_id"]
+    if variant.get("cancel"):
+        assert result["cancelled"] is True
+    else:
+        assert result["final_seat_runs"] == 1
