@@ -1377,12 +1377,18 @@ See [ATTEST-KEYS.md](ATTEST-KEYS.md#runtime-catalog-drift-check).
 
 | Key | Default | Values | Meaning |
 |---|---|---|---|
-| `work.runtime` | `local` | `claude`, `local`, `temporal`, or any name a plugin registered | Selects the runtime from the name-keyed registry. bh validates the name against the registry when the config loads and in `bh config set`; an unregistered name is rejected, listing the available ones. |
+| `work.runtime` | `local` | `claude`, `local`, `temporal`, or any name a plugin registered | Selects the runtime from the name-keyed registry, per hive (`managed_repos[].work.runtime`) or for the host. Config load checks only that the name is well-formed (letters, digits, `_`, `.`, `-`, starting alphanumeric); it does not consult the registry, so a hive that names a plugin runtime still loads on a host without the package. The registry check runs where the value is used: `bh work loop`, `bh config set`, `bh config validate`, `bh hive ready` and `bh doctor`. It loads the `beadhive.runtimes` entry point of that name, and only that one, then rejects an unregistered name listing the registered ones. |
+
+A plugin runtime becomes selectable by calling `register_runtime` or by declaring a
+`beadhive.runtimes` entry point named after the runtime. A foreground `bh role` always runs
+locally, whatever this key says; only what `bh work loop` dispatches goes through the runtime.
 
 The published config schema (contract v1 line) still lists only the built-in runtimes for
-`work.runtime`, so an external validator of that schema rejects a plugin name such as `gascity`
-until the next contract major (bh-esnpc). See the
-[runtime integration guide](RUNTIME-INTEGRATION.md) and [Runtime tiers](WORK.md#runtime-tiers--workruntime).
+`work.runtime`, and its description of the key is stale: it says the registry is checked when the
+config loads. An external validator of that schema rejects a plugin name such as `gascity` until
+the next contract major (bh-esnpc). That is a next-major item, not a blocker: `bh` itself accepts
+the name. See the [runtime integration guide](RUNTIME-INTEGRATION.md) and
+[Runtime tiers](WORK.md#runtime-tiers--workruntime).
 
 ## `work.dispatch` — collapsed dispatch
 
