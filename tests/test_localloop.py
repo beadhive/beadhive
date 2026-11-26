@@ -36,6 +36,7 @@ from beadhive import (
     config,
     localloop,
     run_journal,
+    runtime_handle,
     seatrun,
     state,
     work_next,
@@ -43,7 +44,7 @@ from beadhive import (
 from beadhive import bd as bd_mod
 from beadhive.complexity import ComplexityTier
 from beadhive.model_routing import ModelBlockedVerdict, ModelSelection
-from beadhive.runtime import GateResolution
+from beadhive.runtime import GateResolution, RoleOutcome
 from harness.readiness import ReadyFifo, wait_pid_gone
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
@@ -220,10 +221,22 @@ async def _finish(seat) -> None:
     EOF on stdout and `returncode` becoming non-None are separate events: the pipe closes when
     the process execs out, the return code appears when the child watcher reaps it a moment
     later. A test that harvested on EOF alone would flake, and `_harvest` is right to skip a run
-    that has not been reaped yet — it will take it on the next pass.
+    that has not been reaped yet — it will take it on the next pass. (The pumps belong to the
+    runtime's private loop, so this waits on the return code alone; the harvest collects them.)
     """
-    await seat.collect()
     assert await seat.wait_exit(10), "the seat should have exited"
+
+
+def _seat(loop, bead: str):
+    """The live process behind *bead*'s in-flight entry. The loop itself holds only the
+    runtime's handle (bh-03rvd); these process-supervision tests reach through to the default
+    :class:`localloop.LocalRuntime`'s run map to assert on the real process group."""
+    assert loop.in_flight[bead].handle.bead_id == bead
+    return loop.runtime._runs[bead]
+
+
+def _outcome(cls) -> RoleOutcome:
+    return RoleOutcome.from_classification(cls)
 
 
 def _ready_fifo(tmp_path: Path, monkeypatch) -> ReadyFifo:
@@ -546,7 +559,7 @@ def test_a_done_run_writes_nothing_write_on_failure_not_on_attempt():
     """Event beads are permanent and this hive has no compaction tier, so a successful dispatch
     must add no rows at all. Only bounces, stalls and escalations are recorded."""
     done = seatrun.classify_run(0, json.dumps({"outcome": {"status": "done"}, "session_id": "s"}))
-    assert localloop.LocalLoop._cause_for(done) == ""
+    assert localloop.LocalLoop._cause_for(_outcome(done)) == ""
 
 
 @pytest.mark.parametrize(
@@ -555,11 +568,12 @@ def test_a_done_run_writes_nothing_write_on_failure_not_on_attempt():
 )
 def test_a_judgment_result_records_its_cause(status, cause):
     cls = seatrun.classify_run(0, json.dumps({"outcome": {"status": status}, "session_id": "s"}))
-    assert localloop.LocalLoop._cause_for(cls) == cause
+    assert localloop.LocalLoop._cause_for(_outcome(cls)) == cause
 
 
 def test_an_unparseable_run_records_failure():
-    assert localloop.LocalLoop._cause_for(seatrun.classify_run(1, "")) == localloop.CAUSE_FAILED
+    failed = _outcome(seatrun.classify_run(1, ""))
+    assert localloop.LocalLoop._cause_for(failed) == localloop.CAUSE_FAILED
 
 
 def test_a_bead_mismatch_is_a_failure_even_when_the_status_says_done():
@@ -568,7 +582,7 @@ def test_a_bead_mismatch_is_a_failure_even_when_the_status_says_done():
         json.dumps({"outcome": {"status": "done", "bead_id": "other"}, "session_id": "s"}),
         bead="b1",
     )
-    assert localloop.LocalLoop._cause_for(cls) == localloop.CAUSE_MISMATCH
+    assert localloop.LocalLoop._cause_for(_outcome(cls)) == localloop.CAUSE_MISMATCH
 
 
 # ---- the pass ----------------------------------------------------------------------------------
@@ -643,9 +657,9 @@ async def test_the_loop_never_spawns_two_processes_for_one_bead(tmp_path, fakebd
     )
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
-    first = loop.in_flight["b1"].pid
+    first = _seat(loop, "b1").pid
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
-    assert loop.in_flight["b1"].pid == first
+    assert _seat(loop, "b1").pid == first
     assert report.dispatched == ("b1",)
     await loop.shutdown()
 
@@ -673,7 +687,7 @@ async def test_a_finished_run_is_harvested_and_its_group_reaped(tmp_path, fakebd
     loop = _loop(tmp_path, caps=localloop.Caps(max_concurrency=1))
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
-    seat = loop.in_flight["b1"]
+    seat = _seat(loop, "b1")
     await _finish(seat)
 
     harvest = localloop.PassReport()
@@ -682,6 +696,7 @@ async def test_a_finished_run_is_harvested_and_its_group_reaped(tmp_path, fakebd
     assert "b1" not in loop.in_flight
     assert localloop.group_alive(seat.pgid) is False
     assert fake.written_states() == [], "a done run writes nothing"
+    await loop.shutdown()
 
 
 @async_test
@@ -696,7 +711,7 @@ async def test_a_failed_run_writes_its_cause_to_the_bead(tmp_path, fakebd):
     )
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
-    await _finish(loop.in_flight["b1"])
+    await _finish(_seat(loop, "b1"))
     harvest = localloop.PassReport()
     await loop._harvest(harvest)
 
@@ -705,6 +720,7 @@ async def test_a_failed_run_writes_its_cause_to_the_bead(tmp_path, fakebd):
     assert fake.written_states() == [("b1", "dispatch=run_blocked")]
     reason = [c for c in fake.calls if c[0] == "set-state"][0]
     assert "needs a call" in " ".join(reason), "the seat's own summary is the recorded cause"
+    await loop.shutdown()
 
 
 @async_test
@@ -722,7 +738,7 @@ async def test_the_wall_time_cap_cancels_through_the_ladder_and_prices_the_run(
     )
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
-    seat = loop.in_flight["b1"]
+    seat = _seat(loop, "b1")
     await ready.await_lines()
 
     capped = localloop.PassReport()
@@ -733,6 +749,7 @@ async def test_the_wall_time_cap_cancels_through_the_ladder_and_prices_the_run(
     assert ("b1", "dispatch=run_cancelled") in fake.written_states()
     # the claim is released NOW, not left to age out over the 5-minute lease TTL
     assert any(c[:2] == ["update", "b1"] and "--status" in c for c in fake.calls)
+    await loop.shutdown()
 
 
 @async_test
@@ -776,7 +793,7 @@ async def test_siblings_are_notified_by_the_loop_not_by_the_child(tmp_path, fake
     # the stub treats any non-control line as the cooperative wrap-up, so b2 winds down cleanly.
     # Generous timeout on purpose: this test spawns two real interpreters and the suite runs
     # under `-n auto`, so a tight bound would measure machine load rather than the behavior.
-    sibling = loop.in_flight["b2"]
+    sibling = _seat(loop, "b2")
     assert await sibling.wait_exit(60), "the notified sibling should have wrapped up and exited"
     assert sibling.proc.returncode == 0
     await loop.shutdown()
@@ -1341,7 +1358,7 @@ async def test_shutdown_terminates_children_through_the_group_and_unclaims(tmp_p
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
     await loop._spawn_for("b2", action="dispatch", role="developer", report=report)
-    pgids = [s.pgid for s in loop.in_flight.values()]
+    pgids = [_seat(loop, b).pgid for b in loop.in_flight]
 
     await loop.shutdown()
 
@@ -1389,6 +1406,68 @@ def test_local_runtime_reschedules_a_finished_run_with_a_new_identity(tmp_path):
         )
 
         assert second.session_id == "s2", "a finished run is eligible to be scheduled again"
+
+
+def test_local_runtime_observe_answers_only_for_the_session_it_holds(tmp_path):
+    """A handle from an EARLIER turn of the same bead must not read the current run's state
+    (bh-fwm82, carried from the bh-lhxy8 review): observe checks the session id exactly as
+    cancel / notify do, so an adopted or stale handle can never report a newer session."""
+    finished = _instructions(tmp_path, "finished", "STUB_STATUS=done")
+    hanging = _instructions(tmp_path, "hanging", "STUB_HANG=true")
+    with localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}") as rt:
+        first = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(finished), session_id="s1"
+        )
+        assert rt._submit(rt._runs["b1"].wait_exit(15)), "control the completion boundary"
+        assert rt.observe(first).status == "done"
+        second = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(hanging), session_id="s2"
+        )
+
+        stale = rt.observe(first)
+        assert stale.status == "failed"
+        assert stale.summary == "no run for session s1 of b1"
+        assert rt.observe(second).status == "running", "the current turn still answers"
+        assert rt.cancel(first) is None and rt.notify(first, "hi") is False
+
+
+@async_test
+async def test_a_local_runtime_loop_writes_no_runtime_handle_metadata(tmp_path, fakebd):
+    """LocalRuntime is not adoptable, so the loop persists no handle for it (bh-fwm82, ADR
+    Decision 4): no `bd update --metadata` / `--unset-metadata` on schedule, harvest, the
+    wall-time cap, or shutdown — the default path is unchanged."""
+    fake = fakebd(FakeBd(children=[_child("b1", status="in_progress"), _child("b2")]))
+    clock = [1000.0]
+    loop = _loop(
+        tmp_path,
+        caps=localloop.Caps(max_concurrency=3, max_run_seconds=60.0),
+        clock=lambda: clock[0],
+        instructions=lambda a, b, r: str(
+            _instructions(tmp_path, b, "STUB_STATUS=done" if b == "b1" else "STUB_HANG=true")
+        ),
+    )
+    assert localloop.LocalRuntime.adoptable is False
+    report = localloop.PassReport()
+    await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
+    await loop._spawn_for("b2", action="dispatch", role="developer", report=report)
+    await loop._spawn_for("b3", action="dispatch", role="developer", report=report)
+    await _finish(_seat(loop, "b1"))
+    await loop._harvest(localloop.PassReport())
+    await loop._spawn_for("b1", action="resume", role="developer", report=report)
+    await _finish(_seat(loop, "b1"))
+    await loop._harvest(localloop.PassReport())
+    clock[0] += 61.0
+    capped = localloop.PassReport()
+    await loop._enforce_wall_time(capped)
+    assert [b for b, _ in capped.cancelled] == ["b2", "b3"]
+    await loop.shutdown()
+
+    assert report.dispatched == ("b1", "b2", "b3", "b1")
+    metadata_writes = [
+        c for c in fake.calls if any(a in ("--metadata", "--unset-metadata") for a in c)
+    ]
+    assert metadata_writes == []
+    assert not any(runtime_handle.METADATA_KEY in json.dumps(c) for c in fake.calls)
 
 
 @pytest.mark.parametrize(
@@ -1552,7 +1631,7 @@ async def test_poll_loop_launches_shared_decision_for_leaf_and_nested_dispatcher
     report = localloop.PassReport()
     await loop._spawn_for("b1", action="dispatch", role=role, report=report)
 
-    seat = loop.in_flight["b1"]
+    seat = _seat(loop, "b1")
     model_index = seat.argv.index("--model")
     assert seat.argv[model_index + 1] == "claude-sonnet-4-5"
     assert report.as_dict()["routing"]["b1"]["selected_model"] == decision.selected_model
@@ -1607,12 +1686,12 @@ async def test_resume_reuses_original_launch_identity_without_refresh_or_double_
     await loop._spawn_for("b1", action="dispatch", role="developer", report=first)
     assert len(calls) == 1
 
-    assert await loop.in_flight["b1"].wait_exit(30), "the first run never exited"
+    assert await _seat(loop, "b1").wait_exit(30), "the first run never exited"
     await loop._harvest(localloop.PassReport())
     resumed = localloop.PassReport()
     await loop._spawn_for("b1", action="resume", role="developer", report=resumed)
     assert len(calls) == 1
-    seat = loop.in_flight["b1"]
+    seat = _seat(loop, "b1")
     assert seat.argv[seat.argv.index("--model") + 1] == "claude-sonnet-4-5"
     await loop.shutdown()
 
@@ -2393,7 +2472,9 @@ def test_every_cause_the_loop_can_write_is_a_registered_dispatch_value():
     # …and the classifier's own outputs, which is where a new RunOutcome would leak in.
     for outcome in seatrun.RunOutcome:
         cause = localloop.LocalLoop._cause_for(
-            seatrun.Classification(outcome=outcome, detail="", seat_run=None, envelope=None)
+            _outcome(
+                seatrun.Classification(outcome=outcome, detail="", seat_run=None, envelope=None)
+            )
         )
         assert cause == "" or cause in registered
 
@@ -2729,6 +2810,7 @@ async def test_a_bounce_is_rescheduled_by_the_loop_not_the_runtime(tmp_path, fak
     report = await loop.run_pass()
     assert scheduled == [("hook", "b1")]
     assert report.decision.row == "resume-changes-requested"
+    await loop.shutdown()
 
 
 # ---- work.dispatch.loop: gc (bh-njarn, ADR Decision 7) --------------------------------------

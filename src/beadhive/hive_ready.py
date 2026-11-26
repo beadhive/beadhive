@@ -96,6 +96,20 @@ def _required(label: str, ok: bool, ok_detail: str, miss_detail: str) -> Check:
     return Check(label, True, "ok" if ok else "missing", ok_detail if ok else miss_detail)
 
 
+def _runtime_check(cfg, entry) -> Check:
+    """Required: the hive's `work.runtime` must resolve. Config load checks the name's syntax
+    only, so an unregistered name (no installed `beadhive.runtimes` entry point) surfaces here,
+    with the registered names and what to install."""
+    from .modules.config.domain.runtime_names import validate_runtime_name
+
+    name = config.work_runtime(cfg, entry)
+    try:
+        validate_runtime_name(name)
+    except ValueError as exc:
+        return Check("work.runtime", True, "missing", str(exc))
+    return Check("work.runtime", True, "ok", name)
+
+
 def _otel_sdk_check(cfg) -> Check:
     """Required (fails readiness) once ``otel.enabled`` is true: the config asserts a capability
     the binary must actually have. Config default is false (bh-vy4t9), so this is N/A — never
@@ -578,6 +592,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
             f"no kind=hq hive — `{config.BINARY_ALIAS} hq init`",
         )
     )
+    checks.append(_runtime_check(cfg, entry))
     # Declared footprint: tracked furniture is required only on furnished hives;
     # zero-footprint hives (the default) are green without any repo files.
     furnished = registry.furnish_of(entry) == "full" if entry is not None else False

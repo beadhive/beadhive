@@ -9,7 +9,10 @@ The whole tier is one pass, repeated:
 and everything it needs to run that pass is re-derived from `bd` each time. That is what makes
 a RESTART a no-op by construction (loop-ownership-and-execution-memory-adr.md Decision 1): the
 in-flight map dies with the process, and the beads it referred to come back through
-`bd reclaim` on the next pass.
+`bd reclaim` on the next pass. The one exception is a runtime whose sessions OUTLIVE the loop
+(``adoptable``, ADR Decision 4): for it alone the loop keeps each turn's handle in bead metadata
+(:mod:`beadhive.runtime_handle`) and a restarted loop adopts the live ones instead of reclaiming
+them. `work.runtime: local` is not adoptable and writes no handle.
 
 WHAT THIS MODULE OWNS, AND WHAT IT DELIBERATELY DOES NOT
 --------------------------------------------------------
@@ -62,10 +65,18 @@ THE CANCEL LADDER LIVES HERE, NOT IN THE HARNESS
 `baml.sys.exec`'s `ProcessOptions.stdin` is a static string fixed before launch and `exec`
 returns a `ShellOutput` for an already-finished process, so `run_resolved_seat` structurally
 cannot hold a bidirectional stream-json channel (bh-a7so.7 §13). Rungs 1 and 2 therefore belong
-to whatever process spawns the seat and keeps its pipes — in this tier, this module. The
-in-flight map (`bead_id -> SeatProcess`, carrying proc/stdin/pgid/session_id) is what makes them
-possible at all, and is also why SIBLING NOTIFICATION is the loop's job: the child has no
-topology and no outbound channel to a sibling.
+to whatever process spawns the seat and keeps its pipes — in this tier, :class:`LocalRuntime`,
+whose run map (`bead_id -> SeatProcess`, carrying proc/stdin/pgid/session_id) is what makes them
+possible at all. SIBLING NOTIFICATION is still the loop's decision — the child has no topology
+and no outbound channel to a sibling — delivered through the runtime's ``notify``.
+
+ONE SPAWN PATH (bh-03rvd)
+-------------------------
+:class:`LocalLoop` never spawns a seat itself. It drives every seat through the registered
+runtime's ``schedule`` / ``observe`` (plus the optional ``cancel`` / ``notify`` / ``close``),
+with :class:`LocalRuntime` as the default, so `work.runtime: local` and a third-party runtime go
+down the same loop code. :func:`spawn_seat` has exactly one loop-side caller:
+``LocalRuntime.schedule``.
 
 WHAT IS NOT HERE
 -----------------
@@ -84,6 +95,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import dataclasses
 import json
 import os
 import shlex
@@ -92,6 +104,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -106,10 +119,20 @@ from . import (
     model_routing,
     otel,
     run_journal,
+    runtime_handle,
     schedule,
     seatrun,
     state,
     work_next,
+)
+from .runtime.protocol import (
+    RoleHandle,
+    RoleOutcome,
+    can_cancel,
+    can_close,
+    can_notify,
+    is_adoptable,
+    schedule_accepts,
 )
 
 if TYPE_CHECKING:
@@ -408,10 +431,10 @@ async def spawn_seat(
     task started here, so the read end is held for the entire life of the run.
 
     ``BAML_PROFILE_DIR`` is stamped HERE rather than at the call sites because this is the one
-    choke point every seat spawn passes through (`LocalLoop._spawn_for`, `RuntimeAdapter.schedule`,
-    and any future caller), so no call site can forget it — see :func:`baml_profile_dir`. *env*
-    stays "inherit" by default: it is COPIED, never replaced, so the seat still gets bh's
-    environment plus this one key.
+    choke point every seat spawn passes through (`LocalRuntime.schedule`, which `LocalLoop`
+    drives, and the foreground `bh role` owner in `role_process`), so no call site can forget it
+    — see :func:`baml_profile_dir`. *env* stays "inherit" by default: it is COPIED, never
+    replaced, so the seat still gets bh's environment plus this one key.
     """
     env = dict(os.environ if env is None else env)
     provider_continuation = provider_continuation or session_id
@@ -757,6 +780,31 @@ async def _collect_with_timeout(seat: SeatProcess, timeout: float) -> str:
     return await seat.collect(timeout=timeout)
 
 
+def _journal_harvest(seat: SeatProcess, cls: seatrun.Classification, reap: ReapResult) -> None:
+    """Append the ``process.harvested`` activity for a finished, reaped seat — written by
+    :meth:`LocalRuntime.observe` (the harvest :meth:`LocalLoop._harvest` drives) on its first
+    terminal answer, exactly once per run."""
+    if seat.journal is None:
+        return
+    outcome, usage, cost = run_journal.activity_outcome(cls)
+    activity: dict[str, object] = {
+        "kind": "process.harvested",
+        "phase": "finished" if reap.group_gone else "failed",
+        "outcome_code": outcome,
+        "process": {
+            "exit_code": seat.proc.returncode,
+            "group_gone": reap.group_gone,
+        },
+    }
+    if usage:
+        activity["usage"] = usage
+    if cost:
+        activity["cost_usd"] = cost
+    if seat.journal.degraded:
+        activity["journal_degraded"] = True
+    seat.journal.append(activity, operation="harvest")
+
+
 # --------------------------------------------------------------------------------------------
 # In-process caps — the pure decision core (and the seam a budget governor plugs into)
 # --------------------------------------------------------------------------------------------
@@ -1099,6 +1147,74 @@ CAUSE_PROVISIONING_FAILED = state.CAUSE_PROVISIONING_FAILED  # infra failure on 
 #: CLOSED set — the SAME object `state` registers for the `dispatch` dimension, not a copy.
 DISPATCH_CAUSES: frozenset[str] = state.DISPATCH_CAUSES
 
+#: A terminal :class:`beadhive.runtime.RoleOutcome` status -> the cause the loop's harvest writes.
+#: The same table :meth:`LocalLoop._cause_for` applies to a ``seatrun.RunOutcome`` (``failed`` is
+#: the protocol's spelling of ``INCOMPLETE``); a parity test pins the two together.
+_OUTCOME_CAUSES = {
+    "done": "",
+    "blocked": CAUSE_BLOCKED,
+    "handoff": CAUSE_HANDOFF,
+    "failed": CAUSE_FAILED,
+}
+
+
+def cause_for_outcome(outcome: RoleOutcome) -> str:
+    """The cause a terminal *outcome* writes, or ``""`` for a ``done`` run (write on failure,
+    not on attempt). :meth:`LocalLoop._cause_for` over a runtime's ``observe()`` answer: a
+    bead-id mismatch is a failure even when the status says done. ``running`` is not terminal
+    and has no cause; asking for one is a caller bug, so it raises."""
+    if outcome.bead_id_mismatch:
+        return CAUSE_MISMATCH
+    try:
+        return _OUTCOME_CAUSES[outcome.status]
+    except KeyError:
+        raise ValueError(f"no cause for a non-terminal outcome status {outcome.status!r}") from None
+
+
+def cause_reason_for_outcome(outcome: RoleOutcome, *, action: str) -> str:
+    """The reason text the loop's harvest records with :func:`cause_for_outcome`'s cause:
+    byte-for-byte what the loop built from the classification and the held process before it
+    drove seats through a runtime, rebuilt from the outcome's additive fields (pinned against a
+    frozen copy of that code by ``tests/test_local_runtime_parity.py``). A ``done`` /
+    ``blocked`` / ``handoff`` status means a ``SeatRun`` parsed; a ``failed`` one whose killed-run
+    envelope survived (``envelope_present`` — NOT ``session_id is not None``: an envelope may
+    carry a null session) quotes the envelope; anything else quotes the detail."""
+    parts = [f"exit {outcome.exit_code}", f"action {action}"]
+    if outcome.status in ("done", "blocked", "handoff"):
+        parts.append(f"session {outcome.session_id}")
+        parts.append(f"cost {outcome.cost_usd}")
+        if outcome.summary:
+            parts.append(outcome.summary)
+    elif outcome.envelope_present:
+        parts.append(f"session {outcome.session_id}")
+        parts.append(f"terminal_reason {outcome.terminal_reason}")
+    else:
+        parts.append(outcome.detail)
+    return "; ".join(p for p in parts if p)
+
+
+def cause_already_recorded(events, cause: str, reason: str, *, session_id: str = "") -> bool:
+    """Does one of *events* (a bead's event rows, as :meth:`LocalLoop.load_molecule` reads them)
+    already record ``dispatch=<cause>`` with exactly *reason*?
+
+    :func:`cause_reason_for_outcome` names the session (``session <id>``) for every outcome a
+    seat or the outcome sink reported, so a match means THIS turn's cause was already written,
+    not an earlier turn's. ``bd set-state`` stores the reason in the event description.
+
+    Not every reason names a session (a failure with no envelope quotes only its detail), and
+    two turns can then fail with the same text. With *session_id* (the persisted handle's), a
+    reason that does not name that session proves nothing about which turn wrote the event, so
+    it never counts as recorded: a second cause event is recoverable, a suppressed one is not."""
+    if session_id and f"session {session_id}" not in reason.split("; "):
+        return False
+    wanted = cause.replace("_", "-")
+    for row in events:
+        if not isinstance(row, dict) or reason not in str(row.get("description") or ""):
+            continue
+        if work_next.transition_destination(row, DISPATCH_DIMENSION) == wanted:
+            return True
+    return False
+
 
 def record_cause(cwd, bead: str, cause: str, *, reason: str, actor: str = "") -> bool:
     """Write a failure cause onto *bead* as a closed state-dimension value.
@@ -1308,6 +1424,10 @@ class PassReport:
     denied: tuple[Admission, ...] = ()
     declined: tuple[str, ...] = ()  # `bh work next` decline codes this pass
     orphans_reaped: tuple[str, ...] = ()  # seats a previous, killed loop left running
+    #: Live sessions of an ADOPTABLE runtime a previous loop scheduled, taken back into the
+    #: in-flight map on this loop's first pass instead of being rescheduled (ADR Decision 4).
+    #: Reported only when non-empty, so a `local` hive's pass record is unchanged.
+    adopted: tuple[str, ...] = ()
     causes: tuple[tuple[str, str], ...] = ()  # (bead, cause)
     #: The beads whose SEATS are still running at the end of this pass. `bh host dispatch
     #: status` advertises "seats in flight?" and reads exactly this key off the sink, so it is
@@ -1353,6 +1473,7 @@ class PassReport:
             "denied": [{"reason": d.reason, "detail": d.detail} for d in self.denied],
             "declined": list(self.declined),
             "orphans_reaped": list(self.orphans_reaped),
+            **({"adopted": list(self.adopted)} if self.adopted else {}),
             "causes": [list(c) for c in self.causes],
             "in_flight": list(self.in_flight),
             "halted": self.halted,
@@ -1447,6 +1568,74 @@ def bh_work_next(
     )
 
 
+@dataclass(frozen=True)
+class InFlight:
+    """One seat the loop has scheduled and not yet harvested: the value its in-flight map holds.
+
+    The loop drives every seat through the registered runtime (bh-03rvd), so it holds the
+    runtime's opaque :class:`beadhive.runtime.RoleHandle` — never a process, a pipe or a pgid —
+    plus the three facts that are the LOOP's, not the runtime's: which role and decision verb it
+    scheduled, and when (on the loop's own monotonic clock, which the wall-time cap reads).
+    Volatile, like the map itself. An entry ADOPTED after a restart rebuilds ``started_at`` from
+    the persisted wall-clock ``scheduled_at`` (:mod:`beadhive.runtime_handle`), so the cap keeps
+    counting from the original schedule instead of resetting or firing at once.
+    """
+
+    handle: RoleHandle
+    role: str
+    action: str
+    started_at: float
+
+    def age(self, now: float) -> float:
+        return now - self.started_at
+
+
+#: The harvest label for a terminal outcome — ``PassReport.harvested``'s second field. It has
+#: always been ``str(seatrun.RunOutcome)``, whose spelling of the protocol's ``failed`` is
+#: ``incomplete``; kept so the pass record reads exactly as it did before seats went through a
+#: runtime.
+_HARVEST_LABELS = {"failed": str(seatrun.RunOutcome.INCOMPLETE)}
+
+#: ``PassReport.cancelled`` rungs for a stop the CANCEL ladder did not report: the runtime has no
+#: ``cancel`` capability at all, or it held no run for the handle.
+RUNG_UNSUPPORTED = "unsupported"
+RUNG_NOT_HELD = "not_held"
+#: A runtime's ``cancel`` returned an outcome without naming a rung.
+RUNG_UNREPORTED = "unreported"
+#: A runtime's ``cancel`` RAISED. The loop cannot tell whether the session stopped.
+RUNG_ERROR = "error"
+
+#: How many CONSECUTIVE times a runtime's ``observe`` (or ``cancel``) for one bead may raise
+#: before the loop stops treating it as transient. See :meth:`LocalLoop._observe`.
+DEFAULT_RUNTIME_ERROR_LIMIT = 3
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def bind_local_launch(
+    rt,
+    *,
+    seat_command: str | None = None,
+    seat_bundle: str | None = None,
+    launch_context: Callable[[str], SeatLaunchContext] | None = None,
+) -> bool:
+    """Apply `bh work loop`'s per-invocation launch overrides (``--seat-binary``, the qualified
+    BAML launch contexts) to *rt* when it is this module's :class:`LocalRuntime`. Returns whether
+    *rt* took them: a third-party runtime launches its own way, so a caller that NEEDS an
+    override refuses rather than silently dropping it."""
+    if not isinstance(rt, LocalRuntime):
+        return False
+    if seat_command is not None:
+        rt.seat_command = seat_command
+    if seat_bundle is not None:
+        rt.seat_bundle = seat_bundle
+    if launch_context is not None:
+        rt._launch_context = launch_context
+    return True
+
+
 class LocalLoop:
     """The `local` tier's per-epic dispatcher: one pass, repeated, over one molecule.
 
@@ -1500,6 +1689,10 @@ class LocalLoop:
         journal_base: Path | None = None,
         dry_run: bool = False,
         on_gate_resolved: Callable[[GateResolution], None] | None = None,
+        runtime=None,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = _utc_now,
+        runtime_error_limit: int = DEFAULT_RUNTIME_ERROR_LIMIT,
     ):
         self.hive_dir = Path(hive_dir)
         self.epic = epic
@@ -1540,8 +1733,48 @@ class LocalLoop:
             if on_gate_resolved
             else None
         )
+        #: THE runtime every seat goes through (bh-03rvd): one spawn path, no direct-spawn branch.
+        #: ``bh work loop`` hands in the hive's ``get_runtime(cfg, entry)`` instance — the same one
+        #: whose ``on_gate_resolved`` it wires above. Left unset (tests, the demo), the loop builds
+        #: the default :class:`LocalRuntime` from its own launch arguments. The loop owns it for
+        #: its lifetime and :meth:`shutdown` closes it when it offers ``close()``.
+        self.runtime = (
+            runtime
+            if runtime is not None
+            else LocalRuntime(
+                seat_command=seat_command,
+                seat_bundle=seat_bundle,
+                harness=harness,
+                terminate_grace=terminate_grace,
+                envelope_grace=envelope_grace,
+                run_identity=run_identity,
+                launch_context=launch_context,
+                journal_base=journal_base,
+                env=env,
+            )
+        )
+        #: Optional ``schedule`` keywords this runtime declares, read once off its signature so the
+        #: loop passes ``decision`` / ``action`` without knowing its concrete type.
+        self._schedule_extras = frozenset(
+            kw for kw in ("decision", "action") if schedule_accepts(self.runtime, kw)
+        )
+        #: The wall-time cap's clock — monotonic in production, injectable so the cap is testable
+        #: without waiting one out.
+        self._clock = clock
+        #: The wall clock a persisted handle's ``scheduled_at`` is stamped and read with (ADR
+        #: Decision 4): the monotonic clock above means nothing across a restart. Injectable for
+        #: the same reason.
+        self._wall_clock = wall_clock
+        #: The transient-error budget for a runtime's ``observe`` / ``cancel`` (see
+        #: :meth:`_observe`): consecutive raises per bead, counted, never timed.
+        self.runtime_error_limit = max(int(runtime_error_limit), 1)
+        self._observe_errors: dict[str, int] = {}
+        self._cancel_errors: dict[str, int] = {}
+        #: Beads whose wall-time cap could not be enforced because the adoptable runtime cannot
+        #: stop the session: warned about once, then left to finish (see `_enforce_wall_time`).
+        self._cap_unenforceable: set[str] = set()
         #: The in-flight map. DELIBERATELY VOLATILE — see the module docstring.
-        self.in_flight: dict[str, SeatProcess] = {}
+        self.in_flight: dict[str, InFlight] = {}
         self.halted = False
         self.done = False
         #: Set by the SIGTERM handler — "wind up at the next safe point", not "die now".
@@ -1550,10 +1783,6 @@ class LocalLoop:
         self._stop: asyncio.Event | None = None
         self.passes = 0
         self._instruction_dir: Path | None = None
-        #: Set for the lifetime of :meth:`run` so spawned pumps join the supervised task tree.
-        #: `None` when a caller drives `run_pass` directly (tests, the demo), which is fine —
-        #: the pumps then stand alone and `shutdown` still reaps every process group.
-        self._tg: asyncio.TaskGroup | None = None
 
     # ---- gate observation (bh-6z2cj) ------------------------------------------------------
 
@@ -1818,9 +2047,20 @@ class LocalLoop:
             #     is still spending. It cannot be adopted (its pipes died with its parent), so
             #     it is reaped and its bead released — see `find_orphan_seats`. SKIPPED in
             #     dry_run: this sends real signals to real processes and releases real claims,
-            #     which is exactly the opposite of "nothing claimed, no seat spawned".
+            #     which is exactly the opposite of "nothing claimed, no seat spawned". Only for a
+            #     runtime whose sessions die with their scheduler (`is_adoptable` False, e.g.
+            #     LocalRuntime): an adoptable runtime's live sessions are not orphans (ADR D4).
+            #     They are ADOPTED instead — after reclaim on purpose, so a claim reclaim has
+            #     already reverted is not resurrected by the heartbeat below. Decision 4: the
+            #     handle is live until observe() is terminal OR the lease expires, and expiry
+            #     wins by the claim's `lease_expires_at` (operator decision 2026-11-26), not by
+            #     what reclaim has reverted: inside `bd reclaim`'s grace window an expired claim
+            #     is still `in_progress`, so `adopt_live_sessions` refuses it on the timestamp.
             if self.passes == 1:
-                report.orphans_reaped = await self.reap_orphan_seats()
+                if self._adoptable():
+                    await self.adopt_live_sessions(report)
+                else:
+                    report.orphans_reaped = await self.reap_orphan_seats()
 
         # 3. The host lease — renewed (legacy hives only, best-effort liveness hint, bh-12hev)
         #    only while workers are active. A dry pass never has any (see below), so `active`
@@ -1859,7 +2099,7 @@ class LocalLoop:
             #    so even a capped-out run comes back priced.
             await self._enforce_wall_time(report)
 
-            # 6. Harvest anything that finished, classifying stdout-first.
+            # 6. Harvest anything the runtime reports terminal (`observe()`).
             await self._harvest(report)
 
         # 7. Decide — pure, no I/O beyond the `bd` READS `load_molecule` already does to
@@ -1943,10 +2183,13 @@ class LocalLoop:
         """Poll until the molecule is done, the loop halts, SIGTERM arrives, or *max_passes* is
         reached.
 
-        `asyncio.TaskGroup` is the supervision tree for the TASK layer — cancellation propagates
-        down, exceptions propagate up, a failing sibling cancels the group. It is NOT process
-        supervision; that is :func:`reap_group`'s job, and :meth:`shutdown` is what connects the
-        two so a cancelled task tree never leaves a live process tree behind.
+        Process supervision is the runtime's, not this coroutine's (bh-03rvd): every seat is
+        scheduled through :attr:`runtime`, and the default :class:`LocalRuntime` runs each seat's
+        output pumps on its OWN private event-loop thread, deliberately outside this loop's task
+        tree — the protocol is synchronous, so the pumps have to live where the runtime can reach
+        them between calls. What used to be the TaskGroup's job here (no live process tree left
+        behind) is :meth:`shutdown`'s: it walks every in-flight seat through ``cancel`` and then
+        ``close()``-s the runtime, which reaps every process group the runtime still owns.
 
         `on_pass` is called with each report AS IT COMPLETES, before the next pass starts. That
         is what makes `bh work loop --json` a stream rather than a batch: with `--passes 0` the
@@ -1956,33 +2199,40 @@ class LocalLoop:
         reports: list[PassReport] = []
         self._stop = asyncio.Event()
         installed = self._install_sigterm_handler()
-        async with asyncio.TaskGroup() as tg:
-            self._tg = tg
+        raised = True
+        try:
+            while True:
+                report = await self.run_pass()
+                reports.append(report)
+                if on_pass is not None:
+                    on_pass(report)
+                if self.done or self.halted or self.stopping:
+                    break
+                if max_passes is not None and len(reports) >= max_passes:
+                    break
+                await self._sleep_or_stop(self.poll_interval)
+            raised = False
+        finally:
+            if installed:
+                self._remove_sigterm_handler()
+            self._stop = None
             try:
-                while True:
-                    report = await self.run_pass()
-                    reports.append(report)
-                    if on_pass is not None:
-                        on_pass(report)
-                    if self.done or self.halted or self.stopping:
-                        break
-                    if max_passes is not None and len(reports) >= max_passes:
-                        break
-                    await self._sleep_or_stop(self.poll_interval)
-            finally:
-                if installed:
-                    self._remove_sigterm_handler()
-                self._stop = None
-                # INSIDE the group, deliberately: a TaskGroup does not exit until every child
-                # task finishes, and a pump task only finishes when its pipe closes — which
-                # only happens once the seat's process group is reaped. Shutting down after the
-                # `async with` would therefore deadlock on exactly the live-seat case shutdown
-                # exists to handle.
                 await self.shutdown()
-                self._tg = None
+            except Exception as exc:
+                # A shutdown failure (a runtime's close() raising) must not MASK the error that
+                # brought the loop down; on a clean exit it is the error, and propagates.
+                if not raised:
+                    raise
+                _LOG.error("loop_shutdown_failed", epic=self.epic, error=str(exc))
         return reports
 
-    async def shutdown(self, *, cause: str = CAUSE_CANCELLED, reason: str = "loop shutting down"):
+    async def shutdown(
+        self,
+        *,
+        cause: str = CAUSE_CANCELLED,
+        reason: str = "loop shutting down",
+        keep_adoptable: bool = True,
+    ):
         """Stop every in-flight seat through the ladder and confirm each process GROUP is gone.
 
         SIGTERM to the loop itself lands here — really, not aspirationally: :meth:`run` installs
@@ -1991,22 +2241,298 @@ class LocalLoop:
         each one's cause is written to its bead, and the claim is released rather than left to
         age out over the 5-minute TTL. `bd reclaim` stays the backstop for the case this path
         never runs (kill -9 of the loop), which is the restart story, not this one.
+
+        Each seat is stopped through the runtime's optional ``cancel`` (:meth:`_cancel`); a
+        runtime without one still gets the cause written and the claim released. Last, the
+        runtime itself is ``close()``-d when it offers that — for :class:`LocalRuntime` that stops
+        its private event-loop thread and reaps any process group it still owns. Idempotent:
+        a second call finds nothing in flight and closes an already-closed runtime.
+
+        AN ADOPTABLE RUNTIME'S SESSIONS ARE LEFT ALONE (ADR Decision 4). They outlive this
+        process by design, and the next loop adopts them from their persisted handle — so a
+        plain shutdown (``keep_adoptable``, the default: SIGTERM, a restart, the end of
+        :meth:`run`) neither cancels them, nor writes a cause, nor releases their claim; it only
+        drops them from the in-flight map. Cancelling them would turn every restart into lost
+        work, and releasing the claim without stopping the session would let the bead be
+        dispatched a second time while the first session still runs. A lease-loss shutdown
+        passes ``keep_adoptable=False`` and cancels them like any other seat — except a session
+        the runtime cannot stop (no ``cancel``, or ``cancel`` raised), whose claim is still left
+        to its lease for the same two-sessions reason.
+
+        One seat's failure never strands the others: each is handled on its own, the runtime
+        is closed in a ``finally``, and the first error is re-raised once everything ran.
         """
-        for bead, seat in list(self.in_flight.items()):
-            result = await cancel(
-                seat,
-                envelope_grace=self.envelope_grace,
-                terminate_grace=self.terminate_grace,
+        errors: list[Exception] = []
+        try:
+            for bead, entry in list(self.in_flight.items()):
+                try:
+                    await self._shutdown_seat(
+                        bead, entry, cause=cause, reason=reason, keep_adoptable=keep_adoptable
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+                    _LOG.error("shutdown_seat_failed", bead=bead, error=str(exc))
+                finally:
+                    self.in_flight.pop(bead, None)
+        finally:
+            await self._close_runtime()
+        if errors:
+            raise errors[0]
+
+    async def _shutdown_seat(
+        self, bead: str, entry: InFlight, *, cause: str, reason: str, keep_adoptable: bool
+    ) -> None:
+        if self._adoptable() and (keep_adoptable or not can_cancel(self.runtime)):
+            _LOG.info(
+                "session_left_for_adoption",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
             )
-            self.in_flight.pop(bead, None)
-            record_cause(
-                self.hive_dir,
-                bead,
-                cause,
-                reason=f"{reason} (rung {result.rung}, session {result.session_id or 'unknown'})",
-                actor=self.actor,
+            return
+        rung, session, _cost = await self._cancel(bead, entry)
+        if rung == RUNG_ERROR and self._adoptable():
+            _LOG.warning(
+                "session_left_for_adoption",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
+                reason="cancel raised; the session may still be running, so its claim is left "
+                "to its lease",
             )
-            self._release(bead)
+            return
+        record_cause(
+            self.hive_dir,
+            bead,
+            cause,
+            reason=f"{reason} (rung {rung}, session {session or 'unknown'})",
+            actor=self.actor,
+        )
+        self._forget_handle(bead)
+        self._release(bead)
+
+    # ---- the runtime (bh-03rvd) ---------------------------------------------------------------
+
+    def _adoptable(self) -> bool:
+        return is_adoptable(self.runtime)
+
+    def _runtime_name(self) -> str:
+        return str(getattr(self.runtime, "name", "") or type(self.runtime).__name__)
+
+    async def _observe(self, entry: InFlight) -> RoleOutcome:
+        """``runtime.observe(handle)`` off the event loop: the protocol is synchronous, and a
+        runtime may do I/O (LocalRuntime reaps and journals on the first terminal answer).
+
+        THE TRANSIENT-ERROR POLICY. A runtime that hosts sessions elsewhere answers ``observe``
+        over a network, so a raise is first read as transient: logged, answered ``running`` (the
+        seat stays in flight and keeps its heartbeat), and asked again next pass. It is COUNTED,
+        never timed: after :attr:`runtime_error_limit` consecutive raises for one bead the loop
+        stops waiting and answers ``failed`` with the error as the detail, so the harvest writes
+        the bead's cause instead of heartbeating a claim forever on the strength of a runtime it
+        cannot read. One clean answer resets the count."""
+        bead = entry.handle.bead_id
+        try:
+            outcome = await asyncio.to_thread(self.runtime.observe, entry.handle)
+        except Exception as exc:
+            count = self._observe_errors.get(bead, 0) + 1
+            self._observe_errors[bead] = count
+            _LOG.warning(
+                "runtime_observe_failed",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
+                attempt=count,
+                limit=self.runtime_error_limit,
+                error=str(exc),
+            )
+            if count < self.runtime_error_limit:
+                return RoleOutcome(status="running", summary=f"observe() raised: {exc}")
+            self._observe_errors.pop(bead, None)
+            return RoleOutcome(
+                status="failed",
+                detail=(
+                    f"runtime {self._runtime_name()} observe() raised {count} times in a row: {exc}"
+                ),
+            )
+        self._observe_errors.pop(bead, None)
+        return outcome
+
+    async def _cancel(self, bead: str, entry: InFlight) -> tuple[str, str | None, float]:
+        """Stop one in-flight seat through the runtime: ``(rung, reported session, cost)``.
+
+        With :class:`beadhive.runtime.CancellableRuntime` the runtime walks its ladder and reports
+        the rung on the outcome (``RoleOutcome.cancel_rung``), so the pass record and the cause
+        reason read exactly as they did when the loop held the process. Without it the loop
+        DEGRADES as designed rather than pretending: it cannot stop the session, so it says so
+        (rung ``unsupported``, a warning naming the runtime), and the caller decides what that
+        means for the claim — the session is the runtime's to wind down. A ``cancel`` that
+        raises is rung ``error``: logged, never propagated, and the caller treats it as "may
+        still be running"."""
+        if not can_cancel(self.runtime):
+            _LOG.warning(
+                "runtime_cannot_cancel",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
+                reason=(
+                    "the runtime offers no cancel capability; its session outlives this loop, "
+                    "so its claim is left to its lease"
+                    if self._adoptable()
+                    else "the runtime offers no cancel capability; cause written and claim "
+                    "released, the session itself is left to the runtime"
+                ),
+            )
+            return RUNG_UNSUPPORTED, None, 0.0
+        try:
+            outcome = await asyncio.to_thread(self.runtime.cancel, entry.handle)
+        except Exception as exc:
+            _LOG.warning(
+                "runtime_cancel_failed",
+                bead=bead,
+                runtime=self._runtime_name(),
+                session_id=entry.handle.session_id,
+                error=str(exc),
+            )
+            return RUNG_ERROR, None, 0.0
+        if outcome is None:
+            _LOG.warning("runtime_cancel_not_held", bead=bead, session_id=entry.handle.session_id)
+            return RUNG_NOT_HELD, None, 0.0
+        return outcome.cancel_rung or RUNG_UNREPORTED, outcome.session_id, outcome.cost_usd
+
+    async def _close_runtime(self) -> None:
+        if can_close(self.runtime):
+            await asyncio.to_thread(self.runtime.close)
+
+    # ---- persisted runtime handles (ADR Decision 4; adoptable runtimes only) -------------------
+
+    def _persist_handle(self, bead: str, entry: InFlight) -> None:
+        """Record the turn just scheduled as the bead's ``bh.runtime.handle`` — the LOOP's write,
+        never the runtime's. Adoptable runtimes only; a failed write is logged, not fatal: the
+        session runs, it simply cannot be adopted if this loop dies before harvesting it."""
+        if not self._adoptable():
+            return
+        persisted = runtime_handle.PersistedHandle(
+            bead_id=bead,
+            runtime=self._runtime_name(),
+            session_id=entry.handle.session_id,
+            role=entry.role,
+            action=entry.action,
+            scheduled_at=self._wall_clock(),
+        )
+        try:
+            runtime_handle.write(self.hive_dir, persisted, actor=self.actor)
+        except Exception as exc:
+            _LOG.error("runtime_handle_write_failed", bead=bead, error=str(exc))
+
+    def _forget_handle(self, bead: str) -> None:
+        """The turn is over (harvested or cancelled): drop its persisted handle so no later loop
+        adopts or re-harvests it. Adoptable runtimes only; best-effort."""
+        if not self._adoptable():
+            return
+        try:
+            runtime_handle.clear(self.hive_dir, bead, actor=self.actor)
+        except Exception as exc:
+            _LOG.warning("runtime_handle_clear_failed", bead=bead, error=str(exc))
+
+    async def adopt_live_sessions(self, report: PassReport) -> None:
+        """Take back the sessions a previous loop scheduled through this ADOPTABLE runtime.
+
+        Called on the first pass, after reclaim, in place of the orphan reap (ADR Decision 4).
+        Candidates are this molecule's beads that are still ``in_progress``, claimed by this
+        loop's actor, and carry a persisted handle naming THIS runtime.
+
+        LEASE EXPIRY WINS, and it means the claim's ``lease_expires_at`` timestamp read against
+        the injected wall clock (operator decision 2026-11-26), not "whatever ``bd reclaim`` has
+        reverted". A reverted bead is no longer ``in_progress`` and is never a candidate; but
+        ``bd reclaim`` reverts only after a grace window past expiry (``--older-than``, 10m by
+        default), and inside it an expired claim is still ``in_progress`` and still ours. Such a
+        bead is NOT adopted: not observed, not put in flight (so not heartbeated), not harvested,
+        not released and no cause written. It is logged (``session_not_adopted_lease_expired``)
+        and left exactly as it is for reclaim, which this loop runs every pass; once reverted it
+        is re-dispatched as a fresh turn, whose new session id means the old session's late
+        record never answers for it. A row with no readable lease time is not expired
+        (:func:`runtime_handle.lease_expired`).
+
+        Each remaining candidate's handle is observed once: ``running`` puts it back in the
+        in-flight map — no second ``schedule()``, no reap, no release; the heartbeat step later
+        in this same pass renews its claim — with its age rebuilt from the persisted wall-clock
+        ``scheduled_at``; a terminal answer (it finished while no loop was running) is harvested
+        exactly as a harvest pass would — unless the bead's events already carry that turn's
+        cause (:func:`cause_already_recorded`: harvested by an earlier loop whose handle removal
+        failed), when only the handle is dropped, so a permanent cause event is never written
+        twice."""
+        molecule = self.load_molecule(self.caps.max_concurrency)
+        name = self._runtime_name()
+        adopted = []
+        for row in molecule.beads:
+            bead = str(row.get("id") or "")
+            if not bead or bead in self.in_flight or str(row.get("status") or "") != "in_progress":
+                continue
+            data = bd_mod.show(bead, self.hive_dir) or {}
+            if str(data.get("status") or "") != "in_progress":
+                continue
+            if str(data.get("assignee") or "") != self.actor:
+                continue
+            persisted = runtime_handle.from_row({**data, "id": bead})
+            if persisted is None or persisted.runtime != name:
+                continue
+            now = self._wall_clock()
+            if runtime_handle.lease_expired(data, now):
+                _LOG.warning(
+                    "session_not_adopted_lease_expired",
+                    bead=bead,
+                    runtime=name,
+                    session_id=persisted.session_id,
+                    role=persisted.role,
+                    action=persisted.action,
+                    lease_expires_at=str(data.get("lease_expires_at") or ""),
+                    reason=(
+                        "the claim's lease has expired; it is left to bd reclaim and "
+                        "re-dispatched as a fresh turn once reverted"
+                    ),
+                )
+                continue
+            age = persisted.age_seconds(now)
+            entry = InFlight(
+                handle=persisted.handle,
+                role=persisted.role,
+                action=persisted.action,
+                started_at=self._clock() - age,
+            )
+            outcome = await self._observe(entry)
+            if outcome.status == "running":
+                self.in_flight[bead] = entry
+                adopted.append(bead)
+                _LOG.info(
+                    "session_adopted",
+                    bead=bead,
+                    runtime=name,
+                    session_id=persisted.session_id,
+                    role=persisted.role,
+                    action=persisted.action,
+                    age_seconds=age,
+                )
+                continue
+            cause = self._cause_for(outcome)
+            reason = cause_reason_for_outcome(outcome, action=entry.action)
+            if cause and cause_already_recorded(
+                molecule.events.get(bead) or (), cause, reason, session_id=persisted.session_id
+            ):
+                # Harvested already: an earlier loop wrote this cause and then failed to drop the
+                # handle (`_forget_handle` is best-effort), so the bead is still `in_progress` with
+                # a handle and a terminal record. The cause event is permanent, so it is not
+                # written twice; only the stale handle is dropped.
+                _LOG.info(
+                    "session_already_harvested",
+                    bead=bead,
+                    runtime=name,
+                    session_id=persisted.session_id,
+                    cause=cause,
+                )
+                self._forget_handle(bead)
+                continue
+            self._settle(bead, entry, outcome, report)
+        report.adopted = tuple(adopted)
 
     # ---- pass steps --------------------------------------------------------------------------
 
@@ -2074,121 +2600,115 @@ class LocalLoop:
         )
         report.causes += ((self.epic, CAUSE_LEASE_LOST),)
         await self.shutdown(
-            cause=CAUSE_LEASE_LOST, reason="host lease lost mid-flight — wrapping up"
+            cause=CAUSE_LEASE_LOST,
+            reason="host lease lost mid-flight — wrapping up",
+            keep_adoptable=False,
         )
 
     async def _enforce_wall_time(self, report: PassReport) -> None:
-        now = time.monotonic()
-        for bead, seat in list(self.in_flight.items()):
-            if seat.finished or not over_wall_time(self.caps, seat.age(now)):
+        """Cancel every in-flight seat past the per-run wall-time cap.
+
+        Two ways the cap cannot be enforced, both handled without a second session for the bead:
+        ``cancel`` RAISED (rung ``error``) — retried on the next pass, counted against
+        :attr:`runtime_error_limit`, then treated as below; or the session cannot be stopped at
+        all. For a non-adoptable runtime the latter degrades as it always has (cause written,
+        claim released). For an ADOPTABLE runtime the session outlives this loop, so releasing
+        its claim would let the bead be dispatched again while it still runs: the loop warns
+        once, keeps it in flight, and lets the harvest record whatever it ends with."""
+        now = self._clock()
+        for bead, entry in list(self.in_flight.items()):
+            if bead in self._cap_unenforceable or not over_wall_time(self.caps, entry.age(now)):
                 continue
-            result = await cancel(
-                seat,
-                envelope_grace=self.envelope_grace,
-                terminate_grace=self.terminate_grace,
-            )
+            # A run that already finished is settled HERE, on the answer the cap just read. Left
+            # for the harvest, it would be observed a second time and this answer dropped; when
+            # it is the transient-error limit's `failed` (which also reset the count), the bead
+            # would then need another full budget of raises before it failed.
+            observed = await self._observe(entry)
+            if observed.status != "running":
+                self._settle(bead, entry, observed, report)
+                continue
+            rung, session, cost = await self._cancel(bead, entry)
+            if rung == RUNG_ERROR:
+                count = self._cancel_errors.get(bead, 0) + 1
+                self._cancel_errors[bead] = count
+                if count < self.runtime_error_limit:
+                    continue
+            self._cancel_errors.pop(bead, None)
+            if self._adoptable() and rung in (RUNG_UNSUPPORTED, RUNG_ERROR):
+                self._cap_unenforceable.add(bead)
+                _LOG.warning(
+                    "wall_time_cap_unenforceable",
+                    bead=bead,
+                    runtime=self._runtime_name(),
+                    session_id=entry.handle.session_id,
+                    rung=rung,
+                    max_run_seconds=self.caps.max_run_seconds,
+                    reason="the runtime cannot stop this session; it stays in flight so the "
+                    "bead is not dispatched a second time",
+                )
+                continue
             self.in_flight.pop(bead, None)
-            report.cancelled += ((bead, result.rung),)
+            report.cancelled += ((bead, rung),)
             record_cause(
                 self.hive_dir,
                 bead,
                 CAUSE_CANCELLED,
                 reason=(
                     f"per-run wall-time cap {self.caps.max_run_seconds}s exceeded; cancelled at "
-                    f"rung {result.rung}, session {result.session_id or 'unknown'}, "
-                    f"cost {result.cost_usd}"
+                    f"rung {rung}, session {session or 'unknown'}, "
+                    f"cost {cost}"
                 ),
                 actor=self.actor,
             )
             report.causes += ((bead, CAUSE_CANCELLED),)
             await self.notify_siblings(bead, f"sibling {bead} was cancelled (wall-time cap)")
+            self._forget_handle(bead)
             self._release(bead)
 
     async def _harvest(self, report: PassReport) -> None:
-        for bead, seat in list(self.in_flight.items()):
-            if not seat.finished:
+        """Harvest every seat the runtime reports terminal, writing its cause (write on failure,
+        not on attempt). The runtime did the reading, reaping and journaling inside ``observe``
+        (LocalRuntime: collect the held pipe, reap the group, classify stdout-first, journal
+        ``process.harvested``); the loop owns only the lifecycle writes."""
+        for bead, entry in list(self.in_flight.items()):
+            outcome = await self._observe(entry)
+            if outcome.status == "running":
                 continue
-            stdout = await _collect_with_timeout(seat, self.envelope_grace)
-            reap = await reap_group(seat, grace=self.terminate_grace)
-            if not reap.group_gone:
-                _LOG.error("seat_group_orphaned", bead=bead, pgid=seat.pgid)
-            cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=bead)
-            self.in_flight.pop(bead, None)
-            report.harvested += ((bead, str(cls.outcome)),)
-            cause = self._cause_for(cls)
-            if cause:
-                record_cause(
-                    self.hive_dir,
-                    bead,
-                    cause,
-                    reason=self._cause_reason(cls, seat),
-                    actor=self.actor,
-                )
-                report.causes += ((bead, cause),)
-            _LOG.info(
-                "seat_harvested",
-                bead=bead,
-                outcome=str(cls.outcome),
-                exit_code=seat.proc.returncode,
-                session_id=seat.session_id,
-                provider_continuation_observed=(
-                    cls.seat_run.session_id
-                    if cls.seat_run
-                    else cls.envelope.session_id
-                    if cls.envelope
-                    else ""
-                ),
+            self._settle(bead, entry, outcome, report)
+
+    def _settle(self, bead: str, entry: InFlight, outcome: RoleOutcome, report: PassReport) -> None:
+        """Record one TERMINAL outcome: out of the in-flight map, onto the pass record, its cause
+        written (if any), and — for an adoptable runtime — its persisted handle dropped, after
+        the cause, so a crash between the two re-harvests rather than losing the cause."""
+        self.in_flight.pop(bead, None)
+        self._cap_unenforceable.discard(bead)
+        report.harvested += ((bead, _HARVEST_LABELS.get(outcome.status, outcome.status)),)
+        cause = self._cause_for(outcome)
+        if cause:
+            record_cause(
+                self.hive_dir,
+                bead,
+                cause,
+                reason=cause_reason_for_outcome(outcome, action=entry.action),
+                actor=self.actor,
             )
-            if seat.journal is not None:
-                outcome, usage, cost = run_journal.activity_outcome(cls)
-                activity: dict[str, object] = {
-                    "kind": "process.harvested",
-                    "phase": "finished" if reap.group_gone else "failed",
-                    "outcome_code": outcome,
-                    "process": {
-                        "exit_code": seat.proc.returncode,
-                        "group_gone": reap.group_gone,
-                    },
-                }
-                if usage:
-                    activity["usage"] = usage
-                if cost:
-                    activity["cost_usd"] = cost
-                if seat.journal.degraded:
-                    activity["journal_degraded"] = True
-                seat.journal.append(activity, operation="harvest")
+            report.causes += ((bead, cause),)
+        self._forget_handle(bead)
 
     @staticmethod
-    def _cause_for(cls: seatrun.Classification) -> str:
-        """Map a classification to a cause — or to nothing.
+    def _cause_for(outcome: RoleOutcome) -> str:
+        """Map a terminal :class:`beadhive.runtime.RoleOutcome` to a cause — or to nothing.
 
         A `done` run writes NOTHING: write on failure, not on attempt. A bead-id mismatch is a
         failure even when the status says done, because the seat advanced something other than
-        what it was handed.
+        what it was handed. :func:`cause_for_outcome` is the table; a status outside the
+        protocol's vocabulary (a third-party runtime's invention) is a failure, never a crash.
         """
-        if cls.bead_id_mismatch:
-            return CAUSE_MISMATCH
-        return {
-            seatrun.RunOutcome.DONE: "",
-            seatrun.RunOutcome.BLOCKED: CAUSE_BLOCKED,
-            seatrun.RunOutcome.HANDOFF: CAUSE_HANDOFF,
-            seatrun.RunOutcome.INCOMPLETE: CAUSE_FAILED,
-        }[cls.outcome]
-
-    @staticmethod
-    def _cause_reason(cls: seatrun.Classification, seat: SeatProcess) -> str:
-        parts = [f"exit {seat.proc.returncode}", f"action {seat.action}"]
-        if cls.seat_run:
-            parts.append(f"session {cls.seat_run.session_id}")
-            parts.append(f"cost {cls.seat_run.cost_usd}")
-            if cls.seat_run.outcome.summary:
-                parts.append(cls.seat_run.outcome.summary)
-        elif cls.envelope:
-            parts.append(f"session {cls.envelope.session_id}")
-            parts.append(f"terminal_reason {cls.envelope.terminal_reason}")
-        else:
-            parts.append(cls.detail)
-        return "; ".join(p for p in parts if p)
+        try:
+            return cause_for_outcome(outcome)
+        except ValueError:
+            _LOG.error("runtime_outcome_status_unknown", status=outcome.status)
+            return CAUSE_FAILED
 
     def _escalation_open(self, bead: str) -> bool:
         """Whether *bead* already carries an UNRESOLVED `escalation:raised`."""
@@ -2395,7 +2915,7 @@ class LocalLoop:
         report: PassReport,
         workspace: str | None = None,
     ) -> None:
-        """Spawn one seat for *bead*, unless one is already in flight for it.
+        """Schedule one seat for *bead* through :attr:`runtime`, unless one is already in flight.
 
         The in-flight guard is what makes "the loop never spawns two processes for one bead"
         true: it is a membership test on the map, checked before every spawn, and it is also why
@@ -2405,7 +2925,10 @@ class LocalLoop:
         """
         if bead in self.in_flight:
             return
-        launch = self._launch_context(role) if self._launch_context is not None else None
+        if self._launch_context is not None:
+            # Launch-owner validation fails here, before admission and before any runtime call;
+            # the runtime resolves the same context again for the launch itself.
+            self._launch_context(role)
         verdict = self._admit(
             self.caps, in_flight=len(self.in_flight), lease_held=True, halted=self.halted
         )
@@ -2429,12 +2952,6 @@ class LocalLoop:
             routing = resolved
             if isinstance(routing, model_routing.ModelSelection):
                 self._resolved_routing[bead] = routing
-        translated_model = (
-            model_routing.translate_for_harness(routing.selected_model, routing.harness)
-            if isinstance(routing, model_routing.ModelSelection)
-            else None
-        )
-        routing_payload = None
         if isinstance(routing, model_routing.ModelSelection):
             routing_payload = {
                 "bead": bead,
@@ -2443,7 +2960,6 @@ class LocalLoop:
             report.routing += ((bead, routing_payload),)
             for warning in routing.warnings:
                 _LOG.warning("model_routing_fallback", bead=bead, warning=warning)
-        seat_process_id = f"seat-{uuid.uuid4()}"
         provider_continuation = f"provider-{uuid.uuid4()}"
         ws = workspace or self._workspace_for(bead)
         # A developer seat pointed at the main clone means "this bead has no worktree here yet",
@@ -2464,49 +2980,55 @@ class LocalLoop:
             )
             report.causes += ((bead, CAUSE_FAILED),)
             return
-        argv = seat_argv(
-            launch.command if launch is not None else self.seat_command,
-            role,
-            workspace=ws,
-            bead=bead,
-            instructions=self._instructions(action, bead, role),
-            session_id=provider_continuation,
-            model=translated_model,
-            bundle=launch.bundle if launch is not None else self.seat_bundle,
-        )
-        attrs = self._routing_attributes(routing) if routing else None
-        journal = None
-        if launch is not None:
-            journal = run_journal.RunJournal.create(
-                launch.run_identity(bead), base=self._journal_base
+        instructions = self._instructions(action, bead, role)
+        # THE ONE SPAWN PATH (bh-03rvd): the runtime starts the seat. argv, the child env, the
+        # run journal, the process group and the dispatch telemetry span are all the runtime's;
+        # the loop keeps admission, routing, the workspace and the lifecycle writes.
+        selection = routing if isinstance(routing, model_routing.ModelSelection) else None
+        extras: dict[str, object] = {}
+        if "decision" in self._schedule_extras:
+            extras["decision"] = selection
+        if "action" in self._schedule_extras:
+            extras["action"] = action
+        try:
+            handle = await asyncio.to_thread(
+                self.runtime.schedule,
+                bead,
+                role,
+                workspace=ws,
+                instructions=instructions,
+                session_id=provider_continuation,
+                model=selection.selected_model if selection is not None else None,
+                **extras,
             )
-        elif self._run_identity is not None:
-            identity = self._run_identity(bead, action, role, routing)
-            if identity is not None:
-                # Mint + run.created happen before create_subprocess_exec.  Calling this method
-                # again after retry creates a new object and therefore a new outer run_id.
-                journal = run_journal.RunJournal.create(identity, base=self._journal_base)
-        with otel.record_agent_dispatch(
-            agent=role,
-            model=routing.selected_model if routing else "",
-            system=routing.harness if routing else "",
-            attributes=attrs,
-        ):
-            seat = await spawn_seat(
-                argv,
-                bead_id=bead,
-                role=role,
-                action=action,
-                session_id=seat_process_id,
-                provider_continuation=provider_continuation,
-                cwd=ws,
-                env=self.env,
-                task_group=self._tg,
-                routing=routing_payload,
-                journal=journal,
-            )
-        self.in_flight[bead] = seat
+        except ValueError as exc:
+            self._schedule_refused(bead, exc, report)
+            return
+        entry = InFlight(handle=handle, role=role, action=action, started_at=self._clock())
+        self.in_flight[bead] = entry
+        self._persist_handle(bead, entry)
         report.dispatched += (bead,)
+
+    def _schedule_refused(self, bead: str, exc: ValueError, report: PassReport) -> None:
+        """Record a ``schedule()`` refusal — the ``ValueError`` contract — as the loop's cause.
+
+        A :class:`beadhive.runtime.ScheduleRefused` carries its own status (``failed`` for an
+        unusable workspace, ``blocked`` for a strict routing block), the reason text and any
+        evidence payload, which lands in ``report.routing`` beside the loop's own routing record.
+        A bare ``ValueError`` from a third-party runtime is a failure quoting its message."""
+        typed = isinstance(exc, seatrun.ScheduleRefused)
+        status = exc.status if typed else "failed"
+        reason = (exc.reason if typed else "") or (
+            f"runtime {getattr(self.runtime, 'name', '?')} refused to schedule {bead}: {exc}"
+        )
+        payload = exc.payload if typed else None
+        if isinstance(payload, dict) and payload:
+            report.routing += ((bead, payload),)
+            _LOG.error("model_routing_blocked", **payload)
+        cause = self._cause_for(RoleOutcome(status=status))
+        _LOG.warning("schedule_refused", bead=bead, status=status, reason=reason)
+        record_cause(self.hive_dir, bead, cause or CAUSE_FAILED, reason=reason, actor=self.actor)
+        report.causes += ((bead, cause or CAUSE_FAILED),)
 
     # ---- sibling notification ------------------------------------------------------------
 
@@ -2516,14 +3038,17 @@ class LocalLoop:
         This is the loop's job and cannot be the child's (bh-a7so.7 §14): the child has no
         topology — the contract hands it one bead and one worktree by design — and no outbound
         channel to a sibling, since stream-json input is inbound only and its stdout goes to
-        whoever spawned it. The loop already holds the in-flight map and already knows the
-        molecule, so it writes to their stdin pipes directly.
+        whoever spawned it. The loop holds the in-flight map and knows the molecule, so it
+        delivers through the runtime's optional ``notify(handle, message)`` (LocalRuntime writes
+        the seat's stdin pipe). A runtime without that capability notifies nobody.
         """
+        if not can_notify(self.runtime):
+            return ()
         notified = []
-        for other, seat in self.in_flight.items():
-            if other == bead or seat.finished:
+        for other, entry in list(self.in_flight.items()):
+            if other == bead:
                 continue
-            if seat.write_stdin(message):
+            if await asyncio.to_thread(self.runtime.notify, entry.handle, message):
                 notified.append(other)
         if notified:
             _LOG.info("siblings_notified", about=bead, notified=notified, message=message)
@@ -2565,9 +3090,37 @@ class LocalRuntime:
 
     The thread starts lazily on the first :meth:`schedule` so merely *resolving* the runtime
     (``get_runtime()``) costs nothing.
+
+    THE PUMPS LIVE ON THAT THREAD, ON PURPOSE (bh-03rvd). :class:`LocalLoop` drives every seat
+    through this runtime, so each seat's stdout/stderr pump tasks run on the private loop, not in
+    any caller's ``asyncio.TaskGroup``. That is the intended shape, not an oversight: the protocol
+    is synchronous, the pumps must keep draining between ``observe`` calls, and the transports
+    belong to the loop that created them. Process supervision never relied on the TaskGroup
+    anyway (it supervises tasks, not process trees); it is :func:`reap_group` on every harvest
+    and cancel, and :meth:`close` — which :meth:`LocalLoop.shutdown` calls — as the floor that
+    reaps any group still owned and joins the thread.
+
+    LOOP PARITY (bh-lhxy8; since bh-03rvd this IS the loop's spawn path). Given the same bead,
+    role, routing decision and launch inputs, :meth:`schedule` launches exactly what the loop's
+    own spawn path launched before it went through this runtime: the same argv
+    (``launch_context`` command + bundle, or ``seat_command`` + ``seat_bundle``), the same child
+    environment (``env``, then the run journal's child env, then ``BAML_PROFILE_DIR``), the same
+    process group, and the same journal records (``run.created``, ``process.spawned``, and the
+    ``process.harvested`` that :meth:`observe` appends once it reaps the run). :meth:`observe`
+    returns the rich :class:`beadhive.runtime.RoleOutcome` the loop's cause mapping needs
+    (:func:`cause_for_outcome`, :func:`cause_reason_for_outcome`). Workspace and routing
+    failures raise :class:`beadhive.runtime.ScheduleRefused` carrying the cause inputs the loop
+    records, because writing a cause is a lifecycle write and a runtime makes none.
+
+    Optional capabilities: ``cancel(handle)``, ``notify(handle, message)`` and ``close()`` are
+    offered; ``adoptable`` is ``False`` because a seat here is a child of this process and dies
+    with it, so there is never a live session for a restarted loop to adopt.
     """
 
     name = "local"
+    #: Sessions do not outlive this process (see the class docstring). Read through
+    #: :func:`beadhive.runtime.is_adoptable`.
+    adoptable = False
 
     def __init__(
         self,
@@ -2578,7 +3131,9 @@ class LocalRuntime:
         terminate_grace: float = 5.0,
         envelope_grace: float = 3.0,
         run_identity: Callable[..., run_journal.RunIdentity | None] | None = None,
+        launch_context: Callable[[str], SeatLaunchContext] | None = None,
         journal_base: Path | None = None,
+        env: dict | None = None,
     ):
         self.seat_command = seat_command
         self.seat_bundle = seat_bundle
@@ -2586,10 +3141,20 @@ class LocalRuntime:
         self.terminate_grace = terminate_grace
         self.envelope_grace = envelope_grace
         self._run_identity = run_identity
+        #: The same launch seam :class:`LocalLoop` takes: a validated per-role command, bundle
+        #: and run identity. When set it wins over ``seat_command`` / ``seat_bundle`` /
+        #: ``run_identity``, exactly as it does on the loop's spawn path.
+        self._launch_context = launch_context
         self._journal_base = journal_base
+        #: The child's base environment (``None`` inherits this process's), as on the loop.
+        self.env = env
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread = None
         self._runs: dict[str, SeatProcess] = {}
+        #: The terminal outcome of each run already harvested (or cancelled), keyed by bead and
+        #: held against the exact :class:`SeatProcess` it describes, so a repeated ``observe``
+        #: answers the same verdict without reaping or journaling a second time.
+        self._terminal: dict[str, tuple[SeatProcess, RoleOutcome]] = {}
 
     # ---- the private loop thread -----------------------------------------------------------
 
@@ -2635,6 +3200,7 @@ class LocalRuntime:
             if reap is not None and not reap.group_gone:
                 failures.append(f"{seat.bead_id}: process group {seat.pgid} survived cleanup")
         self._runs.clear()
+        self._terminal.clear()
         if failures:
             raise RuntimeError("; ".join(failures))
 
@@ -2658,6 +3224,7 @@ class LocalRuntime:
                     f"{seat.bead_id}: process group {seat.pgid} survived last-resort reap"
                 )
         self._runs.clear()
+        self._terminal.clear()
         return failures
 
     def close(self) -> None:
@@ -2730,6 +3297,7 @@ class LocalRuntime:
         session_id: str,
         model: str | None = None,
         decision: model_routing.ModelDecision | None = None,
+        action: str = "schedule",
     ):
         """Spawn the role binary for *bead_id* and return a handle to observe it by.
 
@@ -2737,18 +3305,35 @@ class LocalRuntime:
         the SAME handle rather than a second process. "The loop never spawns two processes for
         one bead" is a property of the map, so it has to hold on this path too — a caller
         driving the protocol directly gets the same guarantee the poll loop gets.
-        """
-        from .runtime import RoleHandle
 
+        *session_id* is the provider continuation handed to the seat as ``--session_id`` (the
+        loop's ``provider-<uuid>``); the process-owner id that joins the dispatch logs is minted
+        here, as the loop mints it. *action* is this runtime's extension of the protocol
+        signature (a caller that only knows the protocol leaves it at ``schedule``): the loop's
+        decision verb (``dispatch``, ``resume``, ...), recorded on the run and passed to the
+        ``run_identity`` hook. :class:`LocalLoop` passes it whenever a runtime's signature
+        declares it (:func:`beadhive.runtime.schedule_accepts`), never by concrete type.
+
+        Raises :class:`beadhive.runtime.ScheduleRefused` (a ``ValueError``) for a strict routing
+        block (``status="blocked"``) or an invalid workspace (``status="failed"``), with the
+        reason the loop records for the same failure. Nothing is spawned and nothing is written.
+        """
         live = self._runs.get(bead_id)
         if live is not None and not live.finished:
             return RoleHandle(bead_id=bead_id, session_id=live.provider_continuation)
 
+        launch = self._launch_context(role) if self._launch_context is not None else None
         if isinstance(decision, model_routing.ModelBlockedVerdict):
-            raise ValueError(
+            raise seatrun.ScheduleRefused(
                 f"cannot schedule {bead_id}: {decision.reason}; required "
                 f"{decision.required_tier.name}, preferred {decision.preferred_model or '(none)'}, "
-                f"availability {decision.availability_source}; {decision.remediation}"
+                f"availability {decision.availability_source}; {decision.remediation}",
+                status="blocked",
+                reason=(
+                    f"model routing blocked {bead_id}: {decision.reason}; "
+                    f"remediation: {decision.remediation}"
+                ),
+                payload={"bead": bead_id, **decision.as_dict()},
             )
         canonical_model = decision.selected_model if decision else model
         harness = decision.harness if decision else self.harness
@@ -2766,29 +3351,39 @@ class LocalRuntime:
 
         validation = seatrun.validate_workspace(str(workspace))
         if not validation.ok:
-            raise ValueError(f"cannot schedule {bead_id}: {validation.reason}")
+            raise seatrun.ScheduleRefused(
+                f"cannot schedule {bead_id}: {validation.reason}",
+                status="failed",
+                reason=f"workspace invalid before spawn: {validation.reason}",
+            )
         provider_continuation = session_id
         seat_process_id = f"seat-{uuid.uuid4()}"
         argv = seat_argv(
-            self.seat_command,
+            launch.command if launch is not None else self.seat_command,
             role,
             workspace=str(workspace),
             bead=bead_id,
             instructions=str(instructions),
             session_id=provider_continuation,
             model=translated_model,
-            bundle=self.seat_bundle,
+            bundle=launch.bundle if launch is not None else self.seat_bundle,
         )
         attributes = LocalLoop._routing_attributes(decision) if decision else None
         journal = None
-        if self._run_identity is not None:
-            identity = self._run_identity(bead_id, "schedule", role, decision)
+        if launch is not None:
+            journal = run_journal.RunJournal.create(
+                launch.run_identity(bead_id), base=self._journal_base
+            )
+        elif self._run_identity is not None:
+            identity = self._run_identity(bead_id, action, role, decision)
             if identity is not None:
                 journal = run_journal.RunJournal.create(identity, base=self._journal_base)
         with otel.record_agent_dispatch(
             agent=role,
             model=canonical_model or "",
-            system=harness,
+            # The routing decision's harness, or "" with none — what the loop has always
+            # reported; ``self.harness`` only translates a bare ``model`` above.
+            system=decision.harness if decision else "",
             attributes=attributes,
         ):
             seat = self._submit(
@@ -2796,38 +3391,82 @@ class LocalRuntime:
                     argv,
                     bead_id=bead_id,
                     role=role,
-                    action="schedule",
+                    action=action,
                     session_id=seat_process_id,
                     provider_continuation=provider_continuation,
                     cwd=str(workspace),
+                    env=self.env,
                     routing=routing_payload,
                     journal=journal,
                 )
             )
         self._runs[bead_id] = seat
+        self._terminal.pop(bead_id, None)
         return RoleHandle(bead_id=bead_id, session_id=provider_continuation)
+
+    def _settled(self, bead_id: str, seat: SeatProcess) -> RoleOutcome | None:
+        done = self._terminal.get(bead_id)
+        return done[1] if done is not None and done[0] is seat else None
+
+    async def _harvest_run(self, seat: SeatProcess) -> seatrun.Classification:
+        """The harvest of one finished seat: read the held pipe, reap the group, classify
+        stdout-first, and journal ``process.harvested`` through the shared writer."""
+        stdout = await _collect_with_timeout(seat, self.envelope_grace)
+        reap = await reap_group(seat, grace=self.terminate_grace)
+        if not reap.group_gone:
+            _LOG.error("seat_group_orphaned", bead=seat.bead_id, pgid=seat.pgid)
+        cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=seat.bead_id)
+        _LOG.info(
+            "seat_harvested",
+            bead=seat.bead_id,
+            outcome=str(cls.outcome),
+            exit_code=seat.proc.returncode,
+            session_id=seat.session_id,
+            provider_continuation_observed=(
+                cls.seat_run.session_id
+                if cls.seat_run
+                else cls.envelope.session_id
+                if cls.envelope
+                else ""
+            ),
+        )
+        _journal_harvest(seat, cls, reap)
+        return cls
 
     def observe(self, handle):
         """A status READ, never a blocking wait. ``running`` while the process is alive; once it
         exits, the verdict comes from :func:`beadhive.seatrun.classify_run` — stdout-first, never
         trusting a bare exit 0 — and the group is reaped so a finished run can never leave an
-        orphan behind."""
-        from .runtime import RoleOutcome
+        orphan behind.
 
+        The first terminal answer harvests the run exactly as the loop's harvest does (one
+        ``process.harvested`` journal record) and maps it through
+        :meth:`beadhive.runtime.RoleOutcome.from_classification` with the child's exit code; later
+        calls return that same outcome without reaping or journaling again."""
         seat = self._runs.get(handle.bead_id)
         if seat is None:
             return RoleOutcome(status="failed", summary=f"no run scheduled for {handle.bead_id}")
+        if seat.provider_continuation != handle.session_id:
+            # A handle from an EARLIER turn of this bead names a run this runtime no longer
+            # holds; it must never be answered with the current run's state (the same rule
+            # `cancel` / `notify` apply through `_live_for`).
+            return RoleOutcome(
+                status="failed",
+                summary=f"no run for session {handle.session_id} of {handle.bead_id}",
+            )
+        settled = self._settled(handle.bead_id, seat)
+        if settled is not None:
+            return settled
         if not seat.finished:
             return RoleOutcome(
                 status="running", summary=f"pid {seat.pid}, pgid {seat.pgid}", routing=seat.routing
             )
-        stdout = self._submit(_collect_with_timeout(seat, self.envelope_grace))
-        self._submit(reap_group(seat, grace=self.terminate_grace))
-        cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=handle.bead_id)
-        if cls.outcome is seatrun.RunOutcome.INCOMPLETE:
-            return RoleOutcome(status="failed", summary=cls.detail, routing=seat.routing)
-        summary = cls.seat_run.outcome.summary if cls.seat_run else ""
-        return RoleOutcome(status=str(cls.outcome), summary=summary, routing=seat.routing)
+        cls = self._submit(self._harvest_run(seat))
+        result = RoleOutcome.from_classification(
+            cls, routing=seat.routing, exit_code=seat.proc.returncode
+        )
+        self._terminal[handle.bead_id] = (seat, result)
+        return result
 
     def on_gate_resolved(self, resolution: GateResolution) -> None:
         """A no-op with a reason, not an oversight. This tier notices a resolved gate on its next
@@ -2843,20 +3482,65 @@ class LocalRuntime:
             runtime=self.name,
         )
 
-    def cancel(self, bead_id: str) -> CancelResult | None:
-        """Walk the CANCEL ladder against a scheduled run. Not part of the `Runtime` protocol —
-        the protocol has no cancel verb — but the capability belongs to whatever holds the pipes,
-        so it is exposed here rather than left reachable only through :class:`LocalLoop`."""
-        seat = self._runs.get(bead_id)
+    # ---- optional capabilities (beadhive.runtime.CancellableRuntime / NotifiableRuntime) ----
+
+    def _live_for(self, handle: RoleHandle) -> SeatProcess | None:
+        """The run *handle* names — and only that run: a handle whose session id is not the
+        current run's (an earlier, finished turn of the same bead) names nothing."""
+        seat = self._runs.get(handle.bead_id)
+        if seat is None or seat.provider_continuation != handle.session_id:
+            return None
+        return seat
+
+    def cancel(self, handle: RoleHandle) -> RoleOutcome | None:
+        """Walk the CANCEL ladder against the run *handle* names and return its terminal outcome
+        (:class:`beadhive.runtime.CancellableRuntime`), with the rung that stopped it on
+        ``cancel_rung``. ``None`` when this runtime holds no run for the handle. A run that
+        already finished is harvested, not cancelled (rung ``exited``, as the ladder itself
+        reports it), and a settled run returns its outcome again without acting. The ladder
+        journals ``process.cancelled``; the outcome is mapped by
+        :meth:`beadhive.runtime.RoleOutcome.from_classification` and is what a later
+        :meth:`observe` answers."""
+        seat = self._live_for(handle)
         if seat is None:
             return None
-        return self._submit(
+        settled = self._settled(handle.bead_id, seat)
+        if settled is not None:
+            return settled
+        if seat.finished:
+            # Finished before any rung was needed: the ladder's own ``exited`` answer.
+            outcome = dataclasses.replace(self.observe(handle), cancel_rung=RUNG_EXITED)
+            self._terminal[handle.bead_id] = (seat, outcome)
+            return outcome
+        result = self._submit(
             cancel(
                 seat,
                 envelope_grace=self.envelope_grace,
                 terminate_grace=self.terminate_grace,
             )
         )
+        outcome = dataclasses.replace(
+            RoleOutcome.from_classification(
+                result.classification, routing=seat.routing, exit_code=result.exit_code
+            ),
+            cancel_rung=result.rung,
+        )
+        self._terminal[handle.bead_id] = (seat, outcome)
+        return outcome
+
+    def notify(self, handle: RoleHandle, message: str) -> bool:
+        """Write one line to the live run's stdin — the channel :meth:`LocalLoop.notify_siblings`
+        uses (:class:`beadhive.runtime.NotifiableRuntime`). ``False`` when there is no live run
+        for the handle or its pipe is already gone."""
+        seat = self._live_for(handle)
+        if seat is None or seat.finished:
+            return False
+        return self._submit(_write_stdin(seat, message))
+
+
+async def _write_stdin(seat: SeatProcess, message: str) -> bool:
+    # The stdin transport belongs to the loop that spawned the seat; write from that loop.
+    return seat.write_stdin(message)
 
 
 def runtime_from_config(cfg=None, entry=None) -> LocalRuntime:

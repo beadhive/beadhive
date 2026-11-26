@@ -242,16 +242,81 @@ def impl_next_(api, as_, hive, as_json, epic):
         raise api.typer.Exit(api.NEXT_DECLINE_EXIT)
 
 
-def _runtime_gate_hook(cfg):
-    """The configured runtime's `on_gate_resolved`, or None when no runtime can be resolved
-    (an unregistered or not-yet-implemented `work.runtime`). The loop owns lifecycle either way;
-    the hook is only the bounce / feedback signal (gas-city-runtime-seam-adr.md Decision 3)."""
+#: `work.runtime` values the loop refuses at start: they name a tier, not a scheduler the loop
+#: can hand a seat to. `temporal` already fails inside its factory (unimplemented, bh-c6dk.4).
+_UNSCHEDULABLE_RUNTIMES = {
+    "claude": (
+        "work.runtime=claude is the Task-tool sub-agent fanout a harness session drives itself; "
+        "`bh work loop` has nothing to schedule seats on. Use work.runtime=local (the default) "
+        "or a registered runtime."
+    ),
+}
+
+
+class LoopRuntimeError(ValueError):
+    """The hive's `work.runtime` cannot drive `bh work loop`. Raised at loop start only."""
+
+
+def loop_runtime(cfg, entry):
+    """The ONE runtime instance a `bh work loop` drives: `runtime.get_runtime(cfg, entry)`, or a
+    :class:`LoopRuntimeError` naming why it cannot be used — an unregistered name, an
+    unimplemented tier (`temporal`), a tier that schedules nothing (`claude`), or a factory that
+    returned something that is not a :class:`beadhive.runtime.Runtime`. Fails loudly at start;
+    the loop never falls back to a different runtime than the one configured. Lives here, beside
+    `impl_loop`, not in `localloop`: resolution goes through the runtime REGISTRY, whose `local`
+    factory imports `localloop`, so `localloop` itself only ever imports the leaf
+    `beadhive.runtime.protocol` (bh-03rvd)."""
     from . import runtime
+    from .config_consumer_ports import work_settings as config
+
+    name = config.work_runtime(cfg, entry) if cfg is not None else "local"
+    if name in _UNSCHEDULABLE_RUNTIMES:
+        raise LoopRuntimeError(_UNSCHEDULABLE_RUNTIMES[name])
+    try:
+        rt = runtime.get_runtime(cfg, entry)
+    except NotImplementedError as exc:
+        raise LoopRuntimeError(f"work.runtime={name} cannot run the loop: {exc}") from exc
+    except ValueError as exc:
+        raise LoopRuntimeError(f"work.runtime={name} is not usable: {exc}") from exc
+    if not isinstance(rt, runtime.Runtime):
+        raise LoopRuntimeError(
+            f"work.runtime={name} resolved to {type(rt).__name__}, which does not implement the "
+            "Runtime protocol (name, schedule, observe, on_gate_resolved)"
+        )
+    return rt
+
+
+def _loop_runtime(api, cfg, entry, *, seat_binary, launch_contexts):
+    """The ONE runtime instance `bh work loop` drives (bh-03rvd): the hive's
+    `get_runtime(cfg, entry)`, carrying this invocation's launch overrides. Seat scheduling AND
+    the gate hook (`on_gate_resolved`, gas-city-runtime-seam-adr.md Decision 3) use this same
+    instance. A runtime that cannot drive the loop — unregistered, unimplemented (`temporal`), a
+    tier with no scheduler (`claude`) — fails the loop START with a clear `✗` line rather than
+    degrading to a silent `None` hook or a different runtime. `--seat-binary` and the qualified
+    BAML launch contexts are LocalRuntime launch inputs; a third-party runtime refuses them by
+    name rather than dropping them."""
+    from . import localloop
 
     try:
-        return runtime.get_runtime(cfg).on_gate_resolved
-    except (ValueError, NotImplementedError):
-        return None
+        rt = loop_runtime(cfg, entry)
+    except LoopRuntimeError as exc:
+        api.typer.echo(f"✗ runtime_unavailable: {exc}", err=True)
+        raise api.typer.Exit(1) from None
+    overrides = {}
+    if seat_binary:
+        overrides.update(seat_command=seat_binary, seat_bundle="")
+    if launch_contexts is not None:
+        overrides["launch_context"] = lambda role: launch_contexts[role]
+    if overrides and not localloop.bind_local_launch(rt, **overrides):
+        flag = "--seat-binary" if seat_binary else "--baml-required"
+        api.typer.echo(
+            f"✗ runtime_conflict: {flag} configures the local seat launch, but this hive's "
+            f"work.runtime is {getattr(rt, 'name', type(rt).__name__)!r}, which launches seats "
+            "its own way",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    return rt
 
 
 def _refuse_if_loop_delegated(api, verb, cfg, entry, hive):
@@ -329,6 +394,7 @@ def impl_loop(
                 manifest_digest=artifact.manifest_digest,
             )
 
+    rt = _loop_runtime(api, cfg, entry, seat_binary=seat_binary, launch_contexts=launch_contexts)
     driver = localloop.LocalLoop(
         hive_dir=main,
         epic=epic,
@@ -345,7 +411,8 @@ def impl_loop(
         max_action_retries=api.config.dispatch_max_action_retries(cfg, entry),
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
         dry_run=dry_run,
-        on_gate_resolved=_runtime_gate_hook(cfg),
+        runtime=rt,
+        on_gate_resolved=rt.on_gate_resolved,
         launch_context=(
             (lambda role: launch_contexts[role]) if launch_contexts is not None else None
         ),

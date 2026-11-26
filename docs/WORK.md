@@ -345,7 +345,7 @@ work:
                                  # See "The always-run set" below.
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
   runtime: local                 # which scheduler wakes a role binary: claude | local | temporal
-                                 # (default local — see "Runtime tiers" below)
+                                 # | a registered plugin name (default local — see "Runtime tiers")
   landing: local                 # how merge/finish land on the SHARED integration branch:
                                  # local (--no-ff merge, default) | pr (push + GitHub PR;
                                  # PR-only-main repos — see "PR-governed landing" below)
@@ -655,17 +655,32 @@ than silently assumed away.
 
 ### The `Runtime` seam
 
-`src/beadhive/runtime/__init__.py` names the `Runtime` protocol: three operations, nothing else —
+`src/beadhive/runtime/__init__.py` names the `Runtime` protocol (its types live in the leaf module
+`beadhive.runtime.protocol`, re-exported from `beadhive.runtime`): a `name` plus three operations —
 `schedule` a role binary for a bead, `observe` whether it finished, and `on_gate_resolved`
-react to a review gate resolving. `runtime.get_runtime()` resolves `work.runtime` through a
-name-keyed registry that mirrors `claim_authority`'s: `register_runtime(name, factory)`,
-`available_runtimes()`. The built-ins `local`, `claude` and `temporal` register at import
-(`temporal` still raises `NotImplementedError` naming bh-c6dk.4); nothing is auto-discovered,
-so a plugin such as Gas City calls `register_runtime` itself. A second registration of a name
-raises unless `replace=True`. `work.runtime` is a string validated against the registry when the
-config loads (and by `bh config set`); an unregistered name is rejected listing the available
-ones, and `get_runtime` raises the same `ValueError`
-([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 1).
+react to a review gate resolving. `cancel`, `notify`, `close` and `adoptable` are optional
+capabilities, detected per runtime (`can_cancel`, `can_notify`, `can_close`, `is_adoptable`), so
+a runtime written against the three operations stays valid. `runtime.get_runtime()` resolves
+`work.runtime` through a name-keyed registry that mirrors `claim_authority`'s:
+`register_runtime(name, factory)`, `available_runtimes()`. The built-ins `local`, `claude` and
+`temporal` register at import (`temporal` still raises `NotImplementedError` naming bh-c6dk.4). A
+plugin either calls `register_runtime` itself or declares a `beadhive.runtimes` entry point named
+after the runtime: on a registry miss, `get_runtime` imports only the entry point whose name
+equals `work.runtime`, never the rest of the group. A second registration of a name
+raises unless `replace=True`. `work.runtime` is a string whose **syntax** is checked when the
+config loads and whose **registry membership** is checked where the value is used (`bh work
+loop`, `bh config set`, `bh config validate`, `bh hive ready`, `bh doctor`); an unregistered name
+is rejected listing the available ones, and `get_runtime` raises the same `ValueError`
+([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 1). The hive's
+`managed_repos[].work.runtime` overrides the host value.
+
+`bh work loop` drives every seat the loop dispatches through that one runtime instance, for
+`schedule`, `observe` and the gate hook alike. It refuses at start, with a `runtime_unavailable`
+line, a name that is unregistered, `temporal`, `claude`, or a factory that returns a non-`Runtime`.
+The one accepted exception to "every dispatch goes through the runtime" is the foreground
+`bh role` (one seat in the operator's terminal, with live forwarding, signals and the outcome
+writer): it spawns its child directly, so it always runs locally, even when `work.runtime` names a
+plugin runtime. A guard test pins exactly those two spawn callers.
 
 `on_gate_resolved(resolution: GateResolution)` is called from the loop's gate pass for each
 review gate it observes resolving, with `GateResolution(gate_id, bead_id, verdict, feedback_ref)`
@@ -729,6 +744,85 @@ ready-made `observe()` for a non-child runtime: the classified record when prese
 when absent. Like every `observe()`, it is never authoritative about bead lifecycle. Bead state
 still wins.
 
+#### Persisted runtime handles and restart adoption — `bh.runtime.handle`
+
+A runtime whose sessions outlive the loop that scheduled them declares `adoptable = True`
+([gas-city-runtime-seam-adr.md](design/gas-city-runtime-seam-adr.md) Decision 4). For such a
+runtime only, the loop (never the runtime) writes one metadata document per bead after each
+`schedule()`, through the same `bd update --metadata` merge the outcome sink uses:
+
+```text
+bh.runtime.handle  { runtime, session_id, role, action, scheduled_at }  # scheduled_at: UTC ISO-8601
+```
+
+Each schedule replaces it, and harvesting or cancelling the turn removes it, so a handle on a
+bead means the turn has not been harvested yet. `LocalRuntime` is not adoptable and gets no
+handle. A `local` hive's restart still reaps orphaned seats and leaves their beads to
+`bd reclaim`.
+
+On its first pass, after `bd reclaim`, a loop over an adoptable runtime looks at the molecule's
+`in_progress` beads claimed by its own actor whose handle names the same runtime, and calls
+`observe()` once on each. `running` puts the bead back in flight with no second `schedule()`.
+Its wall-time age is rebuilt from `scheduled_at`, and the heartbeat later in the same pass renews
+its claim. A terminal answer is harvested like any finished run. The startup orphan scan does
+not run. Adoption runs **after** reclaim, not before: adopting first would put a bead with an
+expired lease in flight and then let reclaim revert it underneath the loop, leaving a stale
+in-flight entry and a possible double dispatch. A claim `bd reclaim` has reverted is therefore
+re-dispatched with a fresh session id, and the old session's late `bh.outcome.<session_id>` record
+never answers for the new turn.
+
+Lease expiry wins, and it means the claim's `lease_expires_at` timestamp (ADR Decision 4, operator
+decision 2026-11-26), not whatever `bd reclaim` has reverted. `bd reclaim` reverts a claim only
+after a grace window past expiry: its `--older-than` flag, a fixed 10 minutes by default (bd
+recommends about twice the claim TTL; BeadHive passes no flag, so the 10-minute default applies).
+Inside that window an expired claim is still `in_progress` and still the loop's. Before it
+observes a candidate, a restarted loop reads the claim's `lease_expires_at` against its wall
+clock (`runtime_handle.lease_expired`), and a candidate whose lease has passed is **not
+adopted**. It is not observed, not put in flight (so not heartbeated), not harvested and not
+released, and no cause is written. The loop logs `session_not_adopted_lease_expired`, naming the
+bead, runtime and session, and leaves the bead, its lease and its `bh.runtime.handle` as they
+are. The loop runs `bd reclaim` every pass, so once the grace window has passed the claim is
+reverted and the bead is re-dispatched with a fresh session id. A row with no readable lease time
+is not treated as expired. A `local` hive is unaffected: `LocalRuntime` is not adoptable.
+
+Accepted gaps: a session whose handle write failed (or whose loop crashed between `schedule()` and
+the write) is not adopted and can run alongside a re-dispatch of the same bead, and a loop that
+stops for good leaves its sessions to lease expiry. An adopted run's cause reason reads
+`exit None`, because an outcome-sink record carries no exit code (ADR Decision 2).
+
+A plain shutdown (SIGTERM, a restart) leaves an adoptable runtime's sessions alone. It does not
+cancel them, write a cause or release their claims. It still calls the runtime's `close()`, so an
+adoptable runtime's `close()` must not end its sessions (a third-party runtime's included). A
+lease-loss shutdown cancels the
+sessions the runtime can stop. When a session cannot be stopped (no `cancel`, or `cancel`
+raised), the loop leaves its claim to the lease, during a lease-loss shutdown or under the
+wall-time cap, because releasing it would let the bead start a second session. A runtime's
+`observe()` or `cancel()` that raises counts as transient: it is logged and retried, instead of
+crashing the pass. This applies to `LocalRuntime` too. The limit
+counts calls, not passes. After three consecutive raising `observe()` calls for one bead
+(`LocalLoop(runtime_error_limit=...)`), the third answers `failed` and the bead is harvested
+with that failure. A run past the wall-time cap is observed by the cap and by the harvest, so it
+can reach the limit in two passes. A raising `cancel()` under the cap is retried the same way.
+After three consecutive raising `cancel()` calls, what happens depends on the runtime. For an
+adoptable runtime the cap stops retrying `cancel` and leaves the claim to the lease. For a
+non-adoptable one it writes the cause and releases the claim.
+
+A restart never writes a turn's cause twice. Removing a harvested turn's handle is best-effort.
+If it fails, the bead keeps a handle and a terminal record. When the bead's events already hold
+that turn's cause, which names its session, the restarted loop only drops the handle. The match
+is scoped to the persisted handle's session: a reason that names no session (a failure with no
+envelope quotes only its detail) never counts as already recorded, so an earlier turn's
+identical failure text cannot swallow the new turn's cause.
+
+`beadhive.runtime_handle.reclaim_refusal(row, now=...)` is the guard for an operator-driven
+reclaim. It returns a message naming the runtime and session when the bead is `in_progress`,
+has a handle, its session has no outcome record, and its lease has not expired. Otherwise it
+returns `None`. No CLI verb calls it yet: there is no operator-facing reclaim that refuses a
+live handle. `bh-zaxga` adds `work.reclaim` with `--force`. Until it lands, lease expiry is the
+protection. `bd reclaim` reverts a claim only after its lease has expired and its grace window
+has passed, and a loop heartbeats the claims of the sessions it has adopted, never a claim whose
+lease had already expired when it restarted (above).
+
 #### The conformance kit — `beadhive.runtime.conformance`
 
 Passing the kit is the GO condition for documenting a runtime as supported, and a failure is
@@ -780,6 +874,42 @@ restart a live one. And the runner maps any exception a check raises (a crash in
 a factory error) to a GC-fixable failure, so a crash reads as NOT YET, never NO-GO. Polling uses
 `RuntimeEnv.clock` / `RuntimeEnv.sleep`, which a test can replace. Each attempt uses a fresh
 session id, because session ids are write-once.
+
+##### The loop probe (opt-in)
+
+The checks above call the runtime directly. The loop probe drives it through BeadHive's real
+dispatcher loop, `LocalLoop`, wired the way `bh work loop` wires it (`runtime=` plus its
+`on_gate_resolved`). In the scratch bd store it seeds one in-progress epic with one ready child,
+then runs passes over one turn:
+
+1. The loop claims the child and calls `schedule()` once.
+2. While the turn is held, `observe()` answers `running`. The bead stays in flight, its claim is
+   heartbeated, and `bd reclaim` leaves it alone.
+3. Once the turn is released, the loop harvests `done` and writes no cause. The stand-in seat
+   started exactly once, under the session id the loop passed.
+
+Around the turn the bead is diffed as in `no-lifecycle-writes`. The loop's own writes are the
+loop's: the claim, the heartbeat, and, for an adoptable runtime, the `bh.runtime.handle`
+document. A non-adoptable runtime gets no handle from the loop, so a handle on its bead is the
+runtime's write.
+
+| Check | Invariant | Class |
+|---|---|---|
+| `loop_drives_one_turn` | `loop-session-started`: the loop's `schedule()` starts exactly one seat session, under the loop's `session_id` | GC-fixable |
+| | `observe-transitions`, `no-lifecycle-writes` (as above, seen through the loop) | as above |
+| | `bh-loop`: BeadHive's loop did not dispatch, heartbeat, harvest or clean up a turn the runtime ran correctly | **BH-side** |
+
+A BH-side failure is a fault in BeadHive, not the runtime's, so it is never reported as
+GC-fixable. A run with one reads `INCONCLUSIVE` (unless a structural failure makes it NO-GO):
+report it to BeadHive. An exception raised inside one of the runtime's own methods is still the
+runtime's crash.
+
+A Mode 1 GO should be earned with the loop probe on, over a real bd store. Opt in with `--loop`
+on the command line, `run_conformance(factory, loop=True)`, or
+`loop_probe = True` on a `RuntimeConformanceSuite` subclass. The probe needs a real scratch bd
+store (`bd` on `PATH`). On a `FileHive` it fails as `bh-loop`, and the pytest suite skips it.
+While it runs, `BH_HOME` and `BH_CONFIG` point at a throwaway config that reads beads over the
+`cli` route, and the shared-server variables are unset. All are restored afterwards.
 
 ### The `local` tier — `bh work loop <epic>`
 

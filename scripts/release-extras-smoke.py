@@ -189,6 +189,14 @@ def main(argv: list[str]) -> int:
             for strategy in ("bd", "bd-history", "docs", "git-commits", "planning"):
                 assert f"extract with the {strategy} strategy" in help_text, strategy
             run([str(venv / "bin" / "beadlog"), "read", "--help"], cwd=work, env=env, quiet=True)
+            # The runtime conformance kit must run on a runtime-only install (no pytest): the way
+            # an external runtime team invokes it (bh-nel6w).
+            run(
+                [str(python), "-I", "-m", "beadhive.runtime.conformance", "--help"],
+                cwd=work,
+                env=env,
+                quiet=True,
+            )
             print(f"== {name}: ok", flush=True)
     print("extras smoke: bare, [github] and [xtdb] all passed (checks + full CLI)")
     return 0

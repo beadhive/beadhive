@@ -158,7 +158,6 @@ def test_spawn_cancel_and_harvest_keep_one_exact_outer_identity(tmp_path: Path) 
         )
         assert cancelled.reap.group_gone
 
-        harvest_journal = run_journal.RunJournal.create(_identity("bh-harvest"), base=tmp_path)
         payload = json.dumps(
             {
                 "outcome": {"status": "done", "summary": "ok", "bead_id": "bh-harvest"},
@@ -167,31 +166,40 @@ def test_spawn_cancel_and_harvest_keep_one_exact_outer_identity(tmp_path: Path) 
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             }
         )
-        harvest_seat = await localloop.spawn_seat(
-            [sys.executable, "-c", f"print({payload!r})"],
-            bead_id="bh-harvest",
-            role="developer",
-            action="dispatch",
-            session_id="seat-process-harvest",
-            provider_continuation="provider-session-harvest",
-            journal=harvest_journal,
+        # The loop's harvest goes through its runtime (bh-03rvd), so the harvested seat is
+        # scheduled through it too.
+        seat_script = tmp_path / "harvest_seat.py"
+        seat_script.write_text(f"print({payload!r})\n", encoding="utf-8")
+        loop = localloop.LocalLoop(
+            hive_dir=tmp_path,
+            epic="bh-epic",
+            actor="dev/test",
+            seat_command=f"{sys.executable} {seat_script}",
+            workspace_for=lambda _bead: str(Path.cwd()),
+            routing=lambda _bead, _role: None,
+            instructions=lambda _a, _b, _r: "-",
+            run_identity=lambda bead, *_a: _identity(bead),
+            journal_base=tmp_path,
         )
-        await harvest_seat.collect()
-        assert await harvest_seat.wait_exit(5)
-        loop = localloop.LocalLoop(hive_dir=tmp_path, epic="bh-epic", actor="dev/test")
-        loop.in_flight["bh-harvest"] = harvest_seat
+        await loop._spawn_for(
+            "bh-harvest", action="dispatch", role="developer", report=localloop.PassReport()
+        )
+        seat = loop.runtime._runs["bh-harvest"]
+        assert await seat.wait_exit(5)
         report = localloop.PassReport(number=1)
         await loop._harvest(report)
         assert report.harvested == (("bh-harvest", "done"),)
+        harvest_journal = seat.journal
+        await loop.shutdown()
+        continuations["bh-harvest"] = seat.provider_continuation
         return _records(cancel_journal.path), _records(harvest_journal.path)
 
+    continuations = {"bh-cancel": "provider-session-cancel"}
     cancelled, harvested = asyncio.run(scenario())
     for records, bead in ((cancelled, "bh-cancel"), (harvested, "bh-harvest")):
         assert len({record["run_id"] for record in records}) == 1
         assert {record["bead"] for record in records} == {bead}
-        assert {record["provider_continuation"] for record in records[1:]} == {
-            f"provider-session-{'cancel' if bead == 'bh-cancel' else 'harvest'}"
-        }
+        assert {record["provider_continuation"] for record in records[1:]} == {continuations[bead]}
         assert records[0]["provider_continuation"] is None
         validator = jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text()))
         for record in records:
@@ -289,11 +297,12 @@ def test_local_loop_retry_mints_a_fresh_attempt(tmp_path: Path) -> None:
         for _ in range(2):
             report = localloop.PassReport(number=1)
             await loop._spawn_for("bh-retry", action="retry", role="merger", report=report)
-            seat = loop.in_flight.pop("bh-retry")
+            seat = loop.runtime._runs["bh-retry"]
             identities.append(seat.journal.run_id)
-            await seat.collect()
             assert await seat.wait_exit(5)
-            await localloop.reap_group(seat, grace=1.0)
+            await loop._harvest(localloop.PassReport(number=1))
+            assert "bh-retry" not in loop.in_flight
+        await loop.shutdown()
 
     asyncio.run(scenario())
     assert len(identities) == len(set(identities)) == 2

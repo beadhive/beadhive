@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from beadhive import config, config_schema, config_validate, runtime
+from beadhive.modules.config.domain import runtime_names
 
 # ---- config: work.runtime section --------------------------------------------
 
@@ -282,11 +283,13 @@ def test_empty_name_is_refused(clean_registry):
 
 
 def test_unknown_name_fails_closed_listing_available_names():
-    with pytest.raises(ValueError, match=r"unknown work runtime 'nope'.*claude, local, temporal"):
-        runtime.get_runtime({"work": {"runtime": "nope"}})
+    with pytest.raises(
+        ValueError, match=r"unknown runtime 'nope'; registered: claude, local, temporal"
+    ):
+        runtime.get_runtime({"work": {"runtime": "nope"}}, entry_points=lambda **kw: [])
 
 
-def test_config_load_validates_against_the_registry(clean_registry):
+def test_config_validate_checks_the_registry_at_use(clean_registry):
     def problems(name):
         return config_validate.validate_config(
             {
@@ -297,6 +300,185 @@ def test_config_load_validates_against_the_registry(clean_registry):
             }
         )
 
-    assert any("unknown work runtime 'gascity'" in p["message"] for p in problems("gascity"))
+    assert any("unknown runtime 'gascity'" in p["message"] for p in problems("gascity"))
     runtime.register_runtime("gascity", lambda cfg, entry: _FakeRuntime())
     assert not any("runtime" in p["message"] for p in problems("gascity"))
+
+
+# ---- syntax at load, strict at use (bh-igvro) -------------------------------------------------
+
+_GASCITY_ENTRY = (
+    "  - provider: github\n    org: o\n    repo: r\n    prefix: r\n    kind: external\n"
+    "    work:\n      runtime: gascity\n"
+)
+
+
+def _write_cfg(tmp_path, monkeypatch, body):
+    p = tmp_path / "config.yaml"
+    p.write_text(f"schema_version: {config_schema.SCHEMA_VERSION}\nproviders: [github]\n{body}")
+    monkeypatch.setenv("BH_CONFIG", str(p))
+    return p
+
+
+def test_file_backed_load_accepts_unregistered_well_formed_host_runtime(tmp_path, monkeypatch):
+    _write_cfg(tmp_path, monkeypatch, "managed_repos: []\nwork:\n  runtime: gascity\n")
+    assert config.work_runtime(config.load(), None) == "gascity"
+
+
+def test_file_backed_load_accepts_unregistered_well_formed_per_hive_runtime(tmp_path, monkeypatch):
+    _write_cfg(tmp_path, monkeypatch, f"managed_repos:\n{_GASCITY_ENTRY}")
+    cfg = config.load()
+    assert config.work_runtime(cfg, cfg["managed_repos"][0]) == "gascity"
+
+
+@pytest.mark.parametrize("scope", ["host", "fleet"])
+def test_raw_document_gate_accepts_unregistered_runtime_at_both_scopes(scope):
+    from beadhive import hq_document_validation as hdv
+
+    doc = {
+        "schema_version": config_schema.SCHEMA_VERSION,
+        "work": {"runtime": "gascity"},
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "o",
+                "repo": "r",
+                "prefix": "r",
+                "kind": "external",
+                "work": {"runtime": "gascity"},
+            }
+        ],
+    }
+    hdv.validate_settings_mapping(doc, scope=scope)
+    for bad in ("", "has space", "-lead"):
+        doc["work"]["runtime"] = bad
+        with pytest.raises(hdv.DocumentValidationError):
+            hdv.validate_settings_mapping(doc, scope=scope)
+
+
+@pytest.mark.parametrize("bad", ["", " ", "has space", "-lead", "a/b"])
+def test_empty_or_malformed_runtime_still_fails_at_load(tmp_path, monkeypatch, bad):
+    _write_cfg(tmp_path, monkeypatch, f"managed_repos: []\nwork:\n  runtime: {bad!r}\n")
+    with pytest.raises(Exception):  # noqa: B017 - any load rejection; the type is the loader's
+        config.load()
+
+
+def test_validate_config_refuses_unregistered_runtime_at_use_with_registered_names():
+    cfg = {
+        "schema_version": config_schema.SCHEMA_VERSION,
+        "providers": ["github"],
+        "managed_repos": [],
+        "work": {"runtime": "gascity"},
+    }
+    msgs = [p["message"] for p in config_validate.validate_config(cfg) if p["level"] == "error"]
+    assert any(
+        "unknown runtime 'gascity'" in m and "registered: " in m and "local" in m for m in msgs
+    )
+
+
+def test_get_runtime_raises_registered_names_message_at_use():
+    with pytest.raises(ValueError, match=r"unknown runtime 'gascity'; registered: .*local"):
+        runtime.get_runtime({"work": {"runtime": "gascity"}}, entry_points=lambda **kw: [])
+
+
+# ---- `beadhive.runtimes` entry points, loaded lazily by name (bh-a68gk) -----------------------
+
+
+class _EP:
+    """A stand-in entry point recording whether it was imported."""
+
+    def __init__(self, name, obj=None, *, error=None, dist="gc-pkg"):
+        self.name = name
+        self._obj, self._error = obj, error
+        self.loads = 0
+        self.dist = type("D", (), {"name": dist})()
+
+    def load(self):
+        self.loads += 1
+        if self._error is not None:
+            raise self._error
+        return self._obj
+
+
+def _eps(*eps):
+    return lambda group=None: list(eps) if group == "beadhive.runtimes" else []
+
+
+def test_entry_point_factory_resolves_and_only_that_entry_point_is_imported(clean_registry):
+    marker = _FakeRuntime()
+    wanted = _EP("gascity", lambda cfg, entry: marker)
+    other = _EP("other", lambda cfg, entry: None)
+    got = runtime.get_runtime({"work": {"runtime": "gascity"}}, entry_points=_eps(other, wanted))
+    assert got is marker
+    assert wanted.loads == 1
+    assert other.loads == 0
+
+
+def test_entry_point_register_callable_is_supported(clean_registry):
+    marker = _FakeRuntime()
+    ep = _EP("gascity", lambda: runtime.register_runtime("gascity", lambda cfg, entry: marker))
+    assert runtime.get_runtime({"work": {"runtime": "gascity"}}, entry_points=_eps(ep)) is marker
+
+
+def test_config_load_then_get_runtime_resolves_entry_point(tmp_path, monkeypatch, clean_registry):
+    _write_cfg(tmp_path, monkeypatch, "managed_repos: []\nwork:\n  runtime: gascity\n")
+    marker = _FakeRuntime()
+    ep = _EP("gascity", lambda cfg, entry: marker)
+    cfg = config.load()
+    assert runtime.get_runtime(cfg, None, entry_points=_eps(ep)) is marker
+
+
+def test_per_hive_runtime_selects_that_hives_runtime(clean_registry):
+    host_rt, hive_rt = _FakeRuntime(), _FakeRuntime()
+    runtime.register_runtime("hostrt", lambda cfg, entry: host_rt)
+    runtime.register_runtime("hivert", lambda cfg, entry: hive_rt)
+    cfg = {"work": {"runtime": "hostrt"}}
+    entry = {"work": {"runtime": "hivert"}}
+    assert runtime.get_runtime(cfg, entry) is hive_rt
+    assert runtime.get_runtime(cfg, {"work": {}}) is host_rt
+
+
+def test_missing_package_message_names_runtime_and_group(clean_registry):
+    with pytest.raises(ValueError) as ei:
+        runtime.get_runtime({"work": {"runtime": "gascity"}}, entry_points=_eps())
+    assert "'gascity'" in str(ei.value) and "beadhive.runtimes" in str(ei.value)
+    assert "install the package" in str(ei.value)
+
+
+def test_import_error_is_distinct(clean_registry):
+    ep = _EP("gascity", error=ImportError("no module gc"))
+    with pytest.raises(runtime_names.RuntimeEntryPointError) as ei:
+        runtime.get_runtime({"work": {"runtime": "gascity"}}, entry_points=_eps(ep))
+    assert ei.value.kind == "import_error"
+    assert "'gascity'" in str(ei.value) and "beadhive.runtimes" in str(ei.value)
+    assert "failed to import" in str(ei.value) and "gc-pkg" in str(ei.value)
+
+
+def test_name_mismatch_is_distinct(clean_registry):
+    ep = _EP("gascity", lambda: runtime.register_runtime("elsewhere", lambda c, e: None))
+    with pytest.raises(runtime_names.RuntimeEntryPointError) as ei:
+        runtime.get_runtime({"work": {"runtime": "gascity"}}, entry_points=_eps(ep))
+    assert ei.value.kind == "name_mismatch"
+    assert "did not register a runtime named 'gascity'" in str(ei.value)
+    assert "beadhive.runtimes" in str(ei.value)
+
+
+def test_three_failure_modes_have_distinct_messages(clean_registry):
+    msgs = set()
+    for ep in (
+        None,
+        _EP("gascity", error=ImportError("x")),
+        _EP("gascity", lambda: None),
+    ):
+        eps = _eps(*([ep] if ep else []))
+        with pytest.raises(ValueError) as ei:
+            runtime.validate_runtime_name("gascity", entry_points=eps)
+        msgs.add(str(ei.value).split(":")[0] + str(ei.value)[-40:])
+    assert len(msgs) == 3
+
+
+def test_validate_runtime_name_loads_entry_point_on_miss(clean_registry):
+    ep = _EP("gascity", lambda cfg, entry: _FakeRuntime())
+    assert runtime.validate_runtime_name("gascity", entry_points=_eps(ep)) == "gascity"
+    # builtins validate without touching entry points
+    assert runtime.validate_runtime_name("local", entry_points=_eps()) == "local"
