@@ -233,7 +233,8 @@ know:
 - **Minimum `bd` version: 1.3.0.** `bd update --claim` is an atomic, actor-idempotent
   compare-and-set from 1.3.0, and BH treats a non-zero `--claim` exit as a clean "lost the race",
   so a second driver such as GC may claim from the same store. An older `bd` is refused by name.
-  An unparseable version (a dev build) is allowed.
+  A version that is not a plain tagged release (a dev, HEAD or rc build such as
+  `bd version 1.1.0 (dev)`) cannot be judged and is allowed.
 - **HQ outside `BH_HOME`.** A runtime that keeps HQ elsewhere sets `hq.path` (or `BH_HQ`, which
   wins). See [CONFIGURATION.md](CONFIGURATION.md) for what follows it.
 
