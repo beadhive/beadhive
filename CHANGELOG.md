@@ -13,6 +13,55 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.41.0 (2026-11-26)
+
+### Feat
+
+- **runtime**: add LocalRuntime.run_for read accessor for a handle's run
+- **runtime**: conformance-kit loop probe over BeadHive's real loop
+- **runtime**: persist adoptable runtime handles and adopt live sessions on restart
+- **runtime**: LocalLoop drives every seat through runtime.schedule/observe
+- **runtime**: work.runtime syntax-only at load; beadhive.runtimes entry points (bh-igvro, bh-a68gk)
+- **dispatch**: work.dispatch.loop bh|gc with delegated status and owner-naming refusals
+- **runtime**: beadhive.runtime.conformance contract kit for third-party runtimes
+- **runtime**: bead-metadata outcome sink for non-child seat sessions
+- **runtime**: call on_gate_resolved from the loop's gate pass with a GateResolution
+- **runtime**: name-keyed work.runtime registry mirroring claim_authority
+- **config**: hq.path key relocates HQ and its adjacent state out of BH_HOME
+
+### Fix
+
+- **demos**: port both operator demos to the runtime seam
+- **config**: report the work.runtime syntax message at load, quiet the runtime load log
+- **bd**: accept dev builds at the claim floor via one shared version rule
+- **runtime**: refuse to adopt a handle whose claim lease has expired
+- **runtime**: keep the cap's failed answer; never write a harvested cause twice
+- **runtime**: conformance kit runs without pytest (lazy suite import)
+- **hq**: read an unheld empty api hive lease as no lease
+- **runtime**: write a terminated-by-signal outcome record in the bead sink
+- **doctor**: render delegated (loop: gc) dispatch state instead of healthy
+- **runtime**: exclude the kit-only sink round trip from the conformance verdict
+- **dispatch**: fail closed when releasing a gc-owned claim fails
+- **dispatch**: skip dispatch-owner:gc members on the atomic and epic next routes
+- **runtime**: keep the runtime name registry and gate watcher boundary-clean
+- **registry**: suppress hub prune on malformed fleet entries and surface skips
+- **registry**: adopt entry_triplet at the remaining raw fleet-entry index sites
+- **dispatch**: fail clean on a triplet-less entry for enable/disable/logs/runs --hive
+- **dispatch**: render an error row for single-hive status on a triplet-less entry
+- **dispatch**: render an error row for triplet-less fleet entries
+- **config**: read hq.path without a layered load; refresh config ledgers
+- **host**: print status/stop/start recovery ladder when beads start is refused
+- **claim**: refuse an old bd cleanly instead of a raw BdTooOldError traceback
+- **claim**: conform to bd atomic --claim; drop not-a-CAS assumptions
+
+### Refactor
+
+- **runtime**: move the protocol surface to a leaf module, breaking the localloop cycle
+- **runtime**: LocalRuntime reaches loop launch and harvest parity
+- **registry**: entry_triplet at the registry core and mutating fleet-entry sites
+- **registry**: adopt entry_triplet at the remaining raw fleet-entry index sites
+- **runtime**: make beadhive.runtime a package
+
 ## v0.40.5 (2026-11-24)
 
 ### Feat
