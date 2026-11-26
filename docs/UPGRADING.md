@@ -17,11 +17,12 @@ a host that sets none of the new keys, with one exception: the `bd` floor below.
   atomic compare-and-set only from bd 1.3.0, and bh relies on that to lose a race cleanly. On an
   older `bd`, `bh work claim` and the loop's claim route now refuse by name
   (`bd <found> is too old to claim beads safely ... Upgrade bd to 1.3.0 or later`) where they
-  previously proceeded. Upgrade `bd` on every host that claims beads. An unparseable version
-  (a `HEAD` or dev build, or no `bd` on `PATH`) is allowed through the floor; how a dev build is
-  parsed is being fixed separately (bh-5traf). Verified against `MIN_ATOMIC_CLAIM_BD` and
-  `require_atomic_claim` in `src/beadhive/bd_floor.py`, called from `work_lifecycle.py` (the lease
-  `acquire` and the `claim` verb's `BdTooOldError` handler).
+  previously proceeded. Upgrade `bd` on every host that claims beads. Any version that is
+  not a plain tagged release passes the floor: a dev, `HEAD`, rc, pre or `.dev` build (for
+  example `1.1.0 (dev)` or `HEAD-af076b6`), or no `bd` on `PATH`. A plain tagged release below
+  1.3.0 is refused. Verified against `MIN_ATOMIC_CLAIM_BD` and `require_atomic_claim` in
+  `src/beadhive/bd_floor.py` and `tagged_release` in `src/beadhive/bd_version.py`, called from
+  `work_lifecycle.py` (the lease `acquire` and the `claim` verb's `BdTooOldError` handler).
 
 ### What is new (all opt-in)
 
@@ -77,6 +78,8 @@ a host that sets none of the new keys, with one exception: the `bd` floor below.
 - `bh host beads start` prints a status/stop/start recovery ladder when it is refused
   ([BEADS-SERVICE.md](BEADS-SERVICE.md)).
 - `bh doctor` renders a delegated (`loop: gc`) dispatch state instead of reporting it healthy.
+- An unheld, empty api hive lease is read as no lease instead of an error.
+- Hub prune is suppressed when a fleet entry is malformed, and the skipped entries are reported.
 - Runtime conformance kit: `beadhive.runtime.conformance` runs without pytest installed.
 
 ### Not in 0.41.0
