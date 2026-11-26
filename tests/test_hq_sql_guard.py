@@ -50,7 +50,7 @@ def test_route_api_opener_warns_naming_opener_and_call_site(name, monkeypatch, c
     assert f"HQ SQL opener {name} " in err
     assert "hq.route: api" in err
     assert "called from tests.test_hq_sql_guard" in err or "called from test_hq_sql_guard" in err
-    assert "bh 0.41.0 refuses this" in err
+    assert "a later bh release will refuse this" in err
 
 
 @pytest.mark.parametrize("name", OPENERS)

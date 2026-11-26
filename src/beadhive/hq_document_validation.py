@@ -51,9 +51,10 @@ _PROVIDER_LISTS = frozenset({"include", "exclude"})
 class DocumentValidationError(ValueError):
     """A value-free, path-specific failure of a persisted document contract."""
 
-    def __init__(self, kind: str, path: str, code: str):
-        self.kind, self.path, self.code = kind, path, code
-        super().__init__(f"{kind} document invalid at {path}: {code}")
+    def __init__(self, kind: str, path: str, code: str, hint: str = ""):
+        self.kind, self.path, self.code, self.hint = kind, path, code, hint
+        text = f"{kind} document invalid at {path}: {code}"
+        super().__init__(f"{text}: {hint}" if hint else text)
 
 
 @lru_cache(maxsize=1)
@@ -170,7 +171,9 @@ def validate_settings_mapping(document: Mapping[str, Any], *, scope: str) -> Non
         code = first.code
         if first.path == "git_workspace" and code == "validation_value_error":
             code = "internal_root_forbidden_use_BH_HOME"
-        raise DocumentValidationError(scope, _safe_path(first.path.split(".")), code) from None
+        raise DocumentValidationError(
+            scope, _safe_path(first.path.split(".")), code, first.hint
+        ) from None
 
 
 def _parse_yaml(content: str, kind: str) -> Mapping[str, Any]:

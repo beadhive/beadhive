@@ -16,14 +16,29 @@ def test_supported_release_passes(line):
 
 
 @pytest.mark.parametrize(
-    "line", ["bd version 1.2.2", "bd version 1.1.0 (dev)", "bd version 0.63.3"]
+    "line",
+    ["bd version 1.2.2", "bd version 1.1.0", "bd version 0.63.3", "bd version 1.2.9 (abc123)"],
 )
 def test_old_release_is_refused_with_the_floor_in_the_message(line):
     with pytest.raises(bd_floor.BdTooOldError, match=r"too old.*1\.3\.0"):
         bd_floor.require_atomic_claim(line)
 
 
-@pytest.mark.parametrize("line", ["", None, "bd version HEAD-af076b6", "garbage"])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "",
+        None,
+        "bd version HEAD-af076b6",
+        "garbage",
+        "bd version 1.3.0 (dev)",
+        "bd version 1.1.0 (dev)",
+        "bd version 1.3.0-rc.1",
+        "bd version 1.2.0-rc.2",
+        "bd version 1.2.0 (HEAD-af076b6)",
+        "bd version 1.2.0.dev0",
+    ],
+)
 def test_unjudgeable_version_is_allowed(line, monkeypatch):
     from beadhive import dolt_health
 
@@ -48,3 +63,24 @@ def test_guarded_lease_refuses_an_old_bd_before_the_claim_write(monkeypatch, tmp
     with pytest.raises(bd_floor.BdTooOldError):
         work_lifecycle.GuardedFrameLease(Leases(), tmp_path).acquire("bh-1", actor="dev/a")
     assert Leases.called is False
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("bd version 1.3.0", (1, 3, 0)),
+        ("bd version 1.3.0 (abc123)", (1, 3, 0)),
+        ("bd version 1.3.0 (dev)", None),
+        ("bd version 1.3.0-rc.1", None),
+        ("bd version 1.3.0 (rc1)", None),
+        ("bd version HEAD-af076b6", None),
+        ("bd version 1.3", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_shared_parse_rule_matches_setup(line, expected):
+    from beadhive import bd_version, setup
+
+    assert bd_version.tagged_release(line) == expected
+    assert setup._bd_release_tuple(line) == expected

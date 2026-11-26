@@ -62,7 +62,7 @@ def _later() -> float:
 def _replayable(case: dict) -> str | None:
     """Why a case is not a client-side replay (``None``: it is)."""
     if case["op"] not in OPS:
-        return "the route is not routed by the adapter (catalog revoke is 0.41.0)"
+        return "the route is not routed by the adapter (catalog revoke is a later release)"
     try:
         body = json.loads(case["plan"]["body"])
     except ValueError:
