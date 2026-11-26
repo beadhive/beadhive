@@ -5,7 +5,7 @@ The same store surface as :class:`beadhive.hq_release_catalog.ReleaseCatalogStor
 import and verify verbs run unchanged: ``rows`` is ``GET /release-catalog/{catalog}`` and ``add``
 is ``POST /release-catalog/{catalog}/import/{plan,apply}``, signed client-side with the operator
 key under the catalog domain. Nothing here opens SQL. Revoke has an hq-service route
-(``.../revoke/{plan,apply}``) that is not routed until 0.41.0.
+(``.../revoke/{plan,apply}``) that is not routed until a later release.
 """
 
 from __future__ import annotations
@@ -88,6 +88,6 @@ class ApiReleaseCatalogStore:
 
     def revoke(self, version: str, reason: str) -> list[str]:
         raise CatalogError(
-            "revoke has no hq-service route on an hq.route api host until 0.41.0; "
+            "revoke has no hq-service route on an hq.route api host until a later release; "
             "run it on the SQL host"
         )

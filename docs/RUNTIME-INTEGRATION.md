@@ -47,9 +47,11 @@ refuses them (`runtime_conflict`) rather than dropping them.
 
 ### From `pip install` to a first loop pass
 
-1. **Install the package** that provides the runtime, into the environment `bh` runs from:
-   `pip install gc-runtime` (or `uv tool install --with gc-runtime beadhive`), where `gc-runtime`
-   stands for your package.
+1. **Install the package** that provides the runtime, into the environment of the `bh` that is on
+   `PATH`: the loop claims each bead through a `bh work next` subprocess found on `PATH`, so a
+   plugin installed anywhere else is invisible to it. For example
+   `uv tool install --with gc-runtime beadhive` (or `pip install gc-runtime` into that same
+   environment), where `gc-runtime` stands for your package.
 2. **Declare the entry point** in that package's `pyproject.toml`. The entry-point *name* is the
    `work.runtime` value it provides:
 
@@ -76,15 +78,22 @@ refuses them (`runtime_conflict`) rather than dropping them.
    first. The entry point is what makes the runtime selectable by name.
 3. **Select it per hive** (or for the host):
 
+   Add a `work:` block to the hive's **existing** `managed_repos` entry; do not add a new entry,
+   because an entry without its `provider`/`org`/`repo` triplet is malformed:
+
    ```yaml
    managed_repos:
-     - prefix: bh
-       work:
-         runtime: gascity   # this hive only; `work.runtime` at the top level sets the host default
+     - provider: github      # your existing entry's triplet, unchanged
+       org: acme
+       repo: tool
+       prefix: tl
+       work:               # <- the only addition
+         runtime: gascity  # this hive only; `work.runtime` at the top level sets the host default
    ```
 
    `bh config set work.runtime gascity` is the host-level form.
-4. **Check it resolves.** `bh hive ready` reports `work.runtime` as missing, naming the runtime
+4. **Check it resolves.** Run `bh hive ready` from inside the hive checkout (it takes no hive
+   argument). It reports `work.runtime` as missing, naming the runtime
    and the entry-point group, when it does not.
 5. **Run the conformance kit** statically, then with the loop probe (see below). Both need
    nothing from BeadHive's own fixtures.
@@ -193,8 +202,8 @@ when `work.runtime` names a plugin runtime. A guard test pins exactly those two 
 A registered runtime owns spawning, restarting and reaping its own sessions, and nothing else. It
 must not claim, assign or change the status of a bead, write a label, write a metadata key except
 through the outcome sink, or resolve a gate. A session GC restarts is valid only if it answers
-`observe()` for the **same** `session_id`. With `work.dispatch.loop: bh`, GC's own orphan sweep,
-gate sweep and formula dispatch stay off for hive beads.
+`observe()` for the **same** `session_id`. With `work.dispatch.loop: bh`, you must turn off GC's own
+orphan sweep and gate sweep, and keep its formula dispatch off, for hive beads.
 
 ### The outcome sink
 

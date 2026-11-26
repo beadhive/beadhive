@@ -5,6 +5,92 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.40.5 → 0.41.0 — a pluggable runtime seam, a hard `bd` floor, `hq.path`
+
+0.41.0 is mostly additive: the runtime seam (Gas City integration, see
+[RUNTIME-INTEGRATION.md](RUNTIME-INTEGRATION.md)) and a handful of config keys. Nothing changes on
+a host that sets none of the new keys, with one exception: the `bd` floor below.
+
+### Action required
+
+- **`bd` 1.3.0 or newer is now a hard floor for claiming (bh-rwjxt).** `bd update --claim` is an
+  atomic compare-and-set only from bd 1.3.0, and bh relies on that to lose a race cleanly. On an
+  older `bd`, `bh work claim` and the loop's claim route now refuse by name
+  (`bd <found> is too old to claim beads safely ... Upgrade bd to 1.3.0 or later`) where they
+  previously proceeded. Upgrade `bd` on every host that claims beads. Any version that is
+  not a plain tagged release passes the floor: a dev, `HEAD`, rc, pre or `.dev` build (for
+  example `1.1.0 (dev)` or `HEAD-af076b6`), or no `bd` on `PATH`. A plain tagged release below
+  1.3.0 is refused. Verified against `MIN_ATOMIC_CLAIM_BD` and `require_atomic_claim` in
+  `src/beadhive/bd_floor.py` and `tagged_release` in `src/beadhive/bd_version.py`, called from
+  `work_lifecycle.py` (the lease `acquire` and the `claim` verb's `BdTooOldError` handler).
+
+### What is new (all opt-in)
+
+- **`work.runtime` is syntax-only at config load, strict at use.** Config load only checks that
+  the value is a well-formed name; it no longer consults the registry, so a hive that names a
+  plugin runtime still loads on a host without the package. The registry check, which loads the
+  entry point, runs in `bh work loop`, `bh config set`, `bh config validate`, `bh hive ready` and
+  `bh doctor`, and an unregistered name fails closed there. Verified against
+  [CONFIGURATION.md](CONFIGURATION.md#workruntime--what-wakes-the-lifecycle) and the registry in
+  `src/beadhive/runtime/`.
+- **`beadhive.runtimes` entry points and per-hive `work.runtime`.** A package registers a runtime
+  by declaring an entry point in the `beadhive.runtimes` group whose name is the `work.runtime`
+  value; `bh` imports only the entry point named by the value. Select it per hive
+  (`managed_repos[].work.runtime`) or for the host. `local` stays built in and is never an entry
+  point. The published config schema still lists only the built-ins (tracked as bh-esnpc), so an
+  external validator of that schema rejects a plugin name until the next contract major; `bh`
+  itself accepts it.
+- **`work.dispatch.loop` (`bh` | `gc`) and the `dispatch-owner:gc` label.** Declares who owns the
+  dispatcher loop for a hive (the default `bh` changes nothing) or for one molecule (the label).
+  A delegated owner stands `bh` down from picking ready work, the dispatcher lease, reclaim and
+  the supervised service; `bh host dispatch status` and `bh doctor` report `delegated (loop: gc)`.
+  Lifecycle verbs (claim, submit, review, merge, gate resolve) are unaffected. Verified against
+  `src/beadhive/dispatch_loop_owner.py` (`declared_loop`, `OWNER_LABEL_GC`), `work_queue.py` and
+  `localloop.py`.
+- **`hq.path` (HOST-only) relocates the HQ checkout.** HQ resolves as `BH_HQ` (legacy `WS_HQ`),
+  then `hq.path`, then `<BH_HOME>/hq`. HQ-adjacent state (HQ backups, fleet authority state,
+  beadyard adoption journals) lives beside the resolved HQ directory only when `hq.path` is the
+  source; with `BH_HQ` set or nothing set, state stays under `BH_HOME`, so an upgrade strands
+  nothing. Verified against `hq_dir` and `hq_home` in `src/beadhive/config_paths.py`.
+- **Restart adoption of adoptable runtime handles (`bh.runtime.handle`).** For a runtime that
+  declares `adoptable = True` (sessions that outlive the loop), the loop records one
+  `bh.runtime.handle` metadata document per bead when it schedules a turn and clears it on
+  harvest or cancel. After a restart `bh work loop` adopts a live session instead of reclaiming
+  its bead or scheduling a second session, unless the claim's `lease_expires_at` has passed
+  (including inside `bd reclaim`'s grace window), in which case it is not adopted. The built-in
+  `local` runtime is not adoptable and writes nothing. Verified against
+  `src/beadhive/runtime_handle.py` and `localloop.py`.
+
+### Behaviour change for runtimes
+
+- **A raising `observe()` or `cancel()` is retried instead of crashing the pass.** The loop reads
+  a raise as transient: it logs it, answers `running` and asks again next pass. After
+  `runtime_error_limit` consecutive raises for one bead (default 3, `DEFAULT_RUNTIME_ERROR_LIMIT`
+  in `localloop.py`) it answers `failed` with the error as the detail, so the bead gets a written
+  cause rather than a heartbeated claim nobody can read. One clean answer resets the count. This
+  applies to every runtime the loop drives, `LocalRuntime` included; before, a raise propagated
+  and stopped the pass.
+
+### Smaller fixes you may notice
+
+- `bh work next` and the loop skip `dispatch-owner:gc` members; a triplet-less fleet entry renders
+  an error row (or a clean error) in `bh host dispatch` verbs instead of a traceback.
+- `bh host beads start` prints a status/stop/start recovery ladder when it is refused
+  ([BEADS-SERVICE.md](BEADS-SERVICE.md)).
+- `bh doctor` renders a delegated (`loop: gc`) dispatch state instead of reporting it healthy.
+- An unheld, empty api hive lease is read as no lease instead of an error.
+- Hub prune is suppressed when a fleet entry is malformed, and the skipped entries are reported.
+- Runtime conformance kit: `beadhive.runtime.conformance` runs without pytest installed.
+
+### Not in 0.41.0
+
+The HQ-track items previously pencilled in for 0.41.0 are **not** in this release: the
+`hq.sql_guard` default flip (an unset `hq.route: sql` host is still untouched and silent),
+`bh hq release-catalog revoke` on an `api` host, fleet config publication on `api`, the
+`--operator-key` flag for `release-catalog import`, and the deferred operator verbs listed under
+"Deferred to a later release" in the 0.39.0 → 0.40.0 notes below. The separate host certificate
+is tracked as bh-pm1s4.
+
 ## 0.39.0 → 0.40.0 — every host reaches HQ through hq-service (`hq.route: api`)
 
 0.40.0 lets every frame and every CLI path reach HQ only through hq-service, behind the Gateway
@@ -36,7 +122,7 @@ beadhive-gateway `v0.1.0`, `docs/operations/hq-plane.md` ("Principal kinds" and 
 - **`hq.mode` stays a FLEET key.** Hosts cut over one at a time with host-scoped `hq.route: api`
   (or `BH_HQ_ROUTE=api` for one command). Fleet `hq.mode: api` is the end state, once every
   host is on `api`. **Do not set fleet `hq.mode: api` in 0.40.0:** fleet config publication has
-  no api route until 0.41.0, and a config that resolves to `hq.mode: api` beside an explicit
+  no api route until a later release, and a config that resolves to `hq.mode: api` beside an explicit
   `hq.route: sql` is refused (`hq.mode api needs hq.route api (or no hq.route)`), which would
   also close the per-host rollback below.
 - **Liveness on `api` (bh-65s71).** `beadhive-session-renew.timer` (launchd
@@ -52,7 +138,7 @@ beadhive-gateway `v0.1.0`, `docs/operations/hq-plane.md` ("Principal kinds" and 
 - **Operator verbs on `api` (bh-lejfy).** `bh hq authority rebind`, `bh hq authority
   release-policy plan|apply`, `bh hq release-catalog verify` and `bh hq release-catalog import`
   go through hq-service. `import` signs with the key named by `BH_HQ_OPERATOR_KEY` (an
-  environment variable in 0.40.0; the `--operator-key` flag for it comes in 0.41.0).
+  environment variable in 0.40.0; the `--operator-key` flag for it is a later-release item).
 - **The SQL plane guard (bh-d9anb).** Every HQ SQL opener off the hq-service host warns on an
   `api` host. Placement (`bh hq placement`), `bh hq migrate` and `bh hq authority prune-inbox`
   stay local to the hq-service host.
@@ -105,13 +191,13 @@ host it writes one stderr line per process, opener and call site, and changes no
 output:
 
 ```text
-warning: HQ SQL opener <Opener> is retired off the hq-service host (this host is hq.route: api; called from <module.function>). Reach HQ through hq-service (hq.route: api); bh 0.41.0 refuses this. Silence: hq.sql_guard: off.
+warning: HQ SQL opener <Opener> is retired off the hq-service host (this host is hq.route: api; called from <module.function>). Reach HQ through hq-service (hq.route: api); a later bh release will refuse this. Silence: hq.sql_guard: off.
 ```
 
 For placement, `bh hq migrate` and `prune-inbox` the text says `is hq-service-host-only` instead
 of `is retired off the hq-service host`. `hq.sql_guard: refuse` raises `SqlPlaneRetired` before
 connecting; `off` is silent. Setting `hq.route` back to `sql` silences it again (nothing else to
-undo unless you set `hq.sql_guard`). You can preview 0.41.0 on a `sql` frame with
+undo unless you set `hq.sql_guard`). You can preview the later default on a `sql` frame with
 `hq.sql_guard: warn`.
 
 `bh doctor` prints a new `# HQ route` section. The three shapes you will meet:
@@ -122,7 +208,7 @@ undo unless you set `hq.sql_guard`). You can preview 0.41.0 on a `sql` frame wit
     hq.service_host: false
     hq.sql: present
     hq.sql_guard: unset
-    hq.route is sql on a host not marked hq.service_host: the HQ SQL warning defaults on in 0.41.0 alongside refuse; cut this host over to hq.route: api
+    hq.route is sql on a host not marked hq.service_host: the HQ SQL warning defaults on in a later release alongside refuse; cut this host over to hq.route: api
 ```
 
 ```text
@@ -563,7 +649,7 @@ workstation's Gateway binding is an operator binding.
    `status` prints JSON with `"authority_ready": true` and a `"revision"` (the current head).
    `verify --all` needs the `beadhive[release-verify]` extra and exits 1 if any row fails.
 5. C10 when it holds. Keep the SQL operator settings file (`BH_HQ_OPERATOR_SETTINGS`): the verbs
-   deferred to 0.41.0 still need it (below). **Leave `hq.sql_guard` unset on this host** for
+   deferred to a later release still need it (below). **Leave `hq.sql_guard` unset on this host** for
    the same reason.
 
 Operator commands on `api` (run here, `K` = absolute path to the operator private key):
@@ -585,7 +671,7 @@ BH_HQ_OPERATOR_KEY=K bh hq release-catalog import 0.40.0
   Add `--bundle F --wheel F --trusted-root F` for an offline import.
 - `hq.release_catalog.auto_import`, if on here, still writes the catalog through the SQL
   settings file (it warns on `api`). `release-catalog revoke` and `provision` are refused on
-  `api`: run them with `BH_HQ_ROUTE=sql` and the SQL settings file until 0.41.0.
+  `api`: run them with `BH_HQ_ROUTE=sql` and the SQL settings file until a later release.
 
 Rollback: `cp -p "$CFG.pre-0.40.0" "$CFG"`. Every operator verb then uses the SQL settings file
 again.
@@ -831,7 +917,7 @@ bh host rm HOST_ID --force --confirm
 ```
 
 Then remove its Gateway binding (G2). The admitted grant stays in authority: `frame-retire` has
-no api route until 0.41.0.
+no api route until a later release.
 
 ### beadhive-factory
 
@@ -873,21 +959,21 @@ Rollback: as for `bead-frame-01`; re-enable the failover loop if you turned it o
   you run the write (`bh host init --role executor --force` after a release upgrade, or `bh host
   rm HOST_ID --force --confirm` for the rollback withdrawal), then G2 restores the `kind` frame
   binding. Until the restore the frame cannot renew or be admitted. A separate host certificate
-  is planned for 0.41.0 (bh-pm1s4).
+  is tracked as bh-pm1s4 (not in 0.41.0).
 - **`bh hq release-catalog revoke` and `provision` are refused on `api`;** they arrive in
-  0.41.0.
+  a later release.
 - **`describe_incarnation` and `preflight` have no api route** (`HqUnavailable` naming the
   method).
 - **`hq-parity` is unsupported** for the admission, operator and release-eligibility corpora
   ([HQ-PARITY-RUNS](HQ-PARITY-RUNS.md)).
-- **Deferred to 0.41.0:**
+- **Deferred to a later release (not 0.41.0):**
   - `cordon`, `drain`, `park`, `resume`, `quarantine`, `frame-retire`, `emergency`;
   - `observe`, `bind-beadyard`, `mode`, `release-upgrade`;
   - fleet config publication;
   - catalog revoke;
   - the guard's default flip to `refuse`.
 
-## Unreleased — upgrade every frame before the first `fleet.json` republish
+## Shipped in 0.39.0 — upgrade every frame before the first `fleet.json` republish
 
 - **Ordering requirement (bh-vrqne, bh-se4se).** Every publish and repair of the HQ SQL config now
   also commits `fleet.json`. A `bh` that predates it is inferred to reject that unknown document

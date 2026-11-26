@@ -1971,8 +1971,8 @@ class HqConfig(_Section):
             "SQL: `warn` writes one stderr line per process and call site, naming the opener "
             "and caller, and changes no exit code or output; `refuse` raises before "
             "connecting; `off` is silent. Unset (default, 0.40.0): an `hq.route: api` host "
-            "warns and an `hq.route: sql` host is untouched and silent; 0.41.0 makes `warn` "
-            "plus refuse the default. The guard never selects a route and never falls back. "
+            "warns and an `hq.route: sql` host is untouched and silent; a later release makes "
+            "`warn` plus refuse the default. The guard never selects a route and never falls back. "
             "`BH_HQ_SQL_GUARD` overrides it for one process."
         ),
     )
