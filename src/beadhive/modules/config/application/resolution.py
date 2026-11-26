@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from ..contracts import SCHEMA_VERSION, BeadhiveConfig
+from ..domain.runtime_names import RUNTIME_NAME_SYNTAX_HINT
 from .partition import FLEET, is_host_overridable, partition_of
 
 
@@ -41,12 +42,15 @@ class ResolutionDiagnostic:
     layer: SourceLayer
     owner: str = "core"
     schema_version: int = SCHEMA_VERSION
+    #: Static, value-free remediation text (never derived from the rejected input).
+    hint: str = ""
 
     def render(self) -> str:
-        return (
+        text = (
             f"{self.code}: {self.path} "
             f"(owner={self.owner}, layer={self.layer.value}, schema={self.schema_version})"
         )
+        return f"{text}: {self.hint}" if self.hint else text
 
 
 class ConfigResolutionError(ValueError):
@@ -194,6 +198,15 @@ def _runtime_diagnostics(inputs: ResolutionInputs) -> tuple[ResolutionDiagnostic
     return tuple(diagnostics)
 
 
+def _static_hint(error: Mapping[str, Any]) -> str:
+    """Friendly remediation for the few fields whose syntax rule is worth stating
+    (`work.runtime`, host or per-hive). Never echoes the rejected value (diagnostics are
+    secret-safe)."""
+    if tuple(error["loc"][-2:]) == ("work", "runtime") and error["type"] == "value_error":
+        return RUNTIME_NAME_SYNTAX_HINT
+    return ""
+
+
 def resolve_config(inputs: ResolutionInputs) -> ResolvedConfig:
     """Resolve explicit sources as default < fleet < host < hive < environment < runtime."""
 
@@ -235,6 +248,7 @@ def resolve_config(inputs: ResolutionInputs) -> ResolvedConfig:
                     ".".join(str(part) for part in error["loc"]),
                     ValueProvenance(SourceLayer.DEFAULT, "default"),
                 ).layer,
+                hint=_static_hint(error),
             )
             for error in exc.errors(include_input=False, include_context=False, include_url=False)
         )

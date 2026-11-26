@@ -482,3 +482,29 @@ def test_validate_runtime_name_loads_entry_point_on_miss(clean_registry):
     assert runtime.validate_runtime_name("gascity", entry_points=_eps(ep)) == "gascity"
     # builtins validate without touching entry points
     assert runtime.validate_runtime_name("local", entry_points=_eps()) == "local"
+
+
+# ---- friendly work.runtime message at load; quiet console (bh-h9e5u) --------------------------
+
+
+@pytest.mark.parametrize("scope", ["host", "per-hive"])
+def test_malformed_runtime_at_load_reports_the_syntax_message(tmp_path, monkeypatch, scope):
+    body = (
+        "managed_repos: []\nwork:\n  runtime: 'bad name!'\n"
+        if scope == "host"
+        else f"managed_repos:\n{_GASCITY_ENTRY.replace('gascity', repr('bad name!'))}"
+    )
+    _write_cfg(tmp_path, monkeypatch, body)
+    with pytest.raises(Exception) as captured:  # noqa: B017 - the loader's own error type
+        config.load()
+    text = str(captured.value)
+    assert runtime_names.RUNTIME_NAME_SYNTAX_HINT in text
+    assert "work.runtime" in text
+    assert "bad name!" not in text  # diagnostics stay value-free
+
+
+def test_loading_a_runtime_entry_point_is_not_logged_at_info(caplog, clean_registry):
+    ep = _EP("gascity", lambda cfg, entry: _FakeRuntime())
+    with caplog.at_level("INFO"):
+        runtime.get_runtime({"work": {"runtime": "gascity"}}, entry_points=_eps(ep))
+    assert not [r for r in caplog.records if "loading runtime" in r.getMessage()]

@@ -57,6 +57,11 @@ def unknown_runtime(name: str) -> ValueError:
     )
 
 
+#: The allowed-syntax statement, value-free so config load can surface it without echoing input.
+RUNTIME_NAME_SYNTAX_HINT = (
+    "work.runtime must be a runtime name (letters, digits, '_', '.', '-'; starting alphanumeric)"
+)
+
 _NAME_SYNTAX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
@@ -65,10 +70,7 @@ def check_runtime_name_syntax(name: object) -> str:
     alphanumerics / `_` / `.` / `-` — the shape an entry-point name can have), else `ValueError`.
     Does NOT consult the registry: this is the load-time check ("syntax at load")."""
     if not isinstance(name, str) or _NAME_SYNTAX.fullmatch(name) is None:
-        raise ValueError(
-            f"work.runtime must be a runtime name (letters, digits, '_', '.', '-'; "
-            f"starting alphanumeric), got {name!r}"
-        )
+        raise ValueError(f"{RUNTIME_NAME_SYNTAX_HINT}, got {name!r}")
     return name
 
 
@@ -149,7 +151,7 @@ def load_entry_point(
             f"runtime {name!r}: {where} is not callable; it must be a register() callable "
             "or a (cfg, entry) factory",
         )
-    log.info("loading runtime %r from %s via %s", name, dist, ENTRY_POINT_GROUP)
+    log.debug("loading runtime %r from %s via %s", name, dist, ENTRY_POINT_GROUP)
     if _is_register_callable(obj):
         try:
             obj()
