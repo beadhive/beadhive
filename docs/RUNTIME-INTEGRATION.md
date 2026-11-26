@@ -166,18 +166,20 @@ runtime author needs to know:
 - **Adoption runs after reclaim**, so a bead `bd reclaim` has already reverted is dispatched
   again under a fresh session id, and the old session's late outcome record never answers for it.
 - **Lease expiry wins, and it means the claim's `lease_expires_at` timestamp.** `bd reclaim`
-  reverts a claim only after a grace window past expiry (about 10 minutes at the default 5-minute
-  TTL), so expiry and "reverted" are not the same moment.
-- **Known gap: the current code adopts inside that grace window.** It does not yet check
-  `lease_expires_at`, so a restarted loop can adopt, and heartbeat, an expired lease until reclaim
-  reverts it. The required behaviour (a restarted loop never adopts or heartbeats an expired
-  lease) is decided and is fixed in a follow-up.
+  reverts a claim only after a grace window past expiry (its `--older-than` flag, a fixed
+  10 minutes by default), so expiry and "reverted" are not the same moment.
+- **An expired lease is never adopted, even inside that grace window.** A restarted loop checks
+  `lease_expires_at` before it calls `observe()`. A session whose claim has expired is not
+  observed, adopted, heartbeated or harvested, and its claim is not released. The loop logs
+  `session_not_adopted_lease_expired` and leaves the bead to `bd reclaim`. Once reclaimed, the
+  bead is dispatched again under a fresh session id. Expect that session to be left running in
+  your runtime, and expect its late outcome record to be ignored.
 - **Accepted gaps.** A session whose handle write failed (or whose loop crashed between
   `schedule()` and the write) is not adopted and can run alongside a re-dispatch. A loop that
   stops for good leaves its sessions to lease expiry. An adopted run's cause reason reads
   `exit None`, because an outcome-sink record carries no exit code.
 - **No operator reclaim verb yet.** Nothing stops a manual reclaim of a bead with a live session.
-  A follow-up adds `work.reclaim` with `--force`; until then, lease expiry is the protection.
+  `bh-zaxga` adds `work.reclaim` with `--force`; until then, lease expiry is the protection.
 
 ### Foreground `bh role` always runs locally
 
@@ -269,7 +271,7 @@ The runner prints a PASS or FAIL line per check, then one verdict:
 |---|---|---|
 | `GO` | Every check passed. | Mode 1: register the runtime and set `work.runtime`. |
 | `NOT YET` | One or more checks failed, and every failure is GC-fixable. | Fix the runtime and re-run. |
-| `INCONCLUSIVE` | Only the loop probe failed, and the failure is **BH-side** (`bh-loop`): BeadHive's own loop mishandled a turn the runtime ran correctly. | Not the runtime's to fix. Report it to BeadHive and re-run. |
+| `INCONCLUSIVE` | At least one failure is **BH-side** (`bh-loop`: BeadHive's own loop mishandled a turn the runtime ran correctly) and none is structural. GC-fixable failures may be present too. | The BH-side failure is not the runtime's to fix: report it to BeadHive and re-run. Fix any GC-fixable failures as for `NOT YET`. |
 | `NO-GO` | At least one structural check failed (`same-session-id` or `no-lifecycle-writes`). | **This routes GC to Mode 2.** |
 
 Each failure names the ADR invariant it broke and its fix class: GC-fixable, structural or

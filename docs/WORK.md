@@ -773,10 +773,17 @@ never answers for the new turn.
 
 Lease expiry wins, and it means the claim's `lease_expires_at` timestamp (ADR Decision 4, operator
 decision 2026-11-26), not whatever `bd reclaim` has reverted. `bd reclaim` reverts a claim only
-after a grace window past expiry (default 2x the 5-minute TTL, about 10 minutes). **Known gap,
-fixed in a follow-up:** the loop does not check `lease_expires_at` when it adopts, so a restarted
-loop adopts, and heartbeats, an expired lease while it is still inside that grace window. The
-decided behaviour is that a restarted loop never adopts or heartbeats an expired lease.
+after a grace window past expiry: its `--older-than` flag, a fixed 10 minutes by default (bd
+recommends about twice the claim TTL; BeadHive passes no flag, so the 10-minute default applies).
+Inside that window an expired claim is still `in_progress` and still the loop's. Before it
+observes a candidate, a restarted loop reads the claim's `lease_expires_at` against its wall
+clock (`runtime_handle.lease_expired`), and a candidate whose lease has passed is **not
+adopted**. It is not observed, not put in flight (so not heartbeated), not harvested and not
+released, and no cause is written. The loop logs `session_not_adopted_lease_expired`, naming the
+bead, runtime and session, and leaves the bead, its lease and its `bh.runtime.handle` as they
+are. The loop runs `bd reclaim` every pass, so once the grace window has passed the claim is
+reverted and the bead is re-dispatched with a fresh session id. A row with no readable lease time
+is not treated as expired. A `local` hive is unaffected: `LocalRuntime` is not adoptable.
 
 Accepted gaps: a session whose handle write failed (or whose loop crashed between `schedule()` and
 the write) is not adopted and can run alongside a re-dispatch of the same bead, and a loop that
@@ -795,21 +802,26 @@ crashing the pass. This applies to `LocalRuntime` too. The limit
 counts calls, not passes. After three consecutive raising `observe()` calls for one bead
 (`LocalLoop(runtime_error_limit=...)`), the third answers `failed` and the bead is harvested
 with that failure. A run past the wall-time cap is observed by the cap and by the harvest, so it
-can reach the limit in two passes. After three consecutive raising `cancel()` calls, the cap
-stops retrying `cancel`.
+can reach the limit in two passes. A raising `cancel()` under the cap is retried the same way.
+After three consecutive raising `cancel()` calls, what happens depends on the runtime. For an
+adoptable runtime the cap stops retrying `cancel` and leaves the claim to the lease. For a
+non-adoptable one it writes the cause and releases the claim.
 
 A restart never writes a turn's cause twice. Removing a harvested turn's handle is best-effort.
 If it fails, the bead keeps a handle and a terminal record. When the bead's events already hold
-that turn's cause, which names its session, the restarted loop only drops the handle.
+that turn's cause, which names its session, the restarted loop only drops the handle. The match
+is scoped to the persisted handle's session: a reason that names no session (a failure with no
+envelope quotes only its detail) never counts as already recorded, so an earlier turn's
+identical failure text cannot swallow the new turn's cause.
 
 `beadhive.runtime_handle.reclaim_refusal(row, now=...)` is the guard for an operator-driven
 reclaim. It returns a message naming the runtime and session when the bead is `in_progress`,
 has a handle, its session has no outcome record, and its lease has not expired. Otherwise it
 returns `None`. No CLI verb calls it yet: there is no operator-facing reclaim that refuses a
-live handle. A follow-up adds `work.reclaim` with `--force`. Until it lands, lease expiry is the
+live handle. `bh-zaxga` adds `work.reclaim` with `--force`. Until it lands, lease expiry is the
 protection. `bd reclaim` reverts a claim only after its lease has expired and its grace window
-has passed, and a loop heartbeats the claims of the sessions it has adopted (see the known gap
-above for an expired lease inside that window).
+has passed, and a loop heartbeats the claims of the sessions it has adopted, never a claim whose
+lease had already expired when it restarted (above).
 
 #### The conformance kit — `beadhive.runtime.conformance`
 

@@ -652,14 +652,37 @@ async def test_lease_expiry_wins_over_a_persisted_handle_on_real_bd(tmp_path, st
     await first.shutdown()
 
     # Expired, but inside bd reclaim's default grace window (10m past expiry): real bd does NOT
-    # revert it yet (the fake hive's reclaim models no grace window).
+    # revert it yet. `bd reclaim` reads the real clock, so the lease is backdated from it once;
+    # the loop's wall clock is frozen at that same instant (no sleeping, no racing the clock).
     now = datetime.now(UTC)
     store.backdate_lease(bead, now - timedelta(minutes=1))
     row = store.show(bead)
+    expired_at = row["lease_expires_at"]
     assert runtime_handle.lease_expired(row, now)
     assert runtime_handle.reclaim_refusal(row, now=now) is None, "an expired lease frees it"
     assert coordination.reclaim(store.path, actor=ACTOR).reclaimed_ids == ()
     assert store.show(bead)["status"] == "in_progress"
+
+    # A loop restarted INSIDE the window: lease expiry wins by `lease_expires_at` (operator
+    # decision 2026-11-26), so the bead is not adopted, observed or heartbeated, and is left
+    # exactly as it is for reclaim.
+    graced_rt = resolve()
+    graced = _loop(
+        tmp_path, store, graced_rt, epic, [bead], clock=FakeClock(now), max_concurrency=1
+    )
+    report = await graced.run_pass()
+    assert report.reclaimed == (), "still inside the grace window"
+    assert report.adopted == () and graced.in_flight == {}
+    assert report.heartbeats == (), "the expired lease is not heartbeated back to life"
+    assert report.harvested == () and report.causes == () and report.dispatched == ()
+    assert graced_rt.scheduled == []
+    row = store.show(bead)
+    assert (row["status"], row["assignee"]) == ("in_progress", ACTOR), "left for reclaim"
+    assert row["lease_expires_at"] == expired_at, "the lease was not renewed"
+    assert runtime_handle.from_row(row).session_id == old, "the handle is left as it is"
+    assert store.dispatch_events(bead) == [], "no cause is written"
+    assert host.alive(old), "the session is not touched"
+    await graced.shutdown()
 
     # Past the grace window: the restarted loop's own reclaim reverts it BEFORE adoption runs.
     store.backdate_lease(bead, now - timedelta(hours=2))

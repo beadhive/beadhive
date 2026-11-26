@@ -157,15 +157,16 @@ removal rules and the no-double-cause guard are in
   flight, and then reclaim would revert it underneath the loop. That leaves a stale in-flight entry
   and a possible double dispatch.
 - **"Lease expiry wins" means the claim's `lease_expires_at` timestamp.** (Operator decision,
-  2026-11-26.) It does **not** mean "whatever `bd reclaim` has reverted". A restarted loop must
-  not adopt or heartbeat a claim whose `lease_expires_at` has passed. `bd reclaim` reverts a claim
-  only after a grace window past expiry (about 10 minutes at the default 5-minute TTL), so the
-  two readings differ inside that window.
-- **Known gap, fixed in a follow-up.** The current code does **not** yet check
-  `lease_expires_at` when it adopts. It relies on `bd reclaim` having reverted the claim, so a
-  restarted loop adopts, and heartbeats, an expired lease while it is still inside reclaim's grace
-  window. The behaviour ADR Decision 4 requires is the timestamp rule above. A follow-up bead
-  makes the loop enforce it.
+  2026-11-26, implemented by `bh-vjzki.3`.) It does **not** mean "whatever `bd reclaim` has
+  reverted". `bd reclaim` reverts a claim only after a grace window past expiry (its
+  `--older-than` flag, a fixed 10 minutes by default), so the two readings differ inside that
+  window. Before it observes a candidate, a restarted loop reads the claim's `lease_expires_at`
+  against its wall clock (`runtime_handle.lease_expired`). A candidate whose lease has passed is
+  not adopted: it is not observed, not put in flight (so not heartbeated), not harvested and not
+  released, and no cause is written. The loop logs `session_not_adopted_lease_expired`, naming
+  the runtime and session, and leaves the bead, its lease and its handle as they are for
+  reclaim, which the loop runs every pass. Once reclaim reverts it, it is re-dispatched with a
+  fresh session id. A row with no readable lease time is not treated as expired.
 - **Accepted gaps.** A session whose handle write failed, or whose loop crashed between
   `schedule()` and the write, is not adopted. The loop logs the failed write and carries on, and
   the session can run alongside a re-dispatch of the same bead. A loop that is stopped for good
@@ -181,7 +182,7 @@ removal rules and the no-double-cause guard are in
   `LocalRuntime` too, which is a behaviour change: a raising `LocalRuntime.observe` used to crash
   the pass.
 - **`runtime_handle.reclaim_refusal` has no caller.** There is no operator reclaim verb yet that
-  refuses a bead with a live handle. A follow-up adds `work.reclaim` with `--force`, and until it
+  refuses a bead with a live handle. `bh-zaxga` adds `work.reclaim` with `--force`, and until it
   lands, lease expiry is the only protection.
 
 **One spawn path, with one accepted exception.** Everything the loop dispatches goes through
@@ -331,7 +332,7 @@ check.
   is decided, not open: runtimes are discovered through their own `beadhive.runtimes` entry-point
   group (Decision 1), and the plugin kernel is not used for it. Nothing in the kernel is waiting
   on this. If the kernel's runtime port lands, it will call `register_runtime`.
-- **An operator reclaim verb.** A follow-up adds `work.reclaim` with `--force`, using
+- **An operator reclaim verb.** `bh-zaxga` adds `work.reclaim` with `--force`, using
   `runtime_handle.reclaim_refusal` (Decision 4).
 - **The published schema's `work.runtime` enum.** The published config-v1 schema still lists only
   `claude`, `local` and `temporal`, and its description of `work.runtime` is stale (it says the
@@ -345,8 +346,10 @@ check.
   it fails for structural reasons, the documented fallback is Mode 2.
 - `work.runtime` accepts any well-formed name at load, and an unregistered name still fails
   closed where the value is used (`bh work loop`, `bh config set`, `bh hive ready`, `bh doctor`).
-- Known gaps, each with a follow-up: an expired lease can be adopted inside `bd reclaim`'s grace
-  window, there is no operator reclaim verb, and the published schema description is stale.
+- Known gaps, each with a tracking bead: there is no operator reclaim verb (`bh-zaxga`), and the
+  published schema description is stale (`bh-esnpc`). The expired-lease adoption gap is closed
+  (`bh-vjzki.3`): a restarted loop does not adopt an expired lease, even inside `bd reclaim`'s
+  grace window.
 - `work.dispatch.loop` makes "who runs the loop" explicit. Under `gc`, BH reports itself as
   delegated and refuses loop-owning verbs.
 - `bh-kp64s.2` closes with this ADR. `gas-frameworks-comparison.md:44` ("not currently a runtime
